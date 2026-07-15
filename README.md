@@ -55,6 +55,6 @@ product does.
 Part of the [Keiko](https://github.com/oscharko-dev/Keiko) family — governed agentic
 workspaces for knowledge work.
 
-© 2026 Oscharko Dev · Licensed under the [Apache License 2.0](LICENSE).
+© 2026 oscharko-dev · Licensed under the [Apache License 2.0](LICENSE).
 
 </div>
