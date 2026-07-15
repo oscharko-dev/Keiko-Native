@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "qualityProfile": "keiko-parity-v1",
+  "phase": "bootstrap",
+  "baseBranch": "main",
+  "productiveSourceRoots": [],
+  "nativeTargets": [],
+  "minimumCoverage": {
+    "branches": 85,
+    "functions": 85,
+    "lines": 85,
+    "statements": 85
+  }
+}

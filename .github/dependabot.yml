@@ -1,0 +1,32 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:00"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 5
+    target-branch: main
+    labels:
+      - dependencies
+      - github-actions
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:30"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 5
+    target-branch: main
+    versioning-strategy: increase
+    labels:
+      - dependencies
+      - npm
+    cooldown:
+      default-days: 7

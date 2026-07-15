@@ -1,0 +1,32 @@
+{
+  "name": "@oscharko-dev/keiko-native-quality",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Repository-local quality control plane for Keiko Native.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/oscharko-dev/Keiko-Native"
+  },
+  "engines": {
+    "node": ">=24.18.0 <25",
+    "npm": ">=11.6.2 <12"
+  },
+  "packageManager": "npm@11.16.0",
+  "scripts": {
+    "build": "node quality/smoke.mjs",
+    "check:contract": "node quality/check.mjs",
+    "coverage": "c8 --all --include=quality/contract.mjs --reporter=text --reporter=lcov --check-coverage --branches=85 --functions=85 --lines=85 --statements=85 node --test quality/*.test.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "markdownlint-cli2 '**/*.md' '#node_modules'",
+    "quality": "npm run check:contract && npm run lint && npm run format:check && npm run coverage && npm run build",
+    "test": "node --test quality/*.test.mjs"
+  },
+  "devDependencies": {
+    "c8": "11.0.0",
+    "markdownlint-cli2": "0.23.0",
+    "prettier": "3.9.5"
+  }
+}

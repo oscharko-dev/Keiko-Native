@@ -1,0 +1,2 @@
+# Repository-specific zizmor configuration. No findings are ignored during bootstrap.
+rules: {}
