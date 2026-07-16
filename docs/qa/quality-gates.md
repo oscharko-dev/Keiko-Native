@@ -56,6 +56,15 @@ head. Restoring issue readiness does not restore those pull requests; their upda
 evidence must pass again. Readiness records are accepted only from the canonical GitHub Actions bot
 identity; copied or user-authored marker comments have no authority.
 
+The shared GitHub transport retries only idempotent `GET` requests after a transport failure or an
+HTTP `429`, `502`, `503`, or `504`. It makes at most three attempts. Fallback delays are 100 and 200
+milliseconds; a non-negative integer-seconds `Retry-After` value may replace each delay but is
+capped at one second, so the cumulative delay cannot exceed two seconds. Missing, negative,
+fractional, date-form, oversized, or malformed values cannot escape that bound. Mutations and
+permanent responses remain single-attempt, errors retain only the method, path, status or transport
+classification, and exhaustion fails closed. These bounded retries tolerate a brief provider
+failure; they do not turn a sustained GitHub outage into readiness or merge authority.
+
 Zizmor's `dangerous-triggers` finding is dispositioned only for this one metadata workflow. The
 repository contract enforces its protected-`dev` checkout, fixed script, pinned actions,
 least-privilege permissions, absence of PR checkout or build commands, and exact branch filters. No
