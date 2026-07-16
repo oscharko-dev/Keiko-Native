@@ -34,10 +34,14 @@ Protection uses strict current-branch checks, administrator enforcement, signed 
 history, resolved conversations, no force pushes, and no branch deletion. A same-named check from a
 different App ID does not satisfy the policy.
 
-Pull-request workflows emit their applicable checks for both `dev` and `epic/**` targets. Epic
-integration branches require the direct deterministic checks needed by child-issue scope before
-agent auto-merge. The final epic pull request into `dev` remains subject to the complete required
-exact-head set above and integrated epic acceptance.
+Pull-request workflows emit their applicable checks for both `dev` and `epic/**` targets. The full
+set above applies to `dev`. CI-based SonarQube Cloud analysis and its provider context are selected
+only for pull requests targeting `dev`, pushes to `dev`, and manual dispatches bound exactly to
+`dev`. Repository coverage remains unconditional. Epic pull requests and pushes retain all
+applicable deterministic, security, dependency, contract, native, and platform checks without
+requesting unavailable non-main Sonar branch data. The final epic pull request into `dev` remains
+subject to the complete required exact-head set above, including integrated Sonar and epic
+acceptance.
 
 For user-facing changes, required status includes the machine-executable Acceptance Journey rows
 declared by the issue. A draft pull request may be used to obtain remote and authoritative-platform
@@ -72,18 +76,22 @@ pull request on the exact current head.
 
 That final review covers scope, acceptance criteria, the issue Quality Plan, verification and audit
 evidence, required and advisory findings, review conversations, and residual risks. Agents and bots
-must not merge into `dev`, enable auto-merge on a pull request targeting `dev`, or operate through a
-human merge-capable credential.
+must not merge into `dev`, enable auto-merge on a pull request targeting `dev`, or, for actions
+targeting `dev`, operate through a human merge-capable credential.
 
-Automatic agent merge is permitted only from a child-issue branch into the epic integration branch
-named by its accepted issue. The applicable exact-head gates must be green, acceptance and audit
-evidence must be complete, and no blocking finding or review conversation may remain. An epic or
-standalone pull request targeting `dev` is always outside this exception.
+An authenticated agent may use the authenticated maintainer account to merge a fully eligible
+accepted child branch only into the exact accepted epic target. Immediately before mutation it
+revalidates the accepted issue, exact source and target, current head, applicable green checks,
+acceptance and audit evidence, blocking findings, and review conversations. Any mismatch, stale
+evidence, failed or skipped required check, unresolved thread, closed issue, or `dev` target fails
+closed. Never merge or enable auto-merge for `dev`. An epic or standalone pull request targeting
+`dev` is always outside this exception.
 
-Repository administration enforces the boundary by limiting merge-capable identities to the two
-authorized maintainers, disabling auto-merge for `dev` delivery, and giving every automation
-identity credentials without authority to merge into `dev`. A shared human credential cannot prove
-whether the actor was human or automated and is therefore prohibited for agent operation.
+Repository administration limits `dev` merge authority to the two authorized maintainers and keeps
+repository auto-merge available for epic delivery. Because GitHub attribution identifies the
+account rather than whether its operation was human- or agent-driven, the accepted issue, pull
+request evidence, exact target validation, and recorded automation handoff provide the audit trail
+for child-to-epic delivery. They never authorize an agent action against `dev`.
 
 ## Bootstrap and productive phases
 

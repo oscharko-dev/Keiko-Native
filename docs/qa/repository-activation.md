@@ -53,9 +53,12 @@ Configure an epic-branch ruleset that requires pull requests, signed commits, li
 resolved conversations, `PR contract`, `Issue contract current`, and every deterministic or
 provider check observed for that target during the live probes.
 
-Allow a dedicated automation identity to merge a child-issue pull request only when the accepted
-issue names that exact epic branch and all required checks and evidence are current. Do not give
-that identity a human credential, a `dev` bypass, or unrestricted branch-update authority.
+An authenticated agent may use the authenticated maintainer account to merge a fully eligible
+accepted child branch only into the exact accepted epic target. Require it to revalidate the issue
+contract, source, target, current head, applicable checks, audit evidence, findings, and review
+conversations immediately before mutation. Any mismatch or `dev` target fails closed. Never merge
+or enable auto-merge for `dev`. Retain the issue, pull request, exact head, actor, and result as the
+automation record.
 
 ## 5. Verify workflow permissions and providers
 
@@ -84,8 +87,9 @@ Record the issue, pull request, exact head, actor, result, and timestamp for eac
    again.
 6. A wrong source issue number, delivery target, readiness URL, contract version, or stale head
    fails closed.
-7. The dedicated automation identity can merge one fully green child pull request to its accepted
-   epic branch and cannot merge, enable auto-merge, push, or bypass a gate on `dev`.
+7. An authenticated-agent probe using the authenticated maintainer account can merge one fully
+   green child pull request to its exact accepted epic branch, rejects a wrong or stale target, and
+   does not merge, enable auto-merge, push, or bypass a gate on `dev`.
 8. Niko or Oscharko can manually merge a fully green `dev` pull request after reviewing the exact
    head; no separate non-author approval is required.
 
