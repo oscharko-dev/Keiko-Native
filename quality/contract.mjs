@@ -211,7 +211,12 @@ function actionReference(line) {
     candidate[end]?.trim() !== ""
   )
     end += 1;
-  return end > 0 ? candidate.slice(0, end) : undefined;
+  if (end === 0) return undefined;
+  const reference = candidate.slice(0, end);
+  const quote = reference[0];
+  return (quote === '"' || quote === "'") && reference.at(-1) === quote
+    ? reference.slice(1, -1)
+    : reference;
 }
 
 async function repositoryFiles(root, directory = root) {
@@ -248,12 +253,15 @@ async function contractFailures(root, files, manifest) {
     );
   failures.push(...validateManifest(manifest));
   const productiveSources = files.filter(isProductiveSource);
-  if (manifest.phase === "bootstrap" && productiveSources.length > 0) {
+  if (manifest?.phase === "bootstrap" && productiveSources.length > 0) {
     failures.push(
       "Productive source exists while the project is in bootstrap phase; declare native targets and gates first.",
     );
   }
-  for (const sourceRoot of manifest.productiveSourceRoots ?? []) {
+  const sourceRoots = Array.isArray(manifest?.productiveSourceRoots)
+    ? manifest.productiveSourceRoots
+    : [];
+  for (const sourceRoot of sourceRoots) {
     if (!(await exists(join(root, sourceRoot))))
       failures.push(`Declared source root is missing: ${sourceRoot}.`);
   }
@@ -261,22 +269,39 @@ async function contractFailures(root, files, manifest) {
 }
 
 async function productiveCommandFailures(root, ci, manifest) {
-  if (manifest.phase !== "productive") return [];
+  if (
+    manifest?.phase !== "productive" ||
+    !Array.isArray(manifest.nativeTargets)
+  )
+    return [];
   const packageJson = await readJson(join(root, "package.json"));
-  const localQuality = packageJson.scripts?.quality ?? "";
+  const localQuality =
+    typeof packageJson.scripts?.quality === "string"
+      ? packageJson.scripts.quality
+      : "";
   return manifest.nativeTargets.flatMap((target) =>
-    Object.values(target.commands).flatMap((command) => {
-      const failures = [];
-      if (typeof packageJson.scripts?.[command] !== "string")
-        failures.push(`Native target package script is missing: ${command}.`);
-      if (!localQuality.includes(`npm run ${command}`))
-        failures.push(
-          `Local quality does not execute native target command: ${command}.`,
-        );
-      if (!ci.includes(`npm run ${command}`))
-        failures.push(`CI does not execute native target command: ${command}.`);
-      return failures;
-    }),
+    Object.values(
+      target?.commands !== null &&
+        typeof target?.commands === "object" &&
+        !Array.isArray(target.commands)
+        ? target.commands
+        : {},
+    )
+      .filter((command) => typeof command === "string")
+      .flatMap((command) => {
+        const failures = [];
+        if (typeof packageJson.scripts?.[command] !== "string")
+          failures.push(`Native target package script is missing: ${command}.`);
+        if (!localQuality.includes(`npm run ${command}`))
+          failures.push(
+            `Local quality does not execute native target command: ${command}.`,
+          );
+        if (!ci.includes(`npm run ${command}`))
+          failures.push(
+            `CI does not execute native target command: ${command}.`,
+          );
+        return failures;
+      }),
   );
 }
 
@@ -334,7 +359,7 @@ export async function validateRepository(root) {
     failureCount: failures.length,
     failures,
     fileCount: files.length,
-    phase: manifest.phase,
+    phase: manifest?.phase,
     productiveSourceCount: contract.productiveSources.length,
   };
 }

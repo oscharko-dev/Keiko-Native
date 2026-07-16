@@ -145,6 +145,8 @@ test("accepts full-SHA, local, and container action references", () => {
   const workflow = [
     "- uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
     "  -   uses:\tactions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0",
+    '- uses: "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"',
+    "- uses: 'actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e'",
     "- uses: ./local-action",
     "- uses: docker://alpine:3.23",
   ].join("\n");
@@ -350,6 +352,40 @@ test("fails closed when productive commands are not wired locally and in CI", as
     assert.match(failures, /Native target package script is missing/u);
     assert.match(failures, /Local quality does not execute/u);
     assert.match(failures, /CI does not execute/u);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("reports malformed productive manifests without throwing", async () => {
+  const root = await fixtureRepository();
+  try {
+    const manifests = [
+      {
+        ...validManifest,
+        nativeTargets: [{ ...validTarget, commands: undefined }],
+        phase: "productive",
+        productiveSourceRoots: ["Sources"],
+      },
+      {
+        ...validManifest,
+        nativeTargets: "App",
+        phase: "productive",
+        productiveSourceRoots: 42,
+      },
+    ];
+    for (const manifest of manifests) {
+      await writeFile(
+        join(root, "quality/project.json"),
+        JSON.stringify(manifest),
+      );
+      const result = await validateRepository(root);
+      assert.ok(result.failureCount > 0);
+      assert.match(
+        result.failures.join("\n"),
+        /must be an array|command is missing/u,
+      );
+    }
   } finally {
     await rm(root, { force: true, recursive: true });
   }
