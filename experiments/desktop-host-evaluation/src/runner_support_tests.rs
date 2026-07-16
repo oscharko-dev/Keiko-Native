@@ -1,6 +1,9 @@
 use std::fs;
 
 use crate::benchmark::{Candidate, ScheduledLaunch, StartClass};
+use crate::runner_close::{
+    close_request_ready, fresh_close_request_path, publish_close_request, remove_close_request,
+};
 use crate::runner_evidence::{EvidenceClass, GateStatus};
 use crate::runner_support::{
     clear_canonical_output, fresh_handshake_path, journey_gates, remove_handshake,
@@ -23,6 +26,77 @@ fn stable_shell_handshake_is_exact_and_stale_files_are_removed() {
     fs::write(&reset, b"keiko-stable-rendered-shell-v1\n").unwrap();
     assert!(stable_shell_ready(&reset));
     remove_handshake(&reset).unwrap();
+}
+
+#[test]
+fn close_request_is_unique_exact_atomic_and_removed() {
+    let launch = ScheduledLaunch {
+        start_class: StartClass::Warm,
+        round: 7,
+        position: 0,
+        candidate: Candidate::Tauri,
+    };
+    let first = fresh_close_request_path(launch).unwrap();
+    let second = fresh_close_request_path(launch).unwrap();
+    assert_ne!(first, second);
+    assert!(!first.exists());
+    publish_close_request(&first).unwrap();
+    assert!(close_request_ready(&first));
+    assert_eq!(fs::read(&first).unwrap(), b"keiko-close-request-v1\n");
+    assert!(!first.with_extension("request.tmp").exists());
+    remove_close_request(&first).unwrap();
+    remove_close_request(&second).unwrap();
+    assert!(!first.exists());
+}
+
+#[test]
+fn stale_or_malformed_close_requests_fail_closed() {
+    let launch = ScheduledLaunch {
+        start_class: StartClass::Cold,
+        round: 8,
+        position: 1,
+        candidate: Candidate::Slint,
+    };
+    let path = fresh_close_request_path(launch).unwrap();
+    fs::write(&path, b"old-or-malformed\n").unwrap();
+    assert!(matches!(
+        publish_close_request(&path),
+        Err(crate::runner::RunnerError::StaleCloseRequest)
+    ));
+    assert!(matches!(
+        remove_close_request(&path),
+        Err(crate::runner::RunnerError::InvalidCloseRequest)
+    ));
+    assert!(path.exists());
+    fs::remove_file(path).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_close_request_is_rejected_without_touching_target() {
+    use std::os::unix::fs::symlink;
+
+    let launch = ScheduledLaunch {
+        start_class: StartClass::Cold,
+        round: 9,
+        position: 0,
+        candidate: Candidate::Tauri,
+    };
+    let path = fresh_close_request_path(launch).unwrap();
+    let target = path.with_extension("target");
+    fs::write(&target, b"keiko-close-request-v1\n").unwrap();
+    symlink(&target, &path).unwrap();
+    assert!(matches!(
+        publish_close_request(&path),
+        Err(crate::runner::RunnerError::StaleCloseRequest)
+    ));
+    assert!(matches!(
+        remove_close_request(&path),
+        Err(crate::runner::RunnerError::InvalidCloseRequest)
+    ));
+    assert_eq!(fs::read(&target).unwrap(), b"keiko-close-request-v1\n");
+    fs::remove_file(path).unwrap();
+    fs::remove_file(target).unwrap();
 }
 
 #[test]

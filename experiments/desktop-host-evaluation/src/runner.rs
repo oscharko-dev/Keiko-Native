@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use crate::benchmark::{Candidate, ScheduledLaunch, StartClass, Thresholds, accepted_schedule};
 use crate::lifecycle::{ProcessSupervisor, Termination, supervision_backend};
+use crate::runner_close::*;
 pub use crate::runner_error::RunnerError;
 use crate::runner_evidence::*;
 use crate::runner_package::*;
@@ -16,7 +17,6 @@ const CLEANUP_DEADLINE: Duration = Duration::from_secs(5);
 const RESOURCE_IDLE_SETTLE: Duration = Duration::from_millis(250);
 const RESOURCE_SAMPLE_INTERVAL: Duration = Duration::from_millis(100);
 const MEASUREMENT_RESOLUTION_MS: f64 = 10.0;
-
 pub fn verify_current() -> Result<VerifyEvidence, RunnerError> {
     let output = verify_output();
     clear_canonical_output(&output)?;
@@ -46,7 +46,6 @@ pub fn verify_current() -> Result<VerifyEvidence, RunnerError> {
     require_complete(evidence.decision_ready)?;
     Ok(evidence)
 }
-
 pub fn benchmark_current() -> Result<BenchmarkEvidence, RunnerError> {
     let output = benchmark_output();
     clear_canonical_output(&output)?;
@@ -78,7 +77,6 @@ pub fn benchmark_current() -> Result<BenchmarkEvidence, RunnerError> {
     require_complete(evidence.decision_ready)?;
     Ok(evidence)
 }
-
 fn run_quality_commands() -> Result<(), RunnerError> {
     run_cargo(["fmt", "--all", "--", "--check"])?;
     run_cargo(["test", "--locked", "--workspace", "--all-targets"])?;
@@ -95,7 +93,6 @@ fn run_quality_commands() -> Result<(), RunnerError> {
     build_instrumented_candidate("keiko-tauri-prototype")?;
     build_instrumented_candidate("keiko-slint-prototype")
 }
-
 fn build_instrumented_candidate(package: &str) -> Result<(), RunnerError> {
     run_cargo([
         "build",
@@ -141,7 +138,7 @@ fn warm_candidate(
         candidate,
     };
     let mut process = start_candidate(platform, packages, launch, false)?;
-    close_candidate(platform, &mut process.supervisor)?;
+    close_candidate(&mut process)?;
     remove_handshake(&process.handshake)
 }
 
@@ -157,14 +154,10 @@ fn measure_launch(
         .supervisor
         .sample_resources_after_settle(RESOURCE_IDLE_SETTLE, RESOURCE_SAMPLE_INTERVAL);
     let shutdown_started = Instant::now();
-    request_normal_close(platform, process.supervisor.root_pid())?;
-    let termination = process.supervisor.wait_or_terminate(CLEANUP_DEADLINE)?;
+    close_candidate(&mut process)?;
     let normal_shutdown_ms = rounded_millis(shutdown_started.elapsed());
     let orphan_process = process.supervisor.process_tree_remains();
     remove_handshake(&process.handshake)?;
-    if termination != Termination::Exited {
-        return Err(RunnerError::NormalShutdownFailed);
-    }
     Ok(LaunchSample {
         launch,
         precondition: launch_precondition(launch.start_class, warmup_completed),
@@ -180,6 +173,7 @@ fn measure_launch(
 struct RunningCandidate {
     supervisor: ProcessSupervisor,
     handshake: std::path::PathBuf,
+    close_request: std::path::PathBuf,
     started: Instant,
 }
 
@@ -192,27 +186,32 @@ fn start_candidate(
     require_package_record(packages, launch.candidate)?;
     let executable = packaged_executable(platform, launch.candidate);
     let handshake = fresh_handshake_path(launch)?;
+    let close_request = fresh_close_request_path(launch)?;
     let state = launch_state_path(launch, unique_state)?;
     let started = Instant::now();
     let mut command = Command::new(executable);
     command
         .env("KEIKO_EVAL_READY_FILE", &handshake)
+        .env("KEIKO_EVAL_CLOSE_FILE", &close_request)
         .env("KEIKO_EVAL_STATE_DIR", state);
     let supervisor = ProcessSupervisor::spawn(command)?;
     wait_for_stable_shell(&supervisor, &handshake, started)?;
     Ok(RunningCandidate {
         supervisor,
         handshake,
+        close_request,
         started,
     })
 }
-
-fn close_candidate(platform: &str, supervisor: &mut ProcessSupervisor) -> Result<(), RunnerError> {
-    request_normal_close(platform, supervisor.root_pid())?;
-    if supervisor.wait_or_terminate(CLEANUP_DEADLINE)? != Termination::Exited {
-        return Err(RunnerError::NormalShutdownFailed);
-    }
-    Ok(())
+fn close_candidate(process: &mut RunningCandidate) -> Result<(), RunnerError> {
+    let result = publish_close_request(&process.close_request)
+        .and_then(|()| Ok(process.supervisor.wait_or_terminate(CLEANUP_DEADLINE)?));
+    let cleanup = remove_close_request(&process.close_request);
+    let termination = result?;
+    cleanup?;
+    (termination == Termination::Exited)
+        .then_some(())
+        .ok_or(RunnerError::NormalShutdownFailed)
 }
 
 fn summarize(samples: &[LaunchSample]) -> Result<Vec<CandidateSummary>, RunnerError> {
@@ -375,8 +374,9 @@ pub(crate) fn benchmark_methodology() -> BenchmarkMethodology {
             .into(),
         resource_limitation:
             "shared system WebView services outside the descendant tree are not attributed".into(),
-        shutdown_endpoint: "normal-close dispatch start through full supervised process-tree exit"
-            .into(),
+        shutdown_endpoint:
+            "evaluation-only atomic close-request dispatch through full supervised process-tree exit"
+                .into(),
         measurement_resolution: "values rounded to 10 ms with plus-or-minus 10 ms uncertainty"
             .into(),
     }

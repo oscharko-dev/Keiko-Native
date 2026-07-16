@@ -15,6 +15,8 @@ fn default_artifact_contains_no_test_listener_or_debug_hook() {
     for forbidden in [
         "keiko-stable-rendered-shell-v1",
         "keiko_eval_ready_file",
+        "keiko-close-request-v1",
+        "keiko_eval_close_file",
         "evaluation_driver_v1",
         "remote-debugging",
         "slint_interpreter",

@@ -11,6 +11,8 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 #[cfg(feature = "evaluation-hooks")]
 mod evaluation_assets;
 #[cfg(feature = "evaluation-hooks")]
+mod evaluation_close;
+#[cfg(feature = "evaluation-hooks")]
 mod evaluation_ready;
 
 pub fn run() {
@@ -25,6 +27,14 @@ pub fn run() {
                     .devtools(false)
                     .on_navigation(allowed_navigation);
             let window = window_builder.build()?;
+            #[cfg(feature = "evaluation-hooks")]
+            if let Some(watcher) = evaluation_close::CloseWatcher::start(window.clone())?
+                && !app.manage(watcher)
+            {
+                return Err(
+                    std::io::Error::other("evaluation close watcher already exists").into(),
+                );
+            }
             drop(window);
             Ok(())
         })
@@ -33,6 +43,10 @@ pub fn run() {
 
     app.run(|handle, event| {
         if should_cleanup(&event) {
+            #[cfg(feature = "evaluation-hooks")]
+            if let Some(watcher) = handle.try_state::<evaluation_close::CloseWatcher>() {
+                watcher.stop();
+            }
             handle.state::<AppState>().cleanup();
         }
     });

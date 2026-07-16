@@ -7,6 +7,7 @@ pub mod evidence;
 pub mod lifecycle;
 pub mod package;
 pub mod runner;
+mod runner_close;
 mod runner_error;
 pub mod runner_evidence;
 mod runner_package;

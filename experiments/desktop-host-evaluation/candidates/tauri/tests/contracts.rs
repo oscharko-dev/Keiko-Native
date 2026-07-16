@@ -95,6 +95,9 @@ fn release_sources_do_not_embed_driver_or_debug_listener_capabilities() {
         "keiko_eval_ready_file",
         "__keiko_eval_ready.js",
         "evaluationready",
+        "keiko_eval_close_file",
+        "keiko-close-request-v1",
+        "keiko-eval-close",
     ] {
         assert!(!text.contains(forbidden), "forbidden marker: {forbidden}");
     }

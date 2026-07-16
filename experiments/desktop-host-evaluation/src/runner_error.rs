@@ -20,8 +20,10 @@ pub enum RunnerError {
     CandidateExited,
     #[error("stable rendered shell handshake was not observed before the deadline")]
     StableShellTimeout,
-    #[error("normal window close could not be requested")]
-    NormalCloseUnavailable,
+    #[error("close request path was not fresh")]
+    StaleCloseRequest,
+    #[error("close request was not an exact regular file")]
+    InvalidCloseRequest,
     #[error("candidate required forced termination")]
     NormalShutdownFailed,
     #[error("required exact-head evidence contains a failed or pending gate")]

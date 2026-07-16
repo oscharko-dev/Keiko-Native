@@ -91,28 +91,6 @@ pub(crate) fn launch_state_path(
     Ok(path)
 }
 
-pub(crate) fn request_normal_close(platform: &str, pid: u32) -> Result<(), RunnerError> {
-    let output = if platform == "macos" {
-        Command::new("osascript").args(["-e", &format!(
-            "tell application \"System Events\" to tell first process whose unix id is {pid} to click button 1 of window 1"
-        )]).output()?
-    } else {
-        Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                &format!("if (-not (Get-Process -Id {pid}).CloseMainWindow()) {{ exit 1 }}"),
-            ])
-            .output()?
-    };
-    output
-        .status
-        .success()
-        .then_some(())
-        .ok_or(RunnerError::NormalCloseUnavailable)
-}
-
 pub(crate) fn verification_gates(
     platform: &str,
     backend: SupervisionBackend,
