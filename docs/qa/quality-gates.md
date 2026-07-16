@@ -38,8 +38,8 @@ Missing target evidence fails closed.
 
 Gitar and `Keiko for Quality` are installed and produce independent evidence but remain outside
 branch protection while availability, plan pacing, or self-deadlock can omit a bounded result. A
-finding from either product is still actionable. An absent advisory check is an integration incident,
-not a product-quality pass or failure.
+finding from either product is still actionable. An absent advisory check is an integration
+incident, not a product-quality pass or failure.
 
 Promotion to a required gate needs a live negative/positive probe proving exact-head emission,
 stable producer identity, bounded settlement, machine-readable evidence, and a repair path that does
@@ -55,3 +55,7 @@ not define a separate Claude CI workflow.
 Run `npm run quality` and `npm audit --audit-level=high` before the first push. Reproduce remote
 findings locally, add a prevention test or contract check, rerun the affected gate, and then rerun
 the complete local suite before another push. GitHub is remote-only validation, not the test loop.
+
+The bootstrap quality control plane deliberately keeps third-party execution surface minimal:
+Prettier is the only npm development dependency. Markdown policy and LCOV generation are local,
+tested Node.js gates, and coverage uses the Node.js 24 test runner with the same 85% floors.

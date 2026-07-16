@@ -22,8 +22,8 @@ conversation must be resolved, and commits must be signed. No approving human re
 after the work has been accepted and the direct app-bound gates are green.
 
 Gitar and `Keiko for Quality` are advisory. Their findings still require owning-layer fixes and
-failure-first tests, but their absence must not deadlock delivery until their documented availability
-probes pass.
+failure-first tests, but their absence must not deadlock delivery until their documented
+availability probes pass.
 
 Do not push directly to `main`, force-push, bypass a gate, dismiss a finding to obtain green status,
 or include secrets or unredacted customer content in repository or CI evidence.

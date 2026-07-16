@@ -17,16 +17,14 @@
   "scripts": {
     "build": "node quality/smoke.mjs",
     "check:contract": "node quality/check.mjs",
-    "coverage": "c8 --all --include=quality/contract.mjs --reporter=text --reporter=lcov --check-coverage --branches=85 --functions=85 --lines=85 --statements=85 node --test quality/*.test.mjs",
+    "coverage": "node --test --experimental-test-coverage --test-coverage-include=quality/contract.mjs --test-coverage-branches=85 --test-coverage-functions=85 --test-coverage-lines=85 --test-reporter=./quality/coverage-reporter.mjs quality/*.test.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "lint": "markdownlint-cli2 '**/*.md' '#node_modules'",
+    "lint": "node quality/markdown.mjs",
     "quality": "npm run check:contract && npm run lint && npm run format:check && npm run coverage && npm run build",
     "test": "node --test quality/*.test.mjs"
   },
   "devDependencies": {
-    "c8": "11.0.0",
-    "markdownlint-cli2": "0.23.0",
-    "prettier": "3.9.5"
+    "prettier": "3.8.1"
   }
 }

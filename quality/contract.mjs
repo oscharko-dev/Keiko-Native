@@ -14,6 +14,7 @@ const requiredFiles = [
   ".github/workflows/mutation-security.yml",
   ".github/workflows/osv-scanner.yml",
   ".github/zizmor.yml",
+  ".markdown-quality.json",
   "AGENTS.md",
   "CLAUDE.md",
   "CONTRIBUTING.md",

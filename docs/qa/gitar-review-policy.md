@@ -10,9 +10,9 @@ updates, signing, packaging, workflows, manifests, public contracts, and tests b
 binary evidence. If service limits prevent complete review, identify the unreviewed files instead of
 issuing a clean verdict.
 
-Draft processing, merge blocking, auto-approve, Gitar auto-merge, approval labels, `gitar unblock`,
-and unrelated-CI retries remain disabled. A ready pull request may receive one `gitar review` request
-on its final locally verified head. A later commit invalidates that evidence.
+Draft processing, merge blocking, auto-approve, Gitar auto-merge, approval labels,
+`gitar unblock`, and unrelated-CI retries remain disabled. A ready pull request may receive one
+`gitar review` request on its final locally verified head. A later commit invalidates that evidence.
 
 A clean advisory verdict requires zero unresolved findings and current-head review evidence. Every
 confirmed behavioral or trust-boundary finding requires an owning-layer fix and a failure-first
