@@ -23,7 +23,7 @@ session has resolved the product inputs; no separate GitHub approval or human co
 - Decision to resolve:
 - Why it must be decided now:
 - Decision owner:
-- Fachkonzept, Decision Addendum, parity, risk, or incident reference:
+- Agent Planning Baseline, Decision Addendum, parity, risk, or incident reference:
 - Relevant accepted ADRs and repository evidence:
 - Required resulting record: `ADR | product decision | security decision | documented deferral`
 

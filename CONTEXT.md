@@ -4,9 +4,10 @@ Keiko Native is the greenfield successor to the existing Keiko application. This
 the product language that prevents the rewrite from silently becoming a wrapper, shared-core
 edition, or unreviewed source-code migration.
 
-Human-approved product and scope changes to the source Fachkonzept are governed by
-`docs/planning/decision-addendum.md`. This file is a current language projection of those decisions
-and accepted Native ADRs; it is not an independent decision authority.
+Human-approved product and scope changes are governed by `docs/planning/decision-addendum.md`. The
+repository-owned functional and quality requirements live in
+`docs/planning/agent-planning-baseline.md`. This file is a current language projection of those
+records and accepted Native ADRs; it is not an independent decision authority.
 
 ## Language
 
@@ -37,6 +38,11 @@ _Avoid_: Moving target, informal feature list, implementation checklist
 The evidence-backed record of each baseline capability's inclusion decision and Keiko Native
 replacement status.
 _Avoid_: Roadmap, aspirational feature list, source-code mapping
+
+**Agent Planning Baseline**:
+The repository-owned functional, journey, quality, decision-gate, and risk baseline used to create
+complete epics and issues without private-source access.
+_Avoid_: Fachkonzept copy, roadmap, implementation issue, private planning dependency
 
 **Mandatory Delta**:
 A security, regulatory, compatibility, or critical-correctness change after the baseline cut-off
@@ -89,6 +95,8 @@ _Avoid_: Wholesale style-guide copy, inherited acceptance evidence, undocumented
   structure.
 - The **Parity Ledger** requires equal or better behavior, security, governance, data integrity,
   evidence, accessibility, performance, and failure handling for every included capability.
+- Every **Parity Ledger** capability links to its requirements in the **Agent Planning Baseline**.
+- Planning agents create epics from repository records and never require the private source.
 - A **Mandatory Delta** changes the baseline only through explicit review and recorded approval.
 - **Agentic Coding** is a hard Keiko Native replacement requirement, independent of whether its
   implementation matches Existing Keiko.

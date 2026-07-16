@@ -12,25 +12,26 @@ out; `CONTEXT.md` defines what the product terms mean.
 
 Use a work-type preflight instead of loading every governance document before every prompt:
 
-| Trigger                       | Required review before work starts                                                                                                                                        |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| New task                      | `AGENTS.md`, `CONTEXT.md`, and `docs/planning/decision-addendum.md`                                                                                                       |
-| Epic or issue authorship      | Relevant product-specification sections, parity decisions, accepted Native ADRs, `docs/engineering/code-quality-standard.md`, current template, and Definition of Ready   |
-| Architecture or security work | Relevant Native ADRs, trust boundaries, threat assumptions, and affected quality contracts                                                                                |
-| User-facing UI work           | `docs/planning/native-design-baseline.md`, adopted component and state contracts, and applicable accessibility requirements                                               |
-| Implementation                | Accepted issue, acceptance criteria, issue Quality Plan, verification commands, `docs/engineering/code-quality-standard.md`, relevant ADRs, and affected module contracts |
-| Pull request or handoff       | Complete diff, acceptance criteria, trust boundaries, failure modes, required gates, and evidence obligations                                                             |
+| Trigger                       | Required review before work starts                                                                                                                                                           |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| New task                      | `AGENTS.md`, `CONTEXT.md`, and `docs/planning/decision-addendum.md`                                                                                                                          |
+| Epic or issue authorship      | Relevant `docs/planning/agent-planning-baseline.md` sections, parity decisions, accepted Native ADRs, `docs/engineering/code-quality-standard.md`, current template, and Definition of Ready |
+| Architecture or security work | Relevant Native ADRs, trust boundaries, threat assumptions, and affected quality contracts                                                                                                   |
+| User-facing UI work           | `docs/planning/native-design-baseline.md`, adopted component and state contracts, and applicable accessibility requirements                                                                  |
+| Implementation                | Accepted issue, acceptance criteria, issue Quality Plan, verification commands, `docs/engineering/code-quality-standard.md`, relevant ADRs, and affected module contracts                    |
+| Pull request or handoff       | Complete diff, acceptance criteria, trust boundaries, failure modes, required gates, and evidence obligations                                                                                |
 
 Repeat the relevant preflight whenever the task changes work type, scope, trust boundary, or target
 platform. Read the smallest complete set of relevant records; do not load all ADRs, all design
 references, or the full product specification when they cannot affect the task. Automated gates
 verify compliance but do not replace understanding the applicable contract before implementation.
 
-The source Fachkonzept is private and external to this repository. Only a human-authorized planner
-may access it under `docs/product/source-baseline.md`; never commit or quote private source content.
-Before an epic becomes ready, the planner must restate every relevant requirement in its Planning
-Contract and decompose complete executable slices into its child issues. Implementation must be
-possible from the accepted epic and issue links, repository context, and ADRs without source access.
+The private product source is provenance only under `docs/product/source-baseline.md`; never commit,
+quote, or require access to it. `docs/planning/agent-planning-baseline.md` is the repository-owned
+functional and quality source for planning. Before an epic becomes ready, the planner must select
+and restate every issue-specific requirement in its Planning Contract and decompose complete
+executable slices into child issues. Planning and implementation must be possible entirely from
+repository records and accepted GitHub contracts.
 
 ## Accepted planning contract
 
@@ -68,7 +69,7 @@ remain here and are not copied into the issue. Missing or contradictory authorit
 Definition of Ready.
 
 The accepted parent epic and implementation issue together are the complete implementation
-contract. An instruction to consult the private Fachkonzept, infer omitted requirements, or obtain
+contract. An instruction to consult the private source, infer omitted requirements, or obtain
 private-source access is a missing-requirement defect: stop and return the work to planning.
 
 The target branch is frozen planning scope because it determines delivery and merge authority. The

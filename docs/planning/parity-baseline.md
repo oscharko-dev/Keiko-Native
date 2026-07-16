@@ -112,5 +112,7 @@ progress cannot be confused:
 ## Next Evidence Work
 
 The level-one inventory is recorded in `docs/planning/parity-ledger.md`. Detailed decomposition
-must continue from product surfaces, release-impact records, runtime routes, accepted ADRs, and
-executable verification. A source file or ADR alone does not prove a released user capability.
+starts from the repository-owned `docs/planning/agent-planning-baseline.md` and continues through
+product surfaces, release-impact records, runtime routes, accepted ADRs, and executable
+verification. A source file or ADR alone does not prove a released user capability, and no private
+source access is required.

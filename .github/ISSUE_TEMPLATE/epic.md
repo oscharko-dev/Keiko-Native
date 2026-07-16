@@ -27,13 +27,13 @@ Select exactly one:
 ## Planning authority
 
 - Product decision, finding, or incident:
-- Fachkonzept capability or section, when applicable:
+- Agent Planning Baseline capability, journey, quality, risk, or decision-gate section:
 - Decision Addendum or parity entry, when applicable:
 - Accepted ADRs:
 - Repository branch or commit used as the planning baseline:
 
-Restate all relevant requirements from the private source baseline in this contract. Do not quote
-private text or require an implementation agent to access the Fachkonzept.
+Select and restate the complete epic-specific requirements from the repository-owned Agent Planning
+Baseline. Do not require an implementation agent to infer omitted behavior from a global baseline.
 
 ## Planning contract
 
@@ -151,8 +151,8 @@ record the stable inputs, outputs, types, lifecycle, and error or empty states i
 - [ ] The Quality Envelope is complete and scaled to the actual surface.
 - [ ] Exactly one change classification and its planning authority are recorded.
 - [ ] The primary journey, platforms, surfaces, trust boundaries, and non-goals are explicit.
-- [ ] Every relevant private-source requirement is restated completely without confidential text,
-      and implementation requires no Fachkonzept access.
+- [ ] Every relevant Agent Planning Baseline requirement is selected and restated completely, and
+      implementation requires no private-source access or omitted inference.
 - [ ] Prerequisite decisions are accepted or assigned to a decision issue with criteria.
 - [ ] Every implementation child can include acceptance criteria and deterministic verification.
 - [ ] Cross-child interfaces and implementation order are stable enough to avoid parallel policy.

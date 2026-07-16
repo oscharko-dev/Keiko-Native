@@ -251,6 +251,7 @@ async function fixtureRepository() {
     "CLAUDE.md",
     "CONTRIBUTING.md",
     "SECURITY.md",
+    "docs/planning/agent-planning-baseline.md",
     "docs/product/source-baseline.md",
     "docs/qa/repository-activation.md",
     "package.json",
@@ -284,7 +285,22 @@ async function fixtureRepository() {
       "2026-07-15",
       "d77a78fb79fc1de882487195d3f2295936f24a34e6bc0579106ad06104737a98",
       "private external source; the document itself must not be committed",
-      "An implementation agent must be able to perform the work",
+      "provenance only",
+      "Agent Planning Baseline",
+      "Planning and implementation agents must be able to perform their work",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, "docs/planning/agent-planning-baseline.md"),
+    [
+      "# Keiko Native Agent Planning Baseline",
+      "## Authority and planning use",
+      "## Global acceptance journeys",
+      "## Capability planning packets",
+      "## Cross-cutting quality contract",
+      "## Decision gates",
+      "## Epic-authoring contract",
+      "Planning and implementation do not require access to the private source.",
     ].join("\n"),
   );
   await writeFile(
@@ -407,7 +423,7 @@ test("fails closed when the private source Fachkonzept is committed", async () =
   }
 });
 
-test("fails closed when private source access and handoff rules drift", async () => {
+test("fails closed when private source provenance rules drift", async () => {
   const root = await fixtureRepository();
   try {
     await writeFile(join(root, "docs/product/source-baseline.md"), "drift\n");
@@ -415,6 +431,23 @@ test("fails closed when private source access and handoff rules drift", async ()
     assert.match(
       result.failures.join("\n"),
       /Private source baseline is missing governed marker/u,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("fails closed when the agent planning baseline contract drifts", async () => {
+  const root = await fixtureRepository();
+  try {
+    await writeFile(
+      join(root, "docs/planning/agent-planning-baseline.md"),
+      "drift\n",
+    );
+    const result = await validateRepository(root);
+    assert.match(
+      result.failures.join("\n"),
+      /Agent Planning Baseline is missing governed marker/u,
     );
   } finally {
     await rm(root, { force: true, recursive: true });
