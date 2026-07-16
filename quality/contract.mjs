@@ -1,4 +1,4 @@
-import { access, readFile, readdir } from "node:fs/promises";
+import { access, lstat, readFile, readdir } from "node:fs/promises";
 import { extname, join, relative, sep } from "node:path";
 
 const sourceSpecificationIdentity = {
@@ -119,6 +119,14 @@ const requiredTargetCommands = [
   "security",
   "test",
 ];
+const experimentalDeclarationKeys = [
+  "contractFingerprint",
+  "issue",
+  "path",
+  "purpose",
+  "temporary",
+];
+const experimentalPurpose = "temporary-decision-evaluation";
 
 export function isSafeRepositoryPath(value) {
   return (
@@ -131,6 +139,97 @@ export function isSafeRepositoryPath(value) {
 
 export function normalizeRepositoryPath(value, pathSeparator = sep) {
   return value.split(pathSeparator).join("/");
+}
+
+function pathsOverlap(left, right) {
+  return (
+    left === right ||
+    left.startsWith(`${right}/`) ||
+    right.startsWith(`${left}/`)
+  );
+}
+
+function isCanonicalExperimentalRoot(path) {
+  return (
+    isSafeRepositoryPath(path) &&
+    path.startsWith("experiments/") &&
+    path !== "experiments/" &&
+    !path.endsWith("/") &&
+    path.split("/").every((segment) => segment !== "" && segment !== ".")
+  );
+}
+
+function experimentalDeclarationFailures(declaration) {
+  if (
+    declaration === null ||
+    typeof declaration !== "object" ||
+    Array.isArray(declaration)
+  )
+    return ["Experimental source declarations must be objects."];
+
+  const failures = [];
+  const keys = Object.keys(declaration).toSorted((left, right) =>
+    left.localeCompare(right),
+  );
+  if (JSON.stringify(keys) !== JSON.stringify(experimentalDeclarationKeys))
+    failures.push(
+      "Experimental source declarations must contain only the governed fields.",
+    );
+  if (!isCanonicalExperimentalRoot(declaration.path))
+    failures.push(
+      "Experimental source paths must be canonical repository-relative directories below experiments/.",
+    );
+  if (!Number.isSafeInteger(declaration.issue) || declaration.issue < 1)
+    failures.push("Experimental source issue must be a positive integer.");
+  if (!/^[0-9a-f]{64}$/u.test(declaration.contractFingerprint ?? ""))
+    failures.push(
+      "Experimental source contractFingerprint must be a lowercase SHA-256 digest.",
+    );
+  if (declaration.purpose !== experimentalPurpose)
+    failures.push(
+      `Experimental source purpose must be ${experimentalPurpose}.`,
+    );
+  if (declaration.temporary !== true)
+    failures.push("Experimental source declarations must be temporary.");
+  return failures;
+}
+
+export function validateExperimentalSourceRoots(manifest) {
+  const declarations = manifest?.experimentalSourceRoots;
+  if (!Array.isArray(declarations))
+    return ["experimentalSourceRoots must be an array."];
+
+  const failures = declarations.flatMap(experimentalDeclarationFailures);
+  const paths = declarations
+    .map((declaration) => declaration?.path)
+    .filter((path) => typeof path === "string");
+  if (
+    new Set(paths).size !== paths.length ||
+    paths.some((path, index) =>
+      paths.slice(index + 1).some((other) => pathsOverlap(path, other)),
+    )
+  )
+    failures.push(
+      "Experimental source paths must be unique and must not overlap or nest.",
+    );
+  const productiveRoots = Array.isArray(manifest?.productiveSourceRoots)
+    ? manifest.productiveSourceRoots.filter((root) => typeof root === "string")
+    : [];
+  if (
+    paths.some((path) =>
+      productiveRoots.some((productiveRoot) =>
+        pathsOverlap(path, productiveRoot),
+      ),
+    )
+  )
+    failures.push(
+      "Experimental source paths must not overlap productive source roots.",
+    );
+  if (declarations.length > 0 && manifest?.phase !== "bootstrap")
+    failures.push(
+      "Experimental source declarations are permitted only during bootstrap.",
+    );
+  return failures;
 }
 
 export function validateNativeTarget(target, productiveSourceRoots) {
@@ -225,6 +324,7 @@ export function validateManifest(manifest) {
     failures.push("productiveSourceRoots must be an array.");
   if (!Array.isArray(manifest?.nativeTargets))
     failures.push("nativeTargets must be an array.");
+  failures.push(...validateExperimentalSourceRoots(manifest));
   for (const metric of ["branches", "functions", "lines", "statements"]) {
     if (manifest?.minimumCoverage?.[metric] !== 85)
       failures.push(`Minimum ${metric} coverage must remain 85.`);
@@ -424,8 +524,43 @@ async function sourceRootFailures(root, manifest) {
     .map((result) => `Declared source root is missing: ${result.sourceRoot}.`);
 }
 
+function validExperimentalRootPaths(manifest) {
+  return validateExperimentalSourceRoots(manifest).length === 0 &&
+    manifest?.phase === "bootstrap"
+    ? manifest.experimentalSourceRoots.map((declaration) => declaration.path)
+    : [];
+}
+
+async function experimentalRootFailures(root, manifest) {
+  const results = await Promise.all(
+    validExperimentalRootPaths(manifest).map(async (sourceRoot) => {
+      try {
+        return {
+          isDirectory: (await lstat(join(root, sourceRoot))).isDirectory(),
+          sourceRoot,
+        };
+      } catch {
+        return { isDirectory: false, sourceRoot };
+      }
+    }),
+  );
+  return results
+    .filter((result) => !result.isDirectory)
+    .map(
+      (result) =>
+        `Declared experimental source root is missing or not a directory: ${result.sourceRoot}.`,
+    );
+}
+
 async function contractFailures(root, files, manifest) {
-  const productiveSources = files.filter(isProductiveSource);
+  const experimentalRoots = validExperimentalRootPaths(manifest);
+  const allProductiveSources = files.filter(isProductiveSource);
+  const experimentalSources = allProductiveSources.filter((path) =>
+    experimentalRoots.some((root) => path.startsWith(`${root}/`)),
+  );
+  const productiveSources = allProductiveSources.filter(
+    (path) => !experimentalSources.includes(path),
+  );
   const bootstrapFailures =
     manifest?.phase === "bootstrap" && productiveSources.length > 0
       ? [
@@ -442,8 +577,9 @@ async function contractFailures(root, files, manifest) {
     ...(await codeQualityStandardFailures(root, files)),
     ...bootstrapFailures,
     ...(await sourceRootFailures(root, manifest)),
+    ...(await experimentalRootFailures(root, manifest)),
   ];
-  return { failures, productiveSources };
+  return { experimentalSources, failures, productiveSources };
 }
 
 async function productiveCommandFailures(root, ci, manifest) {
@@ -643,6 +779,7 @@ export async function validateRepository(root) {
     failures,
     fileCount: files.length,
     phase: manifest?.phase,
+    experimentalSourceCount: contract.experimentalSources.length,
     productiveSourceCount: contract.productiveSources.length,
   };
 }

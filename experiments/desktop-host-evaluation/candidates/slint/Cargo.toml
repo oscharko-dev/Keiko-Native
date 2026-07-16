@@ -1,0 +1,33 @@
+[package]
+name = "keiko-slint-prototype"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0 AND LicenseRef-Slint-Royalty-free-2.0"
+rust-version = "1.92.0"
+build = "build.rs"
+
+[[bin]]
+name = "keiko-slint-prototype"
+path = "src/main.rs"
+
+[dependencies]
+keiko-desktop-host-evaluation = { path = "../.." }
+# Slint 1.17.1's text stack otherwise backtracks to mutually incompatible ICU 2.1 crates.
+icu_normalizer = "=2.2.0"
+rfd = { version = "=0.15.4", default-features = false }
+slint = { version = "=1.17.1", default-features = false, features = [
+  "accessibility",
+  "backend-winit",
+  "compat-1-2",
+  "renderer-femtovg",
+  "std",
+] }
+
+[build-dependencies]
+slint-build = "=1.17.1"
+
+[features]
+default = []
+evaluation-hooks = []
+system-testing = ["slint/system-testing"]

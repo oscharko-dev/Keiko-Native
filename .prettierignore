@@ -1,0 +1,5 @@
+node_modules/
+experiments/desktop-host-evaluation/target/
+experiments/desktop-host-evaluation/artifacts/*
+!experiments/desktop-host-evaluation/artifacts/.gitkeep
+experiments/desktop-host-evaluation/candidates/tauri/gen/

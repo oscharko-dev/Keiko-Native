@@ -10,6 +10,15 @@
     "sha256": "d77a78fb79fc1de882487195d3f2295936f24a34e6bc0579106ad06104737a98",
     "repositoryAccess": "private-external"
   },
+  "experimentalSourceRoots": [
+    {
+      "path": "experiments/desktop-host-evaluation",
+      "issue": 9,
+      "contractFingerprint": "4ef64b75cd9b2f4786f1317f360542b81a65cde058777709b4f2eeb233fc065e",
+      "purpose": "temporary-decision-evaluation",
+      "temporary": true
+    }
+  ],
   "productiveSourceRoots": [],
   "nativeTargets": [],
   "minimumCoverage": {

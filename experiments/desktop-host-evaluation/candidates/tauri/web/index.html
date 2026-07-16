@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Keiko Host Evaluation</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <main class="shell" aria-labelledby="page-title">
+      <header class="hero">
+        <p class="eyebrow">Keiko Native · synthetic evaluation</p>
+        <h1 id="page-title">Desktop host journey</h1>
+        <p class="lede">
+          Local bundled content exercising a narrow, default-deny host boundary.
+          No network, credentials, or contributor files are used.
+        </p>
+      </header>
+
+      <section
+        id="workspace"
+        class="workspace"
+        aria-label="Evaluation controls"
+      >
+        <fieldset class="card input-card">
+          <legend>International text input</legend>
+          <label for="international-input">Evaluation text</label>
+          <input
+            id="international-input"
+            name="international-input"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            aria-describedby="input-help"
+          />
+          <p id="input-help" class="help">
+            Composition events remain intact for input methods such as Japanese,
+            Korean, and accented Latin text.
+          </p>
+        </fieldset>
+
+        <section class="card" aria-labelledby="native-heading">
+          <div class="section-heading">
+            <div>
+              <p class="step">01 · Native surface</p>
+              <h2 id="native-heading">Folder selection</h2>
+            </div>
+            <span id="folder-state" class="badge">Not chosen</span>
+          </div>
+          <p>
+            Open the operating-system folder picker, then cancel it to verify
+            focus restoration.
+          </p>
+          <button id="choose-folder" type="button">Choose folder…</button>
+        </section>
+
+        <section class="card" aria-labelledby="fixture-heading">
+          <div class="section-heading">
+            <div>
+              <p class="step">02 · Governed effect</p>
+              <h2 id="fixture-heading">Harmless fixture process</h2>
+            </div>
+            <span id="fixture-state" class="badge">Stopped</span>
+          </div>
+          <p>
+            The renderer can request only the named start and stop application
+            intents.
+          </p>
+          <div class="button-row">
+            <button id="start-fixture" type="button">Start fixture</button>
+            <button id="stop-fixture" type="button" disabled>
+              Stop fixture
+            </button>
+          </div>
+        </section>
+
+        <section class="card" aria-labelledby="boundary-heading">
+          <div class="section-heading">
+            <div>
+              <p class="step">03 · Failure handling</p>
+              <h2 id="boundary-heading">Fail-closed boundary</h2>
+            </div>
+            <span id="probe-state" class="badge">Not run</span>
+          </div>
+          <p>
+            Run fixed malformed, oversized, and unauthorized probes without
+            exposing raw IPC.
+          </p>
+          <button id="run-probes" type="button">Run rejection probes</button>
+        </section>
+
+        <section class="card" aria-labelledby="recovery-heading">
+          <div class="section-heading">
+            <div>
+              <p class="step">04 · Recovery</p>
+              <h2 id="recovery-heading">Renderer availability</h2>
+            </div>
+            <span id="renderer-state" class="badge badge-ok">Available</span>
+          </div>
+          <p>
+            Inject an unavailable state, then recover the same shell without
+            losing keyboard use.
+          </p>
+          <button id="simulate-unavailable" type="button">
+            Simulate unavailability
+          </button>
+        </section>
+      </section>
+
+      <section
+        id="recovery-panel"
+        class="recovery-panel"
+        aria-labelledby="recovery-title"
+        hidden
+      >
+        <p class="step">Recoverable renderer failure</p>
+        <h2 id="recovery-title">The workspace renderer is unavailable</h2>
+        <p>
+          The trusted host remains responsive. Recover to continue the
+          evaluation journey.
+        </p>
+        <button id="recover-renderer" type="button">Recover renderer</button>
+      </section>
+
+      <footer class="status-bar">
+        <span class="status-label">Status</span>
+        <output id="status" role="status" aria-live="polite" aria-atomic="true"
+          >Shell ready.</output
+        >
+      </footer>
+      <p id="error" class="error" role="alert" hidden></p>
+    </main>
+  </body>
+</html>

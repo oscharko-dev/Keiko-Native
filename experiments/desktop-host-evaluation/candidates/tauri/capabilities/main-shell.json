@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-shell",
+  "description": "Default-deny capability for the single local bundled evaluation shell.",
+  "local": true,
+  "windows": ["main"],
+  "permissions": [
+    "allow-choose-folder",
+    "allow-fixture-start",
+    "allow-fixture-stop",
+    "allow-run-rejection-probe",
+    "allow-renderer-unavailable",
+    "allow-renderer-recover",
+    "allow-shell-snapshot"
+  ]
+}

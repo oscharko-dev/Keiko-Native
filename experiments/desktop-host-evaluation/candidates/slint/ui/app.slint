@@ -1,0 +1,204 @@
+import {
+    AboutSlint,
+    Button,
+    HorizontalBox,
+    LineEdit,
+    Palette,
+    StyleMetrics,
+    VerticalBox,
+} from "std-widgets.slint";
+
+export component AppShell inherits Window {
+    title: "Keiko Native · Slint evaluation";
+    preferred-width: 820px;
+    preferred-height: 760px;
+    min-width: 640px;
+    min-height: 680px;
+    background: Palette.background;
+
+    in property <string> status-text: "Ready";
+    in property <string> folder-state: "Not chosen";
+    in property <string> fixture-state: "Stopped";
+    in property <string> probe-state: "Not run";
+    in property <string> renderer-state: "Available";
+    in property <bool> fixture-running: false;
+    in property <bool> renderer-available: true;
+    in property <int> rejection-count: 0;
+
+    callback choose-folder <=> choose-folder-button.clicked;
+    callback start-fixture <=> start-button.clicked;
+    callback stop-fixture <=> stop-button.clicked;
+    callback exercise-rejections <=> rejection-button.clicked;
+    callback simulate-renderer-unavailable <=> unavailable-button.clicked;
+    callback recover-renderer <=> recover-button.clicked;
+    callback restore-folder-focus();
+    callback focus-recovery-action();
+    callback restore-recovery-focus();
+
+    restore-folder-focus => { choose-folder-button.focus(); }
+    focus-recovery-action => { recover-button.focus(); }
+    restore-recovery-focus => { unavailable-button.focus(); }
+
+    VerticalBox {
+        padding: 24px;
+        spacing: 18px;
+
+        Text {
+            text: "Keiko desktop host evaluation";
+            color: Palette.foreground;
+            font-size: 24px;
+            font-weight: 700;
+            accessible-role: text;
+            accessible-label: self.text;
+        }
+
+        Text {
+            text: "A local-only shell for keyboard, IME, native-dialog, lifecycle, and recovery evidence.";
+            color: Palette.foreground;
+            wrap: word-wrap;
+        }
+
+        Rectangle {
+            border-width: 2px;
+            border-color: Palette.border;
+            border-radius: StyleMetrics.layout-padding;
+            background: Palette.alternate-background;
+            min-height: 106px;
+
+            VerticalBox {
+                padding: 14px;
+                spacing: 8px;
+
+                Text {
+                    text: "International task text";
+                    color: Palette.alternate-foreground;
+                    font-weight: 600;
+                }
+
+                task-input := LineEdit {
+                    enabled: root.renderer-available;
+                    placeholder-text: "Compose text, for example 日本語 or Καλημέρα";
+                    accessible-id: "evaluation-task-input";
+                    accessible-label: "International task text";
+                    accessible-description: "Supports platform input-method composition.";
+                }
+            }
+        }
+
+        HorizontalBox {
+            spacing: 10px;
+
+            choose-folder-button := Button {
+                text: "Choose folder…";
+                enabled: root.renderer-available;
+                accessible-id: "choose-folder";
+                accessible-description: "Opens the operating system folder picker.";
+            }
+
+            start-button := Button {
+                text: "Start fixture";
+                enabled: root.renderer-available && !root.fixture-running;
+                accessible-id: "start-fixture";
+            }
+
+            stop-button := Button {
+                text: "Stop fixture";
+                enabled: root.renderer-available && root.fixture-running;
+                accessible-id: "stop-fixture";
+            }
+        }
+
+        HorizontalBox {
+            spacing: 10px;
+
+            rejection-button := Button {
+                text: "Run rejection probes";
+                enabled: root.renderer-available;
+                accessible-id: "exercise-rejections";
+            }
+
+            unavailable-button := Button {
+                text: "Simulate renderer failure";
+                enabled: root.renderer-available;
+                accessible-id: "simulate-renderer-unavailable";
+            }
+
+            recover-button := Button {
+                text: "Recover renderer";
+                enabled: !root.renderer-available;
+                primary: !root.renderer-available;
+                accessible-id: "recover-renderer";
+            }
+        }
+
+        Rectangle {
+            border-width: 2px;
+            border-color: Palette.border;
+            border-radius: StyleMetrics.layout-padding;
+            background: Palette.control-background;
+            min-height: 184px;
+
+            VerticalBox {
+                padding: 14px;
+                spacing: 6px;
+
+                Text {
+                    text: "Status";
+                    color: Palette.control-foreground;
+                    font-weight: 700;
+                }
+
+                Text {
+                    text: root.status-text;
+                    color: Palette.control-foreground;
+                    wrap: word-wrap;
+                    accessible-role: region;
+                    accessible-id: "evaluation-status";
+                    accessible-live-region: polite;
+                    accessible-label: "Evaluation status";
+                    accessible-value: root.status-text;
+                }
+
+                Text {
+                    text: "Folder: " + root.folder-state;
+                    color: Palette.control-foreground;
+                    accessible-id: "folder-state";
+                    accessible-label: "Folder state";
+                    accessible-value: root.folder-state;
+                }
+
+                Text {
+                    text: "Fixture: " + root.fixture-state;
+                    color: Palette.control-foreground;
+                    accessible-id: "fixture-state";
+                    accessible-label: "Fixture state";
+                    accessible-value: root.fixture-state;
+                }
+
+                Text {
+                    text: "Probe: " + root.probe-state;
+                    color: Palette.control-foreground;
+                    accessible-id: "probe-state";
+                    accessible-label: "Probe state";
+                    accessible-value: root.probe-state;
+                }
+
+                Text {
+                    text: "Renderer: " + root.renderer-state;
+                    color: Palette.control-foreground;
+                    accessible-id: "renderer-state";
+                    accessible-label: "Renderer state";
+                    accessible-value: root.renderer-state;
+                }
+            }
+        }
+
+        Rectangle { vertical-stretch: 1; }
+
+        AboutSlint {
+            height: 72px;
+            accessible-role: image;
+            accessible-label: "Made with Slint";
+        }
+    }
+}

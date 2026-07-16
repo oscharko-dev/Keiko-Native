@@ -1,0 +1,282 @@
+:root {
+  color-scheme: light dark;
+  --background: #f1f4f8;
+  --surface: #ffffff;
+  --surface-raised: #f8fafc;
+  --text: #172033;
+  --muted: #586276;
+  --border: #c8cfdb;
+  --accent: #5b3fd6;
+  --accent-strong: #3f27b5;
+  --button-background: #5b3fd6;
+  --button-hover: #3f27b5;
+  --focus: #056dd4;
+  --success: #167448;
+  --danger: #a42b35;
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #11151f;
+    --surface: #1a2030;
+    --surface-raised: #20283a;
+    --text: #f2f5fb;
+    --muted: #b5bed0;
+    --border: #414b61;
+    --accent: #a895ff;
+    --accent-strong: #c0b3ff;
+    --button-background: #6246c7;
+    --button-hover: #5137b8;
+    --focus: #64b5ff;
+    --success: #68d49f;
+    --danger: #ff9ca5;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: var(--background);
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.shell {
+  width: min(100%, 920px);
+  margin: 0 auto;
+  padding: 32px;
+}
+
+.hero {
+  margin-bottom: 24px;
+}
+
+.eyebrow,
+.step,
+.status-label {
+  margin: 0 0 4px;
+  color: var(--accent-strong);
+  font-size: 0.78rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  margin-bottom: 8px;
+  font-size: clamp(2rem, 5vw, 3.25rem);
+  line-height: 1.06;
+}
+
+h2 {
+  margin-bottom: 0;
+  font-size: 1.15rem;
+}
+
+.lede,
+.help,
+.card > p,
+.recovery-panel > p {
+  color: var(--muted);
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.card,
+.recovery-panel {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgb(16 24 40 / 7%);
+}
+
+.input-card {
+  grid-column: 1 / -1;
+}
+
+fieldset.card {
+  margin: 0;
+}
+
+legend,
+label {
+  font-weight: 700;
+}
+
+label {
+  display: block;
+  margin: 8px 0;
+}
+
+input {
+  width: 100%;
+  min-height: 44px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+}
+
+.help {
+  margin: 8px 0 0;
+  font-size: 0.88rem;
+}
+
+.section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.badge {
+  flex: none;
+  padding: 3px 9px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.badge-ok {
+  color: var(--success);
+}
+
+button {
+  min-height: 44px;
+  padding: 9px 15px;
+  border: 1px solid var(--accent-strong);
+  border-radius: 8px;
+  background: var(--button-background);
+  color: #ffffff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--button-hover);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.recovery-panel {
+  margin-top: 16px;
+  border-width: 2px;
+  border-color: var(--danger);
+}
+
+.status-bar {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  margin-top: 20px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-raised);
+}
+
+.status-label {
+  margin: 0;
+}
+
+.error {
+  margin-top: 12px;
+  color: var(--danger);
+  font-weight: 700;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+@media (max-width: 700px) {
+  .shell {
+    padding: 20px;
+  }
+
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .input-card {
+    grid-column: 1;
+  }
+}
+
+@media (forced-colors: active) {
+  :root {
+    --background: Canvas;
+    --surface: Canvas;
+    --surface-raised: Canvas;
+    --text: CanvasText;
+    --muted: CanvasText;
+    --border: ButtonBorder;
+    --accent: ButtonFace;
+    --accent-strong: Highlight;
+    --button-background: ButtonFace;
+    --button-hover: Highlight;
+    --focus: Highlight;
+    --success: CanvasText;
+    --danger: LinkText;
+  }
+
+  button {
+    color: ButtonText;
+    forced-color-adjust: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

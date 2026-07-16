@@ -11,12 +11,14 @@ import {
   unpinnedActionReferences,
   validateManifest,
   validateNativeTarget,
+  validateExperimentalSourceRoots,
   validateRepository,
   workflowEventTargetsBranch,
 } from "./contract.mjs";
 
 const validManifest = {
   baseBranch: "dev",
+  experimentalSourceRoots: [],
   minimumCoverage: { branches: 85, functions: 85, lines: 85, statements: 85 },
   nativeTargets: [],
   phase: "bootstrap",
@@ -30,6 +32,15 @@ const validManifest = {
     sha256: "d77a78fb79fc1de882487195d3f2295936f24a34e6bc0579106ad06104737a98",
     version: "0.6",
   },
+};
+
+const validExperimentalDeclaration = {
+  contractFingerprint:
+    "4ef64b75cd9b2f4786f1317f360542b81a65cde058777709b4f2eeb233fc065e",
+  issue: 9,
+  path: "experiments/desktop-host-evaluation",
+  purpose: "temporary-decision-evaluation",
+  temporary: true,
 };
 
 const validTarget = {
@@ -131,6 +142,89 @@ test("rejects duplicate, escaping, and untargeted productive roots", () => {
   });
   assert.match(failures.join("\n"), /unique repository-relative paths/u);
   assert.match(failures.join("\n"), /Every productive source root/u);
+});
+
+test("accepts a strictly bound temporary experimental source root", () => {
+  assert.deepEqual(
+    validateExperimentalSourceRoots({
+      ...validManifest,
+      experimentalSourceRoots: [validExperimentalDeclaration],
+    }),
+    [],
+  );
+});
+
+test("rejects malformed experimental source declarations", () => {
+  const malformed = [
+    undefined,
+    null,
+    [],
+    { ...validExperimentalDeclaration, extra: true },
+    { ...validExperimentalDeclaration, path: "experiments" },
+    { ...validExperimentalDeclaration, path: "experiments/" },
+    { ...validExperimentalDeclaration, path: "experiments//candidate" },
+    { ...validExperimentalDeclaration, path: "experiments/./candidate" },
+    { ...validExperimentalDeclaration, path: "experiments/../escape" },
+    { ...validExperimentalDeclaration, path: "/experiments/candidate" },
+    { ...validExperimentalDeclaration, path: "src/candidate" },
+    { ...validExperimentalDeclaration, path: "experiments/*" },
+    { ...validExperimentalDeclaration, issue: 0 },
+    { ...validExperimentalDeclaration, issue: "9" },
+    { ...validExperimentalDeclaration, contractFingerprint: "not-a-digest" },
+    { ...validExperimentalDeclaration, purpose: "prototype" },
+    { ...validExperimentalDeclaration, temporary: false },
+  ];
+  for (const declaration of malformed) {
+    assert.ok(
+      validateExperimentalSourceRoots({
+        ...validManifest,
+        experimentalSourceRoots: [declaration],
+      }).length > 0,
+    );
+  }
+  assert.deepEqual(validateExperimentalSourceRoots(validManifest), []);
+  assert.match(
+    validateExperimentalSourceRoots({
+      ...validManifest,
+      experimentalSourceRoots: "experiments/candidate",
+    }).join("\n"),
+    /must be an array/u,
+  );
+});
+
+test("rejects duplicate, nested, productive, and non-bootstrap experimental roots", () => {
+  for (const paths of [
+    [validExperimentalDeclaration.path, validExperimentalDeclaration.path],
+    [
+      validExperimentalDeclaration.path,
+      `${validExperimentalDeclaration.path}/nested`,
+    ],
+  ]) {
+    const failures = validateExperimentalSourceRoots({
+      ...validManifest,
+      experimentalSourceRoots: paths.map((path) => ({
+        ...validExperimentalDeclaration,
+        path,
+      })),
+    });
+    assert.match(failures.join("\n"), /must not overlap or nest/u);
+  }
+  assert.match(
+    validateExperimentalSourceRoots({
+      ...validManifest,
+      experimentalSourceRoots: [validExperimentalDeclaration],
+      productiveSourceRoots: ["experiments"],
+    }).join("\n"),
+    /must not overlap productive/u,
+  );
+  assert.match(
+    validateExperimentalSourceRoots({
+      ...validManifest,
+      experimentalSourceRoots: [validExperimentalDeclaration],
+      phase: "productive",
+    }).join("\n"),
+    /only during bootstrap/u,
+  );
 });
 
 test("recognizes productive native and application sources", () => {
@@ -494,6 +588,93 @@ test("fails closed when productive code appears during bootstrap", async () => {
     assert.match(
       result.failures.join("\n"),
       /declare native targets and gates first/u,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("allows only productive source inside an exact declared experimental root", async () => {
+  const root = await fixtureRepository();
+  try {
+    await mkdir(join(root, validExperimentalDeclaration.path), {
+      recursive: true,
+    });
+    await writeFile(
+      join(root, validExperimentalDeclaration.path, "main.rs"),
+      "fn main() {}\n",
+    );
+    await writeFile(
+      join(root, "quality/project.json"),
+      JSON.stringify({
+        ...validManifest,
+        experimentalSourceRoots: [validExperimentalDeclaration],
+      }),
+    );
+    const accepted = await validateRepository(root);
+    assert.deepEqual(accepted.failures, []);
+    assert.equal(accepted.experimentalSourceCount, 1);
+    assert.equal(accepted.productiveSourceCount, 0);
+
+    await mkdir(join(root, "experiments/desktop-host-evaluation-sibling"));
+    await writeFile(
+      join(root, "experiments/desktop-host-evaluation-sibling/main.rs"),
+      "fn main() {}\n",
+    );
+    const rejected = await validateRepository(root);
+    assert.equal(rejected.experimentalSourceCount, 1);
+    assert.equal(rejected.productiveSourceCount, 1);
+    assert.match(rejected.failures.join("\n"), /declare native targets/u);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("malformed experimental declarations fail closed without exempting source", async () => {
+  const root = await fixtureRepository();
+  try {
+    await mkdir(join(root, validExperimentalDeclaration.path), {
+      recursive: true,
+    });
+    await writeFile(
+      join(root, validExperimentalDeclaration.path, "main.rs"),
+      "fn main() {}\n",
+    );
+    await writeFile(
+      join(root, "quality/project.json"),
+      JSON.stringify({
+        ...validManifest,
+        experimentalSourceRoots: [
+          { ...validExperimentalDeclaration, temporary: false },
+        ],
+      }),
+    );
+    const result = await validateRepository(root);
+    assert.equal(result.experimentalSourceCount, 0);
+    assert.equal(result.productiveSourceCount, 1);
+    assert.match(result.failures.join("\n"), /must be temporary/u);
+    assert.match(result.failures.join("\n"), /declare native targets/u);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("fails closed when a declared experimental root is not a directory", async () => {
+  const root = await fixtureRepository();
+  try {
+    await mkdir(join(root, "experiments"));
+    await writeFile(join(root, validExperimentalDeclaration.path), "fixture\n");
+    await writeFile(
+      join(root, "quality/project.json"),
+      JSON.stringify({
+        ...validManifest,
+        experimentalSourceRoots: [validExperimentalDeclaration],
+      }),
+    );
+    const result = await validateRepository(root);
+    assert.match(
+      result.failures.join("\n"),
+      /experimental source root is missing or not a directory/u,
     );
   } finally {
     await rm(root, { force: true, recursive: true });

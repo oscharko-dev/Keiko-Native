@@ -1,0 +1,36 @@
+[package]
+name = "keiko-desktop-host-evaluation"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+rust-version = "1.92.0"
+
+[workspace]
+members = ["candidates/slint", "candidates/tauri"]
+resolver = "2"
+
+[lib]
+name = "keiko_eval"
+path = "src/lib.rs"
+
+[[bin]]
+name = "keiko-eval"
+path = "src/main.rs"
+
+[[bin]]
+name = "keiko-fixture-child"
+path = "src/bin/keiko-fixture-child.rs"
+
+[dependencies]
+clap = { version = "=4.5.41", features = ["derive"] }
+command-group = "=5.0.1"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.140"
+sha2 = "=0.10.9"
+sysinfo = { version = "=0.36.1", default-features = false, features = ["system"] }
+thiserror = "=2.0.12"
+wait-timeout = "=0.2.1"
+
+[dev-dependencies]
+tempfile = "=3.20.0"
