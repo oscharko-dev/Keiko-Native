@@ -58,6 +58,23 @@ const expectedWorkflowChecks = [
   "name: native",
 ];
 
+const requiredUnconditionalCiJobs = [
+  "core-quality",
+  "coverage-sonar",
+  "cross-platform-smoke",
+  "actionlint",
+  "verify-pinned-shas",
+  "zizmor",
+  "build-scan-sbom-smoke",
+  "native",
+];
+
+const aggregateCiNeeds = [
+  "core-quality",
+  "coverage-sonar",
+  "cross-platform-smoke",
+];
+
 const epicPullRequestWorkflows = [
   "ci.yml",
   "codeql.yml",
@@ -279,6 +296,167 @@ export function workflowEventTargetsBranch(workflow, event, branch) {
   });
 }
 
+const sonarEventCondition = [
+  "(github.event_name == 'pull_request' && github.base_ref == 'dev')",
+  "||",
+  "(github.event_name == 'push' && github.ref == 'refs/heads/dev')",
+  "||",
+  "(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev')",
+].join(" ");
+
+export function sonarRequiredForEvent({ eventName, baseRef = "", ref = "" }) {
+  return (
+    (eventName === "pull_request" && baseRef === "dev") ||
+    (eventName === "push" && ref === "refs/heads/dev") ||
+    (eventName === "workflow_dispatch" && ref === "refs/heads/dev")
+  );
+}
+
+function workflowSection(lines, marker) {
+  const start = lines.findIndex((line) => line === marker);
+  if (start === -1) return [];
+  const indent = marker.length - marker.trimStart().length;
+  const end = lines.findIndex(
+    (line, index) =>
+      index > start &&
+      line.trim() !== "" &&
+      line.length - line.trimStart().length <= indent,
+  );
+  return lines.slice(start, end === -1 ? lines.length : end);
+}
+
+function jobPreamble(job) {
+  const steps = job.findIndex((line) => line.trim() === "steps:");
+  return job.slice(0, steps === -1 ? job.length : steps);
+}
+
+function normalizedStepCondition(section) {
+  const conditionIndex = section.findIndex((line) =>
+    line.trimStart().startsWith("if:"),
+  );
+  if (conditionIndex === -1) return undefined;
+  const conditionLine = section[conditionIndex];
+  const conditionIndent =
+    conditionLine.length - conditionLine.trimStart().length;
+  const first = conditionLine.trimStart().slice("if:".length).trim();
+  const parts = [first];
+  for (const line of section.slice(conditionIndex + 1)) {
+    if (line.trim() === "") continue;
+    const indent = line.length - line.trimStart().length;
+    if (indent <= conditionIndent) break;
+    parts.push(line.trim());
+  }
+  return parts
+    .join(" ")
+    .replace(/^(?:>-|\|[-+]?)\s*/u, "")
+    .replace(/\$\{\{|\}\}/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+export function sonarWorkflowFailures(workflow) {
+  const lines = workflow.split(/\r?\n/u);
+  const coverageJob = workflowSection(lines, "  coverage-sonar:");
+  if (coverageJob.length === 0)
+    return ["CI must retain the Coverage and SonarCloud job."];
+
+  const coverage = workflowSection(
+    coverageJob,
+    "      - run: npm run coverage",
+  );
+  const failures = [];
+  if (coverage.length === 0) {
+    failures.push("CI must run repository coverage on every accepted event.");
+  } else if (
+    normalizedStepCondition(coverage) !== undefined ||
+    coverage.some((line) => line.includes("continue-on-error"))
+  ) {
+    failures.push("CI coverage must remain unconditional and fail closed.");
+  }
+
+  const coverageJobPreamble = jobPreamble(coverageJob);
+  if (coverageJobPreamble.some((line) => line.trimStart().startsWith("if:")))
+    failures.push("The coverage job must remain unconditional.");
+
+  const checkoutMarker = coverageJob.find((line) =>
+    line.trimStart().startsWith("- uses: actions/checkout@"),
+  );
+  const checkout =
+    checkoutMarker === undefined
+      ? []
+      : workflowSection(coverageJob, checkoutMarker);
+  const dispatchCheckoutRef =
+    "ref: ${{ github.event_name == 'workflow_dispatch' && 'dev' || github.ref }}";
+  if (checkout.length === 0) {
+    failures.push("The coverage job must retain its repository checkout.");
+  } else if (!checkout.some((line) => line.trim() === dispatchCheckoutRef)) {
+    failures.push(
+      "The coverage checkout must bind manual dispatch analysis to dev.",
+    );
+  }
+
+  const manualBinding = workflowSection(
+    coverageJob,
+    "      - name: Verify manual analysis is bound to remote dev",
+  );
+  if (manualBinding.length === 0) {
+    failures.push(
+      "CI must verify manual analysis against the remote dev head.",
+    );
+  } else {
+    if (
+      normalizedStepCondition(manualBinding) !==
+      "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev'"
+    )
+      failures.push(
+        "Manual analysis verification must use the exact-dev dispatch predicate.",
+      );
+    for (const marker of [
+      'if [ "$(git rev-parse HEAD)" != "$(git rev-parse refs/remotes/origin/dev)" ]; then',
+      "exit 1",
+    ]) {
+      if (!manualBinding.some((line) => line.trim() === marker))
+        failures.push(
+          `Manual analysis dev-head binding is missing marker: ${marker}.`,
+        );
+    }
+    if (manualBinding.some((line) => line.includes("continue-on-error")))
+      failures.push("Manual analysis dev-head verification must fail closed.");
+  }
+
+  for (const name of [
+    "Download and verify Sonar Scanner CLI",
+    "SonarQube Cloud analysis",
+  ]) {
+    const step = workflowSection(coverageJob, `      - name: ${name}`);
+    if (step.length === 0) {
+      failures.push(`CI is missing required Sonar step: ${name}.`);
+      continue;
+    }
+    if (normalizedStepCondition(step) !== sonarEventCondition)
+      failures.push(
+        `Sonar step must use the exact dev event predicate: ${name}.`,
+      );
+    if (step.some((line) => line.includes("continue-on-error")))
+      failures.push(`Sonar step must fail closed when required: ${name}.`);
+  }
+
+  const analysis = workflowSection(
+    coverageJob,
+    "      - name: SonarQube Cloud analysis",
+  ).join("\n");
+  for (const marker of [
+    "SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}",
+    '[ -z "$SONAR_TOKEN" ]',
+    "exit 1",
+    "-Dsonar.qualitygate.wait=true",
+  ]) {
+    if (!analysis.includes(marker))
+      failures.push(`Required Sonar fail-closed marker is missing: ${marker}.`);
+  }
+  return failures;
+}
+
 function actionReference(line) {
   let candidate = line.trimStart();
   if (candidate.startsWith("-")) candidate = candidate.slice(1).trimStart();
@@ -492,11 +670,42 @@ function unpinnedWorkflowFailures(workflows) {
 }
 
 function ciWorkflowFailures(ci) {
-  return expectedWorkflowChecks
+  const failures = expectedWorkflowChecks
     .filter((check) => !ci.includes(check))
     .map(
       (check) => `CI workflow does not emit required check marker: ${check}.`,
     );
+  const lines = ci.split(/\r?\n/u);
+  for (const jobName of requiredUnconditionalCiJobs) {
+    const job = workflowSection(lines, `  ${jobName}:`);
+    if (job.length === 0) {
+      failures.push(`CI must retain required job section: ${jobName}.`);
+      continue;
+    }
+    if (jobPreamble(job).some((line) => line.trimStart().startsWith("if:")))
+      failures.push(
+        `CI job must remain applicable and unconditional on accepted events: ${jobName}.`,
+      );
+  }
+
+  const aggregate = workflowSection(lines, "  ci:");
+  if (aggregate.length === 0) {
+    failures.push("CI must retain the aggregate ci job.");
+    return failures;
+  }
+  const aggregatePreamble = jobPreamble(aggregate);
+  if (normalizedStepCondition(aggregatePreamble) !== "always()")
+    failures.push(
+      "The aggregate ci job must always evaluate dependency results.",
+    );
+  const needs = workflowSection(aggregatePreamble, "    needs:");
+  for (const dependency of aggregateCiNeeds) {
+    if (!needs.some((line) => line.trim() === `- ${dependency}`))
+      failures.push(
+        `The aggregate ci job must depend on required job: ${dependency}.`,
+      );
+  }
+  return failures;
 }
 
 function epicWorkflowFailures(workflows) {
@@ -584,6 +793,7 @@ async function workflowFailures(root, manifest) {
   return [
     ...unpinnedWorkflowFailures(workflows),
     ...ciWorkflowFailures(ci),
+    ...sonarWorkflowFailures(ci),
     ...epicWorkflowFailures(workflows),
     ...issueReadinessWorkflowFailures(
       workflows.get("issue-readiness.yml") ?? "",

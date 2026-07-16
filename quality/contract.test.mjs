@@ -8,6 +8,8 @@ import {
   isProductiveSource,
   isSafeRepositoryPath,
   normalizeRepositoryPath,
+  sonarRequiredForEvent,
+  sonarWorkflowFailures,
   unpinnedActionReferences,
   validateManifest,
   validateNativeTarget,
@@ -226,6 +228,142 @@ test("recognizes exact branch targets in CRLF workflow files", () => {
   assert.equal(workflowEventTargetsBranch(workflow, "push", "dev"), true);
 });
 
+test("selects Sonar only for the complete exact-dev event matrix", () => {
+  const cases = [
+    [{ eventName: "pull_request", baseRef: "dev" }, true],
+    [{ eventName: "pull_request", baseRef: "epic/9-foundation-v0.1" }, false],
+    [{ eventName: "pull_request", baseRef: "release/v0.1.0" }, false],
+    [{ eventName: "push", ref: "refs/heads/dev" }, true],
+    [{ eventName: "push", ref: "refs/heads/epic/9-foundation-v0.1" }, false],
+    [{ eventName: "push", ref: "refs/heads/release/v0.1.0" }, false],
+    [{ eventName: "workflow_dispatch", ref: "refs/heads/dev" }, true],
+    [
+      {
+        eventName: "workflow_dispatch",
+        ref: "refs/heads/epic/9-foundation-v0.1",
+      },
+      false,
+    ],
+    [{ eventName: "workflow_dispatch", ref: "refs/heads/development" }, false],
+    [{ eventName: "schedule", ref: "refs/heads/dev" }, false],
+    [{ eventName: "pull_request_target", baseRef: "dev" }, false],
+  ];
+  for (const [event, expected] of cases)
+    assert.equal(sonarRequiredForEvent(event), expected, JSON.stringify(event));
+});
+
+test("CI restricts Sonar to the exact dev event matrix while coverage stays unconditional", async () => {
+  const workflow = await readFile(
+    join(import.meta.dirname, "..", ".github/workflows/ci.yml"),
+    "utf8",
+  );
+  const requiredPredicate = [
+    "(github.event_name == 'pull_request' && github.base_ref == 'dev')",
+    "(github.event_name == 'push' && github.ref == 'refs/heads/dev')",
+    "(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev')",
+  ];
+  const coverageStep = workflow.indexOf("- run: npm run coverage");
+  const downloadStep = workflow.indexOf(
+    "- name: Download and verify Sonar Scanner CLI",
+  );
+  const analysisStep = workflow.indexOf("- name: SonarQube Cloud analysis");
+  assert.ok(coverageStep !== -1 && coverageStep < downloadStep);
+  assert.doesNotMatch(workflow.slice(coverageStep, downloadStep), /^\s+if:/mu);
+  assert.match(
+    workflow,
+    /ref: \$\{\{ github\.event_name == 'workflow_dispatch' && 'dev' \|\| github\.ref \}\}/u,
+  );
+  assert.match(
+    workflow,
+    /name: Verify manual analysis is bound to remote dev[\s\S]*github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/heads\/dev'[\s\S]*git rev-parse HEAD[\s\S]*git rev-parse refs\/remotes\/origin\/dev/u,
+  );
+  for (const stepStart of [downloadStep, analysisStep]) {
+    const step = workflow.slice(
+      stepStart,
+      workflow.indexOf("\n      - ", stepStart + 1),
+    );
+    assert.match(step, /^\s*if:/mu);
+    for (const clause of requiredPredicate) assert.ok(step.includes(clause));
+    assert.doesNotMatch(step, /epic|release/u);
+  }
+  assert.deepEqual(sonarWorkflowFailures(workflow), []);
+});
+
+test("Sonar workflow validation rejects predicate expansion and weakened failure behavior", async () => {
+  const workflow = await readFile(
+    join(import.meta.dirname, "..", ".github/workflows/ci.yml"),
+    "utf8",
+  );
+  const mutations = [
+    workflow.replace(
+      "(github.event_name == 'push' && github.ref == 'refs/heads/dev')",
+      "(github.event_name == 'push')",
+    ),
+    workflow.replace(
+      "(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev')",
+      "(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev') || true",
+    ),
+    workflow.replace(
+      "      - run: npm run coverage",
+      "      - run: npm run coverage\n        if: github.ref == 'refs/heads/dev'",
+    ),
+    workflow.replace('[ -z "$SONAR_TOKEN" ]', '[ -n "$SONAR_TOKEN" ]'),
+    workflow.replace(
+      "      - name: SonarQube Cloud analysis",
+      "      - name: SonarQube Cloud analysis\n        continue-on-error: true",
+    ),
+    workflow.replace(
+      "ref: ${{ github.event_name == 'workflow_dispatch' && 'dev' || github.ref }}",
+      "ref: ${{ github.ref }}",
+    ),
+    workflow.replace(
+      "if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev'",
+      "if: github.event_name == 'workflow_dispatch'",
+    ),
+    workflow.replace(
+      'if [ "$(git rev-parse HEAD)" != "$(git rev-parse refs/remotes/origin/dev)" ]; then',
+      'if [ "$(git rev-parse HEAD)" != "$(git rev-parse refs/remotes/origin/main)" ]; then',
+    ),
+    workflow.replace(
+      "      - name: Verify manual analysis is bound to remote dev",
+      "      - name: Verify manual analysis was requested",
+    ),
+  ];
+  for (const mutation of mutations)
+    assert.ok(sonarWorkflowFailures(mutation).length > 0);
+});
+
+test("public governance records exact-target authenticated epic merge and sacred dev", async () => {
+  const root = join(import.meta.dirname, "..");
+  const [agents, gates, activation, adr] = await Promise.all([
+    readFile(join(root, "AGENTS.md"), "utf8"),
+    readFile(join(root, "docs/qa/quality-gates.md"), "utf8"),
+    readFile(join(root, "docs/qa/repository-activation.md"), "utf8"),
+    readFile(
+      join(root, "docs/adr/ADR-0003-free-tier-sonar-and-epic-delivery.md"),
+      "utf8",
+    ),
+  ]);
+  for (const document of [agents, gates, activation, adr]) {
+    assert.match(document, /authenticated maintainer account/u);
+    assert.match(document, /exact accepted epic/u);
+    assert.match(
+      document,
+      /Never\s+(?:merge|enable auto-merge)[\s\S]{0,80}`dev`/u,
+    );
+  }
+  assert.match(adr, /PR #15/u);
+  assert.match(adr, /one-time/u);
+  assert.match(
+    gates,
+    /for actions\s+targeting `dev`, operate through a human merge-capable credential/u,
+  );
+  assert.doesNotMatch(
+    gates,
+    /or operate through a\s+human merge-capable credential\./u,
+  );
+});
+
 async function fixtureRepository() {
   const root = await mkdtemp(join(tmpdir(), "keiko-native-quality-"));
   const files = [
@@ -334,14 +472,75 @@ async function fixtureRepository() {
       "  push:",
       "    branches:",
       '      - "epic/**"',
-      ...[
-        "ci",
-        "actionlint",
-        "Verify pinned action SHAs",
-        "zizmor",
-        "Build, scan, SBOM, smoke",
-        "native",
-      ].map((name) => `  name: ${name}`),
+      "jobs:",
+      "  core-quality:",
+      "    name: Core quality",
+      "    steps:",
+      "      - run: npm run quality",
+      "  coverage-sonar:",
+      "    name: Coverage and SonarCloud",
+      "    steps:",
+      "      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+      "        with:",
+      "          ref: ${{ github.event_name == 'workflow_dispatch' && 'dev' || github.ref }}",
+      "      - name: Verify manual analysis is bound to remote dev",
+      "        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev'",
+      "        run: |",
+      '          if [ "$(git rev-parse HEAD)" != "$(git rev-parse refs/remotes/origin/dev)" ]; then',
+      "            exit 1",
+      "          fi",
+      "      - run: npm run coverage",
+      "      - name: Download and verify Sonar Scanner CLI",
+      "        if: >-",
+      "          (github.event_name == 'pull_request' && github.base_ref == 'dev') ||",
+      "          (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||",
+      "          (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev')",
+      "        run: verify-scanner",
+      "      - name: SonarQube Cloud analysis",
+      "        if: >-",
+      "          (github.event_name == 'pull_request' && github.base_ref == 'dev') ||",
+      "          (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||",
+      "          (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev')",
+      "        env:",
+      "          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}",
+      "        run: |",
+      '          if [ -z "$SONAR_TOKEN" ]; then',
+      "            exit 1",
+      "          fi",
+      "          sonar-scanner -Dsonar.qualitygate.wait=true",
+      "  cross-platform-smoke:",
+      "    name: Cross-platform smoke",
+      "    steps:",
+      "      - run: npm test",
+      "  ci:",
+      "    name: ci",
+      "    if: ${{ always() }}",
+      "    needs:",
+      "      - core-quality",
+      "      - coverage-sonar",
+      "      - cross-platform-smoke",
+      "    steps:",
+      "      - run: verify-results",
+      "  actionlint:",
+      "    name: actionlint",
+      "    steps:",
+      "      - run: actionlint",
+      "  verify-pinned-shas:",
+      "    name: Verify pinned action SHAs",
+      "    steps:",
+      "      - run: verify-pinned-shas",
+      "  zizmor:",
+      "    name: zizmor",
+      "    steps:",
+      "      - run: zizmor",
+      "  build-scan-sbom-smoke:",
+      "    name: Build, scan, SBOM, smoke",
+      "    steps:",
+      "      - run: build-scan-sbom-smoke",
+      "  native:",
+      "    name: native",
+      "    steps:",
+      "      - run: native",
     ].join("\n"),
   );
   for (const name of [
@@ -416,6 +615,126 @@ test("validates a complete bootstrap repository", async () => {
     assert.equal(result.phase, "bootstrap");
   } finally {
     await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("fails closed when an applicable CI job becomes dev-only", async () => {
+  const root = await fixtureRepository();
+  try {
+    const path = join(root, ".github/workflows/ci.yml");
+    const workflow = await readFile(path, "utf8");
+    for (const jobName of [
+      "core-quality",
+      "coverage-sonar",
+      "cross-platform-smoke",
+      "actionlint",
+      "verify-pinned-shas",
+      "zizmor",
+      "build-scan-sbom-smoke",
+      "native",
+    ]) {
+      const mutation = workflow.replace(
+        "  " + jobName + ":\n",
+        "  " + jobName + ":\n    if: github.ref == 'refs/heads/dev'\n",
+      );
+      assert.notEqual(mutation, workflow);
+      await writeFile(path, mutation);
+      const result = await validateRepository(root);
+      assert.ok(
+        result.failures.includes(
+          `CI job must remain applicable and unconditional on accepted events: ${jobName}.`,
+        ),
+        `expected unconditional-job failure for ${jobName}`,
+      );
+    }
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("fails closed when the aggregate ci job no longer always needs every core result", async () => {
+  const root = await fixtureRepository();
+  try {
+    const path = join(root, ".github/workflows/ci.yml");
+    const workflow = await readFile(path, "utf8");
+    const mutations = [
+      workflow.replace(
+        "    if: ${{ always() }}",
+        "    if: github.ref == 'refs/heads/dev'",
+      ),
+      workflow.replace("      - coverage-sonar\n", ""),
+    ];
+    for (const mutation of mutations) {
+      assert.notEqual(mutation, workflow);
+      await writeFile(path, mutation);
+      const result = await validateRepository(root);
+      assert.match(result.failures.join("\n"), /aggregate ci job/u);
+    }
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("fails closed when security workflows omit an epic event", async () => {
+  const cases = [
+    {
+      event: "pull_request",
+      expected:
+        "Workflow must validate pull requests targeting epic branches: codeql.yml.",
+      workflow: "codeql.yml",
+    },
+    {
+      event: "push",
+      expected: "Workflow must validate epic branch heads: codeql.yml.",
+      workflow: "codeql.yml",
+    },
+    {
+      event: "pull_request",
+      expected:
+        "Workflow must validate pull requests targeting epic branches: osv-scanner.yml.",
+      workflow: "osv-scanner.yml",
+    },
+    {
+      event: "push",
+      expected: "Workflow must validate epic branch heads: osv-scanner.yml.",
+      workflow: "osv-scanner.yml",
+    },
+    {
+      event: "pull_request",
+      expected:
+        "Workflow must validate pull requests targeting epic branches: dependency-review.yml.",
+      workflow: "dependency-review.yml",
+    },
+  ];
+
+  for (const scenario of cases) {
+    const root = await fixtureRepository();
+    try {
+      const path = join(root, ".github/workflows", scenario.workflow);
+      const workflow = await readFile(path, "utf8");
+      const eventBlock = [
+        `  ${scenario.event}:`,
+        "    branches:",
+        '      - "epic/**"',
+      ].join("\n");
+      const mutation = workflow.replace(
+        eventBlock,
+        [`  ${scenario.event}:`, "    branches:"].join("\n"),
+      );
+      assert.notEqual(
+        mutation,
+        workflow,
+        `expected ${scenario.workflow} ${scenario.event} fixture mutation`,
+      );
+      await writeFile(path, mutation);
+      const result = await validateRepository(root);
+      assert.ok(
+        result.failures.includes(scenario.expected),
+        `expected epic workflow failure for ${scenario.workflow} ${scenario.event}`,
+      );
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
   }
 });
 

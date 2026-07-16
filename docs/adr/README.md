@@ -5,3 +5,4 @@ rewriting history or renumbering files.
 
 - [ADR-0001: Keiko-parity quality-gate baseline](ADR-0001-keiko-parity-quality-gate-baseline.md)
 - [ADR-0002: Keiko-owned agentic control plane](ADR-0002-keiko-owned-agentic-control-plane.md)
+- [ADR-0003: Sonar and authenticated epic delivery](ADR-0003-free-tier-sonar-and-epic-delivery.md)

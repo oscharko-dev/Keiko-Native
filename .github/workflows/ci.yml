@@ -48,6 +48,14 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'dev' || github.ref }}
+      - name: Verify manual analysis is bound to remote dev
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev'
+        run: |
+          if [ "$(git rev-parse HEAD)" != "$(git rev-parse refs/remotes/origin/dev)" ]; then
+            echo "Manual Sonar analysis must run on the exact remote dev head."
+            exit 1
+          fi
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "24.18.0"
@@ -55,6 +63,10 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run coverage
       - name: Download and verify Sonar Scanner CLI
+        if: >-
+          (github.event_name == 'pull_request' && github.base_ref == 'dev') ||
+          (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||
+          (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev')
         run: |
           scanner_zip="$RUNNER_TEMP/sonar-scanner-cli.zip"
           curl --proto '=https' -sSfL -o "$scanner_zip" "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-8.1.0.6389-linux-x64.zip"
@@ -62,6 +74,10 @@ jobs:
           unzip -q "$scanner_zip" -d "$RUNNER_TEMP"
           echo "SONAR_SCANNER_HOME=$RUNNER_TEMP/sonar-scanner-8.1.0.6389-linux-x64" >> "$GITHUB_ENV"
       - name: SonarQube Cloud analysis
+        if: >-
+          (github.event_name == 'pull_request' && github.base_ref == 'dev') ||
+          (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||
+          (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev')
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
