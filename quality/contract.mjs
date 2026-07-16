@@ -36,8 +36,11 @@ const requiredFiles = [
   "docs/product/source-baseline.md",
   "docs/qa/repository-activation.md",
   "package.json",
+  "quality/github-api.mjs",
+  "quality/github-reference.mjs",
   "quality/issue-contract.mjs",
   "quality/issue-readiness-action.mjs",
+  "quality/markdown-contract.mjs",
   "quality/pr-contract-action.mjs",
   "quality/pr-contract.mjs",
   "socket.yml",
@@ -310,63 +313,89 @@ async function readJson(path) {
   return JSON.parse(await readFile(path, "utf8"));
 }
 
-async function contractFailures(root, files, manifest) {
-  const failures = [];
-  for (const file of requiredFiles) {
-    if (!files.includes(file))
-      failures.push(`Missing required quality file: ${file}.`);
-  }
+function requiredFileFailures(files) {
+  return requiredFiles
+    .filter((file) => !files.includes(file))
+    .map((file) => `Missing required quality file: ${file}.`);
+}
+
+function gitarConfigurationFailures(files) {
   const gitarFiles = files
     .filter((file) => file.startsWith(".gitar/"))
     .toSorted((left, right) => left.localeCompare(right));
   const expectedGitarFiles = requiredFiles
     .filter((file) => file.startsWith(".gitar/"))
     .toSorted((left, right) => left.localeCompare(right));
-  if (JSON.stringify(gitarFiles) !== JSON.stringify(expectedGitarFiles))
-    failures.push(
-      "Gitar configuration must contain exactly the governed review lenses.",
-    );
-  failures.push(...validateManifest(manifest));
+  return JSON.stringify(gitarFiles) === JSON.stringify(expectedGitarFiles)
+    ? []
+    : ["Gitar configuration must contain exactly the governed review lenses."];
+}
+
+function privateSourceFileFailures(files) {
   const committedFachkonzeptFiles = files.filter(
     (file) =>
       file !== "docs/product/source-baseline.md" && /fachkonzept/iu.test(file),
   );
-  if (committedFachkonzeptFiles.length > 0)
-    failures.push(
-      "The private source Fachkonzept must not be committed to this repository.",
+  return committedFachkonzeptFiles.length === 0
+    ? []
+    : [
+        "The private source Fachkonzept must not be committed to this repository.",
+      ];
+}
+
+async function sourceBaselineFailures(root, files) {
+  if (!files.includes("docs/product/source-baseline.md")) return [];
+  const sourceBaseline = await readFile(
+    join(root, "docs/product/source-baseline.md"),
+    "utf8",
+  );
+  return [
+    sourceSpecificationIdentity.document,
+    sourceSpecificationIdentity.version,
+    sourceSpecificationIdentity.date,
+    sourceSpecificationIdentity.sha256,
+    "private external source; the document itself must not be committed",
+    "An implementation agent must be able to perform the work",
+  ]
+    .filter((marker) => !sourceBaseline.includes(marker))
+    .map(
+      (marker) =>
+        `Private source baseline is missing governed marker: ${marker}.`,
     );
-  if (files.includes("docs/product/source-baseline.md")) {
-    const sourceBaseline = await readFile(
-      join(root, "docs/product/source-baseline.md"),
-      "utf8",
-    );
-    for (const marker of [
-      sourceSpecificationIdentity.document,
-      sourceSpecificationIdentity.version,
-      sourceSpecificationIdentity.date,
-      sourceSpecificationIdentity.sha256,
-      "private external source; the document itself must not be committed",
-      "An implementation agent must be able to perform the work",
-    ]) {
-      if (!sourceBaseline.includes(marker))
-        failures.push(
-          `Private source baseline is missing governed marker: ${marker}.`,
-        );
-    }
-  }
-  const productiveSources = files.filter(isProductiveSource);
-  if (manifest?.phase === "bootstrap" && productiveSources.length > 0) {
-    failures.push(
-      "Productive source exists while the project is in bootstrap phase; declare native targets and gates first.",
-    );
-  }
+}
+
+async function sourceRootFailures(root, manifest) {
   const sourceRoots = Array.isArray(manifest?.productiveSourceRoots)
     ? manifest.productiveSourceRoots
     : [];
-  for (const sourceRoot of sourceRoots) {
-    if (!(await exists(join(root, sourceRoot))))
-      failures.push(`Declared source root is missing: ${sourceRoot}.`);
-  }
+  const results = await Promise.all(
+    sourceRoots.map(async (sourceRoot) => ({
+      exists: await exists(join(root, sourceRoot)),
+      sourceRoot,
+    })),
+  );
+  return results
+    .filter((result) => !result.exists)
+    .map((result) => `Declared source root is missing: ${result.sourceRoot}.`);
+}
+
+async function contractFailures(root, files, manifest) {
+  const productiveSources = files.filter(isProductiveSource);
+  const bootstrapFailures =
+    manifest?.phase === "bootstrap" && productiveSources.length > 0
+      ? [
+          "Productive source exists while the project is in bootstrap phase; declare native targets and gates first.",
+        ]
+      : [];
+  const failures = [
+    ...requiredFileFailures(files),
+    ...gitarConfigurationFailures(files),
+    ...validateManifest(manifest),
+    ...privateSourceFileFailures(files),
+    ...(await sourceBaselineFailures(root, files)),
+    ...bootstrapFailures,
+    ...(await sourceRootFailures(root, manifest)),
+  ];
   return { failures, productiveSources };
 }
 
@@ -407,6 +436,88 @@ async function productiveCommandFailures(root, ci, manifest) {
   );
 }
 
+function unpinnedWorkflowFailures(workflows) {
+  return [...workflows].flatMap(([name, workflow]) =>
+    unpinnedActionReferences(workflow).map(
+      (reference) => `Unpinned action reference in ${name}: ${reference}.`,
+    ),
+  );
+}
+
+function ciWorkflowFailures(ci) {
+  return expectedWorkflowChecks
+    .filter((check) => !ci.includes(check))
+    .map(
+      (check) => `CI workflow does not emit required check marker: ${check}.`,
+    );
+}
+
+function epicWorkflowFailures(workflows) {
+  const pullRequestFailures = epicPullRequestWorkflows
+    .filter(
+      (name) =>
+        !workflowEventTargetsBranch(
+          workflows.get(name) ?? "",
+          "pull_request",
+          "epic/**",
+        ),
+    )
+    .map(
+      (name) =>
+        `Workflow must validate pull requests targeting epic branches: ${name}.`,
+    );
+  const pushFailures = epicPushWorkflows
+    .filter(
+      (name) =>
+        !workflowEventTargetsBranch(
+          workflows.get(name) ?? "",
+          "push",
+          "epic/**",
+        ),
+    )
+    .map((name) => `Workflow must validate epic branch heads: ${name}.`);
+  return [...pullRequestFailures, ...pushFailures];
+}
+
+function issueReadinessWorkflowFailures(workflow) {
+  const failures = issueReadinessMarkers
+    .filter((marker) => !workflow.includes(marker))
+    .map((marker) => `Issue readiness workflow is missing marker: ${marker}.`);
+  if (workflow.includes("pull_request_target"))
+    failures.push("Issue readiness must not use pull_request_target.");
+  return failures;
+}
+
+function pullRequestContractWorkflowFailures(workflow) {
+  const markerFailures = pullRequestContractMarkers
+    .filter((marker) => !workflow.includes(marker))
+    .map(
+      (marker) =>
+        `Pull-request contract workflow is missing marker: ${marker}.`,
+    );
+  const unsafeFailures = [
+    "github.event.pull_request.head.sha",
+    "github.head_ref",
+    "npm ci",
+    "npm run",
+  ]
+    .filter((marker) => workflow.includes(marker))
+    .map(
+      (marker) =>
+        `Privileged pull-request metadata workflow contains unsafe marker: ${marker}.`,
+    );
+  const branchFailures = ["dev", "epic/**"]
+    .filter(
+      (branch) =>
+        !workflowEventTargetsBranch(workflow, "pull_request_target", branch),
+    )
+    .map(
+      (branch) =>
+        `Pull-request contract must validate target branch: ${branch}.`,
+    );
+  return [...markerFailures, ...unsafeFailures, ...branchFailures];
+}
+
 async function workflowFailures(root, manifest) {
   const workflowDirectory = join(root, ".github", "workflows");
   if (!(await exists(workflowDirectory)))
@@ -414,77 +525,27 @@ async function workflowFailures(root, manifest) {
   const workflowNames = (await readdir(workflowDirectory)).filter((name) =>
     name.endsWith(".yml"),
   );
-  const workflows = await Promise.all(
-    workflowNames.map(async (name) => [
-      name,
-      await readFile(join(workflowDirectory, name), "utf8"),
-    ]),
-  );
-  const failures = workflows.flatMap(([name, workflow]) =>
-    unpinnedActionReferences(workflow).map(
-      (reference) => `Unpinned action reference in ${name}: ${reference}.`,
+  const workflows = new Map(
+    await Promise.all(
+      workflowNames.map(async (name) => [
+        name,
+        await readFile(join(workflowDirectory, name), "utf8"),
+      ]),
     ),
   );
-  const ci = workflows.find(([name]) => name === "ci.yml")?.[1] ?? "";
-  for (const check of expectedWorkflowChecks) {
-    if (!ci.includes(check))
-      failures.push(
-        `CI workflow does not emit required check marker: ${check}.`,
-      );
-  }
-  for (const name of epicPullRequestWorkflows) {
-    const workflow = workflows.find(([candidate]) => candidate === name)?.[1];
-    if (!workflowEventTargetsBranch(workflow ?? "", "pull_request", "epic/**"))
-      failures.push(
-        `Workflow must validate pull requests targeting epic branches: ${name}.`,
-      );
-  }
-  for (const name of epicPushWorkflows) {
-    const workflow = workflows.find(([candidate]) => candidate === name)?.[1];
-    if (!workflowEventTargetsBranch(workflow ?? "", "push", "epic/**"))
-      failures.push(`Workflow must validate epic branch heads: ${name}.`);
-  }
-  const issueReadiness =
-    workflows.find(([name]) => name === "issue-readiness.yml")?.[1] ?? "";
-  for (const marker of issueReadinessMarkers) {
-    if (!issueReadiness.includes(marker))
-      failures.push(`Issue readiness workflow is missing marker: ${marker}.`);
-  }
-  if (issueReadiness.includes("pull_request_target"))
-    failures.push("Issue readiness must not use pull_request_target.");
-  const pullRequestContract =
-    workflows.find(([name]) => name === "pr-contract.yml")?.[1] ?? "";
-  for (const marker of pullRequestContractMarkers) {
-    if (!pullRequestContract.includes(marker))
-      failures.push(
-        `Pull-request contract workflow is missing marker: ${marker}.`,
-      );
-  }
-  for (const unsafeMarker of [
-    "github.event.pull_request.head.sha",
-    "github.head_ref",
-    "npm ci",
-    "npm run",
-  ]) {
-    if (pullRequestContract.includes(unsafeMarker))
-      failures.push(
-        `Privileged pull-request metadata workflow contains unsafe marker: ${unsafeMarker}.`,
-      );
-  }
-  for (const branch of ["dev", "epic/**"]) {
-    if (
-      !workflowEventTargetsBranch(
-        pullRequestContract,
-        "pull_request_target",
-        branch,
-      )
-    )
-      failures.push(
-        `Pull-request contract must validate target branch: ${branch}.`,
-      );
-  }
-  failures.push(...(await productiveCommandFailures(root, ci, manifest)));
-  return failures;
+  const ci = workflows.get("ci.yml") ?? "";
+  return [
+    ...unpinnedWorkflowFailures(workflows),
+    ...ciWorkflowFailures(ci),
+    ...epicWorkflowFailures(workflows),
+    ...issueReadinessWorkflowFailures(
+      workflows.get("issue-readiness.yml") ?? "",
+    ),
+    ...pullRequestContractWorkflowFailures(
+      workflows.get("pr-contract.yml") ?? "",
+    ),
+    ...(await productiveCommandFailures(root, ci, manifest)),
+  ];
 }
 
 async function providerFailures(root) {
@@ -505,9 +566,12 @@ async function providerFailures(root) {
     failures.push(
       "Zizmor must contain only a scoped dangerous-trigger disposition for the trusted PR metadata workflow.",
     );
-  const ignoredWorkflowFiles = [
-    ...zizmor.matchAll(/^\s+-\s+([^\s#]+\.ya?ml)\s*$/gmu),
-  ].map((match) => match[1]);
+  const ignoredWorkflowFiles = zizmor
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("- "))
+    .map((line) => line.slice(2).split("#")[0].trim())
+    .filter((value) => value.endsWith(".yml") || value.endsWith(".yaml"));
   if (
     ignoredWorkflowFiles.length !== 1 ||
     ignoredWorkflowFiles[0] !== "pr-contract.yml"

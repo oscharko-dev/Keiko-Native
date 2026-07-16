@@ -4,6 +4,11 @@ import test from "node:test";
 import { runPullRequestContractAction } from "./pr-contract-action.mjs";
 import { validPullRequestFixture } from "./pr-contract-test-fixture.mjs";
 
+test.beforeEach((t) => {
+  t.mock.method(process.stdout, "write", () => true);
+  t.mock.method(process.stderr, "write", () => true);
+});
+
 function installGitHubFetchMock(t, fixture, { apiFailure = false } = {}) {
   const originalFetch = globalThis.fetch;
   const originalRepository = process.env.GITHUB_REPOSITORY;

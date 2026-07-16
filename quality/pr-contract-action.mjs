@@ -1,31 +1,13 @@
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
+import { githubRequestFor } from "./github-api.mjs";
 import {
   pullRequestIssueNumber,
   validatePullRequestContract,
 } from "./pr-contract.mjs";
 
-async function githubRequest(path, { method = "GET", payload } = {}) {
-  const response = await fetch(`https://api.github.com${path}`, {
-    body: payload === undefined ? undefined : JSON.stringify(payload),
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
-      "Content-Type": "application/json",
-      "User-Agent": "keiko-native-pr-contract",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
-    method,
-  });
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(
-      `GitHub API ${method} ${path} failed with ${response.status}: ${message.slice(0, 300)}`,
-    );
-  }
-  return response.json();
-}
+const githubRequest = githubRequestFor("keiko-native-pr-contract");
 
 async function allIssueComments(repository, issueNumber) {
   const comments = [];

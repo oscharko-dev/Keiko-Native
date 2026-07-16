@@ -1,10 +1,14 @@
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
+import { githubRequestFor } from "./github-api.mjs";
+import { issueNumberFromReference } from "./github-reference.mjs";
 import { validateIssueContract } from "./issue-contract.mjs";
+import { fieldValue } from "./markdown-contract.mjs";
 
 const readinessMarker = "<!-- keiko-native-readiness -->";
 const allowedPermissions = new Set(["admin", "maintain", "triage", "write"]);
+const githubRequest = githubRequestFor("keiko-native-issue-readiness");
 
 export function readinessRecordFromComments(comments) {
   const records = comments
@@ -100,28 +104,6 @@ export function readinessComment({ actor, decision, now, validation }) {
   return lines.join("\n");
 }
 
-async function githubRequest(path, { method = "GET", payload } = {}) {
-  const response = await fetch(`https://api.github.com${path}`, {
-    body: payload === undefined ? undefined : JSON.stringify(payload),
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
-      "Content-Type": "application/json",
-      "User-Agent": "keiko-native-issue-readiness",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
-    method,
-  });
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(
-      `GitHub API ${method} ${path} failed with ${response.status}: ${message.slice(0, 300)}`,
-    );
-  }
-  if (response.status === 204) return undefined;
-  return response.json();
-}
-
 async function allIssueComments(repository, issueNumber) {
   const comments = [];
   for (let page = 1; ; page += 1) {
@@ -135,14 +117,7 @@ async function allIssueComments(repository, issueNumber) {
 
 function acceptedIssueNumber(body) {
   if (typeof body !== "string") return undefined;
-  const value = /^- Accepted issue:\s*(.+?)\s*$/mu.exec(body)?.[1] ?? "";
-  const short = /^#([1-9][0-9]*)$/u.exec(value)?.[1];
-  if (short !== undefined) return Number(short);
-  const url =
-    /^https:\/\/github\.com\/[^/]+\/[^/]+\/issues\/([1-9][0-9]*)\/?$/u.exec(
-      value,
-    )?.[1];
-  return url === undefined ? undefined : Number(url);
+  return issueNumberFromReference(fieldValue(body, "Accepted issue"));
 }
 
 async function allOpenPullRequests(repository) {
