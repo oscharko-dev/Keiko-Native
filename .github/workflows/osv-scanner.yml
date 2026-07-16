@@ -3,10 +3,12 @@ name: OSV dependency scan
 on:
   pull_request:
     branches:
+      - main
       - dev
     types: [opened, ready_for_review, reopened, synchronize]
   push:
     branches:
+      - main
       - dev
   schedule:
     - cron: "37 3 * * *"
