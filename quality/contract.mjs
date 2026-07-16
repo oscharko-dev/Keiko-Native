@@ -159,8 +159,8 @@ export function validateManifest(manifest) {
     failures.push("The Keiko parity quality profile is required.");
   if (!new Set(["bootstrap", "productive"]).has(manifest?.phase))
     failures.push("Project phase must be bootstrap or productive.");
-  if (manifest?.baseBranch !== "main")
-    failures.push("The protected base branch must be main.");
+  if (manifest?.baseBranch !== "dev")
+    failures.push("The protected base branch must be dev.");
   if (!Array.isArray(manifest?.productiveSourceRoots))
     failures.push("productiveSourceRoots must be an array.");
   if (!Array.isArray(manifest?.nativeTargets))

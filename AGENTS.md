@@ -66,8 +66,8 @@ on its authoritative platform; macOS evidence cannot stand in for Windows or Lin
 
 ## Delivery
 
-`main` is the protected integration branch. Work on `type/short-slug` branches and use pull
-requests. Never push directly to `main`, force-push, bypass a required gate, dismiss a finding to
+`dev` is the protected integration and default branch. Work on `type/short-slug` branches and use
+pull requests. Never push directly to `dev`, force-push, bypass a required gate, dismiss a finding to
 obtain green status, or widen task authority. Signed commits, linear history, resolved
 conversations, and exact current-head checks are required.
 

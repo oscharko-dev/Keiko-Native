@@ -17,7 +17,7 @@ package, platform, and signing gates.
 
 ## Pull requests
 
-Pull requests target `main`. Every required check must pass on the exact current head, every review
+Pull requests target `dev`. Every required check must pass on the exact current head, every review
 conversation must be resolved, and commits must be signed. No approving human review is required
 after the work has been accepted and the direct app-bound gates are green.
 
@@ -25,5 +25,5 @@ Gitar and `Keiko for Quality` are advisory. Their findings still require owning-
 failure-first tests, but their absence must not deadlock delivery until their documented
 availability probes pass.
 
-Do not push directly to `main`, force-push, bypass a gate, dismiss a finding to obtain green status,
+Do not push directly to `dev`, force-push, bypass a gate, dismiss a finding to obtain green status,
 or include secrets or unredacted customer content in repository or CI evidence.

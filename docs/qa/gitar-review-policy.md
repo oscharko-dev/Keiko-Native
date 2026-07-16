@@ -1,6 +1,6 @@
 # Gitar review policy
 
-Gitar is an independent advisory reviewer for pull requests targeting `main`. Its GitHub check must
+Gitar is an independent advisory reviewer for pull requests targeting `dev`. Its GitHub check must
 come from App ID `827041`; comments and reviews must come from the Gitar bot identity. Producer
 identity makes evidence attributable but does not make an unavailable service merge-critical.
 

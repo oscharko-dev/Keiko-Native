@@ -8,7 +8,7 @@ updates:
       time: "05:00"
       timezone: Europe/Berlin
     open-pull-requests-limit: 5
-    target-branch: main
+    target-branch: dev
     labels:
       - dependencies
       - github-actions
@@ -23,7 +23,7 @@ updates:
       time: "05:30"
       timezone: Europe/Berlin
     open-pull-requests-limit: 5
-    target-branch: main
+    target-branch: dev
     versioning-strategy: increase
     labels:
       - dependencies
