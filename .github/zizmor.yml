@@ -1,2 +1,7 @@
-# Repository-specific zizmor configuration. No findings are ignored during bootstrap.
-rules: {}
+# The PR contract is a privileged metadata-only workflow. It loads code only from protected dev,
+# never interpolates PR-controlled data into shell or environment, and publishes fixed commit
+# statuses. quality/contract.mjs enforces those invariants. No other dangerous trigger is exempt.
+rules:
+  dangerous-triggers:
+    ignore:
+      - pr-contract.yml

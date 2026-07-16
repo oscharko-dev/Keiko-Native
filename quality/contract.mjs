@@ -1,25 +1,48 @@
 import { access, readFile, readdir } from "node:fs/promises";
 import { extname, join, relative, sep } from "node:path";
 
+const sourceSpecificationIdentity = {
+  date: "2026-07-15",
+  document: "Keiko-Native-Fachkonzept.md",
+  repositoryAccess: "private-external",
+  sha256: "d77a78fb79fc1de882487195d3f2295936f24a34e6bc0579106ad06104737a98",
+  version: "0.6",
+};
+
 const requiredFiles = [
   ".gitar/review/00-governance-and-delivery.md",
   ".gitar/review/10-security-and-trust-boundaries.md",
   ".gitar/review/20-native-architecture-quality-and-evidence.md",
   ".github/CODEOWNERS",
   ".github/dependabot.yml",
+  ".github/ISSUE_TEMPLATE/decision_evaluation.md",
+  ".github/ISSUE_TEMPLATE/defect_finding.md",
+  ".github/ISSUE_TEMPLATE/epic.md",
+  ".github/ISSUE_TEMPLATE/feature_task.md",
   ".github/pull_request_template.md",
   ".github/workflows/ci.yml",
   ".github/workflows/codeql.yml",
   ".github/workflows/dependency-review.yml",
+  ".github/workflows/issue-readiness.yml",
   ".github/workflows/mutation-security.yml",
   ".github/workflows/osv-scanner.yml",
+  ".github/workflows/pr-contract.yml",
   ".github/zizmor.yml",
   ".markdown-quality.json",
   "AGENTS.md",
   "CLAUDE.md",
   "CONTRIBUTING.md",
   "SECURITY.md",
+  "docs/product/source-baseline.md",
+  "docs/qa/repository-activation.md",
   "package.json",
+  "quality/github-api.mjs",
+  "quality/github-reference.mjs",
+  "quality/issue-contract.mjs",
+  "quality/issue-readiness-action.mjs",
+  "quality/markdown-contract.mjs",
+  "quality/pr-contract-action.mjs",
+  "quality/pr-contract.mjs",
   "socket.yml",
   "sonar-project.properties",
 ];
@@ -31,6 +54,37 @@ const expectedWorkflowChecks = [
   "name: zizmor",
   "name: Build, scan, SBOM, smoke",
   "name: native",
+];
+
+const epicPullRequestWorkflows = [
+  "ci.yml",
+  "codeql.yml",
+  "dependency-review.yml",
+  "osv-scanner.yml",
+];
+const epicPushWorkflows = ["ci.yml", "codeql.yml", "osv-scanner.yml"];
+
+const issueReadinessMarkers = [
+  "types: [closed, edited, labeled, reopened, unlabeled]",
+  "name: Validate implementation readiness",
+  "issues: write",
+  "pull-requests: read",
+  "statuses: write",
+  "node quality/issue-readiness-action.mjs",
+];
+
+const pullRequestContractMarkers = [
+  "types:",
+  "opened",
+  "edited",
+  "reopened",
+  "synchronize",
+  "ready_for_review",
+  "converted_to_draft",
+  "name: Evaluate trusted PR metadata",
+  "ref: dev",
+  "statuses: write",
+  "node quality/pr-contract-action.mjs",
 ];
 
 const productiveExtensions = new Set([
@@ -155,12 +209,16 @@ export function validateManifest(manifest) {
   const failures = [];
   if (manifest?.schemaVersion !== 1)
     failures.push("Unsupported quality manifest schema.");
-  if (manifest?.qualityProfile !== "keiko-parity-v1")
-    failures.push("The Keiko parity quality profile is required.");
+  if (manifest?.qualityProfile !== "keiko-native-bootstrap-v1")
+    failures.push("The Keiko Native bootstrap quality profile is required.");
   if (!new Set(["bootstrap", "productive"]).has(manifest?.phase))
     failures.push("Project phase must be bootstrap or productive.");
   if (manifest?.baseBranch !== "dev")
     failures.push("The protected base branch must be dev.");
+  for (const [field, expected] of Object.entries(sourceSpecificationIdentity)) {
+    if (manifest?.sourceSpecification?.[field] !== expected)
+      failures.push(`The governed source Fachkonzept ${field} is invalid.`);
+  }
   if (!Array.isArray(manifest?.productiveSourceRoots))
     failures.push("productiveSourceRoots must be an array.");
   if (!Array.isArray(manifest?.nativeTargets))
@@ -199,6 +257,26 @@ export function unpinnedActionReferences(workflow) {
     );
 }
 
+export function workflowEventTargetsBranch(workflow, event, branch) {
+  const lines = workflow.split(/\r?\n/u);
+  const eventStart = lines.findIndex(
+    (line) => line === `  ${event}:` || line === `  ${event}: {}`,
+  );
+  if (eventStart === -1) return false;
+  const eventEnd = lines.findIndex(
+    (line, index) =>
+      index > eventStart && /^ {2}[A-Za-z_][A-Za-z0-9_-]*:/u.test(line),
+  );
+  const section = lines.slice(
+    eventStart + 1,
+    eventEnd === -1 ? lines.length : eventEnd,
+  );
+  return section.some((line) => {
+    const candidate = line.trim().replace(/^-\s*/u, "");
+    return candidate.replace(/^(["'])(.*)\1$/u, "$2") === branch;
+  });
+}
+
 function actionReference(line) {
   let candidate = line.trimStart();
   if (candidate.startsWith("-")) candidate = candidate.slice(1).trimStart();
@@ -235,36 +313,89 @@ async function readJson(path) {
   return JSON.parse(await readFile(path, "utf8"));
 }
 
-async function contractFailures(root, files, manifest) {
-  const failures = [];
-  for (const file of requiredFiles) {
-    if (!files.includes(file))
-      failures.push(`Missing required quality file: ${file}.`);
-  }
+function requiredFileFailures(files) {
+  return requiredFiles
+    .filter((file) => !files.includes(file))
+    .map((file) => `Missing required quality file: ${file}.`);
+}
+
+function gitarConfigurationFailures(files) {
   const gitarFiles = files
     .filter((file) => file.startsWith(".gitar/"))
     .toSorted((left, right) => left.localeCompare(right));
   const expectedGitarFiles = requiredFiles
     .filter((file) => file.startsWith(".gitar/"))
     .toSorted((left, right) => left.localeCompare(right));
-  if (JSON.stringify(gitarFiles) !== JSON.stringify(expectedGitarFiles))
-    failures.push(
-      "Gitar configuration must contain exactly the governed review lenses.",
+  return JSON.stringify(gitarFiles) === JSON.stringify(expectedGitarFiles)
+    ? []
+    : ["Gitar configuration must contain exactly the governed review lenses."];
+}
+
+function privateSourceFileFailures(files) {
+  const committedFachkonzeptFiles = files.filter(
+    (file) =>
+      file !== "docs/product/source-baseline.md" && /fachkonzept/iu.test(file),
+  );
+  return committedFachkonzeptFiles.length === 0
+    ? []
+    : [
+        "The private source Fachkonzept must not be committed to this repository.",
+      ];
+}
+
+async function sourceBaselineFailures(root, files) {
+  if (!files.includes("docs/product/source-baseline.md")) return [];
+  const sourceBaseline = await readFile(
+    join(root, "docs/product/source-baseline.md"),
+    "utf8",
+  );
+  return [
+    sourceSpecificationIdentity.document,
+    sourceSpecificationIdentity.version,
+    sourceSpecificationIdentity.date,
+    sourceSpecificationIdentity.sha256,
+    "private external source; the document itself must not be committed",
+    "An implementation agent must be able to perform the work",
+  ]
+    .filter((marker) => !sourceBaseline.includes(marker))
+    .map(
+      (marker) =>
+        `Private source baseline is missing governed marker: ${marker}.`,
     );
-  failures.push(...validateManifest(manifest));
-  const productiveSources = files.filter(isProductiveSource);
-  if (manifest?.phase === "bootstrap" && productiveSources.length > 0) {
-    failures.push(
-      "Productive source exists while the project is in bootstrap phase; declare native targets and gates first.",
-    );
-  }
+}
+
+async function sourceRootFailures(root, manifest) {
   const sourceRoots = Array.isArray(manifest?.productiveSourceRoots)
     ? manifest.productiveSourceRoots
     : [];
-  for (const sourceRoot of sourceRoots) {
-    if (!(await exists(join(root, sourceRoot))))
-      failures.push(`Declared source root is missing: ${sourceRoot}.`);
-  }
+  const results = await Promise.all(
+    sourceRoots.map(async (sourceRoot) => ({
+      exists: await exists(join(root, sourceRoot)),
+      sourceRoot,
+    })),
+  );
+  return results
+    .filter((result) => !result.exists)
+    .map((result) => `Declared source root is missing: ${result.sourceRoot}.`);
+}
+
+async function contractFailures(root, files, manifest) {
+  const productiveSources = files.filter(isProductiveSource);
+  const bootstrapFailures =
+    manifest?.phase === "bootstrap" && productiveSources.length > 0
+      ? [
+          "Productive source exists while the project is in bootstrap phase; declare native targets and gates first.",
+        ]
+      : [];
+  const failures = [
+    ...requiredFileFailures(files),
+    ...gitarConfigurationFailures(files),
+    ...validateManifest(manifest),
+    ...privateSourceFileFailures(files),
+    ...(await sourceBaselineFailures(root, files)),
+    ...bootstrapFailures,
+    ...(await sourceRootFailures(root, manifest)),
+  ];
   return { failures, productiveSources };
 }
 
@@ -305,6 +436,88 @@ async function productiveCommandFailures(root, ci, manifest) {
   );
 }
 
+function unpinnedWorkflowFailures(workflows) {
+  return [...workflows].flatMap(([name, workflow]) =>
+    unpinnedActionReferences(workflow).map(
+      (reference) => `Unpinned action reference in ${name}: ${reference}.`,
+    ),
+  );
+}
+
+function ciWorkflowFailures(ci) {
+  return expectedWorkflowChecks
+    .filter((check) => !ci.includes(check))
+    .map(
+      (check) => `CI workflow does not emit required check marker: ${check}.`,
+    );
+}
+
+function epicWorkflowFailures(workflows) {
+  const pullRequestFailures = epicPullRequestWorkflows
+    .filter(
+      (name) =>
+        !workflowEventTargetsBranch(
+          workflows.get(name) ?? "",
+          "pull_request",
+          "epic/**",
+        ),
+    )
+    .map(
+      (name) =>
+        `Workflow must validate pull requests targeting epic branches: ${name}.`,
+    );
+  const pushFailures = epicPushWorkflows
+    .filter(
+      (name) =>
+        !workflowEventTargetsBranch(
+          workflows.get(name) ?? "",
+          "push",
+          "epic/**",
+        ),
+    )
+    .map((name) => `Workflow must validate epic branch heads: ${name}.`);
+  return [...pullRequestFailures, ...pushFailures];
+}
+
+function issueReadinessWorkflowFailures(workflow) {
+  const failures = issueReadinessMarkers
+    .filter((marker) => !workflow.includes(marker))
+    .map((marker) => `Issue readiness workflow is missing marker: ${marker}.`);
+  if (workflow.includes("pull_request_target"))
+    failures.push("Issue readiness must not use pull_request_target.");
+  return failures;
+}
+
+function pullRequestContractWorkflowFailures(workflow) {
+  const markerFailures = pullRequestContractMarkers
+    .filter((marker) => !workflow.includes(marker))
+    .map(
+      (marker) =>
+        `Pull-request contract workflow is missing marker: ${marker}.`,
+    );
+  const unsafeFailures = [
+    "github.event.pull_request.head.sha",
+    "github.head_ref",
+    "npm ci",
+    "npm run",
+  ]
+    .filter((marker) => workflow.includes(marker))
+    .map(
+      (marker) =>
+        `Privileged pull-request metadata workflow contains unsafe marker: ${marker}.`,
+    );
+  const branchFailures = ["dev", "epic/**"]
+    .filter(
+      (branch) =>
+        !workflowEventTargetsBranch(workflow, "pull_request_target", branch),
+    )
+    .map(
+      (branch) =>
+        `Pull-request contract must validate target branch: ${branch}.`,
+    );
+  return [...markerFailures, ...unsafeFailures, ...branchFailures];
+}
+
 async function workflowFailures(root, manifest) {
   const workflowDirectory = join(root, ".github", "workflows");
   if (!(await exists(workflowDirectory)))
@@ -312,30 +525,32 @@ async function workflowFailures(root, manifest) {
   const workflowNames = (await readdir(workflowDirectory)).filter((name) =>
     name.endsWith(".yml"),
   );
-  const workflows = await Promise.all(
-    workflowNames.map(async (name) => [
-      name,
-      await readFile(join(workflowDirectory, name), "utf8"),
-    ]),
-  );
-  const failures = workflows.flatMap(([name, workflow]) =>
-    unpinnedActionReferences(workflow).map(
-      (reference) => `Unpinned action reference in ${name}: ${reference}.`,
+  const workflows = new Map(
+    await Promise.all(
+      workflowNames.map(async (name) => [
+        name,
+        await readFile(join(workflowDirectory, name), "utf8"),
+      ]),
     ),
   );
-  const ci = workflows.find(([name]) => name === "ci.yml")?.[1] ?? "";
-  for (const check of expectedWorkflowChecks) {
-    if (!ci.includes(check))
-      failures.push(
-        `CI workflow does not emit required check marker: ${check}.`,
-      );
-  }
-  failures.push(...(await productiveCommandFailures(root, ci, manifest)));
-  return failures;
+  const ci = workflows.get("ci.yml") ?? "";
+  return [
+    ...unpinnedWorkflowFailures(workflows),
+    ...ciWorkflowFailures(ci),
+    ...epicWorkflowFailures(workflows),
+    ...issueReadinessWorkflowFailures(
+      workflows.get("issue-readiness.yml") ?? "",
+    ),
+    ...pullRequestContractWorkflowFailures(
+      workflows.get("pr-contract.yml") ?? "",
+    ),
+    ...(await productiveCommandFailures(root, ci, manifest)),
+  ];
 }
 
 async function providerFailures(root) {
   const sonar = await readFile(join(root, "sonar-project.properties"), "utf8");
+  const zizmor = await readFile(join(root, ".github", "zizmor.yml"), "utf8");
   const failures = [];
   if (!sonar.includes("sonar.projectKey=oscharko-dev_Keiko-Native"))
     failures.push("Sonar project key is not bound to Keiko-Native.");
@@ -343,6 +558,27 @@ async function providerFailures(root) {
     failures.push("Sonar organization is not bound to oscharko-dev.");
   if (!sonar.includes("coverage/lcov.info"))
     failures.push("Sonar LCOV evidence is not configured.");
+  if (
+    !zizmor.includes("dangerous-triggers:") ||
+    !zizmor.includes("- pr-contract.yml") ||
+    zizmor.includes("disable: true")
+  )
+    failures.push(
+      "Zizmor must contain only a scoped dangerous-trigger disposition for the trusted PR metadata workflow.",
+    );
+  const ignoredWorkflowFiles = zizmor
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("- "))
+    .map((line) => line.slice(2).split("#")[0].trim())
+    .filter((value) => value.endsWith(".yml") || value.endsWith(".yaml"));
+  if (
+    ignoredWorkflowFiles.length !== 1 ||
+    ignoredWorkflowFiles[0] !== "pr-contract.yml"
+  )
+    failures.push(
+      "Zizmor workflow ignores must remain limited to pr-contract.yml.",
+    );
   return failures;
 }
 

@@ -1,60 +1,61 @@
-<div align="center">
-
 # Keiko Native
 
-## The governed AI workspace that runs where your work lives
+Keiko Native is the independently implemented desktop edition of Keiko for regulated coding and
+knowledge work. It is designed for German banking and insurance environments that require bounded
+AI and agent execution, local control, deterministic verification, traceable evidence, and
+deliberate human authority.
 
-</div>
+## Product direction
 
-Keiko Native is a local-first, desktop AI workspace for people who do serious knowledge
-work — and can't hand it to a black box in someone else's cloud.
+Keiko Native is a greenfield rewrite, not a wrapper, refactor, shared-core edition, or source-code
+migration of the existing Keiko application. Existing Keiko provides versioned evidence for
+capabilities, behavior, UX, security, quality, and known failure modes. Every reuse candidate is
+assessed individually and becomes fully owned by Keiko Native when adopted.
 
-It reads, researches, organizes, drafts, and acts on your behalf. On your machine.
-Within limits you set. Every step accountable to you.
+The product direction includes:
 
----
+- a high-performance native workspace for coding and knowledge work;
+- governed AI and agent workflows, with Agentic Coding as a hard requirement;
+- Windows and macOS as first-class platforms;
+- API-backed and bring-your-own-key model access;
+- model- and runtime-neutral boundaries that permit later customer-hosted local inference; and
+- enterprise-grade security, accessibility, reliability, auditability, and operability.
 
-## The premise
+The first required Agentic Coding runtime is integrated through the Codex App Server behind a
+Keiko-owned control plane and replaceable runtime adapter. Keiko retains authority over workspaces,
+tasks, runs, permissions, approvals, changesets, evidence, verification, recovery, and delivery.
 
-Most AI tools ask for a trade you shouldn't have to make: upload your work to servers you
-don't control, trust a system you can't inspect, and hope it stops where you'd want it to.
+## Repository state
 
-For work that's regulated, confidential, or simply _yours_, that trade doesn't hold.
+The repository is in its governed bootstrap phase. The planning baseline, architecture decisions,
+templates, quality standard, and quality control plane are being established before productive
+application source is admitted. A green bootstrap build proves the repository controls; it does
+not claim that the native product already exists.
 
-Keiko Native is built the other way around:
+Start with:
 
-- **Local-first.** Your documents, knowledge, and context stay on your machine. Nothing
-  leaves without your say-so.
-- **You set the ceiling.** You choose the task and how much autonomy to grant. Keiko acts
-  inside that envelope — never past it.
-- **Accountable by design.** Every action is bounded and auditable. The AI proposes and
-  executes; you remain the authority.
-- **Built for your hardware.** Native desktop performance that makes the most of the
-  machine in front of you.
+- [`CONTEXT.md`](CONTEXT.md) for canonical product language;
+- [`AGENTS.md`](AGENTS.md) for the implementation and delivery contract;
+- [`docs/product/source-baseline.md`](docs/product/source-baseline.md) for the private Fachkonzept
+  identity, access rules, and planning handoff boundary;
+- [`docs/planning/decision-addendum.md`](docs/planning/decision-addendum.md) for approved changes to
+  the Fachkonzept;
+- [`docs/engineering/code-quality-standard.md`](docs/engineering/code-quality-standard.md) for the
+  engineering baseline; and
+- [`docs/qa/quality-gates.md`](docs/qa/quality-gates.md) for machine and human acceptance gates.
 
-## One product, two editions
+## Local verification
 
-- **Keiko Lite** — start anywhere, in the browser or from a portable build.
-- **Keiko Native** — the full desktop experience, with deep native power and platform
-  integration.
+Use Node.js 24.18.x and npm 11.16.x for the repository quality control plane.
 
-Both run on the same governed core, so your work and your rules travel with you.
+```bash
+npm ci --ignore-scripts
+npm run quality
+npm audit --audit-level=high
+```
 
-## What we believe
+Productive source may enter only after the selected Native technologies, source roots, target
+platforms, build and test commands, coverage, packaging, signing, security, and architecture gates
+are declared in the repository contract.
 
-The future of professional AI isn't a bigger cloud. It's trustworthy autonomy that runs
-close to you, answers to you, and earns its place in your day.
-
----
-
-<div align="center">
-
-**Status** · Keiko Native is in active early development. This space will grow as the
-product does.
-
-Part of the [Keiko](https://github.com/oscharko-dev/Keiko) family — governed agentic
-workspaces for knowledge work.
-
-© 2026 oscharko-dev · Licensed under the [Apache License 2.0](LICENSE).
-
-</div>
+Licensed under the [Apache License 2.0](LICENSE).
