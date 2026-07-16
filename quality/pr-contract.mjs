@@ -172,7 +172,7 @@ function issueDeliveryTarget(issueBody, kind) {
 }
 
 function sourceContainsIssueNumber(source, issueNumber) {
-  return source.split(/[\/_-]/u).includes(String(issueNumber));
+  return source.split(/[/_-]/u).includes(String(issueNumber));
 }
 
 function requiredSectionFailures(sections) {

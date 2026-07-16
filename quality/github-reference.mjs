@@ -41,7 +41,7 @@ export function issueNumberFromReference(value) {
   if (typeof value !== "string") return undefined;
   if (value.startsWith("#")) return positiveInteger(value.slice(1));
   const parsed = githubUrl(value);
-  if (parsed === undefined || parsed.hash !== "") return undefined;
+  if (parsed?.hash !== "") return undefined;
   return issuePath(parsed)?.issueNumber;
 }
 

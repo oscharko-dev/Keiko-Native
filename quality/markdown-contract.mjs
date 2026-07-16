@@ -83,7 +83,7 @@ export function splitFencedMarkdown(body) {
 export function hasAnglePlaceholder(body) {
   return markdownLines(body).some((line) => {
     const opening = line.indexOf("<");
-    return opening >= 0 && line.indexOf(">", opening + 2) >= 0;
+    return opening >= 0 && line.includes(">", opening + 2);
   });
 }
 
