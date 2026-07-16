@@ -754,6 +754,23 @@ Measure distributions rather than anecdotes; separate cold, warm, first-run, and
 record hardware, OS, display, scaling, power and thermal conditions; and do not treat virtualized CI
 as the sole desktop-performance authority.
 
+### Desktop acceptance automation
+
+- The repository owns the supported harnesses, platform adapters, evidence formats, and canonical
+  commands. Epics and issues choose applicable journeys and test levels; agents implement within
+  that governed toolchain.
+- A new foundational runner, driver, embedded automation service, or release-facing test capability
+  requires an evidence-backed decision and accepted architecture record rather than an incidental
+  feature dependency.
+- Host candidates must run the same representative journey across renderer, application port,
+  host, native surface, process lifecycle, and recovery boundaries on macOS and Windows.
+- Automatable outcomes require machine-executable evidence. Computer Use and human observation
+  supplement visual, usability, accessibility, native-dialog, and installed-product evidence but
+  do not replace an available deterministic check.
+- Test-only drivers, remote-debugging listeners, relaxed policies, credentials, and instrumentation
+  must be absent from the production release artifact. Release acceptance proves that absence and
+  executes a bounded black-box journey against the actual artifact.
+
 ### Verification and release evidence
 
 An affected epic Quality Envelope selects from:
@@ -780,24 +797,24 @@ implementation, security, accessibility, performance, platform, or release accep
 An epic must not encode an unresolved decision as fact. Use a `Decision & Evaluation` issue and an
 accepted ADR or product record when the selected outcome depends on one of these gates.
 
-| ID     | Decision gate                                                     | Current boundary                                                                              | Required evidence before acceptance                                                                                |
-| ------ | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| APD-01 | Native host and renderer technology                               | Tauri, Electron, or a narrowly scoped custom host remain candidates                           | Equal workload for security, startup, RSS, editor, A11y, IME, update, signing, recovery, and support cost          |
-| APD-02 | Application-to-host boundary                                      | Typed host IPC, protected loopback application APIs, or a minimal hybrid                      | Threat model, origin and sender tests, payload limits, ownership, latency, and failure isolation                   |
-| APD-03 | Codex App Server transport                                        | Local stdio is the safe default; a local socket requires demonstrated need                    | Protocol conformance, listener authentication, lifecycle, multi-window need, and negative network tests            |
-| APD-04 | Codex authentication and credential backends                      | Subscription, API key, access-token, and supported browser or device flows remain distinct    | Customer and admin needs, OS-store behavior, revocation, headless failure, and secret-leak tests                   |
-| APD-05 | Platform sandbox enforcement                                      | macOS and Windows require platform-specific outer containment in addition to runtime controls | Threat model, reuse assessment, escape, network, cleanup, host-compatibility, update, and uninstall tests          |
-| APD-06 | Runtime artifact acquisition, verification, and update            | No PATH trust or unverified download; evidence differs by platform                            | Digest, signing or notarization, available provenance, compatibility, substitution, downgrade, and rollback tests  |
-| APD-07 | Terminal strategy                                                 | Bounded command execution is baseline; supervised PTY is optional                             | User need, containment, shell and environment policy, output bounds, cancellation, process tree, and A11y          |
-| APD-08 | Editor and design-system technology                               | Preserve outcomes and Keiko identity; do not copy the web implementation automatically        | Native design adoption record, large-file, performance, A11y, IME, packaging, and maintenance evidence             |
-| APD-09 | Retained conversation and run content                             | Governance evidence remains body-free                                                         | User need, encrypted store, access, retention, deletion, backup, support, and privacy assessment                   |
-| APD-10 | Knowledge capability protocol and contracts                       | A thin local tool boundary over Keiko Knowledge; no duplicate engine                          | Versioned schemas, scope claims, injection tests, citation roundtrip, payload limits, cancellation, and drift plan |
-| APD-11 | Reference hardware, corpus, and calibrated budgets                | Both first-class platforms require representative authority                                   | Reproducible workload, raw distributions, power and thermal conditions, and approved target changes                |
-| APD-12 | Signing, distribution, and enterprise rollout                     | Direct download, store, and managed enterprise distribution may differ                        | Customer channels, certificates, MDM needs, clean-machine evidence, SBOM, provenance, update, and rollback         |
-| APD-13 | Native capability and consent scope                               | Standard capabilities precede high-sensitivity capture or browsing                            | Product need, consent, OS granularity, active indication, egress, redaction, negative tests, and support plan      |
-| APD-14 | Multi-window and parallel workspace policy                        | Isolation must remain possible; full support is not an initial assumption                     | Single-owner state, window identity, authority isolation, approval routing, resource budgets, and crash tests      |
-| APD-15 | Customer-hosted local models and adaptive hardware                | Deferred; initial architecture preserves only the model-neutral seam                          | Model/runtime profile, artifact trust, accuracy, resources, privacy, fallback, semantic drift, and support cost    |
-| APD-16 | Optional inline AI, workspace checkpoints, and parallel worktrees | Deferred until the integrated workspace proves a user need                                    | No second mutation path, human acceptance, restore preconditions, containment, reconciliation, and UX evidence     |
+| ID     | Decision gate                                                     | Current boundary                                                                              | Required evidence before acceptance                                                                                        |
+| ------ | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| APD-01 | Native host and renderer technology                               | Tauri, Electron, or a narrowly scoped custom host remain candidates                           | Equal workload for security, startup, RSS, editor, A11y, IME, test automation, update, signing, recovery, and support cost |
+| APD-02 | Application-to-host boundary                                      | Typed host IPC, protected loopback application APIs, or a minimal hybrid                      | Threat model, origin and sender tests, payload limits, ownership, latency, and failure isolation                           |
+| APD-03 | Codex App Server transport                                        | Local stdio is the safe default; a local socket requires demonstrated need                    | Protocol conformance, listener authentication, lifecycle, multi-window need, and negative network tests                    |
+| APD-04 | Codex authentication and credential backends                      | Subscription, API key, access-token, and supported browser or device flows remain distinct    | Customer and admin needs, OS-store behavior, revocation, headless failure, and secret-leak tests                           |
+| APD-05 | Platform sandbox enforcement                                      | macOS and Windows require platform-specific outer containment in addition to runtime controls | Threat model, reuse assessment, escape, network, cleanup, host-compatibility, update, and uninstall tests                  |
+| APD-06 | Runtime artifact acquisition, verification, and update            | No PATH trust or unverified download; evidence differs by platform                            | Digest, signing or notarization, available provenance, compatibility, substitution, downgrade, and rollback tests          |
+| APD-07 | Terminal strategy                                                 | Bounded command execution is baseline; supervised PTY is optional                             | User need, containment, shell and environment policy, output bounds, cancellation, process tree, and A11y                  |
+| APD-08 | Editor and design-system technology                               | Preserve outcomes and Keiko identity; do not copy the web implementation automatically        | Native design adoption record, large-file, performance, A11y, IME, packaging, and maintenance evidence                     |
+| APD-09 | Retained conversation and run content                             | Governance evidence remains body-free                                                         | User need, encrypted store, access, retention, deletion, backup, support, and privacy assessment                           |
+| APD-10 | Knowledge capability protocol and contracts                       | A thin local tool boundary over Keiko Knowledge; no duplicate engine                          | Versioned schemas, scope claims, injection tests, citation roundtrip, payload limits, cancellation, and drift plan         |
+| APD-11 | Reference hardware, corpus, and calibrated budgets                | Both first-class platforms require representative authority                                   | Reproducible workload, raw distributions, power and thermal conditions, and approved target changes                        |
+| APD-12 | Signing, distribution, and enterprise rollout                     | Direct download, store, and managed enterprise distribution may differ                        | Customer channels, certificates, MDM needs, clean-machine evidence, SBOM, provenance, update, and rollback                 |
+| APD-13 | Native capability and consent scope                               | Standard capabilities precede high-sensitivity capture or browsing                            | Product need, consent, OS granularity, active indication, egress, redaction, negative tests, and support plan              |
+| APD-14 | Multi-window and parallel workspace policy                        | Isolation must remain possible; full support is not an initial assumption                     | Single-owner state, window identity, authority isolation, approval routing, resource budgets, and crash tests              |
+| APD-15 | Customer-hosted local models and adaptive hardware                | Deferred; initial architecture preserves only the model-neutral seam                          | Model/runtime profile, artifact trust, accuracy, resources, privacy, fallback, semantic drift, and support cost            |
+| APD-16 | Optional inline AI, workspace checkpoints, and parallel worktrees | Deferred until the integrated workspace proves a user need                                    | No second mutation path, human acceptance, restore preconditions, containment, reconciliation, and UX evidence             |
 
 Resolved product directions must not be reopened inside these gates: macOS and Windows are the
 initial platforms; Linux is deferred; Codex App Server is the first runtime behind a neutral Keiko

@@ -33,6 +33,7 @@ const requiredFiles = [
   "CLAUDE.md",
   "CONTRIBUTING.md",
   "SECURITY.md",
+  "docs/engineering/code-quality-standard.md",
   "docs/planning/agent-planning-baseline.md",
   "docs/product/source-baseline.md",
   "docs/qa/repository-activation.md",
@@ -377,6 +378,7 @@ async function agentPlanningBaselineFailures(root, files) {
     "## Global acceptance journeys",
     "## Capability planning packets",
     "## Cross-cutting quality contract",
+    "### Desktop acceptance automation",
     "## Decision gates",
     "## Epic-authoring contract",
     "Planning and implementation do not require access to the private source.",
@@ -385,6 +387,25 @@ async function agentPlanningBaselineFailures(root, files) {
     .map(
       (marker) =>
         `Agent Planning Baseline is missing governed marker: ${marker}.`,
+    );
+}
+
+async function codeQualityStandardFailures(root, files) {
+  const path = "docs/engineering/code-quality-standard.md";
+  if (!files.includes(path)) return [];
+  const standard = await readFile(join(root, path), "utf8");
+  return [
+    "### Desktop test automation ownership",
+    "The repository owns the supported test harnesses",
+    "Computer Use",
+    "A new foundational test framework",
+    "The production release artifact contains no",
+    "test-only automation capability",
+  ]
+    .filter((marker) => !standard.includes(marker))
+    .map(
+      (marker) =>
+        `Code Quality Standard is missing governed marker: ${marker}.`,
     );
 }
 
@@ -418,6 +439,7 @@ async function contractFailures(root, files, manifest) {
     ...privateSourceFileFailures(files),
     ...(await sourceBaselineFailures(root, files)),
     ...(await agentPlanningBaselineFailures(root, files)),
+    ...(await codeQualityStandardFailures(root, files)),
     ...bootstrapFailures,
     ...(await sourceRootFailures(root, manifest)),
   ];

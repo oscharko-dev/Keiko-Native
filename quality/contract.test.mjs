@@ -298,9 +298,22 @@ async function fixtureRepository() {
       "## Global acceptance journeys",
       "## Capability planning packets",
       "## Cross-cutting quality contract",
+      "### Desktop acceptance automation",
       "## Decision gates",
       "## Epic-authoring contract",
       "Planning and implementation do not require access to the private source.",
+    ].join("\n"),
+  );
+  await mkdir(join(root, "docs/engineering"), { recursive: true });
+  await writeFile(
+    join(root, "docs/engineering/code-quality-standard.md"),
+    [
+      "# Code Quality Standard",
+      "### Desktop test automation ownership",
+      "The repository owns the supported test harnesses and canonical commands.",
+      "Computer Use provides complementary manual evidence.",
+      "A new foundational test framework requires an accepted decision.",
+      "The production release artifact contains no test-only automation capability.",
     ].join("\n"),
   );
   await writeFile(
@@ -448,6 +461,23 @@ test("fails closed when the agent planning baseline contract drifts", async () =
     assert.match(
       result.failures.join("\n"),
       /Agent Planning Baseline is missing governed marker/u,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("fails closed when desktop test automation governance drifts", async () => {
+  const root = await fixtureRepository();
+  try {
+    await writeFile(
+      join(root, "docs/engineering/code-quality-standard.md"),
+      "drift\n",
+    );
+    const result = await validateRepository(root);
+    assert.match(
+      result.failures.join("\n"),
+      /Code Quality Standard is missing governed marker/u,
     );
   } finally {
     await rm(root, { force: true, recursive: true });

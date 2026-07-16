@@ -114,6 +114,33 @@ Journey enforcement occurs at four boundaries:
 4. `Ready for Human Review` and merge require complete automated, manual, platform, and exact-head
    evidence.
 
+### Desktop test automation ownership
+
+The repository owns the supported test harnesses, platform adapters, evidence formats, and
+canonical verification commands. An epic or issue selects the applicable test levels and journeys
+from that governed toolchain. The implementing agent owns the concrete cases, fixtures, failure
+coverage, and smallest useful commands; it does not independently choose a competing foundational
+test architecture.
+
+A new foundational test framework, desktop driver, embedded automation service, or release-facing
+test capability requires a `Decision & Evaluation` issue and an accepted ADR or equivalent
+architecture record. The decision must identify the existing mechanism it replaces or complements,
+dependency and supply-chain cost, macOS and Windows support, CI ownership, accessibility exposure,
+failure diagnostics, flake controls, migration, and removal.
+
+The host and renderer evaluation must execute the same representative Acceptance Journey for every
+candidate and prove renderer interaction, native surface and dialog coverage, process lifecycle,
+failure and recovery, and authoritative macOS and Windows evidence. An automatable claim requires a
+machine-executable harness. Computer Use, screenshots, and human observation provide complementary
+manual, visual, usability, and platform evidence; they are not the sole merge evidence for an
+automatable claim.
+
+Automation hooks, embedded drivers, remote-debugging listeners, relaxed security policy, and test
+credentials are test-build capabilities only. The production release artifact contains no
+test-only automation capability, and release verification must prove that absence before a signed
+artifact is accepted. A small black-box journey against the actual release artifact supplements the
+instrumented test build.
+
 ### Planning Contract Change Control
 
 Every epic and implementation issue has a versioned planning contract. Any contributor may create a

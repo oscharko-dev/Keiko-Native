@@ -65,6 +65,7 @@ test | operational evaluation`
 - Reference hardware, operating systems, versions, and dependencies:
 - Required primary sources and repository evidence:
 - Reproduction commands and retained artifacts:
+- Testability, automation harness, CI ownership, and production-artifact isolation:
 - Bias, uncertainty, and evidence limitations:
 
 Experimental code is evidence only. State where it will live, how it remains isolated from

@@ -123,6 +123,7 @@ Map every applicable row to an owner child issue or to the integrated epic accep
 | Production-composition verification (CORE) |                           |          |                   |       |
 | Machine-enforced acceptance (CORE)         |                           |          |                   |       |
 | Native UI or end-to-end behavior           |                           |          |                   |       |
+| Desktop harness and release blackbox       |                           |          |                   |       |
 | Security and privacy                       |                           |          |                   |       |
 | Accessibility and design fidelity          |                           |          |                   |       |
 | Performance and resource use               |                           |          |                   |       |
@@ -132,6 +133,8 @@ Integrated acceptance location: `this epic | final child #...`
 ## Integrated verification
 
 List deterministic commands and authoritative platform evidence that qualify the assembled epic.
+Name the repository-owned harnesses. A new foundational framework, driver, or test capability
+requires a prerequisite decision issue and accepted architecture record.
 
 ```text
 npm run quality
@@ -154,6 +157,8 @@ record the stable inputs, outputs, types, lifecycle, and error or empty states i
 - [ ] Every relevant Agent Planning Baseline requirement is selected and restated completely, and
       implementation requires no private-source access or omitted inference.
 - [ ] Prerequisite decisions are accepted or assigned to a decision issue with criteria.
+- [ ] Desktop automation uses repository-owned harnesses, or a prerequisite decision owns the new
+      foundational test capability and production-artifact exclusion proof.
 - [ ] Every implementation child can include acceptance criteria and deterministic verification.
 - [ ] Cross-child interfaces and implementation order are stable enough to avoid parallel policy.
 - [ ] Integrated release acceptance has an owner, commands, platforms, and expected evidence.
