@@ -23,7 +23,7 @@ emitted by its expected producer on the exact current head:
 7. `Analyze (actions)` — GitHub Actions (App ID `15368`)
 8. `Analyze (javascript-typescript)` — GitHub Actions (App ID `15368`)
 9. `Build, scan, SBOM, smoke` — GitHub Actions (App ID `15368`)
-10. `Review dependency diff` — GitHub Actions (App ID `15368`)
+10. `Review dependency diff (dev/main)` — GitHub Actions (App ID `15368`)
 11. `native` — GitHub Actions (App ID `15368`)
 12. `Scan dependency lockfiles` — GitHub Actions (App ID `15368`)
 13. `SonarCloud Code Analysis` — SonarQube Cloud (App ID `12526`)

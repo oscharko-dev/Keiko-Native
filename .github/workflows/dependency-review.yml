@@ -10,7 +10,7 @@ permissions: {}
 
 jobs:
   dependency-review:
-    name: Review dependency diff
+    name: Review dependency diff (dev/main)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
