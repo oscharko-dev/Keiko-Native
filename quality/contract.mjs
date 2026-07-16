@@ -33,6 +33,8 @@ const requiredFiles = [
   "CLAUDE.md",
   "CONTRIBUTING.md",
   "SECURITY.md",
+  "docs/engineering/code-quality-standard.md",
+  "docs/planning/agent-planning-baseline.md",
   "docs/product/source-baseline.md",
   "docs/qa/repository-activation.md",
   "package.json",
@@ -355,12 +357,55 @@ async function sourceBaselineFailures(root, files) {
     sourceSpecificationIdentity.date,
     sourceSpecificationIdentity.sha256,
     "private external source; the document itself must not be committed",
-    "An implementation agent must be able to perform the work",
+    "provenance only",
+    "Agent Planning Baseline",
+    "Planning and implementation agents must be able to perform their work",
   ]
     .filter((marker) => !sourceBaseline.includes(marker))
     .map(
       (marker) =>
         `Private source baseline is missing governed marker: ${marker}.`,
+    );
+}
+
+async function agentPlanningBaselineFailures(root, files) {
+  const path = "docs/planning/agent-planning-baseline.md";
+  if (!files.includes(path)) return [];
+  const baseline = await readFile(join(root, path), "utf8");
+  return [
+    "# Keiko Native Agent Planning Baseline",
+    "## Authority and planning use",
+    "## Global acceptance journeys",
+    "## Capability planning packets",
+    "## Cross-cutting quality contract",
+    "### Desktop acceptance automation",
+    "## Decision gates",
+    "## Epic-authoring contract",
+    "Planning and implementation do not require access to the private source.",
+  ]
+    .filter((marker) => !baseline.includes(marker))
+    .map(
+      (marker) =>
+        `Agent Planning Baseline is missing governed marker: ${marker}.`,
+    );
+}
+
+async function codeQualityStandardFailures(root, files) {
+  const path = "docs/engineering/code-quality-standard.md";
+  if (!files.includes(path)) return [];
+  const standard = await readFile(join(root, path), "utf8");
+  return [
+    "### Desktop test automation ownership",
+    "The repository owns the supported test harnesses",
+    "Computer Use",
+    "A new foundational test framework",
+    "The production release artifact contains no",
+    "test-only automation capability",
+  ]
+    .filter((marker) => !standard.includes(marker))
+    .map(
+      (marker) =>
+        `Code Quality Standard is missing governed marker: ${marker}.`,
     );
 }
 
@@ -393,6 +438,8 @@ async function contractFailures(root, files, manifest) {
     ...validateManifest(manifest),
     ...privateSourceFileFailures(files),
     ...(await sourceBaselineFailures(root, files)),
+    ...(await agentPlanningBaselineFailures(root, files)),
+    ...(await codeQualityStandardFailures(root, files)),
     ...bootstrapFailures,
     ...(await sourceRootFailures(root, manifest)),
   ];

@@ -36,10 +36,14 @@ Start with:
 
 - [`CONTEXT.md`](CONTEXT.md) for canonical product language;
 - [`AGENTS.md`](AGENTS.md) for the implementation and delivery contract;
-- [`docs/product/source-baseline.md`](docs/product/source-baseline.md) for the private Fachkonzept
-  identity, access rules, and planning handoff boundary;
-- [`docs/planning/decision-addendum.md`](docs/planning/decision-addendum.md) for approved changes to
-  the Fachkonzept;
+- [`docs/planning/agent-planning-baseline.md`](docs/planning/agent-planning-baseline.md) for the
+  complete repository-owned product, journey, capability, quality, risk, and epic-planning baseline;
+- [`docs/planning/parity-ledger.md`](docs/planning/parity-ledger.md) for replacement inclusion and
+  delivery status;
+- [`docs/planning/decision-addendum.md`](docs/planning/decision-addendum.md) for approved product and
+  scope amendments;
+- [`docs/product/source-baseline.md`](docs/product/source-baseline.md) for private-source provenance
+  and the repository-only planning boundary;
 - [`docs/engineering/code-quality-standard.md`](docs/engineering/code-quality-standard.md) for the
   engineering baseline; and
 - [`docs/qa/quality-gates.md`](docs/qa/quality-gates.md) for machine and human acceptance gates.

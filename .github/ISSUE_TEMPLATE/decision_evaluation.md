@@ -23,7 +23,7 @@ session has resolved the product inputs; no separate GitHub approval or human co
 - Decision to resolve:
 - Why it must be decided now:
 - Decision owner:
-- Fachkonzept, Decision Addendum, parity, risk, or incident reference:
+- Agent Planning Baseline, Decision Addendum, parity, risk, or incident reference:
 - Relevant accepted ADRs and repository evidence:
 - Required resulting record: `ADR | product decision | security decision | documented deferral`
 
@@ -65,6 +65,7 @@ test | operational evaluation`
 - Reference hardware, operating systems, versions, and dependencies:
 - Required primary sources and repository evidence:
 - Reproduction commands and retained artifacts:
+- Testability, automation harness, CI ownership, and production-artifact isolation:
 - Bias, uncertainty, and evidence limitations:
 
 Experimental code is evidence only. State where it will live, how it remains isolated from

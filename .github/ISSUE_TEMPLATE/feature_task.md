@@ -54,7 +54,7 @@ journey and describe only this issue's vertical slice.
 - Classification: `parity-replacement | mandatory-delta | net-new | hardening |
 architecture/governance | defect`
 - Product decision, finding, or incident:
-- Fachkonzept or parity reference, when applicable:
+- Agent Planning Baseline and parity reference, when applicable:
 - Existing Keiko evidence or Reuse Assessment, when applicable:
 - Not-applicable rationale for omitted parity or reuse evidence:
 
@@ -103,6 +103,9 @@ cancellation, and recovery behavior. Use `None` only when the slice has no cross
 - Positive, empty, boundary, malformed, hostile, unauthorized, unavailable, cancellation, partial
   failure, and recovery paths to cover:
 - Required unit, contract, architecture, integration, production-composition, and end-to-end tests:
+- Repository-owned harnesses and canonical commands:
+- New foundational framework, driver, or test capability: `None | decision issue and accepted
+architecture record`
 - Required security, accessibility, performance, resource, visual, or manual evidence:
 - Measurable budgets or thresholds:
 - Explicit exclusions with rationale:
@@ -133,7 +136,7 @@ npm run quality
 
 - [ ] Parent epic and owned Quality Envelope rows are identified.
 - [ ] The parent epic and this issue contain the complete executable requirement slice; no private
-      Fachkonzept access or omitted inference is required.
+      source access or omitted inference from the Agent Planning Baseline is required.
 - [ ] Change classification and applicable planning authority are recorded.
 - [ ] Acceptance criteria and deterministic verification commands are complete.
 - [ ] The Acceptance Journey is complete for user-facing work, or its exclusion is justified.
@@ -142,6 +145,8 @@ npm run quality
 - [ ] Execution Authority identifies the exact repository, delivery target, write scope, external
       effects, credentials, and merge boundary.
 - [ ] Required ADRs are accepted or explicitly produced by a decision issue.
+- [ ] The issue uses repository-owned test harnesses, or an accepted decision authorizes the new
+      foundational test capability.
 - [ ] The planned verification is executable in the available environment.
 - [ ] No unresolved product, scope, policy, or architecture decision is disguised as implementation.
 

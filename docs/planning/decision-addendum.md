@@ -3,9 +3,9 @@
 ## Status
 
 Accepted planning baseline, 2026-07-16. This addendum records human-approved product and scope
-changes to the locked source Fachkonzept before implementation planning begins.
+changes applied while deriving the repository-owned Agent Planning Baseline.
 
-## Source Baseline
+## Source provenance
 
 - document: `Keiko-Native-Fachkonzept.md` (private external source; not committed)
 - version: 0.6
@@ -13,24 +13,25 @@ changes to the locked source Fachkonzept before implementation planning begins.
 - SHA-256: `d77a78fb79fc1de882487195d3f2295936f24a34e6bc0579106ad06104737a98`
 - source status: locked functional and quality baseline; not a direct implementation contract
 
-The Fachkonzept remains the detailed functional and quality baseline wherever this addendum does
-not explicitly change its product or scope direction.
+The private source is retained only as derivation provenance. The repository-owned
+[`Agent Planning Baseline`](agent-planning-baseline.md) is the complete functional and quality
+baseline for epic and issue authorship.
 
-Access and implementation handoff follow
-[`docs/product/source-baseline.md`](../product/source-baseline.md). An implementation agent does not
-need or receive the private source: every relevant requirement must be complete in its accepted
-epic and issue Planning Contract.
+Provenance and confidentiality follow
+[`docs/product/source-baseline.md`](../product/source-baseline.md). Neither a planning nor an
+implementation agent needs or receives the private source.
 
 ## Normative Responsibilities
 
 | Artifact                        | Authority                                                                 |
 | ------------------------------- | ------------------------------------------------------------------------- |
 | This Decision Addendum          | Human-approved product, scope, replacement, and sequencing changes        |
-| Source Fachkonzept              | Functional and quality baseline where this addendum does not supersede it |
+| Agent Planning Baseline         | Repository-visible functional, quality, journey, risk, and planning input |
 | Accepted Native ADRs            | Technical decisions within the approved product and scope boundary        |
 | `CONTEXT.md`                    | Current canonical vocabulary and projection of approved decisions         |
 | `AGENTS.md`                     | Repository working, verification, and delivery rules                      |
 | Existing Keiko sources and ADRs | Reference evidence without automatic Native authority                     |
+| Private source identity         | Derivation provenance only; no planning or implementation dependency      |
 
 An accepted Native ADR may supersede an earlier Native ADR. It must not silently contradict this
 addendum or change an approved product requirement. Such a conflict stops implementation until a
@@ -47,10 +48,9 @@ Keiko Native is an independently implemented greenfield product. Existing Keiko 
 capabilities, behavior, UX, security, quality, data, and known failure modes. It is not a mandatory
 build-time or runtime dependency, implementation base, shared core, or thin-host target.
 
-This decision supersedes the no-rewrite, evolution-first, thin-host, shared-governed-core, and
-two-editions-on-one-core direction in sections 12.3, 14.3, 14.4, 43.1, and 49 of the source
-Fachkonzept. Reuse remains possible only after a case-by-case Reuse Assessment, after which Keiko
-Native fully owns the adopted material.
+This decision supersedes the earlier no-rewrite, evolution-first, thin-host, shared-core, and
+two-editions-on-one-core direction. Reuse remains possible only after a case-by-case Reuse
+Assessment, after which Keiko Native fully owns the adopted material.
 
 ### Existing Keiko Lifecycle
 
