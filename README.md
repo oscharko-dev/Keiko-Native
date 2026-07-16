@@ -2,7 +2,7 @@
 
 # Keiko Native
 
-### The governed AI workspace that runs where your work lives.
+## The governed AI workspace that runs where your work lives
 
 </div>
 

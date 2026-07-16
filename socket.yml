@@ -1,0 +1,12 @@
+# Socket scans every pull request and ingests every supported manifest in this repository.
+# Keep triggerPaths and projectIgnorePaths omitted: new native package managers must enter Socket
+# scope automatically instead of bypassing dependency review.
+version: 2
+
+githubApp:
+  enabled: true
+  pullRequestAlertsEnabled: true
+  dependencyOverviewEnabled: true
+  projectReportsEnabled: true
+  ignoreUsers: []
+  disableCommentsAndCheckRuns: false

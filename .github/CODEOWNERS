@@ -1,0 +1,10 @@
+* @oscharko
+
+/.github/ @oscharko
+/.gitar/ @oscharko
+/docs/adr/ @oscharko
+/docs/qa/ @oscharko
+/quality/ @oscharko
+/AGENTS.md @oscharko
+/sonar-project.properties @oscharko
+/socket.yml @oscharko

@@ -1,0 +1,4 @@
+{
+  "allowedHtmlElements": ["div"],
+  "lineLength": 100
+}
