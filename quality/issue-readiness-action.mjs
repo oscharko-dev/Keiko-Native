@@ -220,10 +220,11 @@ export async function runIssueReadinessAction({ event, now = new Date() }) {
   const isInitialRequest =
     event.action === "labeled" && event.label?.name === "status: ready";
   if (
-    !isInitialRequest &&
     labels.some(
       (label) =>
-        label?.name?.startsWith("status: ") && label.name !== "status: ready",
+        label?.name?.startsWith("status: ") &&
+        label.name !== "status: ready" &&
+        !(isInitialRequest && label.name === "status: new"),
     )
   )
     validation.failures.push(
@@ -243,23 +244,21 @@ export async function runIssueReadinessAction({ event, now = new Date() }) {
   if (decision.outcome === "ignore" || decision.outcome === "keep")
     return decision;
 
+  const comment = readinessComment({
+    actor: event.sender?.login ?? "unknown",
+    decision,
+    now: now.toISOString(),
+    validation,
+  });
   if (decision.outcome === "accept") {
     await removeLabel(repository, issue.number, "status: new");
+    await postComment(repository, issue.number, comment);
   } else {
     await removeLabel(repository, issue.number, "status: ready");
     await addLabel(repository, issue.number, "status: new");
+    await postComment(repository, issue.number, comment);
     await invalidateLinkedPullRequestContracts(repository, issue.number);
   }
-  await postComment(
-    repository,
-    issue.number,
-    readinessComment({
-      actor: event.sender?.login ?? "unknown",
-      decision,
-      now: now.toISOString(),
-      validation,
-    }),
-  );
   return decision;
 }
 

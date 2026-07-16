@@ -274,6 +274,28 @@ test("executes the accepted readiness label transition", async (t) => {
   );
 });
 
+test("rejects an initial readiness request with a conflicting lifecycle status", async (t) => {
+  installGitHubFetchMock(t);
+  const event = issueEvent({
+    issue: {
+      body: validTaskBody(),
+      labels: [
+        { name: "type: task" },
+        { name: "status: new" },
+        { name: "status: blocked" },
+        { name: "status: ready" },
+      ],
+      number: 42,
+      title: "Implement governed workspace opening",
+    },
+  });
+
+  const result = await runIssueReadinessAction({ event });
+
+  assert.equal(result.outcome, "reject");
+  assert.match(result.reasons.join("\n"), /conflicting lifecycle status/u);
+});
+
 test("executes a rejected readiness request fail closed", async (t) => {
   const calls = installGitHubFetchMock(t, {
     permission: "read",
@@ -375,6 +397,29 @@ test("rejects invalid linked PR head evidence", async (t) => {
   await assert.rejects(
     invalidateLinkedPullRequestContracts("keiko/Keiko-Native", 42),
     /no valid head SHA/u,
+  );
+});
+
+test("posts rejection feedback before linked PR invalidation can fail", async (t) => {
+  const calls = installGitHubFetchMock(t, {
+    permission: "read",
+    pullRequests: [
+      {
+        body: "- Accepted issue: #42",
+        head: { sha: "invalid" },
+      },
+    ],
+  });
+
+  await assert.rejects(
+    runIssueReadinessAction({ event: issueEvent() }),
+    /no valid head SHA/u,
+  );
+
+  assert.ok(
+    calls.some(
+      (call) => call.method === "POST" && call.url.endsWith("/comments"),
+    ),
   );
 });
 
