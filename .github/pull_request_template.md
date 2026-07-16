@@ -29,7 +29,7 @@
 
 ## Delivery
 
-- [ ] The branch targets `main`; no direct push, force push, gate bypass, finding dismissal, or
+- [ ] The branch targets `dev`; no direct push, force push, gate bypass, finding dismissal, or
       authority widening occurred.
 - [ ] The commit is signed and every check is bound to the exact current head.
 - [ ] Gitar and Keiko for Quality evidence is treated as advisory under the current policy.

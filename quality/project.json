@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "qualityProfile": "keiko-parity-v1",
   "phase": "bootstrap",
-  "baseBranch": "main",
+  "baseBranch": "dev",
   "productiveSourceRoots": [],
   "nativeTargets": [],
   "minimumCoverage": {

@@ -20,7 +20,7 @@ The repository adopts the Keiko quality classes with a native bootstrap profile:
   cross-platform checks;
 - CodeQL for workflow and JavaScript quality-control-plane code;
 - Dependency Review, OSV, Socket, and SonarQube Cloud;
-- signed pull-request-only integration into `main` with linear history and resolved conversations;
+- signed pull-request-only integration into `dev` with linear history and resolved conversations;
 - Gitar and `Keiko for Quality` as advisory evidence until their liveness probes pass; and
 - an 85% coverage floor with no rounding-edge exception.
 

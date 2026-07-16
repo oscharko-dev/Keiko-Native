@@ -15,7 +15,7 @@ import {
 } from "./contract.mjs";
 
 const validManifest = {
-  baseBranch: "main",
+  baseBranch: "dev",
   minimumCoverage: { branches: 85, functions: 85, lines: 85, statements: 85 },
   nativeTargets: [],
   phase: "bootstrap",
@@ -46,7 +46,7 @@ test("accepts the governed bootstrap manifest", () => {
 test("rejects unsupported manifest identity and phase", () => {
   const failures = validateManifest({
     ...validManifest,
-    baseBranch: "dev",
+    baseBranch: "main",
     phase: "unknown",
     qualityProfile: "weakened",
     schemaVersion: 2,

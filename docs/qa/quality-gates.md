@@ -2,7 +2,7 @@
 
 ## Required exact-head checks
 
-`main` protection is activated only after a live pull request proves that every context below is
+`dev` protection is activated only after a live pull request proves that every context below is
 emitted by its expected producer on the exact current head:
 
 1. `ci` — GitHub Actions (App ID `15368`)
