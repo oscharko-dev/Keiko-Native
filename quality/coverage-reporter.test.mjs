@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { toLcov } from "./coverage-reporter.mjs";
+import { coverageStatusLine, toLcov } from "./coverage-reporter.mjs";
 
 test("renders deterministic repository-relative LCOV evidence", () => {
   const summary = {
@@ -50,5 +50,24 @@ test("rejects coverage sources outside the repository", () => {
         ],
       }),
     /escaped the repository/u,
+  );
+});
+
+test("reports threshold status from measured coverage", () => {
+  const summary = {
+    thresholds: { branch: 85, function: 85, line: 85 },
+    totals: {
+      coveredBranchPercent: 84.9,
+      coveredFunctionPercent: 100,
+      coveredLinePercent: 100,
+    },
+  };
+  assert.match(coverageStatusLine(summary), /^coverage: failed\b/u);
+  assert.match(
+    coverageStatusLine({
+      ...summary,
+      totals: { ...summary.totals, coveredBranchPercent: 85 },
+    }),
+    /^coverage: passed\b/u,
   );
 });

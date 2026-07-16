@@ -24,6 +24,42 @@ function headingLevel(line) {
   return level > 0 && level <= 6 && value[level] === " " ? level : undefined;
 }
 
+function backtickRunLength(value, start) {
+  let length = 0;
+  while (value[start + length] === "`") length += 1;
+  return length;
+}
+
+function backtickRuns(line) {
+  const runs = [];
+  let index = 0;
+  while (index < line.length) {
+    if (line[index] !== "`") {
+      index += 1;
+      continue;
+    }
+    const length = backtickRunLength(line, index);
+    runs.push({ end: index + length, length, start: index });
+    index += length;
+  }
+  return runs;
+}
+
+function withoutInlineCode(line) {
+  let result = "";
+  let cursor = 0;
+  let opener;
+  for (const run of backtickRuns(line)) {
+    if (opener === undefined) opener = run;
+    else if (run.length === opener.length) {
+      result += `${line.slice(cursor, opener.start)} `;
+      cursor = run.end;
+      opener = undefined;
+    }
+  }
+  return result + line.slice(cursor);
+}
+
 export function markdownFailures(content, config) {
   const failures = [];
   let fence;
@@ -38,15 +74,19 @@ export function markdownFailures(content, config) {
       continue;
     }
     if (fence !== undefined) continue;
+    const visibleLine = withoutInlineCode(line);
     if (line.includes("\t"))
       failures.push(`${String(lineNumber)}: tab character`);
     if (line.endsWith(" "))
       failures.push(`${String(lineNumber)}: trailing whitespace`);
-    if (!line.includes("|") && codePointLength(line) > config.lineLength)
+    if (
+      !visibleLine.includes("|") &&
+      codePointLength(visibleLine) > config.lineLength
+    )
       failures.push(
         `${String(lineNumber)}: line exceeds ${String(config.lineLength)} characters`,
       );
-    const disallowed = htmlElements(line).filter(
+    const disallowed = htmlElements(visibleLine).filter(
       (element) =>
         element !== undefined && !config.allowedHtmlElements.includes(element),
     );

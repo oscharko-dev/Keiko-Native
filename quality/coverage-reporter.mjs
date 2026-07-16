@@ -54,17 +54,26 @@ function percent(value) {
   return value.toFixed(2);
 }
 
-async function writeCoverage(summary) {
-  await mkdir("coverage", { recursive: true });
-  await writeFile("coverage/lcov.info", toLcov(summary));
+export function coverageStatusLine(summary) {
   const totals = summary.totals;
+  const thresholds = summary.thresholds;
+  const passed =
+    totals.coveredLinePercent >= thresholds.line &&
+    totals.coveredBranchPercent >= thresholds.branch &&
+    totals.coveredFunctionPercent >= thresholds.function;
   return [
-    "coverage: passed",
+    `coverage: ${passed ? "passed" : "failed"}`,
     `lines=${percent(totals.coveredLinePercent)}%`,
     `branches=${percent(totals.coveredBranchPercent)}%`,
     `functions=${percent(totals.coveredFunctionPercent)}%`,
     "statements=line-instrumented",
   ].join(" ");
+}
+
+async function writeCoverage(summary) {
+  await mkdir("coverage", { recursive: true });
+  await writeFile("coverage/lcov.info", toLcov(summary));
+  return coverageStatusLine(summary);
 }
 
 export default async function* coverageReporter(source) {

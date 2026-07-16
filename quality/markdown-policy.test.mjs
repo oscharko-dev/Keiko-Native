@@ -20,6 +20,17 @@ test("accepts governed Markdown and ignores code and table widths", () => {
   assert.deepEqual(markdownFailures(content, config), []);
 });
 
+test("ignores inline code spans for HTML and line-length policy", () => {
+  assert.deepEqual(
+    markdownFailures("Use `<script>` and `List<String>`.", config),
+    [],
+  );
+  assert.deepEqual(
+    markdownFailures("Use ``code with ` tick`` safely.", config),
+    [],
+  );
+});
+
 test("rejects structural and formatting drift", () => {
   const content = [
     "# Title ",
