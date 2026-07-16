@@ -61,6 +61,14 @@ pub(crate) fn remove_handshake(path: &Path) -> Result<(), RunnerError> {
     }
 }
 
+pub(crate) fn clear_canonical_output(path: &Path) -> Result<(), RunnerError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 pub(crate) fn launch_state_path(
     launch: ScheduledLaunch,
     reset_warm: bool,

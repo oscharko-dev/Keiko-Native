@@ -93,6 +93,8 @@ fn release_sources_do_not_embed_driver_or_debug_listener_capabilities() {
         "evaluation_shell_ready",
         "keiko-stable-rendered-shell-v1",
         "keiko_eval_ready_file",
+        "__keiko_eval_ready.js",
+        "evaluationready",
     ] {
         assert!(!text.contains(forbidden), "forbidden marker: {forbidden}");
     }

@@ -18,6 +18,8 @@ const RESOURCE_SAMPLE_INTERVAL: Duration = Duration::from_millis(100);
 const MEASUREMENT_RESOLUTION_MS: f64 = 10.0;
 
 pub fn verify_current() -> Result<VerifyEvidence, RunnerError> {
+    let output = verify_output();
+    clear_canonical_output(&output)?;
     let platform = current_platform()?;
     let source = source_binding()?;
     run_quality_commands()?;
@@ -40,12 +42,14 @@ pub fn verify_current() -> Result<VerifyEvidence, RunnerError> {
         gates,
         decision_ready,
     };
-    write_sanitized(&verify_output(), &evidence)?;
+    write_sanitized(&output, &evidence)?;
     require_complete(evidence.decision_ready)?;
     Ok(evidence)
 }
 
 pub fn benchmark_current() -> Result<BenchmarkEvidence, RunnerError> {
+    let output = benchmark_output();
+    clear_canonical_output(&output)?;
     let platform = current_platform()?;
     let source = source_binding()?;
     let packages = existing_packages(platform, &source)?;
@@ -70,7 +74,7 @@ pub fn benchmark_current() -> Result<BenchmarkEvidence, RunnerError> {
         gates,
         decision_ready,
     };
-    write_sanitized(&benchmark_output(), &evidence)?;
+    write_sanitized(&output, &evidence)?;
     require_complete(evidence.decision_ready)?;
     Ok(evidence)
 }

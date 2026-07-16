@@ -3,7 +3,8 @@ use std::fs;
 use crate::benchmark::{Candidate, ScheduledLaunch, StartClass};
 use crate::runner_evidence::{EvidenceClass, GateStatus};
 use crate::runner_support::{
-    fresh_handshake_path, journey_gates, remove_handshake, stable_shell_ready,
+    clear_canonical_output, fresh_handshake_path, journey_gates, remove_handshake,
+    stable_shell_ready,
 };
 
 #[test]
@@ -49,4 +50,56 @@ fn every_journey_gate_is_candidate_and_platform_specific() {
             2
         );
     }
+}
+
+#[test]
+fn early_failures_remove_stale_canonical_output() {
+    for name in ["current-platform-verify.json", "current-platform.json"] {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join(name);
+        fs::write(&output, br#"{"source_commit":"stale"}"#).unwrap();
+
+        let result: Result<(), crate::runner::RunnerError> = clear_canonical_output(&output)
+            .and(Err(crate::runner::RunnerError::UnsupportedPlatform));
+
+        assert!(matches!(
+            result,
+            Err(crate::runner::RunnerError::UnsupportedPlatform)
+        ));
+        assert!(!output.exists(), "stale {name} survived an early failure");
+    }
+}
+
+#[test]
+fn canonical_output_removal_failure_is_fail_closed() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = directory.path().join("current-platform.json");
+    fs::create_dir(&output).unwrap();
+
+    let result = clear_canonical_output(&output);
+
+    assert!(matches!(result, Err(crate::runner::RunnerError::Io(_))));
+    assert!(output.is_dir());
+}
+
+#[test]
+fn incomplete_fresh_evidence_remains_available() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = directory.path().join("current-platform.json");
+    fs::write(&output, br#"{"source_commit":"stale"}"#).unwrap();
+
+    let result: Result<(), crate::runner::RunnerError> =
+        clear_canonical_output(&output).and_then(|()| {
+            fs::write(&output, br#"{"source_commit":"fresh"}"#).unwrap();
+            Err(crate::runner::RunnerError::IncompleteEvidence)
+        });
+
+    assert!(matches!(
+        result,
+        Err(crate::runner::RunnerError::IncompleteEvidence)
+    ));
+    assert_eq!(
+        fs::read_to_string(output).unwrap(),
+        r#"{"source_commit":"fresh"}"#
+    );
 }
