@@ -64,7 +64,10 @@ export function markdownFailures(content, config) {
   const failures = [];
   let fence;
   let previousHeading;
-  for (const [index, line] of content.split("\n").entries()) {
+  for (const [index, line] of content
+    .replaceAll("\r\n", "\n")
+    .split("\n")
+    .entries()) {
     const lineNumber = index + 1;
     const marker = fenceMarker(line);
     if (marker !== undefined) {

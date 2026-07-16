@@ -31,6 +31,21 @@ test("ignores inline code spans for HTML and line-length policy", () => {
   );
 });
 
+test("applies the same policy to LF and CRLF Markdown", () => {
+  const content = [
+    "# Title",
+    "",
+    "x".repeat(config.lineLength),
+    "",
+    "A governed paragraph.",
+  ].join("\n");
+
+  assert.deepEqual(
+    markdownFailures(content.replaceAll("\n", "\r\n"), config),
+    markdownFailures(content, config),
+  );
+});
+
 test("rejects structural and formatting drift", () => {
   const content = [
     "# Title ",

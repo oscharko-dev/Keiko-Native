@@ -43,6 +43,69 @@ fn release_configuration_is_local_default_deny_and_without_devtools() {
 }
 
 #[test]
+fn windows_resource_icon_is_declared_and_is_an_ico_file() {
+    let config: serde_json::Value = serde_json::from_str(CONFIG).unwrap();
+    let icons = config["bundle"]["icon"].as_array().unwrap();
+    assert!(icons.iter().any(|icon| icon == "icons/icon.ico"));
+
+    let icon = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("icons")
+            .join("icon.ico"),
+    )
+    .unwrap();
+    assert!(icon.len() >= 6, "ICO header must be present");
+    assert_eq!(read_u16(&icon, 0), 0, "ICO reserved field must be zero");
+    assert_eq!(read_u16(&icon, 2), 1, "ICO type must identify an icon");
+
+    let count = usize::from(read_u16(&icon, 4));
+    let directory_end = 6 + count * 16;
+    assert!(count > 0, "ICO must contain an image");
+    assert!(directory_end <= icon.len(), "ICO directory is truncated");
+
+    let mut dimensions = Vec::with_capacity(count);
+    for index in 0..count {
+        let entry = 6 + index * 16;
+        let width = ico_dimension(icon[entry]);
+        let height = ico_dimension(icon[entry + 1]);
+        assert_eq!(width, height, "ICO layer must be square");
+        dimensions.push(width);
+
+        let size = usize::try_from(read_u32(&icon, entry + 8)).unwrap();
+        let offset = usize::try_from(read_u32(&icon, entry + 12)).unwrap();
+        assert!(size > 0, "ICO layer payload must not be empty");
+        assert!(
+            offset >= directory_end,
+            "ICO payload overlaps its directory"
+        );
+        let end = offset
+            .checked_add(size)
+            .expect("ICO payload range overflow");
+        assert!(end <= icon.len(), "ICO layer payload is out of bounds");
+    }
+
+    assert_eq!(dimensions.first(), Some(&32));
+    for required in [16, 24, 32, 48, 64, 256] {
+        assert!(
+            dimensions.contains(&required),
+            "missing {required}px ICO layer"
+        );
+    }
+}
+
+fn ico_dimension(value: u8) -> u16 {
+    if value == 0 { 256 } else { u16::from(value) }
+}
+
+fn read_u16(bytes: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap())
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+}
+
+#[test]
 fn semantic_journey_contract_is_present_without_generic_operating_system_apis() {
     for required in [
         "compositionstart",
