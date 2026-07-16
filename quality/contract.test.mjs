@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   isProductiveSource,
   isSafeRepositoryPath,
+  normalizeRepositoryPath,
   unpinnedActionReferences,
   validateManifest,
   validateNativeTarget,
@@ -118,6 +119,20 @@ test("recognizes productive native and application sources", () => {
   ]) {
     assert.equal(isProductiveSource(path), true);
   }
+});
+
+test("normalizes Windows repository paths for governed file matching", () => {
+  assert.equal(
+    normalizeRepositoryPath(".github\\workflows\\ci.yml", "\\"),
+    ".github/workflows/ci.yml",
+  );
+  assert.equal(
+    normalizeRepositoryPath(
+      ".gitar\\review\\00-governance-and-delivery.md",
+      "\\",
+    ),
+    ".gitar/review/00-governance-and-delivery.md",
+  );
 });
 
 test("ignores quality tooling and workflow implementation", () => {

@@ -71,6 +71,10 @@ export function isSafeRepositoryPath(value) {
   );
 }
 
+export function normalizeRepositoryPath(value, pathSeparator = sep) {
+  return value.split(pathSeparator).join("/");
+}
+
 export function validateNativeTarget(target, productiveSourceRoots) {
   const failures = [];
   if (
@@ -172,7 +176,7 @@ export function validateManifest(manifest) {
 }
 
 export function isProductiveSource(path) {
-  const normalized = path.split(sep).join("/");
+  const normalized = normalizeRepositoryPath(path);
   const root = normalized.split("/")[0];
   return (
     !ignoredProductRoots.has(root) &&
@@ -199,7 +203,8 @@ async function repositoryFiles(root, directory = root) {
     if (entry.isDirectory() && ignoredDirectories.has(entry.name)) continue;
     const path = join(directory, entry.name);
     if (entry.isDirectory()) files.push(...(await repositoryFiles(root, path)));
-    else if (entry.isFile()) files.push(relative(root, path));
+    else if (entry.isFile())
+      files.push(normalizeRepositoryPath(relative(root, path)));
   }
   return files;
 }
