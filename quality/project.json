@@ -1,8 +1,15 @@
 {
   "schemaVersion": 1,
-  "qualityProfile": "keiko-parity-v1",
+  "qualityProfile": "keiko-native-bootstrap-v1",
   "phase": "bootstrap",
   "baseBranch": "dev",
+  "sourceSpecification": {
+    "document": "Keiko-Native-Fachkonzept.md",
+    "version": "0.6",
+    "date": "2026-07-15",
+    "sha256": "d77a78fb79fc1de882487195d3f2295936f24a34e6bc0579106ad06104737a98",
+    "repositoryAccess": "private-external"
+  },
   "productiveSourceRoots": [],
   "nativeTargets": [],
   "minimumCoverage": {

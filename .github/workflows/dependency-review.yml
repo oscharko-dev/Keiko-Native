@@ -4,12 +4,13 @@ on:
   pull_request:
     branches:
       - dev
+      - "epic/**"
 
 permissions: {}
 
 jobs:
   dependency-review:
-    name: Review dependency diff (dev/main)
+    name: Review dependency diff
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

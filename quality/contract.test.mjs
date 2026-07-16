@@ -12,6 +12,7 @@ import {
   validateManifest,
   validateNativeTarget,
   validateRepository,
+  workflowEventTargetsBranch,
 } from "./contract.mjs";
 
 const validManifest = {
@@ -20,8 +21,15 @@ const validManifest = {
   nativeTargets: [],
   phase: "bootstrap",
   productiveSourceRoots: [],
-  qualityProfile: "keiko-parity-v1",
+  qualityProfile: "keiko-native-bootstrap-v1",
   schemaVersion: 1,
+  sourceSpecification: {
+    date: "2026-07-15",
+    document: "Keiko-Native-Fachkonzept.md",
+    repositoryAccess: "private-external",
+    sha256: "d77a78fb79fc1de882487195d3f2295936f24a34e6bc0579106ad06104737a98",
+    version: "0.6",
+  },
 };
 
 const validTarget = {
@@ -60,6 +68,21 @@ test("rejects weakened coverage floors", () => {
     minimumCoverage: { branches: 84, functions: 84, lines: 84, statements: 84 },
   });
   assert.equal(failures.length, 4);
+});
+
+test("requires an immutable governed source Fachkonzept identity", () => {
+  const failures = validateManifest({
+    ...validManifest,
+    sourceSpecification: {
+      ...validManifest.sourceSpecification,
+      document: "other.md",
+      sha256: "not-a-digest",
+    },
+  });
+  assert.deepEqual(failures, [
+    "The governed source Fachkonzept document is invalid.",
+    "The governed source Fachkonzept sha256 is invalid.",
+  ]);
 });
 
 test("requires productive roots and targets together", () => {
@@ -164,6 +187,28 @@ test("rejects tag and branch action references", () => {
   ]);
 });
 
+test("recognizes exact branch targets inside workflow events", () => {
+  const workflow = [
+    "on:",
+    "  pull_request:",
+    "    branches:",
+    "      - dev",
+    '      - "epic/**"',
+    "  push:",
+    "    branches:",
+    "      - dev",
+  ].join("\n");
+  assert.equal(
+    workflowEventTargetsBranch(workflow, "pull_request", "epic/**"),
+    true,
+  );
+  assert.equal(workflowEventTargetsBranch(workflow, "push", "epic/**"), false);
+  assert.equal(
+    workflowEventTargetsBranch(workflow, "pull_request", "release/**"),
+    false,
+  );
+});
+
 async function fixtureRepository() {
   const root = await mkdtemp(join(tmpdir(), "keiko-native-quality-"));
   const files = [
@@ -172,18 +217,30 @@ async function fixtureRepository() {
     ".gitar/review/20-native-architecture-quality-and-evidence.md",
     ".github/CODEOWNERS",
     ".github/dependabot.yml",
+    ".github/ISSUE_TEMPLATE/decision_evaluation.md",
+    ".github/ISSUE_TEMPLATE/defect_finding.md",
+    ".github/ISSUE_TEMPLATE/epic.md",
+    ".github/ISSUE_TEMPLATE/feature_task.md",
     ".github/pull_request_template.md",
     ".github/workflows/codeql.yml",
     ".github/workflows/dependency-review.yml",
+    ".github/workflows/issue-readiness.yml",
     ".github/workflows/mutation-security.yml",
     ".github/workflows/osv-scanner.yml",
+    ".github/workflows/pr-contract.yml",
     ".github/zizmor.yml",
     ".markdown-quality.json",
     "AGENTS.md",
     "CLAUDE.md",
     "CONTRIBUTING.md",
     "SECURITY.md",
+    "docs/product/source-baseline.md",
+    "docs/qa/repository-activation.md",
     "package.json",
+    "quality/issue-contract.mjs",
+    "quality/issue-readiness-action.mjs",
+    "quality/pr-contract-action.mjs",
+    "quality/pr-contract.mjs",
     "socket.yml",
   ];
   for (const file of files) {
@@ -200,9 +257,34 @@ async function fixtureRepository() {
     JSON.stringify(validManifest),
   );
   await writeFile(
+    join(root, "docs/product/source-baseline.md"),
+    [
+      "Keiko-Native-Fachkonzept.md",
+      "0.6",
+      "2026-07-15",
+      "d77a78fb79fc1de882487195d3f2295936f24a34e6bc0579106ad06104737a98",
+      "private external source; the document itself must not be committed",
+      "An implementation agent must be able to perform the work",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, ".markdown-quality.json"),
+    JSON.stringify({
+      allowedHtmlElements: ["div"],
+      lineLength: 100,
+    }),
+  );
+  await writeFile(
     join(root, ".github/workflows/ci.yml"),
     [
       "name: CI",
+      "on:",
+      "  pull_request:",
+      "    branches:",
+      '      - "epic/**"',
+      "  push:",
+      "    branches:",
+      '      - "epic/**"',
       ...[
         "ci",
         "actionlint",
@@ -213,12 +295,65 @@ async function fixtureRepository() {
       ].map((name) => `  name: ${name}`),
     ].join("\n"),
   );
+  for (const name of [
+    "codeql.yml",
+    "dependency-review.yml",
+    "osv-scanner.yml",
+  ]) {
+    const lines = [
+      `name: ${name}`,
+      "on:",
+      "  pull_request:",
+      "    branches:",
+      '      - "epic/**"',
+    ];
+    if (name !== "dependency-review.yml")
+      lines.push("  push:", "    branches:", '      - "epic/**"');
+    await writeFile(join(root, ".github/workflows", name), lines.join("\n"));
+  }
+  await writeFile(
+    join(root, ".github/workflows/issue-readiness.yml"),
+    [
+      "name: Issue readiness",
+      "types: [closed, edited, labeled, reopened, unlabeled]",
+      "name: Validate implementation readiness",
+      "issues: write",
+      "pull-requests: read",
+      "statuses: write",
+      "node quality/issue-readiness-action.mjs",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, ".github/workflows/pr-contract.yml"),
+    [
+      "name: Pull request contract",
+      "on:",
+      "  pull_request_target:",
+      "    branches:",
+      "      - dev",
+      '      - "epic/**"',
+      "types: [opened, edited, reopened, synchronize, ready_for_review, converted_to_draft]",
+      "name: Evaluate trusted PR metadata",
+      "ref: dev",
+      "statuses: write",
+      "node quality/pr-contract-action.mjs",
+    ].join("\n"),
+  );
   await writeFile(
     join(root, "sonar-project.properties"),
     [
       "sonar.projectKey=oscharko-dev_Keiko-Native",
       "sonar.organization=oscharko-dev",
       "sonar.javascript.lcov.reportPaths=coverage/lcov.info",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, ".github/zizmor.yml"),
+    [
+      "rules:",
+      "  dangerous-triggers:",
+      "    ignore:",
+      "      - pr-contract.yml",
     ].join("\n"),
   );
   return root;
@@ -230,6 +365,37 @@ test("validates a complete bootstrap repository", async () => {
     const result = await validateRepository(root);
     assert.deepEqual(result.failures, []);
     assert.equal(result.phase, "bootstrap");
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("fails closed when the private source Fachkonzept is committed", async () => {
+  const root = await fixtureRepository();
+  try {
+    await writeFile(
+      join(root, "docs/product/Keiko-Native-Fachkonzept-v0.6.md"),
+      "private source\n",
+    );
+    const result = await validateRepository(root);
+    assert.match(
+      result.failures.join("\n"),
+      /private source Fachkonzept must not be committed/u,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("fails closed when private source access and handoff rules drift", async () => {
+  const root = await fixtureRepository();
+  try {
+    await writeFile(join(root, "docs/product/source-baseline.md"), "drift\n");
+    const result = await validateRepository(root);
+    assert.match(
+      result.failures.join("\n"),
+      /Private source baseline is missing governed marker/u,
+    );
   } finally {
     await rm(root, { force: true, recursive: true });
   }
