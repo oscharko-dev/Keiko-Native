@@ -1,0 +1,425 @@
+{
+  "schema_version": 1,
+  "purpose": "Primary-source registry for the issue 9 desktop host paper screen",
+  "accessed_on": "2026-07-16",
+  "claims": [
+    {
+      "id": "C-TAURI-CAPABILITIES",
+      "statement": "Tauri 2 capabilities grant or deny permissions by window or webview, while application commands need explicit manifest restriction."
+    },
+    {
+      "id": "C-TAURI-AUTOMATION",
+      "statement": "Tauri documents desktop WebDriver automation, including the current embedded macOS driver route."
+    },
+    {
+      "id": "C-TAURI-DISTRIBUTION",
+      "statement": "Tauri documents Windows and macOS packaging and signing routes."
+    },
+    {
+      "id": "C-TAURI-UPDATER",
+      "statement": "Tauri's updater verifies signed update artifacts and supports desktop targets."
+    },
+    {
+      "id": "C-TAURI-LICENCE",
+      "statement": "The Tauri 2.11.5 workspace declares MIT or Apache-2.0 licensing."
+    },
+    {
+      "id": "C-SLINT-DESKTOP",
+      "statement": "Slint documents Windows and macOS desktop backends and renderer selection."
+    },
+    {
+      "id": "C-SLINT-ACCESSIBILITY",
+      "statement": "Slint exposes accessibility properties for UI elements."
+    },
+    {
+      "id": "C-SLINT-SYSTEM-TESTING",
+      "statement": "Slint 1.17.1 exposes a system-testing feature that is explicitly unsuitable for production use."
+    },
+    {
+      "id": "C-SLINT-LICENCE",
+      "statement": "Slint Royalty-free License 2.0 permits qualifying desktop applications subject to its conditions, including attribution."
+    },
+    {
+      "id": "C-QT-PLATFORMS",
+      "statement": "Qt 6.11 documents supported Windows and macOS configurations."
+    },
+    {
+      "id": "C-QT-ACCESSIBILITY",
+      "statement": "Qt Quick documents accessible properties and platform accessibility bridge behavior."
+    },
+    {
+      "id": "C-QT-LICENCE",
+      "statement": "Qt documents commercial, LGPLv3, GPLv2, and GPLv3 licensing paths with module-specific obligations."
+    },
+    {
+      "id": "C-QT-INSTALLER",
+      "statement": "Qt Installer Framework documents installer creation and maintenance-tool operations."
+    },
+    {
+      "id": "C-CXX-QT-BOUNDARY",
+      "statement": "CXX-Qt generates Rust and C++ interoperability for Qt applications."
+    },
+    {
+      "id": "C-GPUI-SUPPORT",
+      "statement": "GPUI's official README documents Windows, macOS, and Linux/FreeBSD platform routes and describes a pre-1.0 surface with frequent breaking changes."
+    },
+    {
+      "id": "C-DIOXUS-DESKTOP",
+      "statement": "Dioxus 0.7 documents desktop applications based on a system WebView."
+    },
+    {
+      "id": "C-DIOXUS-BUNDLING",
+      "statement": "Dioxus 0.7 documents desktop bundle generation."
+    },
+    {
+      "id": "C-DIOXUS-TESTING",
+      "statement": "Dioxus 0.7 official testing guidance documents Playwright against browser output rather than a packaged native desktop journey."
+    },
+    {
+      "id": "C-DIOXUS-LICENCE",
+      "statement": "Dioxus 0.7.0 is distributed under the MIT licence."
+    },
+    {
+      "id": "C-FLUTTER-DESKTOP",
+      "statement": "Flutter documents native Windows and macOS desktop builds."
+    },
+    {
+      "id": "C-FLUTTER-INTEGRATION",
+      "statement": "Flutter documents integration testing for applications."
+    },
+    {
+      "id": "C-FLUTTER-FFI",
+      "statement": "Flutter's architecture documentation describes Dart native-code interoperability through FFI."
+    },
+    {
+      "id": "C-FLUTTER-NATIVE-UI-LIMIT",
+      "statement": "Flutter's integration-testing concepts state that integration_test cannot interact with native UI such as permission dialogs."
+    },
+    {
+      "id": "C-FLUTTER-LICENCE",
+      "statement": "Flutter 3.44.0 is distributed under the BSD 3-Clause licence."
+    },
+    {
+      "id": "C-WINUI",
+      "statement": "Microsoft publishes WinUI as a Windows application UI framework."
+    },
+    {
+      "id": "C-MSIX",
+      "statement": "Microsoft documents MSIX and related Windows application package lifecycle routes."
+    },
+    {
+      "id": "C-WINDOWS-UIA",
+      "statement": "Microsoft UI Automation provides programmatic access to desktop UI elements."
+    },
+    {
+      "id": "C-SWIFTUI",
+      "statement": "Apple documents SwiftUI as a framework for building application interfaces across Apple platforms."
+    },
+    {
+      "id": "C-XCTEST-UI",
+      "statement": "Apple documents XCTest user-interface tests as an external UI automation route."
+    },
+    {
+      "id": "C-WGPU-PLATFORMS",
+      "statement": "wgpu documents cross-platform graphics support including DirectX 12 and Metal backends."
+    },
+    {
+      "id": "C-WINIT-IME",
+      "statement": "winit exposes explicit IME enablement for windows."
+    },
+    {
+      "id": "C-ACCESSKIT-WINIT",
+      "statement": "accesskit_winit integrates AccessKit accessibility with winit on Windows and macOS."
+    }
+  ],
+  "sources": [
+    {
+      "id": "T01",
+      "publisher": "Tauri Programme within The Commons Conservancy",
+      "title": "Capabilities | Tauri",
+      "url": "https://v2.tauri.app/security/capabilities/",
+      "accessed_on": "2026-07-16",
+      "version": "Tauri 2 documentation; page updated 2025-08-01",
+      "claim_ids": ["C-TAURI-CAPABILITIES"]
+    },
+    {
+      "id": "T02",
+      "publisher": "Tauri Programme within The Commons Conservancy",
+      "title": "WebDriver | Tauri",
+      "url": "https://v2.tauri.app/develop/tests/webdriver/",
+      "accessed_on": "2026-07-16",
+      "version": "Tauri 2 documentation",
+      "claim_ids": ["C-TAURI-AUTOMATION"]
+    },
+    {
+      "id": "T03",
+      "publisher": "Tauri Programme within The Commons Conservancy",
+      "title": "Distribute | Tauri",
+      "url": "https://v2.tauri.app/distribute/",
+      "accessed_on": "2026-07-16",
+      "version": "Tauri 2 documentation",
+      "claim_ids": ["C-TAURI-DISTRIBUTION"]
+    },
+    {
+      "id": "T04",
+      "publisher": "Tauri Programme within The Commons Conservancy",
+      "title": "Updater | Tauri",
+      "url": "https://v2.tauri.app/plugin/updater/",
+      "accessed_on": "2026-07-16",
+      "version": "Tauri 2 documentation",
+      "claim_ids": ["C-TAURI-UPDATER"]
+    },
+    {
+      "id": "T05",
+      "publisher": "Tauri Programme within The Commons Conservancy",
+      "title": "Tauri workspace Cargo manifest",
+      "url": "https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/Cargo.toml",
+      "accessed_on": "2026-07-16",
+      "version": "tauri-v2.11.5",
+      "claim_ids": ["C-TAURI-LICENCE"]
+    },
+    {
+      "id": "S01",
+      "publisher": "Slint",
+      "title": "Desktop | Slint Docs",
+      "url": "https://docs.slint.dev/latest/docs/slint/guide/platforms/desktop/",
+      "accessed_on": "2026-07-16",
+      "version": "latest documentation channel; prototype pinned 1.17.1",
+      "claim_ids": ["C-SLINT-DESKTOP"]
+    },
+    {
+      "id": "S02",
+      "publisher": "Slint",
+      "title": "Common Properties & Callbacks | Slint Docs",
+      "url": "https://docs.slint.dev/latest/docs/slint/reference/common/",
+      "accessed_on": "2026-07-16",
+      "version": "latest documentation channel; prototype pinned 1.17.1",
+      "claim_ids": ["C-SLINT-ACCESSIBILITY"]
+    },
+    {
+      "id": "S03",
+      "publisher": "Slint",
+      "title": "Cargo Features | slint 1.17.1",
+      "url": "https://docs.rs/slint/1.17.1/slint/docs/cargo_features/",
+      "accessed_on": "2026-07-16",
+      "version": "1.17.1",
+      "claim_ids": ["C-SLINT-SYSTEM-TESTING"]
+    },
+    {
+      "id": "S04",
+      "publisher": "Slint",
+      "title": "Slint Royalty-free License",
+      "url": "https://slint.dev/agreements/slint-royalty-free-license.pdf",
+      "accessed_on": "2026-07-16",
+      "version": "2.0",
+      "claim_ids": ["C-SLINT-LICENCE"]
+    },
+    {
+      "id": "Q01",
+      "publisher": "The Qt Company",
+      "title": "Supported Platforms | Qt 6.11",
+      "url": "https://doc.qt.io/qt-6/supported-platforms.html",
+      "accessed_on": "2026-07-16",
+      "version": "Qt 6.11",
+      "claim_ids": ["C-QT-PLATFORMS"]
+    },
+    {
+      "id": "Q02",
+      "publisher": "The Qt Company",
+      "title": "Accessibility for Qt Quick Applications | Qt 6.11",
+      "url": "https://doc.qt.io/qt-6/accessible-qtquick.html",
+      "accessed_on": "2026-07-16",
+      "version": "Qt 6.11",
+      "claim_ids": ["C-QT-ACCESSIBILITY"]
+    },
+    {
+      "id": "Q03",
+      "publisher": "The Qt Company",
+      "title": "Qt Licensing | Qt 6.11",
+      "url": "https://doc.qt.io/qt-6/licensing.html",
+      "accessed_on": "2026-07-16",
+      "version": "Qt 6.11",
+      "claim_ids": ["C-QT-LICENCE"]
+    },
+    {
+      "id": "Q04",
+      "publisher": "The Qt Company",
+      "title": "Overview of Qt Installer Framework",
+      "url": "https://doc.qt.io/qtinstallerframework/ifw-overview.html",
+      "accessed_on": "2026-07-16",
+      "version": "Qt Installer Framework 4.11.0",
+      "claim_ids": ["C-QT-INSTALLER"]
+    },
+    {
+      "id": "Q05",
+      "publisher": "KDAB",
+      "title": "Introduction | CXX-Qt Documentation",
+      "url": "https://kdab.github.io/cxx-qt/book/",
+      "accessed_on": "2026-07-16",
+      "version": "published documentation channel as accessed",
+      "claim_ids": ["C-CXX-QT-BOUNDARY"]
+    },
+    {
+      "id": "G01",
+      "publisher": "Zed Industries",
+      "title": "GPUI README",
+      "url": "https://github.com/zed-industries/zed/blob/b05f40c5546b47bcf9561136dc0fcdcd9968cb63/crates/gpui/README.md",
+      "accessed_on": "2026-07-16",
+      "version": "source commit b05f40c5546b47bcf9561136dc0fcdcd9968cb63; pre-1.0 API",
+      "claim_ids": ["C-GPUI-SUPPORT"]
+    },
+    {
+      "id": "D01",
+      "publisher": "Dioxus Labs",
+      "title": "Desktop | Dioxus 0.7",
+      "url": "https://dioxuslabs.com/learn/0.7/guides/platforms/desktop/",
+      "accessed_on": "2026-07-16",
+      "version": "0.7",
+      "claim_ids": ["C-DIOXUS-DESKTOP"]
+    },
+    {
+      "id": "D02",
+      "publisher": "Dioxus Labs",
+      "title": "Bundle | Dioxus 0.7",
+      "url": "https://dioxuslabs.com/learn/0.7/tutorial/bundle/",
+      "accessed_on": "2026-07-16",
+      "version": "0.7",
+      "claim_ids": ["C-DIOXUS-BUNDLING"]
+    },
+    {
+      "id": "D03",
+      "publisher": "Dioxus Labs",
+      "title": "Testing | Dioxus 0.7",
+      "url": "https://dioxuslabs.com/learn/0.7/guides/testing/",
+      "accessed_on": "2026-07-16",
+      "version": "0.7",
+      "claim_ids": ["C-DIOXUS-TESTING"]
+    },
+    {
+      "id": "D04",
+      "publisher": "Dioxus Labs",
+      "title": "Dioxus MIT License",
+      "url": "https://github.com/DioxusLabs/dioxus/blob/v0.7.0/LICENSE-MIT",
+      "accessed_on": "2026-07-16",
+      "version": "v0.7.0",
+      "claim_ids": ["C-DIOXUS-LICENCE"]
+    },
+    {
+      "id": "F01",
+      "publisher": "Flutter project",
+      "title": "Desktop support for Flutter",
+      "url": "https://docs.flutter.dev/platform-integration/desktop",
+      "accessed_on": "2026-07-16",
+      "version": "Flutter 3.44 documentation",
+      "claim_ids": ["C-FLUTTER-DESKTOP"]
+    },
+    {
+      "id": "F02",
+      "publisher": "Flutter project",
+      "title": "Check app functionality with an integration test",
+      "url": "https://docs.flutter.dev/testing/integration-tests",
+      "accessed_on": "2026-07-16",
+      "version": "Flutter 3.44 documentation",
+      "claim_ids": ["C-FLUTTER-INTEGRATION"]
+    },
+    {
+      "id": "F03",
+      "publisher": "Flutter project",
+      "title": "Flutter architectural overview",
+      "url": "https://docs.flutter.dev/resources/architectural-overview",
+      "accessed_on": "2026-07-16",
+      "version": "Flutter 3.44 documentation",
+      "claim_ids": ["C-FLUTTER-FFI"]
+    },
+    {
+      "id": "F04",
+      "publisher": "Flutter project",
+      "title": "Testing plugins",
+      "url": "https://docs.flutter.dev/testing/testing-plugins",
+      "accessed_on": "2026-07-16",
+      "version": "Flutter 3.44 documentation",
+      "claim_ids": ["C-FLUTTER-NATIVE-UI-LIMIT"]
+    },
+    {
+      "id": "F05",
+      "publisher": "Flutter project",
+      "title": "Flutter License",
+      "url": "https://github.com/flutter/flutter/blob/3.44.0/LICENSE",
+      "accessed_on": "2026-07-16",
+      "version": "3.44.0",
+      "claim_ids": ["C-FLUTTER-LICENCE"]
+    },
+    {
+      "id": "N01",
+      "publisher": "Microsoft",
+      "title": "Microsoft UI XAML (WinUI)",
+      "url": "https://github.com/microsoft/microsoft-ui-xaml/tree/3cae15f071f1ab8565f9a7592dbf27f04bafe651",
+      "accessed_on": "2026-07-16",
+      "version": "source commit 3cae15f071f1ab8565f9a7592dbf27f04bafe651",
+      "claim_ids": ["C-WINUI"]
+    },
+    {
+      "id": "N02",
+      "publisher": "Microsoft",
+      "title": "Packaging overview | Windows apps",
+      "url": "https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/packaging/",
+      "accessed_on": "2026-07-16",
+      "version": "Microsoft Learn documentation as accessed",
+      "claim_ids": ["C-MSIX"]
+    },
+    {
+      "id": "N03",
+      "publisher": "Microsoft",
+      "title": "UI Automation | Win32 apps",
+      "url": "https://learn.microsoft.com/en-us/windows/win32/winauto/entry-uiauto-win32",
+      "accessed_on": "2026-07-16",
+      "version": "Microsoft Learn documentation as accessed",
+      "claim_ids": ["C-WINDOWS-UIA"]
+    },
+    {
+      "id": "N04",
+      "publisher": "Apple",
+      "title": "SwiftUI | Apple Developer Documentation",
+      "url": "https://developer.apple.com/documentation/swiftui",
+      "accessed_on": "2026-07-16",
+      "version": "Apple Developer Documentation as accessed",
+      "claim_ids": ["C-SWIFTUI"]
+    },
+    {
+      "id": "N05",
+      "publisher": "Apple",
+      "title": "Adding tests to your Xcode project | Apple Developer Documentation",
+      "url": "https://developer.apple.com/documentation/xcode/adding-tests-to-your-xcode-project",
+      "accessed_on": "2026-07-16",
+      "version": "Apple Developer Documentation as accessed",
+      "claim_ids": ["C-XCTEST-UI"]
+    },
+    {
+      "id": "B01",
+      "publisher": "gfx-rs",
+      "title": "wgpu: a cross-platform, safe, pure-Rust graphics API",
+      "url": "https://github.com/gfx-rs/wgpu/tree/f680a2c242ce109d632b1154d72e0e7836e31c67",
+      "accessed_on": "2026-07-16",
+      "version": "source commit f680a2c242ce109d632b1154d72e0e7836e31c67",
+      "claim_ids": ["C-WGPU-PLATFORMS"]
+    },
+    {
+      "id": "B02",
+      "publisher": "winit contributors",
+      "title": "Window in winit::window | set_ime_allowed",
+      "url": "https://docs.rs/winit/latest/winit/window/struct.Window.html#method.set_ime_allowed",
+      "accessed_on": "2026-07-16",
+      "version": "latest crate documentation as accessed",
+      "claim_ids": ["C-WINIT-IME"]
+    },
+    {
+      "id": "B03",
+      "publisher": "AccessKit contributors",
+      "title": "accesskit_winit",
+      "url": "https://docs.rs/accesskit_winit/latest/accesskit_winit/",
+      "accessed_on": "2026-07-16",
+      "version": "latest crate documentation as accessed",
+      "claim_ids": ["C-ACCESSKIT-WINIT"]
+    }
+  ]
+}
