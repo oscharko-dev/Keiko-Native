@@ -61,9 +61,10 @@ HTTP `429`, `502`, `503`, or `504`. It makes at most three attempts. Fallback de
 milliseconds; a non-negative integer-seconds `Retry-After` value may replace each delay but is
 capped at one second, so the cumulative delay cannot exceed two seconds. Missing, negative,
 fractional, date-form, oversized, or malformed values cannot escape that bound. Mutations and
-permanent responses remain single-attempt, errors retain only the method, path, status or transport
-classification, and exhaustion fails closed. These bounded retries tolerate a brief provider
-failure; they do not turn a sustained GitHub outage into readiness or merge authority.
+permanent responses remain single-attempt, errors retain only the method, path, status, transport,
+or malformed-JSON classification, and exhaustion fails closed. These bounded retries tolerate a
+brief provider failure; they do not turn a sustained GitHub outage into readiness or merge
+authority.
 
 Zizmor's `dangerous-triggers` finding is dispositioned only for this one metadata workflow. The
 repository contract enforces its protected-`dev` checkout, fixed script, pinned actions,

@@ -195,12 +195,17 @@ test("preserves immediate success, 204, and malformed JSON behavior", async () =
   assert.equal(empty.attempts.length, 1);
 
   const malformed = clientFor([
-    new Response("not-json", {
+    new Response("token=super-secret-provider-body", {
       headers: { "Content-Type": "application/json" },
       status: 200,
     }),
     Response.json({ unexpected: true }),
   ]);
-  await assert.rejects(malformed.request("/malformed"), SyntaxError);
+  await assert.rejects(
+    malformed.request("/malformed"),
+    (error) =>
+      error.message === "GitHub API GET /malformed returned malformed JSON." &&
+      !error.message.includes("super-secret-provider-body"),
+  );
   assert.equal(malformed.attempts.length, 1);
 });

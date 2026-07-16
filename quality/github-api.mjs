@@ -41,6 +41,15 @@ function transportFailure(method, path, attempt) {
   );
 }
 
+async function parseResponse(response, method, path) {
+  if (response.status === 204) return undefined;
+  try {
+    return await response.json();
+  } catch {
+    throw new Error(`GitHub API ${method} ${path} returned malformed JSON.`);
+  }
+}
+
 export function githubRequestFor(
   userAgent,
   { fetch: fetchImplementation, sleep = defaultSleep } = {},
@@ -71,8 +80,7 @@ export function githubRequestFor(
         await sleep(retryDelay(undefined, attempt));
         continue;
       }
-      if (response.ok)
-        return response.status === 204 ? undefined : response.json();
+      if (response.ok) return parseResponse(response, normalizedMethod, path);
 
       const canRetry =
         normalizedMethod === "GET" &&
