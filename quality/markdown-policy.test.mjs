@@ -31,6 +31,15 @@ test("ignores inline code spans for HTML and line-length policy", () => {
   );
 });
 
+test("treats LF and CRLF documents identically at the line-length boundary", () => {
+  const lines = ["x".repeat(config.lineLength), ""];
+  const lfFailures = markdownFailures(lines.join("\n"), config);
+  const crlfFailures = markdownFailures(lines.join("\r\n"), config);
+
+  assert.deepEqual(lfFailures, []);
+  assert.deepEqual(crlfFailures, lfFailures);
+});
+
 test("rejects structural and formatting drift", () => {
   const content = [
     "# Title ",
