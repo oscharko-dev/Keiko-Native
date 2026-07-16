@@ -255,7 +255,7 @@ export function unpinnedActionReferences(workflow) {
 }
 
 export function workflowEventTargetsBranch(workflow, event, branch) {
-  const lines = workflow.split("\n");
+  const lines = workflow.split(/\r?\n/u);
   const eventStart = lines.findIndex(
     (line) => line === `  ${event}:` || line === `  ${event}: {}`,
   );

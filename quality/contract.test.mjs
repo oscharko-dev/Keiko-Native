@@ -209,6 +209,23 @@ test("recognizes exact branch targets inside workflow events", () => {
   );
 });
 
+test("recognizes exact branch targets in CRLF workflow files", () => {
+  const workflow = [
+    "on:",
+    "  pull_request:",
+    "    branches:",
+    '      - "epic/**"',
+    "  push:",
+    "    branches:",
+    "      - dev",
+  ].join("\r\n");
+  assert.equal(
+    workflowEventTargetsBranch(workflow, "pull_request", "epic/**"),
+    true,
+  );
+  assert.equal(workflowEventTargetsBranch(workflow, "push", "dev"), true);
+});
+
 async function fixtureRepository() {
   const root = await mkdtemp(join(tmpdir(), "keiko-native-quality-"));
   const files = [
