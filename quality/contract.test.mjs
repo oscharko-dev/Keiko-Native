@@ -144,6 +144,7 @@ test("ignores quality tooling and workflow implementation", () => {
 test("accepts full-SHA, local, and container action references", () => {
   const workflow = [
     "- uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+    "  -   uses:\tactions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0",
     "- uses: ./local-action",
     "- uses: docker://alpine:3.23",
   ].join("\n");
@@ -176,6 +177,7 @@ async function fixtureRepository() {
     ".github/workflows/osv-scanner.yml",
     ".github/zizmor.yml",
     "AGENTS.md",
+    "CLAUDE.md",
     "CONTRIBUTING.md",
     "SECURITY.md",
     "package.json",

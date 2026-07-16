@@ -45,6 +45,11 @@ Promotion to a required gate needs a live negative/positive probe proving exact-
 stable producer identity, bounded settlement, machine-readable evidence, and a repair path that does
 not depend on the gate succeeding.
 
+The Claude GitHub App has organization-wide repository access. `CLAUDE.md` delegates to the same
+machine-checked `AGENTS.md` contract used by all coding agents, so Claude does not operate under a
+parallel or weaker repository policy. Claude is not a required status context because Keiko does
+not define a separate Claude CI workflow.
+
 ## Local-first rule
 
 Run `npm run quality` and `npm audit --audit-level=high` before the first push. Reproduce remote

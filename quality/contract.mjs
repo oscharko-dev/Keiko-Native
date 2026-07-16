@@ -15,6 +15,7 @@ const requiredFiles = [
   ".github/workflows/osv-scanner.yml",
   ".github/zizmor.yml",
   "AGENTS.md",
+  "CLAUDE.md",
   "CONTRIBUTING.md",
   "SECURITY.md",
   "package.json",
@@ -187,7 +188,7 @@ export function isProductiveSource(path) {
 export function unpinnedActionReferences(workflow) {
   return workflow
     .split("\n")
-    .map((line) => line.match(/^\s*-?\s*uses:\s*([^\s#]+)/u)?.[1])
+    .map(actionReference)
     .filter((reference) => reference !== undefined)
     .filter(
       (reference) =>
@@ -195,6 +196,21 @@ export function unpinnedActionReferences(workflow) {
         !reference.startsWith("docker://") &&
         !/@[0-9a-f]{40}$/u.test(reference),
     );
+}
+
+function actionReference(line) {
+  let candidate = line.trimStart();
+  if (candidate.startsWith("-")) candidate = candidate.slice(1).trimStart();
+  if (!candidate.startsWith("uses:")) return undefined;
+  candidate = candidate.slice("uses:".length).trimStart();
+  let end = 0;
+  while (
+    end < candidate.length &&
+    candidate[end] !== "#" &&
+    candidate[end]?.trim() !== ""
+  )
+    end += 1;
+  return end > 0 ? candidate.slice(0, end) : undefined;
 }
 
 async function repositoryFiles(root, directory = root) {
@@ -221,10 +237,10 @@ async function contractFailures(root, files, manifest) {
   }
   const gitarFiles = files
     .filter((file) => file.startsWith(".gitar/"))
-    .toSorted();
+    .toSorted((left, right) => left.localeCompare(right));
   const expectedGitarFiles = requiredFiles
     .filter((file) => file.startsWith(".gitar/"))
-    .toSorted();
+    .toSorted((left, right) => left.localeCompare(right));
   if (JSON.stringify(gitarFiles) !== JSON.stringify(expectedGitarFiles))
     failures.push(
       "Gitar configuration must contain exactly the governed review lenses.",
