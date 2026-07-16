@@ -15,6 +15,8 @@ use serde::Serialize;
 
 const SHELL_READY: &[u8] = b"keiko-stable-rendered-shell-v1\n";
 const READY_DEADLINE: Duration = Duration::from_secs(5);
+const PRIMARY_CARGO_TARGET: &str = "evaluation-cargo-target";
+const ALTERNATE_CARGO_TARGET: &str = "evaluation-cargo-target-alternate";
 
 pub(crate) fn wait_for_stable_shell(
     supervisor: &ProcessSupervisor,
@@ -309,14 +311,39 @@ fn windows_supervision_gate(platform: &str, backend: SupervisionBackend) -> Gate
 }
 
 pub(crate) fn run_cargo<const N: usize>(arguments: [&str; N]) -> Result<(), RunnerError> {
-    let status = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
-        .args(arguments)
-        .current_dir(manifest_dir())
-        .status()?;
+    let status = cargo_command(arguments)?.status()?;
     status
         .success()
         .then_some(())
         .ok_or(RunnerError::CommandFailed)
+}
+
+pub(crate) fn cargo_command(
+    arguments: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>,
+) -> Result<Command, RunnerError> {
+    let mut command = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
+    command
+        .args(arguments)
+        .current_dir(manifest_dir())
+        .env("CARGO_TARGET_DIR", isolated_cargo_target_dir()?);
+    Ok(command)
+}
+
+pub(crate) fn isolated_cargo_target_dir() -> Result<PathBuf, RunnerError> {
+    Ok(select_cargo_target_dir(
+        &manifest_dir(),
+        &std::env::current_exe()?,
+    ))
+}
+
+pub(crate) fn select_cargo_target_dir(manifest: &Path, current_executable: &Path) -> PathBuf {
+    let target_root = manifest.join("target");
+    let primary = target_root.join(PRIMARY_CARGO_TARGET);
+    if current_executable.starts_with(&primary) {
+        target_root.join(ALTERNATE_CARGO_TARGET)
+    } else {
+        primary
+    }
 }
 
 pub(crate) fn write_sanitized(path: &Path, evidence: &impl Serialize) -> Result<(), RunnerError> {

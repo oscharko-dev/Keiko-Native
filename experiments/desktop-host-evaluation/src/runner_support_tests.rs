@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::fs;
 
 use crate::benchmark::{Candidate, ScheduledLaunch, StartClass};
@@ -6,9 +7,86 @@ use crate::runner_close::{
 };
 use crate::runner_evidence::{EvidenceClass, GateStatus};
 use crate::runner_support::{
-    clear_canonical_output, fresh_handshake_path, journey_gates, remove_handshake,
-    stable_shell_ready,
+    cargo_command, clear_canonical_output, fresh_handshake_path, isolated_cargo_target_dir,
+    journey_gates, remove_handshake, select_cargo_target_dir, stable_shell_ready,
 };
+
+#[test]
+fn internal_cargo_commands_isolate_build_outputs_from_the_running_driver() {
+    for arguments in [
+        vec!["fmt", "--all", "--", "--check"],
+        vec!["test", "--locked", "--workspace", "--all-targets"],
+        vec![
+            "clippy",
+            "--locked",
+            "--workspace",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings",
+        ],
+        vec!["build", "--locked", "--workspace", "--bins", "--release"],
+        vec![
+            "build",
+            "--locked",
+            "--release",
+            "--package",
+            "keiko-tauri-prototype",
+            "--features",
+            "evaluation-hooks",
+        ],
+        vec![
+            "build",
+            "--locked",
+            "--release",
+            "--package",
+            "keiko-slint-prototype",
+            "--features",
+            "evaluation-hooks",
+        ],
+    ] {
+        let command = cargo_command(&arguments).unwrap();
+        let target = command
+            .get_envs()
+            .find_map(|(name, value)| (name == OsStr::new("CARGO_TARGET_DIR")).then_some(value))
+            .flatten();
+        assert_eq!(
+            target,
+            Some(isolated_cargo_target_dir().unwrap().as_os_str()),
+            "Cargo invocation was not isolated: {arguments:?}"
+        );
+    }
+}
+
+#[test]
+fn child_target_selection_never_reuses_the_running_driver_tree() {
+    let directory = tempfile::tempdir().unwrap();
+    let manifest = directory.path().join("evaluation");
+    let primary_driver = manifest
+        .join("target")
+        .join("evaluation-cargo-target")
+        .join("release")
+        .join("keiko-eval.exe");
+    let alternate = select_cargo_target_dir(&manifest, &primary_driver);
+    assert_eq!(
+        alternate,
+        manifest
+            .join("target")
+            .join("evaluation-cargo-target-alternate")
+    );
+    assert!(!primary_driver.starts_with(&alternate));
+
+    let default_driver = manifest
+        .join("target")
+        .join("release")
+        .join("keiko-eval.exe");
+    let primary = select_cargo_target_dir(&manifest, &default_driver);
+    assert_eq!(
+        primary,
+        manifest.join("target").join("evaluation-cargo-target")
+    );
+    assert!(!default_driver.starts_with(&primary));
+}
 
 #[test]
 fn stable_shell_handshake_is_exact_and_stale_files_are_removed() {

@@ -9,6 +9,7 @@ use crate::benchmark::Candidate;
 use crate::package::ExternalRuntime;
 use crate::runner::RunnerError;
 use crate::runner_evidence::PackageEvidence;
+use crate::runner_support::isolated_cargo_target_dir;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SourceBinding {
@@ -67,7 +68,7 @@ fn prepare_package(
     let package = package_dir(platform, candidate);
     fs::create_dir_all(&package)?;
     let destination = packaged_executable(platform, candidate);
-    fs::copy(release_executable(candidate), &destination)?;
+    fs::copy(release_executable(candidate)?, &destination)?;
     validate_package_contents(&package, candidate)?;
     let record = package_evidence(candidate, &package, source)?;
     write_package_record(platform, &record)?;
@@ -200,8 +201,8 @@ pub(crate) fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn release_dir() -> PathBuf {
-    manifest_dir().join("target").join("release")
+fn release_dir() -> Result<PathBuf, RunnerError> {
+    Ok(isolated_cargo_target_dir()?.join("release"))
 }
 
 fn candidate_dir(candidate: Candidate) -> PathBuf {
@@ -231,8 +232,8 @@ pub(crate) fn packaged_executable(platform: &str, candidate: Candidate) -> PathB
     package_dir(platform, candidate).join(executable_name(candidate_binary(candidate)))
 }
 
-fn release_executable(candidate: Candidate) -> PathBuf {
-    release_dir().join(executable_name(candidate_binary(candidate)))
+fn release_executable(candidate: Candidate) -> Result<PathBuf, RunnerError> {
+    Ok(release_dir()?.join(executable_name(candidate_binary(candidate))))
 }
 
 fn executable_name(name: &str) -> String {
@@ -290,6 +291,17 @@ mod tests {
         fs::write(artifact, b"second").unwrap();
         let second = package_evidence(Candidate::Slint, directory.path(), &source()).unwrap();
         assert_ne!(first.artifact_sha256, second.artifact_sha256);
+    }
+
+    #[test]
+    fn candidate_package_copies_from_the_isolated_build_tree() {
+        let source = release_executable(Candidate::Tauri).unwrap();
+        assert!(source.starts_with(isolated_cargo_target_dir().unwrap()));
+        assert_eq!(source.parent(), Some(release_dir().unwrap().as_path()));
+
+        let retained = packaged_executable("windows", Candidate::Tauri);
+        assert!(!retained.starts_with(isolated_cargo_target_dir().unwrap()));
+        assert!(retained.starts_with(package_root("windows")));
     }
 
     #[test]
