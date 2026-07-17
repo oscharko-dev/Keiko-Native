@@ -316,7 +316,12 @@ test("covers alternate fail-closed and no-op lifecycle branches", async (t) => {
     if (path.includes("/issues/27")) return stringLabelIssue;
     return {};
   };
+  const previousRepository = process.env.GITHUB_REPOSITORY;
   process.env.GITHUB_REPOSITORY = "keiko/Keiko-Native";
+  t.after(() => {
+    if (previousRepository === undefined) delete process.env.GITHUB_REPOSITORY;
+    else process.env.GITHUB_REPOSITORY = previousRepository;
+  });
   assert.equal(
     (
       await runIssueLifecycleAction({
@@ -370,7 +375,13 @@ test("covers alternate fail-closed and no-op lifecycle branches", async (t) => {
 
   let reloaded = false;
   const noop = requestMock(t, { issueLabels: ["status: new"] });
+  const previousActivation = process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
   process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = "enabled";
+  t.after(() => {
+    if (previousActivation === undefined)
+      delete process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
+    else process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = previousActivation;
+  });
   const noopResult = await runIssueLifecycleAction({
     event: reopenedEvent,
     request: async (path, options) => {
