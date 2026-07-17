@@ -109,6 +109,9 @@ const failureCategories = [
   ["client diagnostics failed", "client_diagnostics"],
   ["architecture mismatch", "environment_mismatch"],
   ["rss comparability", "process_accounting"],
+  ["candidate process-group", "process_ownership"],
+  ["pgrep candidate observation", "process_ownership"],
+  ["process-tree observation", "process_ownership"],
   ["marker sequence", "marker_sequence"],
   ["preceded", "marker_sequence"],
   ["duplicate", "marker_sequence"],
@@ -2236,6 +2239,22 @@ export async function runCandidate(
       stdoutBytes = snapshot.stdoutBytes;
     }
   };
+  const failureContext = () => ({
+    appPid,
+    appExitAt,
+    candidate: entry.candidate,
+    candidateDiagnostic,
+    evidence,
+    mode: entry.mode,
+    presentedAt,
+    sequence: entry.sequence,
+    shutdownAt,
+    stderrBytes,
+    wrapperError,
+    wrapperExit,
+    wrapperStarted: wrapperGroup !== undefined,
+  });
+  let pendingFailure;
 
   try {
     if (directExecutable) {
@@ -2414,51 +2433,11 @@ export async function runCandidate(
     completedSuccessfully = true;
     return { evidencePayload, sample };
   } catch (error) {
-    throw failureError(error, {
-      appPid,
-      appExitAt,
-      candidate: entry.candidate,
-      candidateDiagnostic,
-      evidence,
-      mode: entry.mode,
-      presentedAt,
-      sequence: entry.sequence,
-      shutdownAt,
-      stderrBytes,
-      wrapperError,
-      wrapperExit,
-      wrapperStarted: wrapperGroup !== undefined,
-    });
+    pendingFailure = failureError(error, failureContext());
+    throw pendingFailure;
   } finally {
-    if (
-      fixturePid !== undefined &&
-      fixtureGroup !== undefined &&
-      fixtureExecutable !== undefined
-    )
-      signalRecordedFixture(
-        fixtureMarker,
-        {
-          executable: fixtureExecutable,
-          group: fixtureGroup,
-          pid: fixturePid,
-        },
-        sessionObserver.sessionFor,
-        "SIGKILL",
-      );
-    if (
-      appPid !== undefined &&
-      appGroup !== undefined &&
-      appGroupIsOwned(appPid, appGroup, wrapperGroup) &&
-      processGroupMembers(appGroup).length > 0
-    )
-      killGroup(appGroup, "SIGKILL");
-    else if (appPid !== undefined && processExists(appPid))
-      killProcess(appPid, "SIGKILL");
-    signalWrapper("SIGKILL");
-    const lateDeadline =
-      process.hrtime.bigint() +
-      BigInt(completedSuccessfully ? 100 : 1_500) * 1_000_000n;
-    while (process.hrtime.bigint() < lateDeadline) {
+    let cleanupFailure;
+    try {
       if (
         fixturePid !== undefined &&
         fixtureGroup !== undefined &&
@@ -2474,27 +2453,68 @@ export async function runCandidate(
           sessionObserver.sessionFor,
           "SIGKILL",
         );
-      const lateMatches = matchingProcesses(definition.executable).filter(
-        (pid) => pid !== process.pid,
-      );
-      for (const pid of lateMatches) killProcess(pid, "SIGKILL");
       if (
-        completedSuccessfully &&
-        lateMatches.length === 0 &&
-        markerProcessRows(fixtureMarker).length === 0
+        appPid !== undefined &&
+        appGroup !== undefined &&
+        appGroupIsOwned(appPid, appGroup, wrapperGroup) &&
+        processGroupMembers(appGroup).length > 0
       )
-        break;
-      await pause(25);
+        killGroup(appGroup, "SIGKILL");
+      else if (appPid !== undefined && processExists(appPid))
+        killProcess(appPid, "SIGKILL");
+      signalWrapper("SIGKILL");
+      const lateDeadline =
+        process.hrtime.bigint() +
+        BigInt(completedSuccessfully ? 100 : 1_500) * 1_000_000n;
+      while (process.hrtime.bigint() < lateDeadline) {
+        if (
+          fixturePid !== undefined &&
+          fixtureGroup !== undefined &&
+          fixtureExecutable !== undefined
+        )
+          signalRecordedFixture(
+            fixtureMarker,
+            {
+              executable: fixtureExecutable,
+              group: fixtureGroup,
+              pid: fixturePid,
+            },
+            sessionObserver.sessionFor,
+            "SIGKILL",
+          );
+        const lateMatches = matchingProcesses(definition.executable).filter(
+          (pid) => pid !== process.pid,
+        );
+        for (const pid of lateMatches) killProcess(pid, "SIGKILL");
+        if (
+          completedSuccessfully &&
+          lateMatches.length === 0 &&
+          markerProcessRows(fixtureMarker).length === 0
+        )
+          break;
+        await pause(25);
+      }
+      invariant(
+        matchingProcesses(definition.executable).length === 0,
+        "exact candidate executable survived cleanup",
+      );
+      invariant(
+        markerProcessRows(fixtureMarker).length === 0,
+        "candidate descendants survived cleanup",
+      );
+    } catch (error) {
+      cleanupFailure = error;
+    } finally {
+      try {
+        await rm(outputRoot, { force: true, recursive: true });
+      } catch (error) {
+        cleanupFailure ??= error;
+      }
     }
-    invariant(
-      matchingProcesses(definition.executable).length === 0,
-      "exact candidate executable survived cleanup",
-    );
-    invariant(
-      markerProcessRows(fixtureMarker).length === 0,
-      "candidate descendants survived cleanup",
-    );
-    await rm(outputRoot, { force: true, recursive: true });
+    if (cleanupFailure !== undefined) {
+      if (pendingFailure !== undefined) throw pendingFailure;
+      throw failureError(cleanupFailure, failureContext());
+    }
   }
 }
 
