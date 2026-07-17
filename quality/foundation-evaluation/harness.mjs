@@ -2786,6 +2786,20 @@ async function writeJsonAtomic(path, value, mode) {
   await rename(temporary, path);
 }
 
+export async function writeFailurePartialOrThrow(
+  partialPath,
+  payload,
+  sampleFailure,
+  writer = writeJsonAtomic,
+) {
+  try {
+    await writer(partialPath, payload, 0o600);
+  } catch {
+    throw sampleFailure;
+  }
+  throw sampleFailure;
+}
+
 export async function benchmark(
   root,
   {
@@ -2860,8 +2874,9 @@ export async function benchmark(
               run.evidencePayload;
             samples.push(run.sample);
           } catch (error) {
-            const failure = sanitizedFailure(error, entry);
-            await writeJsonAtomic(
+            const sampleFailure = failureError(error, entry);
+            const failure = sanitizedFailure(sampleFailure, entry);
+            await writeFailurePartialOrThrow(
               partialPath,
               {
                 bindings,
@@ -2877,9 +2892,8 @@ export async function benchmark(
                 schedule,
                 harness,
               },
-              0o600,
+              sampleFailure,
             );
-            throw failureError(error, entry);
           }
           const completedPairs = samples.length / CANDIDATES.length;
           await writeJsonAtomic(

@@ -49,6 +49,7 @@ import {
   validateDiagnosticProvenance,
   validateReleaseCompositionManifest,
   withDarwinSessionObserver,
+  writeFailurePartialOrThrow,
 } from "./foundation-evaluation/harness.mjs";
 
 function validTauriEvidence(mode) {
@@ -551,6 +552,45 @@ test("diagnostic runner reports direct executable launch failures with candidate
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("diagnostic partial evidence write failure preserves sample context", async () => {
+  const sampleFailure = new Error("foundation evaluation failed");
+  sampleFailure.foundationFailure = {
+    app: "missing",
+    candidate: "tauri",
+    category: "timeout",
+    lastCandidateCode: "unavailable",
+    markers: {
+      evidence: "missing",
+      presented: "seen",
+      shutdown: "missing",
+    },
+    mode: "cold",
+    sequence: 0,
+    stderr: "empty",
+    wrapper: "running",
+  };
+
+  await assert.rejects(
+    () =>
+      writeFailurePartialOrThrow(
+        "/unavailable/partial.json",
+        { failure: sampleFailure.foundationFailure },
+        sampleFailure,
+        async () => {
+          throw new Error("transient partial write failed");
+        },
+      ),
+    (error) => {
+      assert.equal(error, sampleFailure);
+      assert.equal(error.foundationFailure.candidate, "tauri");
+      assert.equal(error.foundationFailure.category, "timeout");
+      assert.equal(error.foundationFailure.mode, "cold");
+      assert.equal(error.foundationFailure.sequence, 0);
+      return true;
+    },
+  );
 });
 
 test("LaunchServices runner bounds output and escalates timed-out process cleanup", async () => {
