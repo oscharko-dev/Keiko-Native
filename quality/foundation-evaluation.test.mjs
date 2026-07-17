@@ -832,6 +832,19 @@ test("binds evidence only to a clean exact git checkout", async () => {
     await rm(join(root, "unapproved.txt"));
     await mkdir(join(root, "build"));
     await writeFile(join(root, "build", "result.bin"), "generated\n");
+    for (let start = 0; start < 4_300; start += 100)
+      await Promise.all(
+        Array.from({ length: Math.min(100, 4_300 - start) }, (_, offset) =>
+          writeFile(
+            join(
+              root,
+              "build",
+              `${String(start + offset).padStart(5, "0")}-${"x".repeat(235)}`,
+            ),
+            "",
+          ),
+        ),
+      );
     await assert.doesNotReject(() =>
       governedCheckout(root, { allowedGeneratedRoots: ["build"] }),
     );

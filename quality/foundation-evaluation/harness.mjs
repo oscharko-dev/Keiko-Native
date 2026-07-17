@@ -270,6 +270,9 @@ export async function governedCheckout(
     "--others",
     "--exclude-standard",
     "-z",
+    "--",
+    ".",
+    ...allowedGeneratedRoots.map((path) => `:(exclude,top,literal)${path}`),
   ]);
   invariant(untracked.status === 0, "untracked-input discovery failed");
   const unapproved = untracked.stdout
