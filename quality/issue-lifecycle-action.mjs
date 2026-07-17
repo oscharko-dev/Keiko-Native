@@ -9,7 +9,10 @@ import {
   validateProviderStatusLabels,
   verifyStatusLabelReadback,
 } from "./issue-lifecycle.mjs";
-import { evaluateCurrentReadiness } from "./issue-lifecycle-readiness.mjs";
+import {
+  evaluateClosurePrecondition,
+  evaluateCurrentReadiness,
+} from "./issue-lifecycle-readiness.mjs";
 import { semanticIssueFingerprint } from "./issue-contract.mjs";
 
 const lifecycleActivationEnabled = "enabled";
@@ -67,8 +70,18 @@ function desiredStateForEvent(event, readiness, currentState) {
   }
   if (event?.action === "reopened")
     return { desiredState: LIFECYCLE_STATES[0] };
-  if (event?.action === "closed" && event.issue?.state_reason === "completed")
-    return { desiredState: LIFECYCLE_STATES[8] };
+  if (event?.action === "closed") {
+    const closure = evaluateClosurePrecondition({
+      completionEvidence: {
+        validated: event.issue?.state_reason === "completed",
+      },
+      reason: event.issue?.state_reason,
+    });
+    if (!closure.ok) return { failures: [closure.reason], outcome: "failed" };
+    return closure.removeLifecycleLabels === true
+      ? { removeLifecycleLabels: true }
+      : { desiredState: closure.target };
+  }
   if (event?.action === "edited" && readiness.current !== true)
     return { desiredState: LIFECYCLE_STATES[0] };
   return {};
@@ -122,6 +135,31 @@ async function addLabels(repository, issueNumber, labels, request) {
   });
 }
 
+function planLifecycleLabelRemoval(issue) {
+  return {
+    apply: [],
+    failures: [],
+    ok: true,
+    remove: statusLabels(issue),
+  };
+}
+
+function verifyLifecycleLabelRemoval({
+  actualIssueIdentity,
+  expectedIssueIdentity,
+  labels,
+}) {
+  const failures = [];
+  if (actualIssueIdentity !== expectedIssueIdentity)
+    failures.push("Issue identity changed during lifecycle reconciliation.");
+  const remaining = (labels ?? []).filter((name) =>
+    name?.startsWith("status: "),
+  );
+  if (remaining.length > 0)
+    failures.push("Issue lifecycle read-back still contains status labels.");
+  return failures.length === 0 ? { ok: true } : { failures, ok: false };
+}
+
 export async function runIssueLifecycleAction({
   event,
   now = new Date(),
@@ -144,13 +182,6 @@ export async function runIssueLifecycleAction({
   const providerValidation = validateProviderStatusLabels(providerLabels);
   if (!providerValidation.ok)
     return { failures: providerValidation.failures, outcome: "failed" };
-  if (statusLabels(issue).length !== 1)
-    return {
-      failures: [
-        "Issue lifecycle reload must contain exactly one status label.",
-      ],
-      outcome: "failed",
-    };
   const currentState = statusLabels(issue)[0];
 
   const readiness = evaluateCurrentReadiness({
@@ -167,6 +198,42 @@ export async function runIssueLifecycleAction({
   });
   const desired = desiredStateForEvent(event, readiness, currentState);
   if (desired?.outcome === "failed") return desired;
+  const enabled =
+    process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION === lifecycleActivationEnabled;
+  if (desired.removeLifecycleLabels === true) {
+    const reconciliation = planLifecycleLabelRemoval(issue);
+    if (!enabled)
+      return {
+        activation: "disabled",
+        now: now.toISOString(),
+        outcome: "planned",
+        plan: reconciliation,
+        readiness,
+        removeLifecycleLabels: true,
+      };
+    for (const label of reconciliation.remove)
+      await removeLabel(repository, issueNumber, label, request);
+    const readback = await reloadIssue(repository, issueNumber, request);
+    const verified = verifyLifecycleLabelRemoval({
+      actualIssueIdentity: readback.node_id ?? String(readback.id),
+      expectedIssueIdentity: issue.node_id ?? String(issue.id),
+      labels: labelNames(readback),
+    });
+    return verified.ok
+      ? {
+          outcome: "applied",
+          plan: reconciliation,
+          removeLifecycleLabels: true,
+        }
+      : { failures: verified.failures, outcome: "failed" };
+  }
+  if (statusLabels(issue).length !== 1)
+    return {
+      failures: [
+        "Issue lifecycle reload must contain exactly one status label.",
+      ],
+      outcome: "failed",
+    };
   const desiredState = desired.desiredState;
   if (desiredState === undefined)
     return { failures: [], outcome: "ignored", readiness };
@@ -177,8 +244,6 @@ export async function runIssueLifecycleAction({
   );
   if (!reconciliation.ok)
     return { failures: reconciliation.failures, outcome: "failed" };
-  const enabled =
-    process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION === lifecycleActivationEnabled;
   if (!enabled)
     return {
       activation: "disabled",

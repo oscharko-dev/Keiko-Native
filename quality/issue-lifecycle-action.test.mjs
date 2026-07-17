@@ -233,6 +233,65 @@ test("ignores events without a lifecycle destination and fails bad read-back", a
   assert.match(result.failures.join("\n"), /does not equal the desired state/u);
 });
 
+test("removes lifecycle labels for non-completed closures", async (t) => {
+  const planned = requestMock(t, {
+    issueLabels: ["status: ready", "status: blocked"],
+  });
+  const plannedResult = await runIssueLifecycleAction({
+    event: {
+      action: "closed",
+      issue: { number: 27, state_reason: "not_planned" },
+    },
+    request: planned.request,
+  });
+  assert.equal(plannedResult.outcome, "planned");
+  assert.equal(plannedResult.removeLifecycleLabels, true);
+  assert.deepEqual(plannedResult.plan, {
+    apply: [],
+    failures: [],
+    ok: true,
+    remove: ["status: ready", "status: blocked"],
+  });
+
+  let deleteCount = 0;
+  const active = requestMock(t, {
+    issueLabels: ["status: ready", "status: blocked"],
+  });
+  const previousActivation = process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
+  process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = "enabled";
+  t.after(() => {
+    if (previousActivation === undefined)
+      delete process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
+    else process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = previousActivation;
+  });
+  const appliedResult = await runIssueLifecycleAction({
+    event: {
+      action: "closed",
+      issue: { number: 27, state_reason: "duplicate" },
+    },
+    request: async (path, options) => {
+      if (path.includes("/issues/27") && deleteCount === 2) return issue([]);
+      const response = await active.request(path, options);
+      if (options?.method === "DELETE") deleteCount += 1;
+      return response;
+    },
+  });
+  assert.equal(appliedResult.outcome, "applied");
+  assert.equal(appliedResult.removeLifecycleLabels, true);
+  assert.equal(deleteCount, 2);
+
+  const unsupported = requestMock(t, { issueLabels: ["status: ready"] });
+  const unsupportedResult = await runIssueLifecycleAction({
+    event: {
+      action: "closed",
+      issue: { number: 27, state_reason: "unsupported" },
+    },
+    request: unsupported.request,
+  });
+  assert.equal(unsupportedResult.outcome, "failed");
+  assert.deepEqual(unsupportedResult.failures, ["unsupported_closure_reason"]);
+});
+
 test("runs the CLI wrapper with a hermetic event file", async (t) => {
   const eventPath = join(
     await mkdtemp(join(tmpdir(), "keiko-lifecycle-")),
