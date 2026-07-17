@@ -26,6 +26,30 @@ const canonicalStates = Object.freeze([
 
 const activeSources = canonicalStates.slice(0, 8);
 
+const stateAlias = Object.freeze({
+  blocked: "status: blocked",
+  done: "status: done",
+  inProgress: "status: in progress",
+  new: "status: new",
+  prOpen: "status: pr open",
+  ready: "status: ready",
+  review: "status: ready for human review",
+  triaged: "status: triaged",
+  waiting: "status: waiting for user",
+});
+
+const expectedEdgeAliases = Object.freeze([
+  ["new", ["triaged", "blocked", "waiting"]],
+  ["triaged", ["ready", "blocked", "waiting", "new"]],
+  ["ready", ["inProgress", "blocked", "waiting", "new"]],
+  ["inProgress", ["ready", "prOpen", "blocked", "waiting", "new"]],
+  ["prOpen", ["ready", "inProgress", "review", "blocked", "waiting", "new"]],
+  ["review", ["prOpen", "inProgress", "blocked", "waiting", "new", "done"]],
+  ["blocked", ["waiting", "new", "triaged", "ready", "inProgress", "prOpen"]],
+  ["waiting", ["blocked", "new", "triaged", "ready", "inProgress", "prOpen"]],
+  ["done", ["new"]],
+]);
+
 function pairKey(source, target) {
   return `${source}->${target}`;
 }
@@ -58,85 +82,12 @@ function validRequest(source, target) {
 }
 
 function expectedEdges() {
-  return new Map([
-    [
-      "status: new",
-      ["status: triaged", "status: blocked", "status: waiting for user"],
-    ],
-    [
-      "status: triaged",
-      [
-        "status: ready",
-        "status: blocked",
-        "status: waiting for user",
-        "status: new",
-      ],
-    ],
-    [
-      "status: ready",
-      [
-        "status: in progress",
-        "status: blocked",
-        "status: waiting for user",
-        "status: new",
-      ],
-    ],
-    [
-      "status: in progress",
-      [
-        "status: ready",
-        "status: pr open",
-        "status: blocked",
-        "status: waiting for user",
-        "status: new",
-      ],
-    ],
-    [
-      "status: pr open",
-      [
-        "status: ready",
-        "status: in progress",
-        "status: ready for human review",
-        "status: blocked",
-        "status: waiting for user",
-        "status: new",
-      ],
-    ],
-    [
-      "status: ready for human review",
-      [
-        "status: pr open",
-        "status: in progress",
-        "status: blocked",
-        "status: waiting for user",
-        "status: new",
-        "status: done",
-      ],
-    ],
-    [
-      "status: blocked",
-      [
-        "status: waiting for user",
-        "status: new",
-        "status: triaged",
-        "status: ready",
-        "status: in progress",
-        "status: pr open",
-      ],
-    ],
-    [
-      "status: waiting for user",
-      [
-        "status: blocked",
-        "status: new",
-        "status: triaged",
-        "status: ready",
-        "status: in progress",
-        "status: pr open",
-      ],
-    ],
-    ["status: done", ["status: new"]],
-  ]);
+  return new Map(
+    expectedEdgeAliases.map(([source, targets]) => [
+      stateAlias[source],
+      targets.map((target) => stateAlias[target]),
+    ]),
+  );
 }
 
 test("exports the ordered nine-state taxonomy and rejects provider drift", () => {
