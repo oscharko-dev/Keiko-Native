@@ -311,6 +311,12 @@ test("failure reporting is closed and never exposes raw diagnostics or paths", (
     wrapper: "running",
   });
   assert.doesNotMatch(JSON.stringify(failure), /Users|credential|raw stderr/u);
+  assert.equal(
+    sanitizedFailure(
+      new Error("tauri retained identity string contract mismatch"),
+    ).category,
+    "identity_contract",
+  );
 });
 
 test("LaunchServices runner tracks the exact packaged process and bounded markers", async () => {
@@ -1010,6 +1016,23 @@ test("rejects identities, modes, oversized trees, and local data in candidate ev
       mode: "cold",
       observation: {},
     }),
+    {
+      candidateHardGates: {},
+      candidateRssBytes: null,
+      inputToPaintMs: 12,
+      runtimeToUiMs: 20,
+    },
+  );
+  const processAccountingInCandidateOrder = {
+    definition: base.processAccounting.definition,
+    rssComparableForWinGate: base.processAccounting.rssComparableForWinGate,
+    limitation: base.processAccounting.limitation,
+  };
+  assert.deepEqual(
+    validateCandidateEvidence(
+      { ...base, processAccounting: processAccountingInCandidateOrder },
+      { candidate: "tauri", mode: "cold", observation: {} },
+    ),
     {
       candidateHardGates: {},
       candidateRssBytes: null,

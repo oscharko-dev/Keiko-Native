@@ -90,6 +90,11 @@ const failureCategories = [
   ["exceeded its bound", "output_bound"],
   ["hard timeout", "timeout"],
   ["shutdown budget", "shutdown_timeout"],
+  ["fixture observation is incomplete", "fixture_observation"],
+  ["retained identity string contract mismatch", "identity_contract"],
+  ["client diagnostics failed", "client_diagnostics"],
+  ["architecture mismatch", "environment_mismatch"],
+  ["rss comparability", "process_accounting"],
   ["marker sequence", "marker_sequence"],
   ["preceded", "marker_sequence"],
   ["duplicate", "marker_sequence"],
@@ -99,6 +104,7 @@ const failureCategories = [
   ["process group", "process_ownership"],
   ["survived cleanup", "cleanup_failed"],
   ["truncated", "invalid_output"],
+  ["incomplete line", "invalid_output"],
   ["unexpected candidate stdout", "invalid_output"],
 ];
 
@@ -435,6 +441,23 @@ function replyHas(value, code, ok) {
   return reply.code === code && reply.ok === ok;
 }
 
+function canonicalJson(value) {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value !== null && typeof value === "object")
+    return Object.fromEntries(
+      Object.keys(value)
+        .toSorted()
+        .map((key) => [key, canonicalJson(value[key])]),
+    );
+  return value;
+}
+
+function sameJsonValue(left, right) {
+  return (
+    JSON.stringify(canonicalJson(left)) === JSON.stringify(canonicalJson(right))
+  );
+}
+
 function validateTauriJourney(evidence) {
   const journey = evidence.journey;
   const codes = {
@@ -634,10 +657,10 @@ const candidateIdentityStrings = {
 function validateCandidateIdentityStrings(evidence, candidate) {
   const expected = candidateIdentityStrings[candidate];
   invariant(
-    sameJson(evidence.dependencies, expected.dependencies) &&
-      sameJson(evidence.processAccounting, expected.processAccounting) &&
+    sameJsonValue(evidence.dependencies, expected.dependencies) &&
+      sameJsonValue(evidence.processAccounting, expected.processAccounting) &&
       (candidate === "tauri" ||
-        sameJson(evidence.hardGates, expected.hardGates)) &&
+        sameJsonValue(evidence.hardGates, expected.hardGates)) &&
       evidence.environment.referenceClass === "owner-m4-16gib-macos26",
     `${candidate} retained identity string contract mismatch`,
   );
