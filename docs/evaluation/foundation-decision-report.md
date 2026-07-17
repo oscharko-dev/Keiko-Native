@@ -29,6 +29,10 @@ The benchmark retained in [`foundation-benchmark.json`](foundation-benchmark.jso
 sanitized samples, source inventories, package digests, release-package hook scans, release
 composition proof, and computed distributions.
 
+[`physical-observations.md`](physical-observations.md) contains current digest-bound physical
+observations for the selected Tauri release-like package. Its Slint observations are explicitly
+supplemental prior-package context and are not credited as current Slint physical hard-gate proof.
+
 Diagnostic GitHub runner evidence was collected in Actions run `29609865566` at exact head
 `96d1e6a7c894bebbce2d4374da858d83478a6d97`. The `macos-14` artifact
 `foundation-diagnostic-macos-14` has JSON SHA-256
@@ -51,23 +55,23 @@ release-like packages.
 
 ## Hard-gate results
 
-| Gate                           | Threshold                     | Tauri 2                                 | Slint                                                                      |
-| ------------------------------ | ----------------------------- | --------------------------------------- | -------------------------------------------------------------------------- |
-| Cold launch p50                | at most 1,500 ms              | 458.509 ms, pass                        | 425.118 ms, pass                                                           |
-| Cold launch p95                | at most 3,000 ms              | 507.467 ms, pass                        | 522.989 ms, pass                                                           |
-| Warm launch p95                | at most 1,000 ms              | 523.153 ms, pass                        | 451.674 ms, pass                                                           |
-| Input-to-paint p75             | at most 33 ms                 | 32.000 ms, pass                         | 33.677 ms, fail                                                            |
-| Input-to-paint p95             | at most 50 ms                 | 33.000 ms, pass                         | 38.928 ms, pass                                                            |
-| Runtime-to-UI p95              | at most 100 ms                | 34.915 ms, pass                         | 29.673 ms, pass                                                            |
-| Shutdown maximum               | at most 5,000 ms              | 0.050 ms, pass                          | 0.052 ms, pass                                                             |
-| Orphans after cleanup          | zero                          | pass                                    | pass                                                                       |
-| Automated native semantic tree | governed machine check        | pass                                    | fail: `automated_native_semantic_tree_unavailable`                         |
-| Physical VoiceOver semantics   | usable labeled journey        | pass                                    | fail: nodes exist, but the complete governed journey was not usable        |
-| Physical IME composition       | committed international input | pass                                    | pass                                                                       |
-| Physical dark appearance       | follows system appearance     | pass                                    | fail: release-like package remained effectively light/low-contrast in Dark |
-| Physical display scaling       | same release-package journey  | pass                                    | pass                                                                       |
-| Licence route                  | implementable compliant route | pass with productive review obligations | fail: royalty-free attribution surface absent in prototype                 |
-| Signed-update recipe           | owned integrated route        | pass as Tauri documented route input    | fail: no Slint-owned integrated signed updater recipe                      |
+| Gate                           | Threshold                     | Tauri 2                                 | Slint                                                                                                              |
+| ------------------------------ | ----------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Cold launch p50                | at most 1,500 ms              | 458.509 ms, pass                        | 425.118 ms, pass                                                                                                   |
+| Cold launch p95                | at most 3,000 ms              | 507.467 ms, pass                        | 522.989 ms, pass                                                                                                   |
+| Warm launch p95                | at most 1,000 ms              | 523.153 ms, pass                        | 451.674 ms, pass                                                                                                   |
+| Input-to-paint p75             | at most 33 ms                 | 32.000 ms, pass                         | 33.677 ms, fail                                                                                                    |
+| Input-to-paint p95             | at most 50 ms                 | 33.000 ms, pass                         | 38.928 ms, pass                                                                                                    |
+| Runtime-to-UI p95              | at most 100 ms                | 34.915 ms, pass                         | 29.673 ms, pass                                                                                                    |
+| Shutdown maximum               | at most 5,000 ms              | 0.050 ms, pass                          | 0.052 ms, pass                                                                                                     |
+| Orphans after cleanup          | zero                          | pass                                    | pass                                                                                                               |
+| Automated native semantic tree | governed machine check        | pass                                    | fail: `automated_native_semantic_tree_unavailable`                                                                 |
+| Physical VoiceOver semantics   | usable labeled journey        | pass                                    | not credited: no current digest-bound physical pass; prior package did not complete the governed journey           |
+| Physical IME composition       | committed international input | pass                                    | pass                                                                                                               |
+| Physical dark appearance       | follows system appearance     | pass                                    | not credited: no current digest-bound physical pass; prior package remained effectively light/low-contrast in Dark |
+| Physical display scaling       | same release-package journey  | pass                                    | pass                                                                                                               |
+| Licence route                  | implementable compliant route | pass with productive review obligations | fail: royalty-free attribution surface absent in prototype                                                         |
+| Signed-update recipe           | owned integrated route        | pass as Tauri documented route input    | fail: no Slint-owned integrated signed updater recipe                                                              |
 
 Tracked RSS is retained as diagnostic only. Tauri shared WebKit XPC processes cannot be consistently
 attributed, so RSS cannot decide the Slint replacement gate.
@@ -95,16 +99,16 @@ appearance, licence, and updater gates.
 Scores are 0 through 5. The weighted total is informative only; hard gates and the replacement
 formula control the outcome.
 
-| Criterion                                          |  Weight |       Tauri 2 |         Slint | Rationale                                                                                                                                                                    |
-| -------------------------------------------------- | ------: | ------------: | ------------: | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Security and authority containment                 |      20 |             5 |             4 | Both candidates proved hostile request, timeout, cancellation, recovery, and release-hook isolation; Tauri has the clearer command/capability model for CH-3.                |
-| Accessibility, IME, and desktop UX                 |      15 |             5 |             2 | Tauri passed automated semantics, VoiceOver, IME, appearance, and scaling. Slint passed IME and scaling but failed the governed semantic/VoiceOver path and Dark appearance. |
-| Performance and resource efficiency                |      15 |             4 |             3 | Slint was faster on cold p95 and runtime-to-UI, but missed input thresholds and more than doubled release-like payload size. RSS is diagnostic only.                         |
-| Packaging, signing, update, and rollback           |      15 |             4 |             2 | Tauri supplies an integrated updater/signing route as implementation input; Slint needs a separate owned updater decision.                                                   |
-| Testing, diagnostics, and recovery                 |      15 |             5 |             3 | Tauri satisfied the machine-evaluated semantic and lifecycle harness. Slint recovered and cleaned up, but lacked the governed semantic automation route.                     |
-| Future coding-runtime boundary fit                 |      10 |             5 |             4 | Both can host the typed application port; Tauri maps more directly to a bundled React UI and Tauri command boundary for the first productive slice.                          |
-| Maintainability, support, licensing, and ecosystem |      10 |             4 |             2 | Tauri keeps ordinary MIT/Apache-style productive review obligations. Slint's custom licence route and required attribution surface remain decision costs.                    |
-| **Weighted total**                                 | **100** | **460 / 500** | **290 / 500** | Hard-gate outcome selects Tauri regardless of total.                                                                                                                         |
+| Criterion                                          |  Weight |       Tauri 2 |         Slint | Rationale                                                                                                                                                                                                                                                           |
+| -------------------------------------------------- | ------: | ------------: | ------------: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Security and authority containment                 |      20 |             5 |             4 | Both candidates proved hostile request, timeout, cancellation, recovery, and release-hook isolation; Tauri has the clearer command/capability model for CH-3.                                                                                                       |
+| Accessibility, IME, and desktop UX                 |      15 |             5 |             2 | Tauri passed automated semantics, VoiceOver, IME, appearance, and scaling. Slint failed the governed machine semantic route and has no current digest-bound physical pass; prior physical observations also failed the governed VoiceOver path and Dark appearance. |
+| Performance and resource efficiency                |      15 |             4 |             3 | Slint was faster on cold p95 and runtime-to-UI, but missed input thresholds and more than doubled release-like payload size. RSS is diagnostic only.                                                                                                                |
+| Packaging, signing, update, and rollback           |      15 |             4 |             2 | Tauri supplies an integrated updater/signing route as implementation input; Slint needs a separate owned updater decision.                                                                                                                                          |
+| Testing, diagnostics, and recovery                 |      15 |             5 |             3 | Tauri satisfied the machine-evaluated semantic and lifecycle harness. Slint recovered and cleaned up, but lacked the governed semantic automation route.                                                                                                            |
+| Future coding-runtime boundary fit                 |      10 |             5 |             4 | Both can host the typed application port; Tauri maps more directly to a bundled React UI and Tauri command boundary for the first productive slice.                                                                                                                 |
+| Maintainability, support, licensing, and ecosystem |      10 |             4 |             2 | Tauri keeps ordinary MIT/Apache-style productive review obligations. Slint's custom licence route and required attribution surface remain decision costs.                                                                                                           |
+| **Weighted total**                                 | **100** | **460 / 500** | **290 / 500** | Hard-gate outcome selects Tauri regardless of total.                                                                                                                                                                                                                |
 
 ## Dissent and residual uncertainty
 

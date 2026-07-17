@@ -16,8 +16,8 @@ Fresh evidence at commit `6a9fa49d86a82a698af5c1ac6e5da1690676dfaa` selects Taur
 bound to #11 v2 readiness fingerprint
 `ee7934be0bfcc74630bfb071ec05c724ed97a2458d4b9238d60561292cc06469`, physical owner Apple M4
 16 GiB macOS 26.5.1 authority, 20 cold and 30 warm launches per candidate, release-like package
-inspection, physical VoiceOver/IME/appearance/scaling observations, official-source records, and
-exact dependency inventories.
+inspection, current Tauri physical VoiceOver/IME/appearance/scaling observations,
+official-source records, and exact dependency inventories.
 
 The superseded v1 branch remains excluded. Its source, binaries, timings, Windows results, and
 fingerprint are not accepted evidence for this ADR.
@@ -49,8 +49,9 @@ The retained decision records are:
   `d64e0d75cdcad6010fbd2be55cdc8f7939d25cde17342218117fe9b0b1425c40`;
 - [`foundation-decision-report.md`](../evaluation/foundation-decision-report.md), with hard-gate
   results, replacement formula, weighted matrix, dissent, and CH-3 handoff;
-- [`physical-observations.md`](../evaluation/physical-observations.md), with release-package
-  VoiceOver, IME, appearance, scaling, restoration, and cleanup observations; and
+- [`physical-observations.md`](../evaluation/physical-observations.md), with current Tauri
+  release-package VoiceOver, IME, appearance, scaling, restoration, and cleanup observations plus
+  supplemental prior Slint context; and
 - [`licence-source-inventory.md`](../evaluation/licence-source-inventory.md), with exact-head
   dependency inventory summaries and productive review obligations.
 
@@ -79,11 +80,13 @@ Slint package and lock bindings:
 
 Tauri passed all absolute benchmark hard gates and the physical VoiceOver, IME, Dark/Light
 appearance, scaling, release-hook exclusion, release-composition, and cleanup gates. Slint passed
-several lifecycle and performance checks but failed input-to-paint p75/p95, governed native
-semantic-tree automation, physical VoiceOver journey completeness, Dark appearance, the required
-Royalty-free attribution surface, and the Slint-owned integrated signed-update recipe. Slint also
-failed the frozen replacement formula: no comparable hard metric improved by 20%, input-to-paint
-p95 regressed 18.0%, and release-like payload size regressed 113.9%.
+several lifecycle and performance checks but failed input-to-paint p75, governed native
+semantic-tree automation, the required Royalty-free attribution surface, and the Slint-owned
+integrated signed-update recipe. Slint has no current digest-bound physical hard-gate pass; prior
+Slint physical observations are retained only as supplemental context and also failed the governed
+VoiceOver journey and Dark appearance. Slint also failed the frozen replacement formula: no
+comparable hard metric improved by 20%, input-to-paint p95 regressed 18.0%, and release-like
+payload size regressed 113.9%.
 
 ### Productive workspace and ownership
 
