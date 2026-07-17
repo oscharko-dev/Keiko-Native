@@ -389,7 +389,7 @@ function backtickStatusNames(text) {
 
 function stringArrayConstant(source, name) {
   const pattern = new RegExp(
-    `(?:export\\s+)?const\\s+${name}\\s*=\\s*(?:Object\\.freeze\\()?\\s*\\[([\\s\\S]*?)\\]\\s*\\)?;`,
+    String.raw`(?:export\s+)?const\s+${name}\s*=\s*(?:Object\.freeze\()?\s*\[([\s\S]*?)\]\s*\)?;`,
     "u",
   );
   const body = pattern.exec(source)?.[1] ?? "";
@@ -714,7 +714,7 @@ function issueReadinessWorkflowFailures(workflow) {
 
 function bracketList(marker, text) {
   return (
-    new RegExp(`${marker}:\\s*\\[([^\\]]*)\\]`, "u")
+    new RegExp(String.raw`${marker}:\s*\[([^\]]*)\]`, "u")
       .exec(text)?.[1]
       ?.split(",")
       .map((value) => value.trim())
