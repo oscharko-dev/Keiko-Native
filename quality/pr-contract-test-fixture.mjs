@@ -204,7 +204,7 @@ export function validPullRequestFixture(target = "dev") {
     ],
     issue: {
       body: issueBody,
-      labels: [{ name: "type: task" }, { name: "status: ready" }],
+      labels: [{ name: "type: task" }, { name: "status: pr open" }],
       number: 42,
       state: "open",
       title: issueTitle,
