@@ -470,6 +470,7 @@ pub fn run(ui: MainWindow) -> Result<(), slint::PlatformError> {
                         Some(json!({ "doubleRendered": true })),
                     ));
                     ui.invoke_focus_input();
+                    values.focus_visible = Some(ui.get_input_has_focus());
                     values.input_started = Some(Instant::now());
                     ui.set_input_text("かなa".into());
                     stage_for_render.set(1);
@@ -500,7 +501,8 @@ pub fn run(ui: MainWindow) -> Result<(), slint::PlatformError> {
                 }
                 4 => {
                     let mut values = measurements_for_render.borrow_mut();
-                    values.focus_visible = Some(ui.get_input_has_focus());
+                    values.focus_visible =
+                        Some(values.focus_visible.unwrap_or(false) || ui.get_input_has_focus());
                     if values.runtime_to_ui_ms.is_none() {
                         let token = values.runtime_token.clone().unwrap_or_default();
                         let committed = port_for_render.borrow_mut().dispatch(&request(
