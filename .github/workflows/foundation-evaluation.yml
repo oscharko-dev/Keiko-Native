@@ -127,6 +127,20 @@ jobs:
           KEIKO_FOUNDATION_TAURI_RELEASE_PACKAGE: experiments/tauri-renderer/target/release-like/release/bundle/macos/Keiko Foundation Tauri Evaluation.app
         run: |
           set -euo pipefail
+          observer_root="$RUNNER_TEMP/keiko-session-observer"
+          rm -rf "$observer_root"
+          mkdir -m 700 "$observer_root"
+          observer="$observer_root/session-observer"
+          "$KEIKO_FOUNDATION_RUSTC" --edition=2021 -O -o "$observer" quality/foundation-evaluation/session-observer.rs
+          chmod 700 "$observer"
+          test "$(stat -f '%Lp' "$observer_root")" = 700
+          test "$(stat -f '%Lp' "$observer")" = 700
+          test -f "$observer"
+          test ! -L "$observer"
+          observer_sha="$(shasum -a 256 "$observer" | awk '{print $1}')"
+          test "${#observer_sha}" = 64
+          export KEIKO_FOUNDATION_SESSION_OBSERVER="$observer"
+          export KEIKO_FOUNDATION_SESSION_OBSERVER_SHA256="$observer_sha"
           npm run experiment:foundation:verify
           npm run experiment:foundation:diagnostic
           shasum -a 256 "$KEIKO_FOUNDATION_RESULT" | awk '{print $1}' >"$KEIKO_FOUNDATION_RESULT.sha256"

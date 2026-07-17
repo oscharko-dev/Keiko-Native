@@ -311,6 +311,7 @@ test("uses the exact governed LaunchServices package invocation", () => {
     "/tmp/stderr",
   ]);
   assert.ok(arguments_.includes("--env"));
+  assert.ok(arguments_.includes("SLINT_BACKEND=winit-femtovg"));
   assert.equal(arguments_.includes("-o"), false);
   assert.deepEqual(arguments_.slice(-5), [
     "/tmp/Candidate.app",

@@ -1549,6 +1549,7 @@ const launchEnvironment = [
   "LC_ALL=en_US.UTF-8",
   "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
   "RUST_BACKTRACE=0",
+  "SLINT_BACKEND=winit-femtovg",
   "TMPDIR=/tmp",
 ];
 
