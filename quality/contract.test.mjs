@@ -142,6 +142,24 @@ test("keeps the temporary foundation diagnostic ARM64 and fail closed", async ()
   assert.ok(
     foundationEvaluationWorkflowFailures(
       workflow.replace(
+        "branches: [codex/11-foundation-macos-decision]",
+        "branches: [dev]",
+      ),
+      manifest,
+    ).length > 0,
+  );
+  assert.ok(
+    foundationEvaluationWorkflowFailures(
+      workflow.replace(
+        "  workflow_dispatch:",
+        "  pull_request:\n  workflow_dispatch:",
+      ),
+      manifest,
+    ).length > 0,
+  );
+  assert.ok(
+    foundationEvaluationWorkflowFailures(
+      workflow.replace(
         "include-hidden-files: true",
         "include-hidden-files: false",
       ),

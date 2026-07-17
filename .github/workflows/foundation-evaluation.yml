@@ -1,6 +1,8 @@
 name: Foundation evaluation diagnostic
 
 on:
+  push:
+    branches: [codex/11-foundation-macos-decision]
   workflow_dispatch:
     inputs:
       authorized_commit:
@@ -26,7 +28,7 @@ jobs:
         with:
           clean: true
           persist-credentials: false
-          ref: ${{ inputs.authorized_commit }}
+          ref: ${{ inputs.authorized_commit || github.sha }}
       - name: Exact Node toolchain
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
@@ -36,7 +38,11 @@ jobs:
           EXPECTED_RUNNER: ${{ matrix.runner }}
         run: |
           set -euo pipefail
-          test "${{ inputs.authorized_commit }}" = "$GITHUB_SHA"
+          if test "$GITHUB_EVENT_NAME" = workflow_dispatch; then
+            test "${{ inputs.authorized_commit }}" = "$GITHUB_SHA"
+          else
+            test "$GITHUB_EVENT_NAME" = push
+          fi
           test "$GITHUB_REF" = refs/heads/codex/11-foundation-macos-decision
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git rev-parse HEAD^{tree})" = "$(git show -s --format=%T "$GITHUB_SHA")"

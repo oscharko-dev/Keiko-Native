@@ -841,13 +841,15 @@ function pullRequestContractWorkflowFailures(workflow) {
 export function foundationEvaluationWorkflowFailures(workflow, manifest) {
   if (manifest?.temporaryExperiment === undefined) return [];
   const required = [
+    "push:",
+    "branches: [codex/11-foundation-macos-decision]",
     "workflow_dispatch:",
     "authorized_commit:",
     "permissions: {}",
     "runner: [macos-14, macos-26]",
     "clean: true",
     "persist-credentials: false",
-    "ref: ${{ inputs.authorized_commit }}",
+    "ref: ${{ inputs.authorized_commit || github.sha }}",
     "node-version: 24.18.0",
     "npm@11.16.0",
     "rustc 1\\.92\\.0",
@@ -857,6 +859,7 @@ export function foundationEvaluationWorkflowFailures(workflow, manifest) {
     'test "$(arch)" = arm64',
     'test "${RUNNER_ARCH:-}" = ARM64',
     'test "${{ inputs.authorized_commit }}" = "$GITHUB_SHA"',
+    'test "$GITHUB_EVENT_NAME" = push',
     "refs/heads/codex/11-foundation-macos-decision",
     "cargo test --locked --manifest-path experiments/tauri-renderer/Cargo.toml",
     "cargo test --locked --manifest-path experiments/slint-renderer/Cargo.toml",
@@ -881,6 +884,21 @@ export function foundationEvaluationWorkflowFailures(workflow, manifest) {
     .map(
       (marker) =>
         `Foundation evaluation workflow is missing marker: ${marker}.`,
+    );
+  const eventNames = workflowSection(workflow.split(/\r?\n/u), "on:")
+    .slice(1)
+    .filter((line) => /^ {2}[A-Za-z_][A-Za-z0-9_-]*:/u.test(line))
+    .map((line) => line.trim().slice(0, -1));
+  const pushSection = workflowSection(workflow.split(/\r?\n/u), "  push:");
+  if (
+    !isDeepStrictEqual(eventNames, ["push", "workflow_dispatch"]) ||
+    !isDeepStrictEqual(pushSection, [
+      "  push:",
+      "    branches: [codex/11-foundation-macos-decision]",
+    ])
+  )
+    failures.push(
+      "Foundation evaluation workflow events must remain closed to the exact issue branch push and governed dispatch.",
     );
   if (/pull_request_target|RUNNER_NAME|github\.token|secrets\./u.test(workflow))
     failures.push("Foundation evaluation workflow crosses a denied boundary.");
