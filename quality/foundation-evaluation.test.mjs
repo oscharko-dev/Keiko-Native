@@ -390,6 +390,15 @@ test("failure reporting is closed and never exposes raw diagnostics or paths", (
   assert.deepEqual(
     sanitizedFailure(stageOnly, {
       candidate: "tauri",
+      checkout: {
+        trackedCount: 2,
+        trackedPaths: [
+          "experiments/tauri-renderer/src/main.rs",
+          "/Users/runner/private",
+        ],
+        untrackedCount: 1,
+        untrackedPaths: ["diagnostic-output.json", "../escape"],
+      },
       mode: "cold",
       phase: "progress-partial-write",
       sequence: 0,
@@ -403,6 +412,12 @@ test("failure reporting is closed and never exposes raw diagnostics or paths", (
         evidence: "missing",
         presented: "missing",
         shutdown: "missing",
+      },
+      checkout: {
+        trackedCount: 2,
+        trackedPaths: ["experiments/tauri-renderer/src/main.rs"],
+        untrackedCount: 1,
+        untrackedPaths: ["diagnostic-output.json"],
       },
       mode: "cold",
       phase: "progress-partial-write",

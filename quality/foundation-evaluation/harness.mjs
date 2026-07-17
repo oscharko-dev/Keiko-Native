@@ -118,6 +118,9 @@ const failureCategories = [
   ["evidence", "evidence_schema"],
   ["journey", "evidence_schema"],
   ["diagnostic", "evidence_schema"],
+  ["tracked or index drift", "checkout_tracked_drift"],
+  ["unapproved untracked input", "checkout_untracked_input"],
+  ["checkout changed", "checkout_identity_changed"],
   ["process group", "process_ownership"],
   ["survived cleanup", "cleanup_failed"],
   ["truncated", "invalid_output"],
@@ -277,6 +280,8 @@ export function sanitizedFailure(error, context = {}) {
       failure.stage = context.stage;
     if (failure.phase === undefined && failurePhases.has(context.phase))
       failure.phase = context.phase;
+    const checkout = closedCheckoutSummary(context.checkout);
+    if (checkout !== undefined) failure.checkout = checkout;
     return failure;
   }
   const message = error instanceof Error ? error.message.toLowerCase() : "";
@@ -330,6 +335,8 @@ export function sanitizedFailure(error, context = {}) {
     failure.diagnostic = context.candidateDiagnostic;
   if (failureStages.has(context.stage)) failure.stage = context.stage;
   if (failurePhases.has(context.phase)) failure.phase = context.phase;
+  const checkout = closedCheckoutSummary(context.checkout);
+  if (checkout !== undefined) failure.checkout = checkout;
   return failure;
 }
 
@@ -386,6 +393,37 @@ function plainObject(value, label) {
   return value;
 }
 
+function safeRepositoryPath(path) {
+  return (
+    typeof path === "string" &&
+    path.length > 0 &&
+    path.length <= 240 &&
+    !path.startsWith("/") &&
+    !path.split("/").includes("..")
+  );
+}
+
+function closedCheckoutSummary(summary) {
+  if (summary === undefined) return undefined;
+  plainObject(summary, "checkout summary");
+  const trackedPaths = Array.isArray(summary.trackedPaths)
+    ? summary.trackedPaths.filter(safeRepositoryPath).slice(0, 8)
+    : [];
+  const untrackedPaths = Array.isArray(summary.untrackedPaths)
+    ? summary.untrackedPaths.filter(safeRepositoryPath).slice(0, 8)
+    : [];
+  return {
+    trackedCount: Number.isSafeInteger(summary.trackedCount)
+      ? Math.max(0, summary.trackedCount)
+      : trackedPaths.length,
+    trackedPaths,
+    untrackedCount: Number.isSafeInteger(summary.untrackedCount)
+      ? Math.max(0, summary.untrackedCount)
+      : untrackedPaths.length,
+    untrackedPaths,
+  };
+}
+
 function execText(command, args) {
   const result = spawnSync(command, args, {
     encoding: "utf8",
@@ -416,6 +454,29 @@ function gitResult(root, args) {
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 5_000,
   });
+}
+
+function gitPathList(result) {
+  if (result.status !== 0) return [];
+  return result.stdout
+    .split(/\r?\n/u)
+    .filter(Boolean)
+    .filter(safeRepositoryPath);
+}
+
+function checkoutDriftSummary(root) {
+  const trackedPaths = gitPathList(
+    gitResult(root, ["diff", "--name-only", "HEAD", "--"]),
+  );
+  const untrackedPaths = gitPathList(
+    gitResult(root, ["ls-files", "--others", "--exclude-standard", "--", "."]),
+  );
+  return {
+    trackedCount: trackedPaths.length,
+    trackedPaths,
+    untrackedCount: untrackedPaths.length,
+    untrackedPaths,
+  };
 }
 
 export async function governedCheckout(
@@ -3012,6 +3073,10 @@ export async function benchmark(
   } catch (error) {
     throw failureError(error, {
       ...(activeEntry ?? {}),
+      checkout:
+        sessionPhase === "final-checkout"
+          ? checkoutDriftSummary(root)
+          : undefined,
       phase: sessionPhase,
       stage: "session-observer",
     });
