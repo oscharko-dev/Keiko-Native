@@ -1,0 +1,33 @@
+[package]
+name = "keiko-foundation-slint-evaluation"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+rust-version = "1.92"
+build = "build.rs"
+
+[features]
+default = []
+evaluation-hook = []
+
+[build-dependencies]
+slint-build = "=1.17.1"
+
+[dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.145"
+slint = { version = "=1.17.1", default-features = false, features = ["accessibility", "backend-winit", "compat-1-2", "renderer-femtovg", "std"] }
+
+[package.metadata.bundle]
+name = "Keiko Foundation Slint Evaluation"
+identifier = "dev.oscharko.keiko.foundation.slint-evaluation"
+category = "public.app-category.developer-tools"
+short_description = "Throwaway foundation renderer evaluation"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

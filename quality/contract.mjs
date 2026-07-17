@@ -1,5 +1,6 @@
 import { access, readFile, readdir } from "node:fs/promises";
 import { extname, join, relative, sep } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 const sourceSpecificationIdentity = {
   date: "2026-07-15",
@@ -137,6 +138,54 @@ const requiredTargetCommands = [
   "test",
 ];
 
+const foundationExperiment = {
+  commands: [
+    "experiment:foundation:verify",
+    "experiment:foundation:benchmark",
+    "experiment:foundation:diagnostic",
+    "experiment:foundation:audit",
+  ],
+  contractVersion: 2,
+  issue: 11,
+  kind: "foundation-stack-evaluation",
+  sourceRoots: ["experiments/tauri-renderer", "experiments/slint-renderer"],
+  workflow: ".github/workflows/foundation-evaluation.yml",
+};
+
+const foundationExperimentScripts = {
+  "experiment:foundation:audit":
+    "node quality/foundation-evaluation/cli.mjs audit",
+  "experiment:foundation:benchmark":
+    "node quality/foundation-evaluation/cli.mjs benchmark",
+  "experiment:foundation:diagnostic":
+    "node quality/foundation-evaluation/cli.mjs diagnostic",
+  "experiment:foundation:verify":
+    "node quality/foundation-evaluation/cli.mjs verify",
+};
+
+export function validateTemporaryExperiment(manifest) {
+  if (manifest?.temporaryExperiment === undefined) return [];
+  if (manifest?.phase !== "bootstrap")
+    return ["Temporary experiments are permitted only during bootstrap."];
+  return isDeepStrictEqual(manifest.temporaryExperiment, foundationExperiment)
+    ? []
+    : [
+        "The temporary experiment declaration must match issue 11 contract v2 exactly.",
+      ];
+}
+
+export function isAuthorizedExperimentSource(path, manifest) {
+  if (
+    manifest?.temporaryExperiment === undefined ||
+    validateTemporaryExperiment(manifest).length > 0
+  )
+    return false;
+  const normalized = normalizeRepositoryPath(path);
+  return foundationExperiment.sourceRoots.some(
+    (root) => normalized === root || normalized.startsWith(`${root}/`),
+  );
+}
+
 export function isSafeRepositoryPath(value) {
   return (
     typeof value === "string" &&
@@ -251,6 +300,7 @@ export function validateManifest(manifest) {
     Array.isArray(manifest?.nativeTargets)
   )
     failures.push(...productiveManifestFailures(manifest));
+  failures.push(...validateTemporaryExperiment(manifest));
   return failures;
 }
 
@@ -603,7 +653,9 @@ async function sourceRootFailures(root, manifest) {
 }
 
 async function contractFailures(root, files, manifest) {
-  const productiveSources = files.filter(isProductiveSource);
+  const productiveSources = files
+    .filter(isProductiveSource)
+    .filter((path) => !isAuthorizedExperimentSource(path, manifest));
   const bootstrapFailures =
     manifest?.phase === "bootstrap" && productiveSources.length > 0
       ? [
@@ -622,6 +674,18 @@ async function contractFailures(root, files, manifest) {
     ...(await sourceRootFailures(root, manifest)),
   ];
   return { failures, productiveSources };
+}
+
+async function temporaryExperimentCommandFailures(root, manifest) {
+  if (manifest?.temporaryExperiment === undefined) return [];
+  if (validateTemporaryExperiment(manifest).length > 0) return [];
+  const packageJson = await readJson(join(root, "package.json"));
+  return Object.entries(foundationExperimentScripts)
+    .filter(([name, command]) => packageJson.scripts?.[name] !== command)
+    .map(
+      ([name]) =>
+        `Temporary foundation experiment package script is missing or changed: ${name}.`,
+    );
 }
 
 async function productiveCommandFailures(root, ci, manifest) {
@@ -774,6 +838,73 @@ function pullRequestContractWorkflowFailures(workflow) {
   return [...markerFailures, ...unsafeFailures, ...branchFailures];
 }
 
+export function foundationEvaluationWorkflowFailures(workflow, manifest) {
+  if (manifest?.temporaryExperiment === undefined) return [];
+  const required = [
+    "push:",
+    "branches: [codex/11-foundation-macos-decision]",
+    "workflow_dispatch:",
+    "authorized_commit:",
+    "permissions: {}",
+    "runner: [macos-14, macos-26]",
+    "clean: true",
+    "persist-credentials: false",
+    "ref: ${{ inputs.authorized_commit || github.sha }}",
+    "node-version: 24.18.0",
+    "npm@11.16.0",
+    "rustc 1\\.92\\.0",
+    "rustup which --toolchain 1.92.0-aarch64-apple-darwin rustc",
+    "KEIKO_FOUNDATION_RUSTC=%s",
+    'test "$(uname -m)" = arm64',
+    'test "$(arch)" = arm64',
+    'test "${RUNNER_ARCH:-}" = ARM64',
+    'test "${{ inputs.authorized_commit }}" = "$GITHUB_SHA"',
+    'test "$GITHUB_EVENT_NAME" = push',
+    "refs/heads/codex/11-foundation-macos-decision",
+    "cargo test --locked --manifest-path experiments/tauri-renderer/Cargo.toml",
+    "cargo test --locked --manifest-path experiments/slint-renderer/Cargo.toml",
+    "KEIKO_FOUNDATION_RUNNER_LABEL: ${{ matrix.runner }}",
+    "cargo-bundle --version 0.11.0 --locked",
+    "cargo fetch --locked --manifest-path experiments/tauri-renderer/Cargo.toml",
+    "CARGO_NET_OFFLINE=true",
+    "git diff --exit-code -- experiments/tauri-renderer/Cargo.lock",
+    "ImageOS",
+    "ImageVersion",
+    "sw_vers -productVersion",
+    "npm run experiment:foundation:verify",
+    "npm run experiment:foundation:diagnostic",
+    "KEIKO_FOUNDATION_ARTIFACT_NAME",
+    "KEIKO_FOUNDATION_WORKFLOW_SHA: ${{ github.workflow_sha }}",
+    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    "retention-days: 30",
+    "include-hidden-files: true",
+  ];
+  const failures = required
+    .filter((marker) => !workflow.includes(marker))
+    .map(
+      (marker) =>
+        `Foundation evaluation workflow is missing marker: ${marker}.`,
+    );
+  const eventNames = workflowSection(workflow.split(/\r?\n/u), "on:")
+    .slice(1)
+    .filter((line) => /^ {2}[A-Za-z_][A-Za-z0-9_-]*:/u.test(line))
+    .map((line) => line.trim().slice(0, -1));
+  const pushSection = workflowSection(workflow.split(/\r?\n/u), "  push:");
+  if (
+    !isDeepStrictEqual(eventNames, ["push", "workflow_dispatch"]) ||
+    !isDeepStrictEqual(pushSection, [
+      "  push:",
+      "    branches: [codex/11-foundation-macos-decision]",
+    ])
+  )
+    failures.push(
+      "Foundation evaluation workflow events must remain closed to the exact issue branch push and governed dispatch.",
+    );
+  if (/pull_request_target|RUNNER_NAME|github\.token|secrets\./u.test(workflow))
+    failures.push("Foundation evaluation workflow crosses a denied boundary.");
+  return failures;
+}
+
 async function workflowFailures(root, manifest) {
   const workflowDirectory = join(root, ".github", "workflows");
   if (!(await exists(workflowDirectory)))
@@ -800,6 +931,10 @@ async function workflowFailures(root, manifest) {
     ),
     ...pullRequestContractWorkflowFailures(
       workflows.get("pr-contract.yml") ?? "",
+    ),
+    ...foundationEvaluationWorkflowFailures(
+      workflows.get("foundation-evaluation.yml") ?? "",
+      manifest,
     ),
     ...(await productiveCommandFailures(root, ci, manifest)),
   ];
@@ -845,6 +980,7 @@ export async function validateRepository(root) {
   const contract = await contractFailures(root, files, manifest);
   const failures = [
     ...contract.failures,
+    ...(await temporaryExperimentCommandFailures(root, manifest)),
     ...(await workflowFailures(root, manifest)),
     ...(await providerFailures(root)),
   ];
