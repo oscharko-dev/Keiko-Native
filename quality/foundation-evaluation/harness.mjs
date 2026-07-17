@@ -120,6 +120,35 @@ const failureStages = new Set([
   "provenance",
   "session-observer",
 ]);
+const candidateFailureDiagnostics = new Set([
+  "frontend-accessibility",
+  "frontend-bounded-work",
+  "frontend-finish",
+  "frontend-fixture-process",
+  "frontend-native-dialog",
+  "frontend-prepare-renderer",
+  "frontend-renderer-cycle",
+  "frontend-replay-protection",
+  "frontend-request-validation",
+  "frontend-runtime-event",
+  "frontend-stable-shell",
+  "frontend-startup",
+  "frontend-synthetic-input",
+  "host-evidence-invalid",
+  "host-watchdog-timeout",
+]);
+
+export function closedCandidateDiagnostic(stderr) {
+  if (!Buffer.isBuffer(stderr)) return "unavailable";
+  const matches = [
+    ...stderr
+      .toString("utf8")
+      .matchAll(/^KEIKO_DIAGNOSTIC_FAILURE:([a-z-]+)\r?$/gmu),
+  ]
+    .map((match) => match[1])
+    .filter((value) => candidateFailureDiagnostics.has(value));
+  return matches.length === 1 ? matches[0] : "unavailable";
+}
 
 function closedCandidateCode(evidence) {
   const candidates = [
@@ -182,6 +211,8 @@ export function sanitizedFailure(error, context = {}) {
             ? "running"
             : "missing",
   };
+  if (candidateFailureDiagnostics.has(context.candidateDiagnostic))
+    failure.diagnostic = context.candidateDiagnostic;
   if (failureStages.has(context.stage)) failure.stage = context.stage;
   return failure;
 }
@@ -1941,6 +1972,7 @@ export async function runCandidate(
   let stdoutBytes = 0;
   let stdoutBuffer = Buffer.alloc(0);
   let stderrBytes = 0;
+  let candidateDiagnostic = "unavailable";
   let completedSuccessfully = false;
   const signalApp = (signal) => {
     if (appPid === undefined) return;
@@ -2042,6 +2074,7 @@ export async function runCandidate(
         "candidate stderr",
       );
       stderrBytes = stderr.length;
+      candidateDiagnostic = closedCandidateDiagnostic(stderr);
       if (stdout.length < stdoutBytes) {
         outputFailure ??= new Error("candidate stdout was truncated");
         escalate("candidate stdout was truncated");
@@ -2209,6 +2242,7 @@ export async function runCandidate(
       appPid,
       appExitAt,
       candidate: entry.candidate,
+      candidateDiagnostic,
       evidence,
       mode: entry.mode,
       presentedAt,

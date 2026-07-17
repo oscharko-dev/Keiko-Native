@@ -27,6 +27,7 @@ import {
   auditedHarnessBinding,
   buildSchedule,
   buildDarwinSessionObserver,
+  closedCandidateDiagnostic,
   distribution,
   governedCheckout,
   inventory,
@@ -363,6 +364,23 @@ test("failure reporting is closed and never exposes raw diagnostics or paths", (
       }),
     false,
   );
+});
+
+test("retains only one allowlisted candidate failure diagnostic", () => {
+  assert.equal(
+    closedCandidateDiagnostic(
+      Buffer.from(
+        "/Users/local/private\nKEIKO_DIAGNOSTIC_FAILURE:frontend-renderer-cycle\nraw credential\n",
+      ),
+    ),
+    "frontend-renderer-cycle",
+  );
+  for (const stderr of [
+    "KEIKO_DIAGNOSTIC_FAILURE:not-allowlisted\n",
+    "KEIKO_DIAGNOSTIC_FAILURE:frontend-finish\nKEIKO_DIAGNOSTIC_FAILURE:frontend-startup\n",
+    "/Users/local/private credential\n",
+  ])
+    assert.equal(closedCandidateDiagnostic(Buffer.from(stderr)), "unavailable");
 });
 
 test("LaunchServices runner tracks the exact packaged process and bounded markers", async () => {
