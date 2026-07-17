@@ -141,6 +141,7 @@ test("recognizes productive native and application sources", () => {
     "native/core.rs",
     "src/main.ts",
     "src/bridge.mm",
+    "some-other-root/target/generated.rs",
   ]) {
     assert.equal(isProductiveSource(path), true);
   }
@@ -613,6 +614,27 @@ test("validates a complete bootstrap repository", async () => {
     const result = await validateRepository(root);
     assert.deepEqual(result.failures, []);
     assert.equal(result.phase, "bootstrap");
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("rejects temporary experiment source during bootstrap", async () => {
+  const root = await fixtureRepository();
+  try {
+    await mkdir(join(root, "experiments/tauri-renderer/src"), {
+      recursive: true,
+    });
+    await writeFile(
+      join(root, "experiments/tauri-renderer/src/main.rs"),
+      "fn main() {}\n",
+    );
+    const rejected = await validateRepository(root);
+    assert.equal(rejected.productiveSourceCount, 1);
+    assert.match(
+      rejected.failures.join("\n"),
+      /Productive source exists while the project is in bootstrap phase/u,
+    );
   } finally {
     await rm(root, { force: true, recursive: true });
   }
