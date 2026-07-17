@@ -16,7 +16,7 @@ export function Shell({ inputValue, onInput, onNativeCancel, status }: Props) {
       <input
         id="synthetic-input"
         autoComplete="off"
-        defaultValue={inputValue}
+        value={inputValue}
         onChange={onInput}
       />
       <div className="actions" role="group" aria-label="Foundation diagnostics">

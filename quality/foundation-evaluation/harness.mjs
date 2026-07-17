@@ -1701,6 +1701,14 @@ function sessionObserverForExecutable(
         ...options,
         timeout: 1_000,
       });
+      if (
+        result.status === 65 &&
+        result.signal === null &&
+        result.error === undefined &&
+        result.stderr === "" &&
+        result.stdout === ""
+      )
+        return undefined;
       invariant(
         result.status === 0 &&
           result.signal === null &&

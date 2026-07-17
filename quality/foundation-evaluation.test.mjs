@@ -265,15 +265,16 @@ function exactProcessCount(executable) {
 }
 
 test("keeps the release-like Tauri input editable without an evaluation hook", () => {
-  const shell = readFileSync(
+  const release = readFileSync(
     join(
       import.meta.dirname,
-      "../experiments/tauri-renderer/web/shared/Shell.tsx",
+      "../experiments/tauri-renderer/web/release/src/main.tsx",
     ),
     "utf8",
   );
-  assert.match(shell, /defaultValue=\{inputValue\}/u);
-  assert.doesNotMatch(shell, /\bvalue=\{inputValue\}/u);
+  assert.match(release, /useState\("ready"\)/u);
+  assert.match(release, /onInput=\{/u);
+  assert.doesNotMatch(release, /evaluation|invoke|dispatch/u);
 });
 
 test("uses the exact governed LaunchServices package invocation", () => {
@@ -735,7 +736,7 @@ test("reuses only an exact governed prepared session observer", async () => {
       /prepared session helper executable is invalid/u,
     );
     const containedRoot = join(preparedRoot, "contained");
-    await mkdir(containedRoot);
+    await mkdir(containedRoot, { mode: 0o700 });
     assert.throws(
       () =>
         buildDarwinSessionObserver(
@@ -754,6 +755,38 @@ test("reuses only an exact governed prepared session observer", async () => {
         ),
       /prepared session helper executable is invalid/u,
     );
+    await rm(preparedRoot, { force: true, recursive: true });
+  }
+});
+
+test("treats an observer target that exited after discovery as absent", async () => {
+  const repositoryRoot = join(import.meta.dirname, "..");
+  const preparedRoot = await mkdtemp(join(tmpdir(), "prepared-observer-race-"));
+  const executable = join(preparedRoot, "session-observer");
+  await writeFile(executable, "prepared fixture", { mode: 0o700 });
+  const executableSha256 = createHash("sha256")
+    .update(await readFile(executable))
+    .digest("hex");
+  const observer = buildDarwinSessionObserver(repositoryRoot, {
+    architecture: "arm64",
+    platform: "darwin",
+    prepared: {
+      executable,
+      executableSha256,
+      root: preparedRoot,
+    },
+    run: () => ({
+      error: undefined,
+      signal: null,
+      status: 65,
+      stderr: "",
+      stdout: "",
+    }),
+  });
+  try {
+    assert.equal(observer.sessionFor(17), undefined);
+  } finally {
+    observer.dispose();
     await rm(preparedRoot, { force: true, recursive: true });
   }
 });
