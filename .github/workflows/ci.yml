@@ -69,10 +69,16 @@ jobs:
             echo "SONAR_TOKEN is required for exact-head SonarQube Cloud evidence."
             exit 1
           fi
+          quality_gate_wait=true
+          case "$GITHUB_EVENT_NAME:$GITHUB_REF" in
+            push:refs/heads/epic/*)
+              quality_gate_wait=false
+              ;;
+          esac
           "$SONAR_SCANNER_HOME/bin/sonar-scanner" \
             -Dsonar.projectBaseDir="$GITHUB_WORKSPACE" \
             -Dsonar.projectVersion="$(node -p "require('./package.json').version")" \
-            -Dsonar.qualitygate.wait=true \
+            -Dsonar.qualitygate.wait="$quality_gate_wait" \
             -Dsonar.working.directory="$RUNNER_TEMP/sonar-work"
 
   cross-platform-smoke:

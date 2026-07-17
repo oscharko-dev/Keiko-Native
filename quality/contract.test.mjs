@@ -438,6 +438,10 @@ async function fixtureRepository() {
         "Build, scan, SBOM, smoke",
         "native",
       ].map((name) => `  name: ${name}`),
+      "quality_gate_wait=true",
+      "push:refs/heads/epic/*)",
+      "quality_gate_wait=false",
+      '-Dsonar.qualitygate.wait="$quality_gate_wait"',
     ].join("\n"),
   );
   for (const name of [
@@ -774,6 +778,22 @@ test("fails closed when workflow checks or the workflow directory are missing", 
     assert.match(
       missingDirectory.failures.join("\n"),
       /Missing workflow directory/u,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("fails closed when the CI Sonar quality-gate wait guard drifts", async () => {
+  const root = await fixtureRepository();
+  try {
+    const ciPath = join(root, ".github/workflows/ci.yml");
+    const ci = await readFile(ciPath, "utf8");
+    await writeFile(ciPath, ci.replace("push:refs/heads/epic/*)", ""));
+    const result = await validateRepository(root);
+    assert.match(
+      result.failures.join("\n"),
+      /CI Sonar quality-gate wait guard is missing marker/u,
     );
   } finally {
     await rm(root, { force: true, recursive: true });

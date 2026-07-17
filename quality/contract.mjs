@@ -64,6 +64,13 @@ const expectedWorkflowChecks = [
   "name: native",
 ];
 
+const sonarQualityGateWaitMarkers = [
+  "quality_gate_wait=true",
+  "push:refs/heads/epic/*)",
+  "quality_gate_wait=false",
+  '-Dsonar.qualitygate.wait="$quality_gate_wait"',
+];
+
 const epicPullRequestWorkflows = [
   "ci.yml",
   "codeql.yml",
@@ -669,11 +676,18 @@ function unpinnedWorkflowFailures(workflows) {
 }
 
 function ciWorkflowFailures(ci) {
-  return expectedWorkflowChecks
+  const checkFailures = expectedWorkflowChecks
     .filter((check) => !ci.includes(check))
     .map(
       (check) => `CI workflow does not emit required check marker: ${check}.`,
     );
+  const sonarFailures = sonarQualityGateWaitMarkers
+    .filter((marker) => !ci.includes(marker))
+    .map(
+      (marker) =>
+        `CI Sonar quality-gate wait guard is missing marker: ${marker}.`,
+    );
+  return [...checkFailures, ...sonarFailures];
 }
 
 function epicWorkflowFailures(workflows) {

@@ -65,12 +65,13 @@ function desiredStateForEvent(event, readiness, currentState) {
       ? { failures, outcome: "failed" }
       : { desiredState: requestedTarget };
   }
-  if (event?.action === "reopened") return LIFECYCLE_STATES[0];
+  if (event?.action === "reopened")
+    return { desiredState: LIFECYCLE_STATES[0] };
   if (event?.action === "closed" && event.issue?.state_reason === "completed")
-    return LIFECYCLE_STATES[8];
+    return { desiredState: LIFECYCLE_STATES[8] };
   if (event?.action === "edited" && readiness.current !== true)
-    return LIFECYCLE_STATES[0];
-  return undefined;
+    return { desiredState: LIFECYCLE_STATES[0] };
+  return {};
 }
 
 async function allIssueComments(repository, issueNumber, request) {
@@ -166,8 +167,7 @@ export async function runIssueLifecycleAction({
   });
   const desired = desiredStateForEvent(event, readiness, currentState);
   if (desired?.outcome === "failed") return desired;
-  const desiredState =
-    typeof desired === "string" ? desired : desired?.desiredState;
+  const desiredState = desired.desiredState;
   if (desiredState === undefined)
     return { failures: [], outcome: "ignored", readiness };
 
