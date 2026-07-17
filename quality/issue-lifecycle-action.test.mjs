@@ -249,7 +249,7 @@ test("runs the CLI wrapper with a hermetic event file", async (t) => {
   assert.equal(result.outcome, "planned");
   assert.deepEqual(writes, ["issue-lifecycle: planned\n"]);
   await assert.rejects(
-    runIssueLifecycleCli({ eventPath: undefined }),
+    runIssueLifecycleCli({ eventPath: "" }),
     /GITHUB_EVENT_PATH/u,
   );
 });

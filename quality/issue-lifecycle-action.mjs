@@ -209,7 +209,8 @@ export async function runIssueLifecycleCli({
   output = process.stdout,
   request = githubRequest,
 } = {}) {
-  if (eventPath === undefined) throw new Error("GITHUB_EVENT_PATH is missing.");
+  if (typeof eventPath !== "string" || eventPath.trim() === "")
+    throw new Error("GITHUB_EVENT_PATH is missing.");
   const event = JSON.parse(await readFile(eventPath, "utf8"));
   const result = await runIssueLifecycleAction({ event, request });
   output.write(`issue-lifecycle: ${result.outcome}\n`);
