@@ -50,8 +50,13 @@ test("rejects stale readiness, wrong delivery, and unready issue state", () => {
     /[0-9a-f]{64}/u,
     "b".repeat(64),
   );
+  fixture.pullRequest.body = fixture.pullRequest.body.replace(
+    "c".repeat(40),
+    "d".repeat(40),
+  );
   const failures = validatePullRequestContract(fixture).failures.join("\n");
   assert.match(failures, /Accepted target branch does not match/u);
+  assert.match(failures, /must cite the pull-request head SHA/u);
   assert.match(failures, /must remain open/u);
   assert.match(failures, /exactly one lifecycle status label/u);
   assert.match(failures, /current matching accepted readiness/u);
@@ -99,7 +104,7 @@ test("rejects incomplete PR evidence and unresolved template choices", () => {
   fixture.pullRequest.title = "short";
   fixture.pullRequest.body = fixture.pullRequest.body
     .replace(
-      "| AC1 | quality/pr-contract.test.mjs | abc123 | Pass |",
+      `| AC1 | quality/pr-contract.test.mjs | ${"c".repeat(40)} | Pass |`,
       "| AC1 | | | |",
     )
     .replace(

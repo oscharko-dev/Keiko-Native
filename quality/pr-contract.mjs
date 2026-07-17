@@ -75,13 +75,25 @@ function tableRows(section) {
     .filter((cells) => !cells.every((cell) => /^:?-{3,}:?$/u.test(cell)));
 }
 
-function hasCompleteEvidenceRow(section, firstCell) {
-  return tableRows(section).some(
+function completeEvidenceRows(section, firstCell) {
+  return tableRows(section).filter(
     (cells) =>
       cells.length >= 4 &&
       firstCell.test(cells[0]) &&
       cells.slice(0, 4).every((cell) => cell.length > 0),
   );
+}
+
+function exactHeadEvidenceFailures(sections, pullRequest) {
+  const head = pullRequest?.head?.sha;
+  if (!/^[\da-f]{40}$/iu.test(head ?? ""))
+    return ["Pull-request head SHA is missing or malformed."];
+  return completeEvidenceRows(
+    sections.get("Acceptance criteria and evidence"),
+    /^AC[1-9]\d*\b/u,
+  ).some((cells) => cells[2] !== head)
+    ? ["Acceptance-criteria evidence must cite the pull-request head SHA."]
+    : [];
 }
 
 function checkboxIsChecked(body, phrase) {
@@ -204,10 +216,10 @@ function scopeContractFailures(scope, pullRequest) {
 function evidenceFailures(sections) {
   const failures = [];
   if (
-    !hasCompleteEvidenceRow(
+    completeEvidenceRows(
       sections.get("Acceptance criteria and evidence"),
       /^AC[1-9]\d*\b/u,
-    )
+    ).length === 0
   )
     failures.push("Acceptance-criteria evidence has no complete result row.");
 
@@ -215,7 +227,7 @@ function evidenceFailures(sections) {
   failures.push(...applicabilityFailures(journey, "Acceptance Journey"));
   if (
     optionValue(fieldValue(journey, "Applicability")) === "Required" &&
-    !hasCompleteEvidenceRow(journey, /^J[1-9]\d*(?:\.[1-9]\d*)?\b/u)
+    completeEvidenceRows(journey, /^J[1-9]\d*(?:\.[1-9]\d*)?\b/u).length === 0
   )
     failures.push(
       "Required Acceptance Journey evidence has no complete result row.",
@@ -351,6 +363,7 @@ export function validatePullRequestContract({
     ...unresolvedPrFailures(body),
     ...scopeContractFailures(scope, pullRequest),
     ...evidenceFailures(sections),
+    ...exactHeadEvidenceFailures(sections, pullRequest),
     ...attestationFailures(sections, scope.acceptedTarget),
   );
 
