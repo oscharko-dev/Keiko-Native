@@ -23,6 +23,7 @@ const requiredFiles = [
   ".github/workflows/ci.yml",
   ".github/workflows/codeql.yml",
   ".github/workflows/dependency-review.yml",
+  ".github/workflows/issue-lifecycle.yml",
   ".github/workflows/issue-readiness.yml",
   ".github/workflows/mutation-security.yml",
   ".github/workflows/osv-scanner.yml",
@@ -36,11 +37,16 @@ const requiredFiles = [
   "docs/engineering/code-quality-standard.md",
   "docs/planning/agent-planning-baseline.md",
   "docs/product/source-baseline.md",
+  "docs/qa/issue-lifecycle.md",
   "docs/qa/repository-activation.md",
   "package.json",
   "quality/github-api.mjs",
   "quality/github-reference.mjs",
   "quality/issue-contract.mjs",
+  "quality/issue-lifecycle-action.mjs",
+  "quality/issue-lifecycle-readiness.mjs",
+  "quality/issue-lifecycle.mjs",
+  "quality/issue-lifecycle.test.mjs",
   "quality/issue-readiness-action.mjs",
   "quality/markdown-contract.mjs",
   "quality/pr-contract-action.mjs",
@@ -75,6 +81,33 @@ const issueReadinessMarkers = [
   "node quality/issue-readiness-action.mjs",
 ];
 
+const issueLifecycleTriggerTypes = [
+  "assigned",
+  "closed",
+  "edited",
+  "labeled",
+  "reopened",
+  "unassigned",
+  "unlabeled",
+];
+
+const issueLifecycleMarkers = [
+  "name: Issue lifecycle",
+  "group: issue-lifecycle-${{ github.event.issue.number }}",
+  "ref: dev",
+  "persist-credentials: false",
+  "KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
+  "node quality/issue-lifecycle-action.mjs",
+];
+
+const issueLifecyclePermissionMarkers = [
+  "permissions: {}",
+  "    permissions:",
+  "      contents: read",
+  "      issues: read",
+  "      pull-requests: read",
+];
+
 const pullRequestContractMarkers = [
   "types:",
   "opened",
@@ -87,6 +120,31 @@ const pullRequestContractMarkers = [
   "ref: dev",
   "statuses: write",
   "node quality/pr-contract-action.mjs",
+];
+
+const canonicalLifecycleStates = Object.freeze([
+  "status: new",
+  "status: triaged",
+  "status: ready",
+  "status: in progress",
+  "status: pr open",
+  "status: ready for human review",
+  "status: blocked",
+  "status: waiting for user",
+  "status: done",
+]);
+
+const issueTemplateFiles = [
+  ".github/ISSUE_TEMPLATE/decision_evaluation.md",
+  ".github/ISSUE_TEMPLATE/defect_finding.md",
+  ".github/ISSUE_TEMPLATE/epic.md",
+  ".github/ISSUE_TEMPLATE/feature_task.md",
+];
+
+const lifecycleCoverageIncludes = [
+  "quality/issue-lifecycle.mjs",
+  "quality/issue-lifecycle-readiness.mjs",
+  "quality/issue-lifecycle-action.mjs",
 ];
 
 const productiveExtensions = new Set([
@@ -315,6 +373,51 @@ async function readJson(path) {
   return JSON.parse(await readFile(path, "utf8"));
 }
 
+async function readText(root, files, path) {
+  return files.includes(path) ? readFile(join(root, path), "utf8") : "";
+}
+
+function unique(values) {
+  return [...new Set(values)];
+}
+
+function backtickStatusNames(text) {
+  return unique(
+    [...text.matchAll(/`(status: [^`]+)`/gu)].map((match) => match[1]),
+  );
+}
+
+function stringArrayConstant(source, name) {
+  const pattern = new RegExp(
+    String.raw`(?:export\s+)?const\s+${name}\s*=\s*(?:Object\.freeze\()?\s*\[([\s\S]*?)\]\s*\)?;`,
+    "u",
+  );
+  const body = pattern.exec(source)?.[1] ?? "";
+  return [...body.matchAll(/"([^"]+)"/gu)].map((match) => match[1]);
+}
+
+function lifecycleStateProjectionFailures(surface, states) {
+  const observed = new Set(states);
+  const expected = new Set(canonicalLifecycleStates);
+  const missing = canonicalLifecycleStates.filter(
+    (state) => !observed.has(state),
+  );
+  const unexpected = states.filter((state) => !expected.has(state));
+  return missing.length === 0 && unexpected.length === 0
+    ? []
+    : [
+        [
+          `Lifecycle state projection drift in ${surface}.`,
+          missing.length > 0 ? `Missing: ${missing.join(", ")}.` : "",
+          unexpected.length > 0
+            ? `Unexpected: ${unique(unexpected).join(", ")}.`
+            : "",
+        ]
+          .filter((part) => part !== "")
+          .join(" "),
+      ];
+}
+
 function requiredFileFailures(files) {
   return requiredFiles
     .filter((file) => !files.includes(file))
@@ -409,6 +512,77 @@ async function codeQualityStandardFailures(root, files) {
     );
 }
 
+async function lifecycleLinkFailures(root, files) {
+  const paths = ["AGENTS.md", ...issueTemplateFiles];
+  const results = await Promise.all(
+    paths.map(async (path) => ({
+      path,
+      text: await readText(root, files, path),
+    })),
+  );
+  return results
+    .filter((result) => !result.text.includes("docs/qa/issue-lifecycle.md"))
+    .map((result) => `Governance lifecycle link missing from ${result.path}.`);
+}
+
+async function lifecycleProjectionFailures(root, files) {
+  const surfaces = [
+    [
+      "quality/issue-lifecycle.mjs",
+      stringArrayConstant(
+        await readText(root, files, "quality/issue-lifecycle.mjs"),
+        "LIFECYCLE_STATES",
+      ),
+    ],
+    [
+      "quality/issue-lifecycle.test.mjs",
+      stringArrayConstant(
+        await readText(root, files, "quality/issue-lifecycle.test.mjs"),
+        "canonicalStates",
+      ),
+    ],
+    [
+      "docs/qa/issue-lifecycle.md",
+      backtickStatusNames(
+        await readText(root, files, "docs/qa/issue-lifecycle.md"),
+      ),
+    ],
+    [
+      "docs/qa/repository-activation.md",
+      backtickStatusNames(
+        await readText(root, files, "docs/qa/repository-activation.md"),
+      ),
+    ],
+    [
+      "AGENTS.md",
+      backtickStatusNames(await readText(root, files, "AGENTS.md")),
+    ],
+  ];
+  for (const path of issueTemplateFiles) {
+    surfaces.push([
+      path,
+      backtickStatusNames(await readText(root, files, path)),
+    ]);
+  }
+  return surfaces.flatMap(([surface, states]) =>
+    lifecycleStateProjectionFailures(surface, states),
+  );
+}
+
+async function coverageIncludeFailures(root, files) {
+  if (!files.includes("package.json")) return [];
+  const packageJson = await readJson(join(root, "package.json"));
+  const coverage = packageJson.scripts?.coverage ?? "";
+  return lifecycleCoverageIncludes
+    .filter(
+      (include) => !coverage.includes(`--test-coverage-include=${include}`),
+    )
+    .map(
+      (include) =>
+        `Coverage command must include lifecycle control-plane module: ${include}.`,
+    );
+}
+
 async function sourceRootFailures(root, manifest) {
   const sourceRoots = Array.isArray(manifest?.productiveSourceRoots)
     ? manifest.productiveSourceRoots
@@ -440,6 +614,9 @@ async function contractFailures(root, files, manifest) {
     ...(await sourceBaselineFailures(root, files)),
     ...(await agentPlanningBaselineFailures(root, files)),
     ...(await codeQualityStandardFailures(root, files)),
+    ...(await lifecycleLinkFailures(root, files)),
+    ...(await lifecycleProjectionFailures(root, files)),
+    ...(await coverageIncludeFailures(root, files)),
     ...bootstrapFailures,
     ...(await sourceRootFailures(root, manifest)),
   ];
@@ -535,6 +712,57 @@ function issueReadinessWorkflowFailures(workflow) {
   return failures;
 }
 
+function bracketList(marker, text) {
+  return (
+    new RegExp(String.raw`${marker}:\s*\[([^\]]*)\]`, "u")
+      .exec(text)?.[1]
+      ?.split(",")
+      .map((value) => value.trim())
+      .filter((value) => value !== "") ?? []
+  );
+}
+
+function workflowWritePermissions(workflow) {
+  return workflow
+    .split(/\r?\n/u)
+    .map(
+      (line) =>
+        /^\s*([A-Za-z][A-Za-z-]*):\s*(?:write|write-all)\s*(?:#.*)?$/u.exec(
+          line,
+        )?.[1],
+    )
+    .filter((name) => name !== undefined);
+}
+
+function issueLifecycleWorkflowFailures(workflow) {
+  const failures = issueLifecycleMarkers
+    .filter((marker) => !workflow.includes(marker))
+    .map((marker) => `Issue lifecycle workflow is missing marker: ${marker}.`);
+  failures.push(
+    ...issueLifecyclePermissionMarkers
+      .filter((marker) => !workflow.includes(marker))
+      .map(
+        (marker) =>
+          `Issue lifecycle workflow permission drift, missing marker: ${marker}.`,
+      ),
+  );
+  const triggerTypes = bracketList("types", workflow);
+  if (
+    JSON.stringify(triggerTypes) !== JSON.stringify(issueLifecycleTriggerTypes)
+  )
+    failures.push(
+      `Issue lifecycle workflow trigger types drifted: ${triggerTypes.join(", ")}.`,
+    );
+  if (workflow.includes("pull_request_target"))
+    failures.push("Issue lifecycle must not use pull_request_target.");
+  const writePermissions = [...new Set(workflowWritePermissions(workflow))];
+  if (writePermissions.length > 0)
+    failures.push(
+      `Issue lifecycle must not request write permissions: ${writePermissions.join(", ")}.`,
+    );
+  return failures;
+}
+
 function pullRequestContractWorkflowFailures(workflow) {
   const markerFailures = pullRequestContractMarkers
     .filter((marker) => !workflow.includes(marker))
@@ -587,6 +815,9 @@ async function workflowFailures(root, manifest) {
     ...epicWorkflowFailures(workflows),
     ...issueReadinessWorkflowFailures(
       workflows.get("issue-readiness.yml") ?? "",
+    ),
+    ...issueLifecycleWorkflowFailures(
+      workflows.get("issue-lifecycle.yml") ?? "",
     ),
     ...pullRequestContractWorkflowFailures(
       workflows.get("pr-contract.yml") ?? "",
