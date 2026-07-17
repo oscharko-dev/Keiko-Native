@@ -118,6 +118,7 @@ const failureCategories = [
   ["evidence", "evidence_schema"],
   ["journey", "evidence_schema"],
   ["diagnostic", "evidence_schema"],
+  ["retained result failed redaction", "result_redaction"],
   ["tracked or index drift", "checkout_tracked_drift"],
   ["unapproved untracked input", "checkout_untracked_input"],
   ["checkout changed", "checkout_identity_changed"],
@@ -141,6 +142,7 @@ const failurePhases = new Set([
   "failure-partial-write",
   "progress-partial-write",
   "final-checkout",
+  "result-redaction",
   "result-write",
   "result-hash",
 ]);
@@ -282,6 +284,8 @@ export function sanitizedFailure(error, context = {}) {
       failure.phase = context.phase;
     const checkout = closedCheckoutSummary(context.checkout);
     if (checkout !== undefined) failure.checkout = checkout;
+    const redaction = closedRedactionSummary(context.redaction);
+    if (redaction !== undefined) failure.redaction = redaction;
     return failure;
   }
   const message = error instanceof Error ? error.message.toLowerCase() : "";
@@ -337,6 +341,8 @@ export function sanitizedFailure(error, context = {}) {
   if (failurePhases.has(context.phase)) failure.phase = context.phase;
   const checkout = closedCheckoutSummary(context.checkout);
   if (checkout !== undefined) failure.checkout = checkout;
+  const redaction = closedRedactionSummary(context.redaction);
+  if (redaction !== undefined) failure.redaction = redaction;
   return failure;
 }
 
@@ -422,6 +428,52 @@ function closedCheckoutSummary(summary) {
       : untrackedPaths.length,
     untrackedPaths,
   };
+}
+
+const redactionKinds = new Set([
+  "absolute path",
+  "endpoint or stable identifier",
+  "forbidden field",
+  "local identity",
+  "raw path",
+  "URI or endpoint",
+]);
+
+function safeDiagnosticPath(path) {
+  return (
+    typeof path === "string" &&
+    path.length > 0 &&
+    path.length <= 240 &&
+    !path.startsWith("/") &&
+    /^[A-Za-z0-9_.[\]-]+$/u.test(path)
+  );
+}
+
+function closedRedactionSummary(findings) {
+  if (!Array.isArray(findings)) return undefined;
+  const closedFindings = findings
+    .filter(
+      (finding) =>
+        finding !== null &&
+        typeof finding === "object" &&
+        redactionKinds.has(finding.kind),
+    )
+    .map((finding) => ({
+      kind: finding.kind,
+      path: safeDiagnosticPath(finding.path) ? finding.path : undefined,
+    }));
+  if (closedFindings.length === 0) return undefined;
+  const kinds = [
+    ...new Set(closedFindings.map((finding) => finding.kind)),
+  ].sort((left, right) => left.localeCompare(right));
+  const paths = [
+    ...new Set(
+      closedFindings
+        .map((finding) => finding.path)
+        .filter((path) => path !== undefined),
+    ),
+  ].slice(0, 8);
+  return { count: findings.length, kinds, paths };
 }
 
 function execText(command, args) {
@@ -585,60 +637,74 @@ export function distribution(values) {
   };
 }
 
-export function redactionFailures(value, observation = {}) {
-  const serialized = JSON.stringify(value);
-  const retainedStrings = [];
-  const collectStrings = (entry) => {
-    if (typeof entry === "string") retainedStrings.push(entry);
-    else if (Array.isArray(entry)) entry.forEach(collectStrings);
-    else if (entry !== null && typeof entry === "object")
-      Object.values(entry).forEach(collectStrings);
-  };
-  collectStrings(value);
+function redactionPath(parent, segment) {
+  if (typeof segment === "number") return `${parent}[${String(segment)}]`;
+  if (/^[A-Za-z][A-Za-z0-9_-]{0,63}$/u.test(segment))
+    return parent === "" ? segment : `${parent}.${segment}`;
+  return parent === "" ? "[key]" : `${parent}.[key]`;
+}
+
+export function redactionFindings(value, observation = {}) {
   const forbidden = [
     observation.home,
     observation.hostname,
     observation.username,
   ].filter((entry) => typeof entry === "string" && entry.length >= 3);
-  const failures = [];
-  if (/\/Users\/|file:\/\/|[A-Za-z]:\\/u.test(serialized))
-    failures.push("raw path");
-  if (
-    /"(?:hostname|username|home|rawPath|secret|password|credential)"\s*:/iu.test(
-      serialized,
-    )
-  )
-    failures.push("forbidden field");
-  if (forbidden.some((entry) => serialized.includes(entry)))
-    failures.push("local identity");
-  if (
-    retainedStrings.some((entry) => {
+  const findings = [];
+  const add = (kind, path) => findings.push({ kind, path });
+  const walk = (entry, path = "value", depth = 0) => {
+    if (depth > 8) return;
+    if (typeof entry === "string") {
+      if (/\/Users\/|file:\/\/|[A-Za-z]:\\/u.test(entry)) add("raw path", path);
+      if (forbidden.some((forbiddenEntry) => entry.includes(forbiddenEntry)))
+        add("local identity", path);
       const trimmed = entry.trim();
-      return (
+      if (
         /^\/(?:[^/\0]+\/?)+/u.test(trimmed) ||
         /^[A-Za-z]:[\\/]/u.test(trimmed) ||
         /^\\\\[^\\]+\\/u.test(trimmed)
-      );
-    })
-  )
-    failures.push("absolute path");
-  if (
-    retainedStrings.some((entry) =>
-      /(?:^|\s)[a-z][a-z0-9+.-]*:\/\/\S+/iu.test(entry),
-    )
-  )
-    failures.push("URI or endpoint");
-  if (
-    retainedStrings.some(
-      (entry) =>
+      )
+        add("absolute path", path);
+      if (/(?:^|\s)[a-z][a-z0-9+.-]*:\/\/\S+/iu.test(entry))
+        add("URI or endpoint", path);
+      if (
         /\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b/u.test(entry) ||
         /\b[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[1-5][A-Fa-f0-9]{3}-[89ABab][A-Fa-f0-9]{3}-[A-Fa-f0-9]{12}\b/u.test(
           entry,
-        ),
-    )
-  )
-    failures.push("endpoint or stable identifier");
-  return failures;
+        )
+      )
+        add("endpoint or stable identifier", path);
+      return;
+    }
+    if (Array.isArray(entry)) {
+      entry.forEach((item, index) =>
+        walk(item, redactionPath(path, index), depth + 1),
+      );
+      return;
+    }
+    if (entry !== null && typeof entry === "object") {
+      Object.entries(entry).forEach(([key, child]) => {
+        const childPath = redactionPath(path, key);
+        if (
+          /^(?:hostname|username|home|rawPath|secret|password|credential)$/iu.test(
+            key,
+          )
+        )
+          add("forbidden field", childPath);
+        walk(child, childPath, depth + 1);
+      });
+    }
+  };
+  walk(value);
+  return findings;
+}
+
+export function redactionFailures(value, observation = {}) {
+  return [
+    ...new Set(
+      redactionFindings(value, observation).map((finding) => finding.kind),
+    ),
+  ];
 }
 
 function validateTree(value, depth = 0) {
@@ -2943,6 +3009,7 @@ export async function benchmark(
     : undefined;
   let sessionPhase = "observer-build";
   let activeEntry;
+  let retainedResult;
   try {
     return await withDarwinSessionObserver(
       root,
@@ -3055,14 +3122,14 @@ export async function benchmark(
           benchmarkId: stableResultIdentity(resultCore),
           ...resultCore,
         };
-        invariant(
-          redactionFailures(result, {
-            home: userInfo().homedir,
-            hostname: hostname(),
-            username: userInfo().username,
-          }).length === 0,
-          "retained result failed redaction",
-        );
+        retainedResult = result;
+        sessionPhase = "result-redaction";
+        const redaction = redactionFindings(result, {
+          home: userInfo().homedir,
+          hostname: hostname(),
+          username: userInfo().username,
+        });
+        invariant(redaction.length === 0, "retained result failed redaction");
         sessionPhase = "result-write";
         await writeJsonAtomic(resultPath, result, 0o600);
         sessionPhase = "result-hash";
@@ -3076,6 +3143,14 @@ export async function benchmark(
       checkout:
         sessionPhase === "final-checkout"
           ? checkoutDriftSummary(root)
+          : undefined,
+      redaction:
+        sessionPhase === "result-redaction" && retainedResult !== undefined
+          ? redactionFindings(retainedResult, {
+              home: userInfo().homedir,
+              hostname: hostname(),
+              username: userInfo().username,
+            })
           : undefined,
       phase: sessionPhase,
       stage: "session-observer",

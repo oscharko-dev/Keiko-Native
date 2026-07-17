@@ -366,6 +366,39 @@ test("failure reporting is closed and never exposes raw diagnostics or paths", (
     ).category,
     "identity_contract",
   );
+  assert.deepEqual(
+    sanitizedFailure(new Error("retained result failed redaction"), {
+      phase: "result-redaction",
+      redaction: [
+        { kind: "absolute path", path: "environment.rawPath" },
+        { kind: "URI or endpoint", path: "candidateEvidence.[key].url" },
+        { kind: "local identity", path: "/Users/runner/private" },
+      ],
+      stage: "session-observer",
+    }),
+    {
+      app: "missing",
+      candidate: "unavailable",
+      category: "result_redaction",
+      lastCandidateCode: "unavailable",
+      markers: {
+        evidence: "missing",
+        presented: "missing",
+        shutdown: "missing",
+      },
+      mode: "unavailable",
+      phase: "result-redaction",
+      redaction: {
+        count: 3,
+        kinds: ["absolute path", "local identity", "URI or endpoint"],
+        paths: ["environment.rawPath", "candidateEvidence.[key].url"],
+      },
+      sequence: null,
+      stage: "session-observer",
+      stderr: "unavailable",
+      wrapper: "missing",
+    },
+  );
   assert.equal(
     sanitizedFailure(new Error("raw environment details"), {
       phase: "sample-run",
