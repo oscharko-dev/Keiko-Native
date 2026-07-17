@@ -6,6 +6,12 @@ labels: ["type: defect", "status: new"]
 assignees: ""
 ---
 
+Lifecycle contract: [docs/qa/issue-lifecycle.md](../../docs/qa/issue-lifecycle.md).
+
+Canonical lifecycle states: `status: new`, `status: triaged`, `status: ready`,
+`status: in progress`, `status: pr open`, `status: ready for human review`, `status: blocked`,
+`status: waiting for user`, and `status: done`.
+
 Parent Epic: `None | #<epic_number>`
 
 ## Planning contract

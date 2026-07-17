@@ -47,6 +47,66 @@ const validTarget = {
   sourceRoot: "Sources",
 };
 
+const lifecycleStates = Object.freeze([
+  "status: new",
+  "status: triaged",
+  "status: ready",
+  "status: in progress",
+  "status: pr open",
+  "status: ready for human review",
+  "status: blocked",
+  "status: waiting for user",
+  "status: done",
+]);
+
+const coverageScript = [
+  "node --test --experimental-test-coverage",
+  "--test-coverage-include=quality/issue-lifecycle.mjs",
+  "--test-coverage-include=quality/issue-lifecycle-readiness.mjs",
+  "--test-coverage-include=quality/issue-lifecycle-action.mjs",
+].join(" ");
+
+const issueTemplateFiles = [
+  ".github/ISSUE_TEMPLATE/decision_evaluation.md",
+  ".github/ISSUE_TEMPLATE/defect_finding.md",
+  ".github/ISSUE_TEMPLATE/epic.md",
+  ".github/ISSUE_TEMPLATE/feature_task.md",
+];
+
+function lifecycleList(states = lifecycleStates) {
+  return states.map((state) => `- \`${state}\``).join("\n");
+}
+
+function lifecycleProjectionText(states = lifecycleStates) {
+  return [
+    "Lifecycle contract: [docs/qa/issue-lifecycle.md](../../docs/qa/issue-lifecycle.md).",
+    "",
+    lifecycleList(states),
+  ].join("\n");
+}
+
+function lifecycleModuleSource(states = lifecycleStates) {
+  return [
+    "export const LIFECYCLE_STATES = Object.freeze([",
+    ...states.map((state) => `  \"${state}\",`),
+    "]);",
+  ].join("\n");
+}
+
+function lifecycleFixtureSource(states = lifecycleStates) {
+  return [
+    "const canonicalStates = Object.freeze([",
+    ...states.map((state) => `  \"${state}\",`),
+    "]);",
+  ].join("\n");
+}
+
+function packageJson(scripts = {}) {
+  return JSON.stringify({
+    scripts: { coverage: coverageScript, quality: "fixture", ...scripts },
+  });
+}
+
 test("accepts the governed bootstrap manifest", () => {
   assert.deepEqual(validateManifest(validManifest), []);
 });
@@ -241,6 +301,7 @@ async function fixtureRepository() {
     ".github/pull_request_template.md",
     ".github/workflows/codeql.yml",
     ".github/workflows/dependency-review.yml",
+    ".github/workflows/issue-lifecycle.yml",
     ".github/workflows/issue-readiness.yml",
     ".github/workflows/mutation-security.yml",
     ".github/workflows/osv-scanner.yml",
@@ -253,11 +314,16 @@ async function fixtureRepository() {
     "SECURITY.md",
     "docs/planning/agent-planning-baseline.md",
     "docs/product/source-baseline.md",
+    "docs/qa/issue-lifecycle.md",
     "docs/qa/repository-activation.md",
     "package.json",
     "quality/github-api.mjs",
     "quality/github-reference.mjs",
     "quality/issue-contract.mjs",
+    "quality/issue-lifecycle-action.mjs",
+    "quality/issue-lifecycle-readiness.mjs",
+    "quality/issue-lifecycle.mjs",
+    "quality/issue-lifecycle.test.mjs",
     "quality/issue-readiness-action.mjs",
     "quality/markdown-contract.mjs",
     "quality/pr-contract-action.mjs",
@@ -268,10 +334,7 @@ async function fixtureRepository() {
     await mkdir(join(root, file, ".."), { recursive: true });
     await writeFile(join(root, file), "fixture\n");
   }
-  await writeFile(
-    join(root, "package.json"),
-    JSON.stringify({ scripts: { quality: "fixture" } }),
-  );
+  await writeFile(join(root, "package.json"), packageJson());
   await mkdir(join(root, "quality"), { recursive: true });
   await writeFile(
     join(root, "quality/project.json"),
@@ -315,6 +378,39 @@ async function fixtureRepository() {
       "A new foundational test framework requires an accepted decision.",
       "The production release artifact contains no test-only automation capability.",
     ].join("\n"),
+  );
+  await writeFile(
+    join(root, "AGENTS.md"),
+    [
+      "Lifecycle reference: [docs/qa/issue-lifecycle.md](docs/qa/issue-lifecycle.md).",
+      lifecycleList(),
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, "docs/qa/issue-lifecycle.md"),
+    [
+      "# Issue Lifecycle",
+      "## Canonical States",
+      lifecycleList(),
+      "## Allowed Edge Graph",
+      lifecycleList(),
+      "## Permitted Label Requests",
+      lifecycleList(),
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, "docs/qa/repository-activation.md"),
+    ["# Repository activation checklist", lifecycleList()].join("\n"),
+  );
+  for (const file of issueTemplateFiles)
+    await writeFile(join(root, file), lifecycleProjectionText());
+  await writeFile(
+    join(root, "quality/issue-lifecycle.mjs"),
+    lifecycleModuleSource(),
+  );
+  await writeFile(
+    join(root, "quality/issue-lifecycle.test.mjs"),
+    lifecycleFixtureSource(),
   );
   await writeFile(
     join(root, ".markdown-quality.json"),
@@ -370,6 +466,33 @@ async function fixtureRepository() {
       "pull-requests: read",
       "statuses: write",
       "node quality/issue-readiness-action.mjs",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, ".github/workflows/issue-lifecycle.yml"),
+    [
+      "name: Issue lifecycle",
+      "on:",
+      "  issues:",
+      "    types: [assigned, closed, edited, labeled, reopened, unassigned, unlabeled]",
+      "permissions: {}",
+      "concurrency:",
+      "  group: issue-lifecycle-${{ github.event.issue.number }}",
+      "jobs:",
+      "  classify:",
+      "    permissions:",
+      "      contents: read",
+      "      issues: read",
+      "      pull-requests: read",
+      "    steps:",
+      "      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+      "        with:",
+      "          persist-credentials: false",
+      "          ref: dev",
+      "      - name: Compute the inert lifecycle decision",
+      "        env:",
+      "          KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
+      "        run: node quality/issue-lifecycle-action.mjs",
     ].join("\n"),
   );
   await writeFile(
@@ -515,15 +638,15 @@ test("fails closed for missing declared productive roots", async () => {
     const commandNames = Object.values(validTarget.commands);
     await writeFile(
       join(root, "package.json"),
-      JSON.stringify({
-        scripts: Object.fromEntries([
+      packageJson(
+        Object.fromEntries([
           ...commandNames.map((command) => [command, "node --version"]),
           [
             "quality",
             commandNames.map((command) => `npm run ${command}`).join(" && "),
           ],
         ]),
-      }),
+      ),
     );
     const ciPath = join(root, ".github/workflows/ci.yml");
     const ci = await readFile(ciPath, "utf8");
@@ -558,15 +681,15 @@ test("accepts declared productive source roots and targets", async () => {
     const commandNames = Object.values(validTarget.commands);
     await writeFile(
       join(root, "package.json"),
-      JSON.stringify({
-        scripts: Object.fromEntries([
+      packageJson(
+        Object.fromEntries([
           ...commandNames.map((command) => [command, "node --version"]),
           [
             "quality",
             commandNames.map((command) => `npm run ${command}`).join(" && "),
           ],
         ]),
-      }),
+      ),
     );
     const ciPath = join(root, ".github/workflows/ci.yml");
     const ci = await readFile(ciPath, "utf8");
@@ -686,6 +809,95 @@ test("rejects undeclared Gitar rules and configuration surfaces", async () => {
       result.failures.join("\n"),
       /exactly the governed review lenses/u,
     );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("fails closed when lifecycle governance links drift", async () => {
+  const root = await fixtureRepository();
+  try {
+    await writeFile(join(root, "AGENTS.md"), lifecycleList());
+    const result = await validateRepository(root);
+    assert.match(
+      result.failures.join("\n"),
+      /Governance lifecycle link missing from AGENTS.md/u,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("fails closed on lifecycle state projection drift", async () => {
+  const driftCases = [
+    {
+      path: "quality/issue-lifecycle.mjs",
+      text: lifecycleModuleSource([...lifecycleStates, "status: archived"]),
+    },
+    {
+      path: "quality/issue-lifecycle.test.mjs",
+      text: lifecycleFixtureSource(
+        lifecycleStates.map((state) =>
+          state === "status: done" ? "status: complete" : state,
+        ),
+      ),
+    },
+    {
+      path: "docs/qa/issue-lifecycle.md",
+      text: lifecycleProjectionText(lifecycleStates.slice(1)),
+    },
+    {
+      path: "docs/qa/repository-activation.md",
+      text: lifecycleProjectionText(
+        lifecycleStates.filter((state) => state !== "status: triaged"),
+      ),
+    },
+    {
+      path: ".github/ISSUE_TEMPLATE/feature_task.md",
+      text: lifecycleProjectionText(
+        lifecycleStates.map((state) =>
+          state === "status: ready" ? "status: prepared" : state,
+        ),
+      ),
+    },
+  ];
+
+  for (const { path, text } of driftCases) {
+    const root = await fixtureRepository();
+    try {
+      await writeFile(join(root, path), text);
+      const result = await validateRepository(root);
+      assert.match(result.failures.join("\n"), new RegExp(path, "u"));
+      assert.match(
+        result.failures.join("\n"),
+        /Lifecycle state projection drift/u,
+      );
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  }
+});
+
+test("fails closed when lifecycle workflow or coverage wiring drifts", async () => {
+  const root = await fixtureRepository();
+  try {
+    await writeFile(
+      join(root, ".github/workflows/issue-lifecycle.yml"),
+      "name: Issue lifecycle\ntypes: [closed, edited]\n",
+    );
+    await writeFile(
+      join(root, "package.json"),
+      packageJson({
+        coverage: coverageScript.replace(
+          " --test-coverage-include=quality/issue-lifecycle-action.mjs",
+          "",
+        ),
+      }),
+    );
+    const result = await validateRepository(root);
+    const failures = result.failures.join("\n");
+    assert.match(failures, /Issue lifecycle workflow trigger types drifted/u);
+    assert.match(failures, /Coverage command must include/u);
   } finally {
     await rm(root, { force: true, recursive: true });
   }
