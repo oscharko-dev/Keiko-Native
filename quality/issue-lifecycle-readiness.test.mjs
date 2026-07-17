@@ -85,6 +85,7 @@ test("accepts only the latest trusted matching readiness record", () => {
     readiness({ comments: [mismatched], expectedCommentId: 12 }),
     "mismatched",
   );
+  assertReason(readiness({ expectedCommentId: undefined }), "missing");
   assertReason(readiness({ expectedCommentId: 999 }), "replayed");
   assertReason(
     readiness({ comments: [malformed], expectedCommentId: 13 }),
@@ -144,12 +145,47 @@ test("requires validated claims and pull-request topology for active states", ()
     }),
     "validated_claim_required",
   );
+  assertReason(
+    evaluateClaimPrecondition({
+      claim: { id: "claim-1", validated: true },
+      readiness: { ok: true },
+      sourceState: "status: ready",
+    }),
+    "current_readiness_required",
+  );
   assert.deepEqual(
-    evaluateClaimRelease({ hasOpenPullRequest: false, readiness: current }),
+    evaluateClaimRelease({
+      hasOpenPullRequest: false,
+      readiness: current,
+      release: { id: "release-1", validated: true },
+      sourceState: "status: in progress",
+    }),
     { ok: true, target: "status: ready" },
   );
   assertReason(
-    evaluateClaimRelease({ hasOpenPullRequest: true, readiness: current }),
+    evaluateClaimRelease({
+      hasOpenPullRequest: false,
+      readiness: current,
+      sourceState: "status: in progress",
+    }),
+    "validated_release_required",
+  );
+  assertReason(
+    evaluateClaimRelease({
+      hasOpenPullRequest: false,
+      readiness: current,
+      release: { validated: true },
+      sourceState: "status: ready",
+    }),
+    "in_progress_source_required",
+  );
+  assertReason(
+    evaluateClaimRelease({
+      hasOpenPullRequest: true,
+      readiness: current,
+      release: { validated: true },
+      sourceState: "status: in progress",
+    }),
     "open_pull_request_retained",
   );
 });
@@ -173,6 +209,15 @@ test("evaluates PR open and unmerged-close recovery topology", () => {
       sourceState: "status: in progress",
     }),
     "validated_pr_required",
+  );
+  assertReason(
+    evaluatePullRequestTopology({
+      event: "opened",
+      pullRequest: { validated: true },
+      readiness: { ok: true },
+      sourceState: "status: in progress",
+    }),
+    "current_readiness_required",
   );
   assert.deepEqual(
     evaluatePullRequestTopology({
@@ -261,6 +306,17 @@ test("records paused sources and derives resume destinations without restoring r
       readiness: current,
     }).target,
     "status: new",
+  );
+  assert.equal(
+    evaluateResumePrecondition({ readiness: current }).target,
+    "status: new",
+  );
+  assert.equal(
+    evaluateResumePrecondition({
+      pauseEvidence: { suspendedSource: "status: triaged", validated: false },
+      readiness: current,
+    }).target,
+    "status: triaged",
   );
   assert.equal(
     evaluateResumePrecondition({

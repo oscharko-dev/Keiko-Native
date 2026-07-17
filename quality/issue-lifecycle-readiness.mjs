@@ -75,10 +75,9 @@ export function evaluateCurrentReadiness(input = {}) {
     return fail("malformed");
   if (record.fingerprint === undefined) return fail("malformed");
   if (record.status !== "accepted") return fail("superseded");
-  if (
-    input.expectedCommentId !== undefined &&
-    record.commentId !== input.expectedCommentId
-  )
+  if (input.expectedCommentId === undefined)
+    return fail("missing", { field: "expectedCommentId", record });
+  if (record.commentId !== input.expectedCommentId)
     return fail("replayed", { record });
   if (record.version !== input.currentVersion) return fail("stale", { record });
   if (record.fingerprint !== currentFingerprint(input))
@@ -89,9 +88,7 @@ export function evaluateCurrentReadiness(input = {}) {
 }
 
 function requireCurrent(readiness) {
-  return readiness?.current === true || readiness?.ok === true
-    ? []
-    : ["current_readiness_required"];
+  return readiness?.current === true ? [] : ["current_readiness_required"];
 }
 
 function validEdge(source, target) {
@@ -117,8 +114,15 @@ export function evaluateClaimPrecondition({ claim, readiness, sourceState }) {
     : ok({ claimId: claim.id, target: IN_PROGRESS });
 }
 
-export function evaluateClaimRelease({ hasOpenPullRequest, readiness }) {
+export function evaluateClaimRelease({
+  hasOpenPullRequest,
+  readiness,
+  release,
+  sourceState,
+}) {
   const failures = requireCurrent(readiness);
+  if (sourceState !== IN_PROGRESS) failures.push("in_progress_source_required");
+  if (release?.validated !== true) failures.push("validated_release_required");
   if (hasOpenPullRequest === true) failures.push("open_pull_request_retained");
   return failures.length > 0 ? fail(failures[0]) : ok({ target: READY });
 }
