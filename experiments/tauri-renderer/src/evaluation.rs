@@ -26,8 +26,13 @@ const MAX_AXE_RULE_ID_BYTES: usize = 64;
 const EXPECTED_WINDOW: &str = "main";
 const FIXTURE_TERM_MS: u64 = 100;
 const FIXTURE_KILL_MS: u64 = 1_000;
-const EVALUATION_WATCHDOG_MS: u64 = 20_000;
+// The bounded prepare, native-dialog, fixture, and two renderer-probe paths can
+// legitimately consume just over 20 seconds under slow scheduling. Keep the
+// host watchdog after that aggregate budget but before the harness's 30-second
+// hard timeout so a genuine hang still fails closed with time to flush evidence.
+const EVALUATION_WATCHDOG_MS: u64 = 28_000;
 const _: () = assert!(FIXTURE_TERM_MS + FIXTURE_KILL_MS < 5_000);
+const _: () = assert!(EVALUATION_WATCHDOG_MS < 30_000);
 
 unsafe extern "C" {
     fn keiko_evaluation_activate() -> i32;
