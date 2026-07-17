@@ -311,7 +311,16 @@ test("uses the exact governed LaunchServices package invocation", () => {
     "/tmp/stderr",
   ]);
   assert.ok(arguments_.includes("--env"));
-  assert.ok(arguments_.includes("SLINT_BACKEND=winit-femtovg"));
+  assert.equal(arguments_.includes("SLINT_BACKEND=winit-femtovg"), false);
+  assert.ok(
+    launchServicesArguments({
+      candidate: "slint",
+      mode: "cold",
+      packagePath: "/tmp/Candidate.app",
+      stderrPath: "/tmp/stderr",
+      stdoutPath: "/tmp/stdout",
+    }).includes("SLINT_BACKEND=winit-femtovg"),
+  );
   assert.equal(arguments_.includes("-o"), false);
   assert.deepEqual(arguments_.slice(-5), [
     "/tmp/Candidate.app",
@@ -471,6 +480,40 @@ test("LaunchServices runner tracks the exact packaged process and bounded marker
     assert.equal(sample.mode, "cold");
     assert.equal(exactProcessCount(fixture.executable), 0);
   } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("diagnostic runner can bypass LaunchServices with the exact packaged executable", async () => {
+  const fixture = await launcherFixture("escaped");
+  try {
+    const result = await runCandidate(
+      {
+        executable: fixture.executable,
+        packagePath: fixture.packagePath,
+      },
+      { candidate: "tauri", iteration: 0, mode: "cold", sequence: 0 },
+      {},
+      {
+        launchMode: "direct-executable",
+        sessionObserver: unitSessionObserver,
+        timeoutMs: 15_000,
+      },
+    );
+    assert.equal(result.sample.candidate, "tauri");
+    assert.deepEqual(result.evidencePayload.fixture, runnerFixture);
+    assert.equal(exactProcessCount(fixture.executable), 0);
+  } finally {
+    for (const pid of spawnSync("/usr/bin/pgrep", ["-f", fixture.escapeWorker])
+      .stdout.toString("utf8")
+      .trim()
+      .split(/\s+/u)
+      .filter(Boolean))
+      try {
+        process.kill(-Number(pid), "SIGKILL");
+      } catch {
+        process.kill(Number(pid), "SIGKILL");
+      }
     await rm(fixture.root, { recursive: true, force: true });
   }
 });

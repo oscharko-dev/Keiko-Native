@@ -1,9 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import {
   chmodSync,
+  closeSync,
   createReadStream,
   mkdtempSync,
   lstatSync,
+  openSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -1549,19 +1551,33 @@ const launchEnvironment = [
   "LC_ALL=en_US.UTF-8",
   "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
   "RUST_BACKTRACE=0",
-  "SLINT_BACKEND=winit-femtovg",
   "TMPDIR=/tmp",
 ];
 
-export function launchServicesArguments({
+function launchEnvironmentFor(candidate) {
+  invariant(CANDIDATES.includes(candidate), "launch candidate is invalid");
+  return [
+    ...launchEnvironment,
+    ...(candidate === "slint" ? ["SLINT_BACKEND=winit-femtovg"] : []),
+  ];
+}
+
+function launchEnvironmentObject(candidate) {
+  return Object.fromEntries(
+    launchEnvironmentFor(candidate).map((entry) => {
+      const separator = entry.indexOf("=");
+      invariant(separator > 0, "launch environment entry is invalid");
+      return [entry.slice(0, separator), entry.slice(separator + 1)];
+    }),
+  );
+}
+
+function candidateArguments({
   fixtureAck,
   fixtureCleanupAck,
   fixtureEscalationAck,
   fixtureMarker,
   mode,
-  packagePath,
-  stderrPath,
-  stdoutPath,
 }) {
   invariant(["cold", "warm"].includes(mode), "launch mode is invalid");
   invariant(
@@ -1576,16 +1592,6 @@ export function launchServicesArguments({
     "fixture acknowledgement path is invalid",
   );
   return [
-    "-n",
-    "-F",
-    "-W",
-    "--stdout",
-    stdoutPath,
-    "--stderr",
-    stderrPath,
-    ...launchEnvironment.flatMap((value) => ["--env", value]),
-    packagePath,
-    "--args",
     "--evaluation-json",
     "--mode",
     mode,
@@ -1601,6 +1607,38 @@ export function launchServicesArguments({
           "--fixture-cleanup-ack",
           fixtureCleanupAck,
         ]),
+  ];
+}
+
+export function launchServicesArguments({
+  candidate = "tauri",
+  fixtureAck,
+  fixtureCleanupAck,
+  fixtureEscalationAck,
+  fixtureMarker,
+  mode,
+  packagePath,
+  stderrPath,
+  stdoutPath,
+}) {
+  return [
+    "-n",
+    "-F",
+    "-W",
+    "--stdout",
+    stdoutPath,
+    "--stderr",
+    stderrPath,
+    ...launchEnvironmentFor(candidate).flatMap((value) => ["--env", value]),
+    packagePath,
+    "--args",
+    ...candidateArguments({
+      fixtureAck,
+      fixtureCleanupAck,
+      fixtureEscalationAck,
+      fixtureMarker,
+      mode,
+    }),
   ];
 }
 
@@ -1896,12 +1934,18 @@ export async function runCandidate(
   entry,
   observation,
   {
+    launchMode = "launch-services",
     openPath = "/usr/bin/open",
-    requireFixtureObservation = openPath === "/usr/bin/open",
+    requireFixtureObservation = openPath === "/usr/bin/open" ||
+      launchMode === "direct-executable",
     sessionObserver,
     timeoutMs = RUN_TIMEOUT_MS,
   } = {},
 ) {
+  invariant(
+    ["launch-services", "direct-executable"].includes(launchMode),
+    "candidate launch mode is invalid",
+  );
   invariant(
     sessionObserver !== undefined &&
       typeof sessionObserver.sessionFor === "function",
@@ -1932,24 +1976,51 @@ export async function runCandidate(
     writeFile(stderrPath, "", { mode: 0o600 }),
   ]);
   const started = process.hrtime.bigint();
-  const wrapper = spawn(
-    openPath,
-    launchServicesArguments({
-      mode: entry.mode,
-      packagePath: definition.packagePath,
-      fixtureAck,
-      fixtureCleanupAck,
-      fixtureEscalationAck,
-      fixtureMarker,
-      stderrPath,
-      stdoutPath,
-    }),
-    {
-      detached: true,
-      env: safeLauncherEnvironment(),
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
+  const directExecutable = launchMode === "direct-executable";
+  const wrapper = directExecutable
+    ? (() => {
+        const stdoutFd = openSync(stdoutPath, "a");
+        const stderrFd = openSync(stderrPath, "a");
+        try {
+          return spawn(
+            definition.executable,
+            candidateArguments({
+              mode: entry.mode,
+              fixtureAck,
+              fixtureCleanupAck,
+              fixtureEscalationAck,
+              fixtureMarker,
+            }),
+            {
+              detached: true,
+              env: launchEnvironmentObject(entry.candidate),
+              stdio: ["ignore", stdoutFd, stderrFd],
+            },
+          );
+        } finally {
+          closeSync(stdoutFd);
+          closeSync(stderrFd);
+        }
+      })()
+    : spawn(
+        openPath,
+        launchServicesArguments({
+          candidate: entry.candidate,
+          mode: entry.mode,
+          packagePath: definition.packagePath,
+          fixtureAck,
+          fixtureCleanupAck,
+          fixtureEscalationAck,
+          fixtureMarker,
+          stderrPath,
+          stdoutPath,
+        }),
+        {
+          detached: true,
+          env: safeLauncherEnvironment(),
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
   const wrapperGroup = wrapper.pid;
   let fixtureGroup;
   let fixturePid;
@@ -2027,12 +2098,14 @@ export async function runCandidate(
   let wrapperExit;
   let wrapperError;
   let wrapperOutputBytes = 0;
-  wrapper.stdout.on("data", (chunk) => {
-    wrapperOutputBytes += chunk.length;
-  });
-  wrapper.stderr.on("data", (chunk) => {
-    wrapperOutputBytes += chunk.length;
-  });
+  if (wrapper.stdout !== null)
+    wrapper.stdout.on("data", (chunk) => {
+      wrapperOutputBytes += chunk.length;
+    });
+  if (wrapper.stderr !== null)
+    wrapper.stderr.on("data", (chunk) => {
+      wrapperOutputBytes += chunk.length;
+    });
   wrapper.once("error", (error) => {
     wrapperError = error;
   });
@@ -2040,8 +2113,8 @@ export async function runCandidate(
     wrapperExit = { code, signal };
   });
 
-  let appPid;
-  let appGroup;
+  let appPid = directExecutable ? wrapper.pid : undefined;
+  let appGroup = directExecutable ? processGroupFor(wrapper.pid) : undefined;
   let appExitAt;
   let evidence;
   let escalationAt;
@@ -2734,7 +2807,12 @@ export async function benchmark(
               configuration[entry.candidate],
               entry,
               observation,
-              { sessionObserver },
+              {
+                launchMode: diagnostic
+                  ? "direct-executable"
+                  : "launch-services",
+                sessionObserver,
+              },
             );
             candidateEvidence[run.sample.candidateEvidenceSha256] =
               run.evidencePayload;
