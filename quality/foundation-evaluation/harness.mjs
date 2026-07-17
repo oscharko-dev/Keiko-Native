@@ -132,6 +132,15 @@ const failureStages = new Set([
   "provenance",
   "session-observer",
 ]);
+const failurePhases = new Set([
+  "observer-build",
+  "sample-run",
+  "failure-partial-write",
+  "progress-partial-write",
+  "final-checkout",
+  "result-write",
+  "result-hash",
+]);
 const candidateFailureDiagnostics = new Set([
   "frontend-accessibility",
   "frontend-bounded-work",
@@ -250,7 +259,26 @@ export function closedCandidateDiagnostics(evidence) {
 }
 
 export function sanitizedFailure(error, context = {}) {
-  if (error?.foundationFailure !== undefined) return error.foundationFailure;
+  if (error?.foundationFailure !== undefined) {
+    const failure = { ...error.foundationFailure };
+    if (
+      failure.candidate === "unavailable" &&
+      CANDIDATES.includes(context.candidate)
+    )
+      failure.candidate = context.candidate;
+    if (
+      failure.mode === "unavailable" &&
+      ["cold", "warm"].includes(context.mode)
+    )
+      failure.mode = context.mode;
+    if (failure.sequence === null && Number.isSafeInteger(context.sequence))
+      failure.sequence = context.sequence;
+    if (failure.stage === undefined && failureStages.has(context.stage))
+      failure.stage = context.stage;
+    if (failure.phase === undefined && failurePhases.has(context.phase))
+      failure.phase = context.phase;
+    return failure;
+  }
   const message = error instanceof Error ? error.message.toLowerCase() : "";
   const category =
     failureCategories.find(([fragment]) => message.includes(fragment))?.[1] ??
@@ -301,6 +329,7 @@ export function sanitizedFailure(error, context = {}) {
   if (candidateFailureDiagnostics.has(context.candidateDiagnostic))
     failure.diagnostic = context.candidateDiagnostic;
   if (failureStages.has(context.stage)) failure.stage = context.stage;
+  if (failurePhases.has(context.phase)) failure.phase = context.phase;
   return failure;
 }
 
@@ -2851,13 +2880,17 @@ export async function benchmark(
   const prepared = diagnostic
     ? preparedSessionObserverFromEnvironment(environment)
     : undefined;
-  return atEvaluationStage("session-observer", () =>
-    withDarwinSessionObserver(
+  let sessionPhase = "observer-build";
+  let activeEntry;
+  try {
+    return await withDarwinSessionObserver(
       root,
       { prepared, rustcPath },
       async (sessionObserver) => {
         harness.sessionObserver = sessionObserver.binding;
         for (const entry of schedule) {
+          activeEntry = entry;
+          sessionPhase = "sample-run";
           try {
             const run = await runCandidate(
               configuration[entry.candidate],
@@ -2874,8 +2907,13 @@ export async function benchmark(
               run.evidencePayload;
             samples.push(run.sample);
           } catch (error) {
-            const sampleFailure = failureError(error, entry);
+            const sampleFailure = failureError(error, {
+              ...entry,
+              phase: sessionPhase,
+              stage: "session-observer",
+            });
             const failure = sanitizedFailure(sampleFailure, entry);
+            sessionPhase = "failure-partial-write";
             await writeFailurePartialOrThrow(
               partialPath,
               {
@@ -2896,23 +2934,32 @@ export async function benchmark(
             );
           }
           const completedPairs = samples.length / CANDIDATES.length;
-          await writeJsonAtomic(
-            partialPath,
-            {
-              bindings,
-              candidateEvidence,
-              counts,
-              environment: observation,
-              evidenceSchemaVersion: EVIDENCE_SCHEMA_VERSION,
-              experiment,
-              harness,
-              incomplete: true,
-              quick,
-              samples,
-              schedule,
-            },
-            0o600,
-          );
+          sessionPhase = "progress-partial-write";
+          try {
+            await writeJsonAtomic(
+              partialPath,
+              {
+                bindings,
+                candidateEvidence,
+                counts,
+                environment: observation,
+                evidenceSchemaVersion: EVIDENCE_SCHEMA_VERSION,
+                experiment,
+                harness,
+                incomplete: true,
+                quick,
+                samples,
+                schedule,
+              },
+              0o600,
+            );
+          } catch (error) {
+            throw failureError(error, {
+              ...entry,
+              phase: sessionPhase,
+              stage: "session-observer",
+            });
+          }
           if (
             Number.isInteger(completedPairs) &&
             !quick &&
@@ -2923,6 +2970,8 @@ export async function benchmark(
               totalPairs: schedule.length / CANDIDATES.length,
             });
         }
+        activeEntry = undefined;
+        sessionPhase = "final-checkout";
         const completedCheckout = await governedCheckout(root);
         invariant(
           sameJson(completedCheckout, checkout),
@@ -2953,12 +3002,20 @@ export async function benchmark(
           }).length === 0,
           "retained result failed redaction",
         );
+        sessionPhase = "result-write";
         await writeJsonAtomic(resultPath, result, 0o600);
+        sessionPhase = "result-hash";
         await rm(partialPath, { force: true });
         return { result, resultPath };
       },
-    ),
-  );
+    );
+  } catch (error) {
+    throw failureError(error, {
+      ...(activeEntry ?? {}),
+      phase: sessionPhase,
+      stage: "session-observer",
+    });
+  }
 }
 
 function sameJson(left, right) {

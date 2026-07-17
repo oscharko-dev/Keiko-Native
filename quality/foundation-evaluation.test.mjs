@@ -368,9 +368,49 @@ test("failure reporting is closed and never exposes raw diagnostics or paths", (
   );
   assert.equal(
     sanitizedFailure(new Error("raw environment details"), {
+      phase: "sample-run",
       stage: "provenance",
     }).stage,
     "provenance",
+  );
+  assert.equal(
+    sanitizedFailure(new Error("raw environment details"), {
+      phase: "sample-run",
+      stage: "session-observer",
+    }).phase,
+    "sample-run",
+  );
+  const stageOnly = new Error("foundation evaluation failed");
+  stageOnly.foundationFailure = sanitizedFailure(
+    new Error("raw environment details"),
+    {
+      stage: "session-observer",
+    },
+  );
+  assert.deepEqual(
+    sanitizedFailure(stageOnly, {
+      candidate: "tauri",
+      mode: "cold",
+      phase: "progress-partial-write",
+      sequence: 0,
+    }),
+    {
+      app: "missing",
+      candidate: "tauri",
+      category: "unknown",
+      lastCandidateCode: "unavailable",
+      markers: {
+        evidence: "missing",
+        presented: "missing",
+        shutdown: "missing",
+      },
+      mode: "cold",
+      phase: "progress-partial-write",
+      sequence: 0,
+      stage: "session-observer",
+      stderr: "unavailable",
+      wrapper: "missing",
+    },
   );
   for (const [message, category] of [
     [
@@ -387,6 +427,13 @@ test("failure reporting is closed and never exposes raw diagnostics or paths", (
     "stage" in
       sanitizedFailure(new Error("raw environment details"), {
         stage: "not-allowlisted",
+      }),
+    false,
+  );
+  assert.equal(
+    "phase" in
+      sanitizedFailure(new Error("raw environment details"), {
+        phase: "not-allowlisted",
       }),
     false,
   );
