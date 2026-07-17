@@ -1,0 +1,111 @@
+name: Foundation evaluation diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      authorized_commit:
+        description: Exact authorized issue 11 commit SHA
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  diagnostic:
+    name: diagnostic (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-14, macos-26]
+    steps:
+      - name: Clean checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          clean: true
+          persist-credentials: false
+          ref: ${{ inputs.authorized_commit }}
+      - name: Exact Node toolchain
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.18.0
+      - name: Verify exact toolchains and ARM64 runner
+        env:
+          EXPECTED_RUNNER: ${{ matrix.runner }}
+        run: |
+          set -euo pipefail
+          test "${{ inputs.authorized_commit }}" = "$GITHUB_SHA"
+          test "$GITHUB_REF" = refs/heads/codex/11-foundation-macos-decision
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$(git show -s --format=%T "$GITHUB_SHA")"
+          test "$(uname -m)" = arm64
+          test "$(arch)" = arm64
+          test "${RUNNER_ARCH:-}" = ARM64
+          test "$(node --version)" = v24.18.0
+          npm install --global npm@11.16.0
+          test "$(npm --version)" = 11.16.0
+          rustup show active-toolchain | grep -Eq '^1\.92\.0-.* \(overridden by '
+          rustc --version | grep -Eq '^rustc 1\.92\.0 '
+          foundation_rustc="$(rustup which --toolchain 1.92.0-aarch64-apple-darwin rustc)"
+          test "${foundation_rustc#/}" != "$foundation_rustc"
+          printf 'KEIKO_FOUNDATION_RUSTC=%s\n' "$foundation_rustc" >>"$GITHUB_ENV"
+          test "$EXPECTED_RUNNER" = macos-14 -o "$EXPECTED_RUNNER" = macos-26
+          test -n "${ImageOS:-}"
+          test -n "${ImageVersion:-}"
+          sw_vers -productVersion | grep -Eq '^[0-9]+\.[0-9]+(\.[0-9]+)?$'
+      - name: Install locked dependencies and candidate packager
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npm --prefix experiments/tauri-renderer/web ci --ignore-scripts
+          cargo install cargo-bundle --version 0.11.0 --locked --root "$RUNNER_TEMP/cargo-bundle"
+          cargo fetch --locked --manifest-path experiments/tauri-renderer/Cargo.toml
+          cargo fetch --locked --manifest-path experiments/slint-renderer/Cargo.toml
+      - name: Build, test, and package both candidates
+        run: |
+          set -euo pipefail
+          npm --prefix experiments/tauri-renderer/web run typecheck
+          npm --prefix experiments/tauri-renderer/web run build
+          cargo test --locked --manifest-path experiments/tauri-renderer/Cargo.toml --features evaluation-hook
+          cargo test --locked --manifest-path experiments/slint-renderer/Cargo.toml --features evaluation-hook
+          (
+            cd experiments/tauri-renderer
+            CARGO_NET_OFFLINE=true CARGO_TARGET_DIR=target/evaluation npm exec --yes @tauri-apps/cli@2.11.4 -- build --bundles app --features evaluation-hook --config evaluation.config.json
+            CARGO_NET_OFFLINE=true CARGO_TARGET_DIR=target/release-like npm exec --yes @tauri-apps/cli@2.11.4 -- build --bundles app
+          )
+          (
+            cd experiments/slint-renderer
+            CARGO_NET_OFFLINE=true CARGO_TARGET_DIR=target/issue11-instrumented "$RUNNER_TEMP/cargo-bundle/bin/cargo-bundle" --release --format osx --features evaluation-hook
+            CARGO_NET_OFFLINE=true CARGO_TARGET_DIR=target/issue11-release-like "$RUNNER_TEMP/cargo-bundle/bin/cargo-bundle" --release --format osx --no-default-features
+          )
+          cargo metadata --locked --no-deps --manifest-path experiments/tauri-renderer/Cargo.toml >/dev/null
+          cargo metadata --locked --no-deps --manifest-path experiments/slint-renderer/Cargo.toml >/dev/null
+          git diff --exit-code -- experiments/tauri-renderer/Cargo.lock experiments/tauri-renderer/web/package-lock.json experiments/slint-renderer/Cargo.lock
+      - name: Verify packages and run short diagnostic timing
+        env:
+          KEIKO_FOUNDATION_RESULT: .foundation-evaluation/diagnostic-${{ matrix.runner }}.json
+          KEIKO_FOUNDATION_ARTIFACT_FILE: .foundation-evaluation/diagnostic-${{ matrix.runner }}.json
+          KEIKO_FOUNDATION_ARTIFACT_NAME: foundation-diagnostic-${{ matrix.runner }}
+          KEIKO_FOUNDATION_RUNNER_LABEL: ${{ matrix.runner }}
+          KEIKO_FOUNDATION_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          KEIKO_FOUNDATION_SLINT_PACKAGE: experiments/slint-renderer/target/issue11-instrumented/release/bundle/osx/Keiko Foundation Slint Evaluation.app
+          KEIKO_FOUNDATION_SLINT_RELEASE_PACKAGE: experiments/slint-renderer/target/issue11-release-like/release/bundle/osx/Keiko Foundation Slint Evaluation.app
+          KEIKO_FOUNDATION_TAURI_PACKAGE: experiments/tauri-renderer/target/evaluation/release/bundle/macos/Keiko Foundation Tauri Evaluation.app
+          KEIKO_FOUNDATION_TAURI_RELEASE_PACKAGE: experiments/tauri-renderer/target/release-like/release/bundle/macos/Keiko Foundation Tauri Evaluation.app
+        run: |
+          set -euo pipefail
+          npm run experiment:foundation:verify
+          npm run experiment:foundation:diagnostic
+          shasum -a 256 "$KEIKO_FOUNDATION_RESULT" | awk '{print $1}' >"$KEIKO_FOUNDATION_RESULT.sha256"
+      - name: Upload sanitized diagnostic evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: foundation-diagnostic-${{ matrix.runner }}
+          path: |
+            .foundation-evaluation/diagnostic-${{ matrix.runner }}.json
+            .foundation-evaluation/diagnostic-${{ matrix.runner }}.json.sha256
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30

@@ -1,0 +1,423 @@
+{
+  "schema_version": 1,
+  "title": "Foundation host evaluation primary-source index",
+  "scope": {
+    "epic": "oscharko-dev/Keiko-Native#9 contract v5",
+    "issue": "oscharko-dev/Keiko-Native#11 contract v2",
+    "platform": "macOS Foundation decision; Windows is a future reopen condition",
+    "accessed_on": "2026-07-17"
+  },
+  "method": {
+    "authority": "Framework maintainers, platform vendors, and tool vendors only",
+    "v1_salvage": "Only sources.json and paper-screen.md at 8684b68 were inspected as untrusted search leads.",
+    "revalidation": "Every retained URL was opened again against its current or pinned official publication.",
+    "exclusions": [
+      "No v1 prose, source code, measurements, binaries, Windows results, or fingerprint is evidence.",
+      "A missing official route is recorded as an evidence gap, not proof that the capability is impossible.",
+      "This index contains no Tauri-versus-Slint prototype result or recommendation."
+    ]
+  },
+  "sources": [
+    {
+      "id": "T01",
+      "publisher": "Tauri Programme within The Commons Conservancy",
+      "title": "Capabilities | Tauri",
+      "url": "https://v2.tauri.app/security/capabilities/",
+      "version": "Tauri 2 documentation",
+      "claims": [
+        "Capabilities grant or deny permissions by window or webview.",
+        "Application commands require explicit AppManifest restriction for a closed command surface."
+      ]
+    },
+    {
+      "id": "T02",
+      "publisher": "Tauri Programme within The Commons Conservancy",
+      "title": "WebDriver | Tauri",
+      "url": "https://v2.tauri.app/develop/tests/webdriver/",
+      "version": "Tauri 2 documentation, updated 2026-06-29",
+      "claims": [
+        "WebdriverIO's Tauri service documents Windows, Linux, and macOS support.",
+        "The free macOS route embeds a WebDriver server in the tested application; direct tauri-driver omits macOS.",
+        "The embedded plugin must therefore be proved absent from a release-like package."
+      ]
+    },
+    {
+      "id": "T03",
+      "publisher": "Tauri Programme within The Commons Conservancy",
+      "title": "Updater | Tauri",
+      "url": "https://v2.tauri.app/plugin/updater/",
+      "version": "Tauri 2 documentation",
+      "claims": [
+        "The updater supports macOS and requires signatures for update verification.",
+        "Update signing cannot be disabled."
+      ]
+    },
+    {
+      "id": "T04",
+      "publisher": "Tauri Programme within The Commons Conservancy",
+      "title": "macOS Code Signing | Tauri",
+      "url": "https://v2.tauri.app/distribute/sign/macos/",
+      "version": "Tauri 2 documentation",
+      "claims": [
+        "Tauri documents Developer ID signing and Apple notarization inputs for macOS distribution."
+      ]
+    },
+    {
+      "id": "T05",
+      "publisher": "Tauri Programme within The Commons Conservancy",
+      "title": "Tauri workspace Cargo manifest",
+      "url": "https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/Cargo.toml",
+      "version": "tauri-v2.11.5",
+      "claims": [
+        "The pinned Tauri workspace declares MIT OR Apache-2.0 licensing."
+      ]
+    },
+    {
+      "id": "S01",
+      "publisher": "Slint",
+      "title": "Desktop | Slint Docs",
+      "url": "https://docs.slint.dev/latest/docs/slint/guide/platforms/desktop/",
+      "version": "Latest documentation; candidate release v1.17.1",
+      "claims": [
+        "Slint documents tested Apple Silicon macOS 14, 15, and 26 desktop configurations.",
+        "Slint also documents Windows desktop configurations for the later reopen."
+      ]
+    },
+    {
+      "id": "S02",
+      "publisher": "Slint",
+      "title": "Common Properties & Callbacks | Slint Docs",
+      "url": "https://docs.slint.dev/latest/docs/slint/reference/common/",
+      "version": "Latest documentation; candidate release v1.17.1",
+      "claims": [
+        "Slint exposes roles, labels, descriptions, actions, landmarks, and stable accessibility identifiers."
+      ]
+    },
+    {
+      "id": "S03",
+      "publisher": "Slint",
+      "title": "Cargo Features | slint",
+      "url": "https://docs.rs/slint/1.17.1/slint/docs/cargo_features/",
+      "version": "1.17.1",
+      "claims": [
+        "The system-testing feature permits remote UI introspection and control.",
+        "Slint labels system-testing a developer/testing feature and does not recommend it for production builds."
+      ]
+    },
+    {
+      "id": "S04",
+      "publisher": "SixtyFPS GmbH",
+      "title": "Slint Royalty-free Desktop, Mobile, and Web Applications License",
+      "url": "https://slint.dev/terms-and-conditions#slint-royalty-free-license-20",
+      "version": "2.0",
+      "claims": [
+        "The royalty-free grant covers distribution as part of a desktop application.",
+        "Distribution requires either the AboutSlint widget in an About or splash surface, or an easily found attribution badge on a public webpage."
+      ]
+    },
+    {
+      "id": "S05",
+      "publisher": "Sparkle Project",
+      "title": "Sparkle 2 Documentation",
+      "url": "https://sparkle-project.org/documentation/",
+      "version": "Sparkle 2 documentation",
+      "claims": [
+        "Sparkle documents a separate macOS updater framework with Ed25519 update signatures.",
+        "Using it would add a native framework, packaging, signing, key-management, and lifecycle boundary; it is not a Slint-owned integrated updater."
+      ]
+    },
+    {
+      "id": "A01",
+      "publisher": "Apple",
+      "title": "XCTest",
+      "url": "https://developer.apple.com/documentation/xctest",
+      "version": "Apple Developer Documentation",
+      "claims": [
+        "XCTest with XCUIAutomation can interact with application UI and validate user flows."
+      ]
+    },
+    {
+      "id": "A02",
+      "publisher": "Apple",
+      "title": "Notarizing macOS software before distribution",
+      "url": "https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution",
+      "version": "Apple Developer Documentation",
+      "claims": [
+        "Developer ID-signed macOS software can be submitted to Apple's notary service.",
+        "Successful notarization produces a ticket that can be stapled to supported distribution artifacts."
+      ]
+    },
+    {
+      "id": "GH01",
+      "publisher": "GitHub",
+      "title": "GitHub-hosted runners reference",
+      "url": "https://docs.github.com/en/actions/reference/runners/github-hosted-runners",
+      "version": "GitHub Actions documentation",
+      "claims": [
+        "GitHub documents standard macos-14 and macos-26 runners as Apple Silicon M1 arm64.",
+        "Workflow logs remain the authority for the exact image used by an evidence run."
+      ]
+    },
+    {
+      "id": "Q01",
+      "publisher": "The Qt Company",
+      "title": "Supported Platforms | Qt 6.11",
+      "url": "https://doc.qt.io/qt-6/supported-platforms.html",
+      "version": "Qt 6.11",
+      "claims": [
+        "Qt documents arm64 macOS and x86-64 Windows desktop targets.",
+        "Platform support can vary by module and licence."
+      ]
+    },
+    {
+      "id": "Q02",
+      "publisher": "The Qt Company",
+      "title": "Qt Licensing | Qt 6.11",
+      "url": "https://doc.qt.io/qt-6/licensing.html",
+      "version": "Qt 6.11",
+      "claims": [
+        "Qt offers commercial and LGPLv3/GPL routes with module-specific exceptions.",
+        "A module-level legal and redistribution inventory is required."
+      ]
+    },
+    {
+      "id": "Q03",
+      "publisher": "The Qt Company",
+      "title": "Accessibility for Qt Quick Applications | Qt 6.11",
+      "url": "https://doc.qt.io/qt-6/accessible-qtquick.html",
+      "version": "Qt 6.11",
+      "claims": [
+        "Qt Quick controls expose keyboard behavior and accessibility metadata.",
+        "Custom QML items require explicit accessible roles, names, and actions."
+      ]
+    },
+    {
+      "id": "Q04",
+      "publisher": "The Qt Company",
+      "title": "Qt Quick Test | Qt 6.11",
+      "url": "https://doc.qt.io/qt-6/qtquicktest-index.html",
+      "version": "Qt 6.11.1",
+      "claims": [
+        "Qt Quick Test is an in-process unit-test framework for QML applications.",
+        "It does not by itself establish external packaged-shell or native-dialog automation."
+      ]
+    },
+    {
+      "id": "Q05",
+      "publisher": "The Qt Company",
+      "title": "Overview of Qt Installer Framework",
+      "url": "https://doc.qt.io/qtinstallerframework/ifw-overview.html",
+      "version": "Qt Installer Framework 4.11.0",
+      "claims": [
+        "Qt Installer Framework documents installer and maintenance-tool construction."
+      ]
+    },
+    {
+      "id": "Q06",
+      "publisher": "KDAB",
+      "title": "Introduction | CXX-Qt Documentation",
+      "url": "https://kdab.github.io/cxx-qt/book/",
+      "version": "Current published documentation",
+      "claims": [
+        "CXX-Qt generates a C++ representation and CXX bridge from Rust annotations.",
+        "Its documented CI covers x86-64 Windows and macOS, not Apple Silicon."
+      ]
+    },
+    {
+      "id": "P01",
+      "publisher": "Zed Industries",
+      "title": "GPUI README",
+      "url": "https://github.com/zed-industries/zed/blob/058f01fa93503491a735bfded53e77bfaa276148/crates/gpui/README.md",
+      "version": "source commit 058f01fa93503491a735bfded53e77bfaa276148",
+      "claims": [
+        "GPUI documents macOS Metal and Windows Win32/DirectWrite platform routes.",
+        "GPUI is pre-1.0, frequently breaking, and directs consumers to source code for much of the API."
+      ]
+    },
+    {
+      "id": "P02",
+      "publisher": "Zed Industries",
+      "title": "GPUI Cargo manifest",
+      "url": "https://github.com/zed-industries/zed/blob/058f01fa93503491a735bfded53e77bfaa276148/crates/gpui/Cargo.toml",
+      "version": "gpui 0.2.2 at source commit 058f01fa93503491a735bfded53e77bfaa276148",
+      "claims": ["The GPUI crate declares Apache-2.0 licensing."]
+    },
+    {
+      "id": "D01",
+      "publisher": "Dioxus Labs",
+      "title": "Desktop | Dioxus 0.7",
+      "url": "https://dioxuslabs.com/learn/0.7/guides/platforms/desktop/",
+      "version": "0.7",
+      "claims": [
+        "Dioxus Desktop uses a system WebView while Rust code runs natively.",
+        "Raw JavaScript and bidirectional WebView messaging are available through document evaluation."
+      ]
+    },
+    {
+      "id": "D02",
+      "publisher": "Dioxus Labs",
+      "title": "Bundle | Dioxus 0.7",
+      "url": "https://dioxuslabs.com/learn/0.7/tutorial/bundle/",
+      "version": "0.7",
+      "claims": ["Dioxus documents desktop bundle generation through its CLI."]
+    },
+    {
+      "id": "D03",
+      "publisher": "Dioxus Labs",
+      "title": "Testing and Debugging | Dioxus 0.7",
+      "url": "https://dioxuslabs.com/learn/0.7/guides/testing/",
+      "version": "0.7",
+      "claims": [
+        "Official end-to-end guidance points to Playwright browser testing.",
+        "The guidance does not establish packaged desktop or native-dialog automation."
+      ]
+    },
+    {
+      "id": "D04",
+      "publisher": "Dioxus Labs",
+      "title": "Dioxus MIT License",
+      "url": "https://github.com/DioxusLabs/dioxus/blob/v0.7.0/LICENSE-MIT",
+      "version": "v0.7.0",
+      "claims": ["Dioxus v0.7.0 is distributed under MIT terms."]
+    },
+    {
+      "id": "F01",
+      "publisher": "Flutter project",
+      "title": "Desktop support for Flutter",
+      "url": "https://docs.flutter.dev/platform-integration/desktop",
+      "version": "Flutter 3.44 documentation",
+      "claims": [
+        "Flutter documents native Windows and macOS desktop builds and release builds."
+      ]
+    },
+    {
+      "id": "F02",
+      "publisher": "Flutter project",
+      "title": "Bind to native code using the legacy FFI plugin template",
+      "url": "https://docs.flutter.dev/platform-integration/legacy-ffi-plugin",
+      "version": "Flutter 3.44 documentation",
+      "claims": [
+        "Flutter desktop applications can call native C APIs through dart:ffi.",
+        "Current guidance prefers the package_ffi template over the legacy plugin_ffi template."
+      ]
+    },
+    {
+      "id": "F03",
+      "publisher": "Flutter project",
+      "title": "Testing plugins",
+      "url": "https://docs.flutter.dev/testing/testing-plugins",
+      "version": "Flutter 3.44 documentation",
+      "claims": [
+        "Dart integration_test cannot interact with native UI such as native dialogs.",
+        "Flutter points to a native UI framework or another tool when native UI interaction is required."
+      ]
+    },
+    {
+      "id": "F04",
+      "publisher": "Flutter project",
+      "title": "Accessibility",
+      "url": "https://docs.flutter.dev/ui/accessibility",
+      "version": "Flutter 3.44 documentation",
+      "claims": [
+        "Flutter documents framework semantics and an accessibility release checklist.",
+        "The cited checklist is not macOS VoiceOver or IME acceptance evidence."
+      ]
+    },
+    {
+      "id": "F05",
+      "publisher": "Flutter project",
+      "title": "Flutter BSD 3-Clause License",
+      "url": "https://github.com/flutter/flutter/blob/3.44.0/LICENSE",
+      "version": "3.44.0",
+      "claims": ["Flutter 3.44.0 is distributed under BSD 3-Clause terms."]
+    },
+    {
+      "id": "N01",
+      "publisher": "Microsoft",
+      "title": "Get started with WinUI",
+      "url": "https://learn.microsoft.com/en-us/windows/apps/get-started/winui-get-started-overview",
+      "version": "Microsoft Learn",
+      "claims": [
+        "WinUI 3 is a Windows-only native desktop UI framework supporting C# and C++."
+      ]
+    },
+    {
+      "id": "N02",
+      "publisher": "Microsoft",
+      "title": "UI Automation Overview",
+      "url": "https://learn.microsoft.com/en-us/dotnet/framework/ui-automation/ui-automation-overview",
+      "version": "Microsoft Learn",
+      "claims": [
+        "Microsoft UI Automation exposes desktop UI elements to assistive tools and automated tests."
+      ]
+    },
+    {
+      "id": "N03",
+      "publisher": "Microsoft",
+      "title": "What is MSIX?",
+      "url": "https://learn.microsoft.com/en-us/windows/msix/overview",
+      "version": "Microsoft Learn, updated 2026-04-15",
+      "claims": [
+        "MSIX provides Windows packaging, signed integrity, install and uninstall, and update routes."
+      ]
+    },
+    {
+      "id": "N04",
+      "publisher": "Apple",
+      "title": "SwiftUI",
+      "url": "https://developer.apple.com/documentation/swiftui",
+      "version": "Apple Developer Documentation",
+      "claims": ["SwiftUI is Apple's declarative application UI framework."]
+    },
+    {
+      "id": "B01",
+      "publisher": "rust-windowing project",
+      "title": "Window | winit",
+      "url": "https://docs.rs/winit/0.30.13/winit/window/struct.Window.html",
+      "version": "winit 0.30.13",
+      "claims": [
+        "winit provides cross-platform window and event-loop plumbing.",
+        "IME is opt-in and requires the consumer to manage IME events and candidate-window geometry."
+      ]
+    },
+    {
+      "id": "B02",
+      "publisher": "gfx-rs project",
+      "title": "wgpu",
+      "url": "https://wgpu.rs/",
+      "version": "wgpu 30.0.0 documentation",
+      "claims": [
+        "wgpu provides native Metal and DirectX 12 graphics backends.",
+        "wgpu is a graphics API, not a widget, accessibility, automation, or updater platform."
+      ]
+    },
+    {
+      "id": "B03",
+      "publisher": "AccessKit project",
+      "title": "accesskit_winit",
+      "url": "https://docs.rs/accesskit_winit/0.33.2/accesskit_winit/",
+      "version": "accesskit_winit 0.33.2",
+      "claims": [
+        "The winit adapter depends on platform adapters for macOS and Windows.",
+        "The consumer still owns the complete semantic tree and widget behavior."
+      ]
+    }
+  ],
+  "evidence_gaps": [
+    {
+      "id": "GAP-SLINT-UPDATER",
+      "status": "accepted candidate hard-gate failure",
+      "statement": "No Slint-owned integrated signed updater was identified in the official Slint desktop, platform, feature, or licensing documentation inspected on 2026-07-17. Sparkle is a possible separate macOS recipe, not evidence that Slint satisfies the issue's signed-update win-gate; the evaluation therefore records this as a Slint failure rather than an unresolved environmental stop."
+    },
+    {
+      "id": "GAP-SLINT-LICENCE",
+      "status": "accepted candidate hard-gate failure",
+      "statement": "Royalty-free License 2.0 has an explicit attribution condition. The prototype implemented no reviewed compliant attribution route, so Slint fails the evaluation licence gate; any future reconsideration still requires legal review."
+    },
+    {
+      "id": "GAP-SLINT-TEST-ISOLATION",
+      "status": "resolved by release-like package proof",
+      "statement": "The documented system-testing feature exposes remote UI control and is not recommended for production. The governed release-like package scan proved that the feature, environment-triggered connection path, and test server were absent; the exact proof is retained in the benchmark evidence map."
+    }
+  ]
+}
