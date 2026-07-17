@@ -5,16 +5,13 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
-  foundationEvaluationWorkflowFailures,
   isProductiveSource,
-  isAuthorizedExperimentSource,
   isSafeRepositoryPath,
   normalizeRepositoryPath,
   sonarRequiredForEvent,
   sonarWorkflowFailures,
   unpinnedActionReferences,
   validateManifest,
-  validateTemporaryExperiment,
   validateNativeTarget,
   validateRepository,
   workflowEventTargetsBranch,
@@ -37,20 +34,6 @@ const validManifest = {
   },
 };
 
-const validExperiment = {
-  commands: [
-    "experiment:foundation:verify",
-    "experiment:foundation:benchmark",
-    "experiment:foundation:diagnostic",
-    "experiment:foundation:audit",
-  ],
-  contractVersion: 2,
-  issue: 11,
-  kind: "foundation-stack-evaluation",
-  sourceRoots: ["experiments/tauri-renderer", "experiments/slint-renderer"],
-  workflow: ".github/workflows/foundation-evaluation.yml",
-};
-
 const validTarget = {
   commands: {
     architecture: "native:architecture",
@@ -68,110 +51,6 @@ const validTarget = {
 
 test("accepts the governed bootstrap manifest", () => {
   assert.deepEqual(validateManifest(validManifest), []);
-});
-
-test("permits only the exact issue 11 experiment roots during bootstrap", () => {
-  const manifest = { ...validManifest, temporaryExperiment: validExperiment };
-  assert.deepEqual(validateTemporaryExperiment(manifest), []);
-  assert.equal(
-    isAuthorizedExperimentSource(
-      "experiments/tauri-renderer/src/main.rs",
-      validManifest,
-    ),
-    false,
-  );
-  assert.equal(
-    isAuthorizedExperimentSource(
-      "experiments/tauri-renderer/src/main.rs",
-      manifest,
-    ),
-    true,
-  );
-  assert.equal(
-    isAuthorizedExperimentSource(
-      "experiments/slint-renderer/ui/main.slint",
-      manifest,
-    ),
-    true,
-  );
-  assert.equal(
-    isAuthorizedExperimentSource(
-      "experiments/third-candidate/src/main.rs",
-      manifest,
-    ),
-    false,
-  );
-  assert.ok(
-    validateTemporaryExperiment({
-      ...manifest,
-      temporaryExperiment: {
-        ...validExperiment,
-        sourceRoots: [
-          ...validExperiment.sourceRoots,
-          "experiments/third-candidate",
-        ],
-      },
-    }).length > 0,
-  );
-  assert.ok(
-    validateTemporaryExperiment({ ...manifest, phase: "productive" }).length >
-      0,
-  );
-});
-
-test("keeps the temporary foundation diagnostic ARM64 and fail closed", async () => {
-  const workflow = await readFile(
-    join(
-      import.meta.dirname,
-      "..",
-      ".github/workflows/foundation-evaluation.yml",
-    ),
-    "utf8",
-  );
-  const manifest = { ...validManifest, temporaryExperiment: validExperiment };
-  assert.deepEqual(
-    foundationEvaluationWorkflowFailures(workflow, manifest),
-    [],
-  );
-  assert.ok(
-    foundationEvaluationWorkflowFailures(
-      workflow.replace('test "${RUNNER_ARCH:-}" = ARM64', "true"),
-      manifest,
-    ).length > 0,
-  );
-  assert.ok(
-    foundationEvaluationWorkflowFailures(
-      workflow.replace(
-        "branches: [codex/11-foundation-macos-decision]",
-        "branches: [dev]",
-      ),
-      manifest,
-    ).length > 0,
-  );
-  assert.ok(
-    foundationEvaluationWorkflowFailures(
-      workflow.replace(
-        "  workflow_dispatch:",
-        "  pull_request:\n  workflow_dispatch:",
-      ),
-      manifest,
-    ).length > 0,
-  );
-  assert.ok(
-    foundationEvaluationWorkflowFailures(
-      workflow.replace(
-        "include-hidden-files: true",
-        "include-hidden-files: false",
-      ),
-      manifest,
-    ).length > 0,
-  );
-  assert.ok(
-    foundationEvaluationWorkflowFailures(
-      `${workflow}\n# secrets.SIGNING`,
-      manifest,
-    ).length > 0,
-  );
 });
 
 test("rejects unsupported manifest identity and phase", () => {
@@ -262,7 +141,6 @@ test("recognizes productive native and application sources", () => {
     "native/core.rs",
     "src/main.ts",
     "src/bridge.mm",
-    "some-other-root/target/generated.rs",
   ]) {
     assert.equal(isProductiveSource(path), true);
   }
@@ -735,68 +613,6 @@ test("validates a complete bootstrap repository", async () => {
     const result = await validateRepository(root);
     assert.deepEqual(result.failures, []);
     assert.equal(result.phase, "bootstrap");
-  } finally {
-    await rm(root, { force: true, recursive: true });
-  }
-});
-
-test("permits experiment source only under the exact issue 11 roots", async () => {
-  const root = await fixtureRepository();
-  try {
-    await writeFile(
-      join(root, "quality/project.json"),
-      JSON.stringify({
-        ...validManifest,
-        temporaryExperiment: validExperiment,
-      }),
-    );
-    const packageJson = JSON.parse(
-      await readFile(join(root, "package.json"), "utf8"),
-    );
-    packageJson.scripts = {
-      ...packageJson.scripts,
-      "experiment:foundation:audit":
-        "node quality/foundation-evaluation/cli.mjs audit",
-      "experiment:foundation:benchmark":
-        "node quality/foundation-evaluation/cli.mjs benchmark",
-      "experiment:foundation:diagnostic":
-        "node quality/foundation-evaluation/cli.mjs diagnostic",
-      "experiment:foundation:verify":
-        "node quality/foundation-evaluation/cli.mjs verify",
-    };
-    await writeFile(join(root, "package.json"), JSON.stringify(packageJson));
-    await writeFile(
-      join(root, ".github/workflows/foundation-evaluation.yml"),
-      await readFile(
-        join(
-          import.meta.dirname,
-          "..",
-          ".github/workflows/foundation-evaluation.yml",
-        ),
-        "utf8",
-      ),
-    );
-    await mkdir(join(root, "experiments/tauri-renderer/src"), {
-      recursive: true,
-    });
-    await writeFile(
-      join(root, "experiments/tauri-renderer/src/main.rs"),
-      "fn main() {}\n",
-    );
-    const accepted = await validateRepository(root);
-    assert.deepEqual(accepted.failures, []);
-
-    await mkdir(join(root, "some-other-root/target"), { recursive: true });
-    await writeFile(
-      join(root, "some-other-root/target/generated.rs"),
-      "fn hidden() {}\n",
-    );
-    const rejected = await validateRepository(root);
-    assert.equal(rejected.productiveSourceCount, 1);
-    assert.match(
-      rejected.failures.join("\n"),
-      /Productive source exists while the project is in bootstrap phase/u,
-    );
   } finally {
     await rm(root, { force: true, recursive: true });
   }

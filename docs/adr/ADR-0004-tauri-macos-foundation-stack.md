@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed.
+Accepted.
 
 ## Context
 
@@ -12,32 +12,70 @@ only by passing every absolute gate and the frozen replacement win-gate. Six add
 were limited to the source-backed paper screen in
 [`paper-screen.md`](../evaluation/paper-screen.md).
 
-The earlier experiment output no longer matches the current candidate trees or package digests and
-is not acceptance evidence. A fresh exact-head evaluation is pending. It must bind both candidates,
-all four packages, the authoritative physical run, the clean macOS runner runs, and the complete
-licence inventories to one authorized signed commit before this record can be accepted. No prior
-metric, hard-gate outcome, physical observation, or recommendation is a current decision claim.
+Fresh evidence at commit `d576a5b652027250f3de0c97163f045c71f98c8b` selects Tauri. The evidence is
+bound to #11 v2 readiness fingerprint
+`ee7934be0bfcc74630bfb071ec05c724ed97a2458d4b9238d60561292cc06469`, physical owner Apple M4
+16 GiB macOS 26.5.1 authority, 20 cold and 30 warm launches per candidate, release-like package
+inspection, physical VoiceOver/IME/appearance/scaling observations, official-source records, and
+exact dependency inventories.
 
-## Proposed decision
+The superseded v1 branch remains excluded. Its source, binaries, timings, Windows results, and
+fingerprint are not accepted evidence for this ADR.
 
-Subject to the pending exact-head evidence satisfying the frozen gates, Keiko Native proposes
-**Tauri 2 with the macOS system WebView and a bundled React/TypeScript frontend** for the macOS
-Foundation v0.1 stack. If the fresh evidence does not establish that result, this proposal must be
-revised before CH-3 starts.
+## Decision
 
-The proposed baseline is:
+Keiko Native selects **Tauri 2 with the macOS system WebView and a bundled React/TypeScript
+frontend** for the macOS Foundation v0.1 stack.
+
+The accepted baseline is:
 
 - Rust 1.92.0, edition 2024;
 - `tauri` 2.11.5 with `wry` 0.55.1 and default features disabled;
 - `tauri-build` 2.6.3 and Tauri CLI 2.11.4 for the evaluated build route;
-- React and React DOM 19.2.7, TypeScript 5.9.3, Vite 7.3.6, and axe-core 4.12.1;
-- exact Cargo and npm lock digests to be recorded from the fresh authorized commit.
+- React and React DOM 19.2.7, TypeScript 5.9.3, Vite 7.3.6, and axe-core 4.12.1; and
+- the exact source, lock, package, and licence-inventory digests recorded in the evidence section.
 
-If accepted, CH-3 must introduce these pins through its productive-phase dependency and
-supply-chain review.
+CH-3 must introduce these pins through its productive-phase dependency and supply-chain review.
 Later version changes are ordinary reviewed dependency changes only when they preserve this ADR's
 architecture and gates; a change of host, renderer class, trust boundary, or automation isolation
 requires a superseding ADR.
+
+### Evidence summary
+
+The retained decision records are:
+
+- [`foundation-benchmark.json`](../evaluation/foundation-benchmark.json), benchmark ID
+  `18a4f580448f060fc9172c471c766e772eff00009ba4c9ac80c3de143e205a88`, file SHA-256
+  `aadedda4bc96ff3e652cc3d86c6bef06072369c1f1ae4907a71361d5ceaba9a6`;
+- [`foundation-decision-report.md`](../evaluation/foundation-decision-report.md), with hard-gate
+  results, replacement formula, weighted matrix, dissent, and CH-3 handoff;
+- [`physical-observations.md`](../evaluation/physical-observations.md), with release-package
+  VoiceOver, IME, appearance, scaling, restoration, and cleanup observations; and
+- [`licence-source-inventory.md`](../evaluation/licence-source-inventory.md), with exact-head
+  dependency inventory summaries and productive review obligations.
+
+Tauri package and lock bindings:
+
+- source SHA-256 `b99a5bb49e99be11123febf8f8697390b42b43947fb67d9e52a168aa9ed56adf`;
+- Cargo lock SHA-256 `8f3d027a9c87907d4f266f2135ab19bc78f6df23eabe8f88e34efe53b43737d3`;
+- npm lock SHA-256 `ff1b106cdee2f72dcb736839e019a257d78ac160c5b0dc36162480e099ebc739`;
+- evaluation package SHA-256 `35e8b3bb6dede3de8d0c9e3bd8b67d82df5b4ae3f3779db44935bebcaa5851ed`; and
+- release-like package SHA-256 `d7eef5852f4fc0c940a38a07b6871abf7b990e776ad9e209895d98f8f6e77ea3`.
+
+Slint package and lock bindings:
+
+- source SHA-256 `f4186fa3be5f91e66251dab30260f38affca42f73815c11c180293269111533b`;
+- Cargo lock SHA-256 `42e765941098f99e33c13b8951bb8f3fa934248b22adfe0f0ef30110ef5aa707`;
+- evaluation package SHA-256 `0d59803121ddf8f3e2a38d48cb323ba1ad5adcd9363d305184f59ca0ca9abed8`; and
+- release-like package SHA-256 `e3ac1d4c973624e3f5cd2138e05e3ef19bd0c52945f3cb089fa97100a000d401`.
+
+Tauri passed all absolute benchmark hard gates and the physical VoiceOver, IME, Dark/Light
+appearance, scaling, release-hook exclusion, release-composition, and cleanup gates. Slint passed
+several lifecycle and performance checks but failed input-to-paint p75/p95, governed native
+semantic-tree automation, physical VoiceOver journey completeness, Dark appearance, the required
+Royalty-free attribution surface, and the Slint-owned integrated signed-update recipe. Slint also
+failed the frozen replacement formula: no comparable hard metric improved by 20%, warm p95 regressed
+13.9%, input-to-paint p95 regressed 58.3%, and release-like payload size regressed 113.9%.
 
 ### Productive workspace and ownership
 
@@ -86,7 +124,7 @@ payload. A renderer reload creates a new host-owned session and clears neither a
 nor its cancellation state until the old session has been failed closed.
 
 The host accepts the request only from the Tauri window labelled `main`, with the bundled
-`tauri://localhost` origin (or Tauri's platform-equivalent `http://tauri.localhost` representation),
+`tauri://localhost` origin or Tauri's platform-equivalent `http://tauri.localhost` representation,
 while the application is in its accepting lifecycle state. Window identity, origin, schema,
 serialized size, field closure, request identifier, sequence, timeout, and operation authorization
 are checked before application code runs. Navigation and capabilities allow only bundled assets and
@@ -129,11 +167,12 @@ compiled into the product package.
 ### Repository-owned packaged-shell harness
 
 The root `acceptance:macos` command owns the stable harness. It builds and launches the exact
-`keiko-native-desktop` package from a clean workspace, obtains the package digest and immutable build
-identity, performs the health roundtrip through the actual bundled renderer, kills the renderer to
-observe unavailable/recovery behavior, requests normal application shutdown, escalates only after
-5,000 ms, and proves zero owned descendant processes. Contract-mode tests additionally cover every
-request bound and reason code through dependency injection without adding a product command.
+`keiko-native-desktop` package from a clean workspace, obtains the package digest and immutable
+build identity, performs the health roundtrip through the actual bundled renderer, kills the
+renderer to observe unavailable/recovery behavior, requests normal application shutdown, escalates
+only after 5,000 ms, and proves zero owned descendant processes. Contract-mode tests additionally
+cover every request bound and reason code through dependency injection without adding a product
+command.
 
 The harness writes schema `keiko-native-packaged-shell-evidence/v1`, containing only source
 revision, readiness fingerprint, package and lock digests, runner image identifier, architecture,
@@ -152,11 +191,11 @@ throwaway evidence and are not the productive port or harness contract.
 
 ## Windows reopen
 
-If accepted, this ADR resolves macOS only. It does not close APD-01, APD-08, or APD-11 for Windows.
-Before the first productive Windows foundation or Windows release work, a new decision issue must
-reopen this choice on an authoritative physical Windows reference system and a clean Windows runner.
-The reopen must use current locked dependencies and the same workload, thresholds, hostile cases,
-process accounting, redaction, package isolation, and release-like inspection.
+This ADR resolves macOS only. It does not close APD-01, APD-08, or APD-11 for Windows. Before the
+first productive Windows foundation or Windows release work, a new decision issue must reopen this
+choice on an authoritative physical Windows reference system and a clean Windows runner. The reopen
+must use current locked dependencies and the same workload, thresholds, hostile cases, process
+accounting, redaction, package isolation, and release-like inspection.
 
 The Windows decision must additionally prove WebView2 runtime and distribution policy, UI
 Automation semantics, keyboard and IME composition, native-dialog cancellation, high-contrast and
@@ -168,16 +207,16 @@ replacement win-gate requires a superseding decision before productive Windows w
 
 ## Consequences
 
-If the pending evaluation accepts this proposal, CH-3 receives one exact macOS host, renderer,
-frontend, trust boundary, and acceptance-harness contract. Until then, CH-3 has no authorized
-foundation selection from this record.
+CH-3 receives one exact macOS host, renderer, frontend, trust boundary, and acceptance-harness
+contract. It may start productive macOS foundation work only from the roots, dependency direction,
+typed port, and packaged-shell evidence contract above.
 
-Acceptance would make Keiko responsible for the WebView boundary, CSP and capability correctness,
-bundled frontend supply chain, system-WebView variance, and web accessibility regression coverage.
-Tauri's documented updater and signing routes are inputs, not release acceptance; key custody,
-rollback, notarization, provenance, and recovery would still require productive implementation and
-physical evidence.
+Keiko is responsible for the WebView boundary, CSP and capability correctness, bundled frontend
+supply-chain review, system-WebView variance, and web accessibility regression coverage. Tauri's
+documented updater and signing routes are implementation inputs, not release acceptance; key
+custody, rollback, notarization, provenance, and recovery still require productive implementation
+and physical evidence.
 
-Slint remains an evaluated macOS alternative, not an invalid framework. Its final disposition and
-any dissenting measurements remain pending the fresh exact-head evidence. After acceptance, the
-decision can be revisited only by a superseding ADR under the documented reopen conditions.
+Slint remains an evaluated macOS alternative, not an invalid framework. It may be reconsidered only
+through a superseding decision that resolves the failed gates and meets the same workload,
+threshold, evidence, licence, updater, and Windows-reopen obligations.

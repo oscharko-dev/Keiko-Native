@@ -2,95 +2,68 @@
 
 ## Status
 
-Fresh exact-head equal-package physical evidence is pending. The transcript below is retained only
-as sanitized historical diagnostic context. Its candidate packages predate the current candidate
-trees, so none of its observations is a current acceptance result, hard-gate result, or basis for a
-recommendation.
+Current sanitized physical observations are bound to issue #11 contract v2 and evidence commit
+`d576a5b652027250f3de0c97163f045c71f98c8b`. They used the fresh release-like candidate packages
+from the same commit:
 
-The historical journey ran on an Apple M4 with 16 GiB running macOS 26.5.1 on 2026-07-17. It used
-synthetic input only. No raw path, hostname, username, stable machine identifier, customer content,
-credential, endpoint, or secret was retained.
+- Tauri release-like package SHA-256
+  `d7eef5852f4fc0c940a38a07b6871abf7b990e776ad9e209895d98f8f6e77ea3`;
+- Slint release-like package SHA-256
+  `e3ac1d4c973624e3f5cd2138e05e3ef19bd0c52945f3cb089fa97100a000d401`.
 
-## Why the historical transcript is non-authoritative
+The run used an Apple M4 with 16 GiB running macOS 26.5.1 on 2026-07-17. It used synthetic input
+only. No raw path, hostname, username, stable machine identifier, customer content, credential,
+endpoint, speech audio, or screenshot was retained.
 
-The first bounded transcript compared an instrumented Tauri evaluation package with a Slint
-release-like package. A later scaling-only observation used equal package classes, but all of those
-packages and their source bindings have since been superseded. Package-class asymmetry and stale
-package bindings mean that the transcript cannot establish either candidate's final disposition.
+## Current Tauri release-package observations
 
-The replacement journey must run both fresh release-like packages from one authorized signed
-commit. It must record exact sanitized source, lock, and package bindings and repeat VoiceOver,
-focus, IME composition, Dark/Light appearance, and alternate display scaling before any result is
-promoted into the benchmark or decision report.
+The release-like Tauri package exposed a visible shell with labeled structure, a settable synthetic
+international-input field, stable keyboard focus, and accessible semantic content. VoiceOver
+navigation reached the labeled field and surrounding shell content in the governed journey.
 
-## Historical scaling diagnostic
+For the IME journey, Japanese-Kana was temporarily installed and selected while the input field had
+focus. Actual physical key events committed `かんな` into the field. The temporary input source was
+removed after the bounded journey.
 
-The built-in display's original selected preset was Default at 1512 × 982. Both historical
-candidates were observed at that preset and at the 1352 × 878 alternate preset using the same Dark
-appearance. The Tauri shell retained its labeled hierarchy, controls, readable content,
-containment, and stable shell at both presets. The Slint shell retained its nodes and contained
-layout without scaling-induced clipping, but its controls and some text remained extremely
-low-contrast in Dark appearance at both presets.
+Tauri followed system appearance changes between Dark and Light. At the alternate 1352 x 878
+display preset and the restored Default 1512 x 982 preset, the shell retained readable content,
+contained layout, focusable controls, and no scaling-induced clipping.
 
-Both historical candidates were closed before the display was returned to Default 1512 × 982. The
-Default selection was visually reverified, System Settings was closed, and bounded process
-inspection found zero candidate survivors. The issue-wide EurKEY v1.2 input source was reselected;
-Dark appearance and VoiceOver-off state were also restored. These restoration observations are
-historical diagnostics and must be repeated for the fresh packages.
+## Current Slint release-package observations
 
-## Historical Tauri diagnostic
+The release-like Slint package exposed a titled window, text nodes, a settable synthetic
+international-input field, and focusable controls. The semantic tree did not provide the complete
+governed VoiceOver journey required by the issue contract: nodes existed, but the final journey was
+not equivalent to the labeled Tauri path and could not substitute for the missing machine semantic
+gate.
 
-The packaged instrumented shell was launched through LaunchServices with the literal
-`--manual-evaluation` argument, and the running application command line was checked before input.
-The accessibility tree exposed a titled application window, level-one `Keiko Foundation` heading,
-candidate description, labeled settable `Synthetic international input` field,
-`Foundation diagnostics` group, `Focus checkpoint` and `Native cancellation` buttons, status, and
-the bundled `tauri://localhost` origin.
+For the IME journey, Japanese-Kana was temporarily installed and selected while the field had
+keyboard focus. Actual physical key events committed `ちかんな` into the field after the existing
+synthetic prefix, producing the observable value `readyちかんな`. This is recorded as an IME pass,
+not as a text-clearing pass.
 
-With VoiceOver enabled, navigation entered the Web content and reached the input content. The
-labeled field remained visible to the accessibility tree and keyboard focus remained observable.
-VoiceOver was disabled immediately after the bounded journey.
+Slint did not materially follow system Dark appearance in the release-like package. It remained
+effectively light and low-contrast under Dark, then stayed light when the system changed to Light.
+At 1352 x 878 and the restored Default 1512 x 982 preset, layout remained contained without
+scaling-induced clipping.
 
-For the IME journey, Japanese–Kana was temporarily installed and selected while the labeled field
-was focused. Individual physical key events produced the AX-visible value `かんな`. The temporary
-input source was removed after the journey.
+## Restoration and cleanup
 
-The manual shell later displayed `Evaluation failed closed: prepare-renderer`. The anomaly remains
-part of the historical record: the typed input and semantic observations remained visible, but the
-manual startup helper did not remain in its ready state. It cannot be reinterpreted as a pass, and
-the replacement journey must evaluate the fresh package independently.
+After the bounded journeys, the machine was restored to:
 
-## Historical Slint diagnostic
+- Dark appearance;
+- Default display preset at 1512 x 982 selected resolution on the built-in display;
+- EurKEY v1.2 input source;
+- Japanese-Kana input source removed;
+- VoiceOver off and not running; and
+- no candidate or evaluation helper processes remaining.
 
-The release-like packaged shell exposed a titled window, text nodes, a labeled settable
-`Synthetic international input` field, and two buttons. It did not expose the title as a heading or
-the diagnostics controls as a named group. With VoiceOver enabled, repeated next-item and
-interact-then-next-item commands produced no observable focused semantic target. VoiceOver was
-disabled immediately after the bounded journey.
+The benchmark's machine evidence separately records zero owned descendants after each candidate
+sample. The physical observations above are complementary manual evidence for VoiceOver, IME,
+appearance, scaling, and restoration.
 
-For the historical Japanese–Kana journey, the input source was selected before typing and the
-field had keyboard focus. The field remained Latin and changed from `ready` to `readyatzu`;
-Select-All also did not replace the existing value. No Japanese composition was observed. The
-temporary input source was removed and the candidate was closed after the bounded journey.
+## Classification
 
-The historical shells were also observed together with the system initially in Dark appearance.
-Tauri rendered a dark palette; Slint rendered a light palette. After the system changed to Light,
-Tauri adapted to a light palette and Slint remained light. Restoring Dark made Tauri dark again
-while Slint still did not adapt. These are diagnostic observations from superseded packages, not
-current physical-gate results.
-
-## Replacement-journey evidence contract
-
-The fresh transcript must retain only bounded observations and exact evidence bindings. It must:
-
-- use both final release-like packages from the same authorized signed commit;
-- verify the physical reference class without retaining serial numbers or stable identifiers;
-- record VoiceOver structure and navigation, keyboard focus, and actual IME commit behavior;
-- observe both system appearances and the defined display presets;
-- restore VoiceOver, input source, appearance, and display state after every bounded journey;
-- prove that candidate and fixture processes have no survivors; and
-- bind the transcript to exact source, lock, and package digests without retaining raw local paths.
-
-The transcript does not retain speech audio or screenshots. The two candidates use different
-rendering stacks, so an accessibility-tree node count is not itself a score. Final classification
-must follow the frozen gates and replacement formula in the decision report.
+Tauri passes the physical VoiceOver, IME, appearance, scaling, and cleanup gates. Slint passes IME,
+scaling, and cleanup, but fails the governed VoiceOver/semantic journey and Dark-appearance gates.
+These outcomes are reflected in the decision report and ADR-0004.

@@ -12,19 +12,6 @@
   },
   "productiveSourceRoots": [],
   "nativeTargets": [],
-  "temporaryExperiment": {
-    "issue": 11,
-    "contractVersion": 2,
-    "kind": "foundation-stack-evaluation",
-    "sourceRoots": ["experiments/tauri-renderer", "experiments/slint-renderer"],
-    "commands": [
-      "experiment:foundation:verify",
-      "experiment:foundation:benchmark",
-      "experiment:foundation:diagnostic",
-      "experiment:foundation:audit"
-    ],
-    "workflow": ".github/workflows/foundation-evaluation.yml"
-  },
   "minimumCoverage": {
     "branches": 85,
     "functions": 85,
