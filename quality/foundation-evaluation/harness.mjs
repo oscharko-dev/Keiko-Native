@@ -2428,6 +2428,22 @@ async function harnessBinding(root) {
   };
 }
 
+export async function auditedHarnessBinding(
+  root,
+  rustcPath,
+  build = buildDarwinSessionObserver,
+) {
+  return withDarwinSessionObserver(
+    root,
+    { rustcPath },
+    async (sessionObserver) => ({
+      ...(await harnessBinding(root)),
+      sessionObserver: sessionObserver.binding,
+    }),
+    build,
+  );
+}
+
 export function validateDiagnosticProvenance(environment, checkout) {
   const expected = {
     artifactFile: `.foundation-evaluation/diagnostic-${environment.KEIKO_FOUNDATION_RUNNER_LABEL}.json`,
@@ -3089,7 +3105,13 @@ export async function audit(root, environment = process.env) {
   const currentExperiment = await experimentBinding(root, checkout, {
     environment,
   });
-  const currentHarness = await harnessBinding(root);
+  const rustcPath = boundedString(
+    environment.KEIKO_FOUNDATION_RUSTC,
+    "KEIKO_FOUNDATION_RUSTC",
+    1_024,
+  );
+  invariant(rustcPath.startsWith("/"), "session helper rustc path is invalid");
+  const currentHarness = await auditedHarnessBinding(root, rustcPath);
   invariant(
     sameJson(result.experiment, currentExperiment),
     "retained experiment commit or readiness fingerprint is stale",

@@ -24,6 +24,7 @@ import test from "node:test";
 
 import {
   FULL_COUNTS,
+  auditedHarnessBinding,
   buildSchedule,
   buildDarwinSessionObserver,
   distribution,
@@ -956,6 +957,26 @@ test("builds one observer across samples and disposes on success or failure", as
     assert.equal(builds, 1);
     assert.equal(disposals, 1);
   }
+});
+
+test("audits the full harness with an exact rebuilt observer binding", async () => {
+  const root = join(import.meta.dirname, "..");
+  const binding = {
+    executableSha256: "a".repeat(64),
+    kind: "locally-compiled",
+    sourceSha256:
+      "d37babdcf3cd0c7358cf99f015abcbc89b42246cceb48c0a44bd74f26e1c2a4c",
+  };
+  let disposals = 0;
+  const harness = await auditedHarnessBinding(root, "/exact/rustc", () => ({
+    binding,
+    dispose: () => {
+      disposals += 1;
+    },
+    sessionFor: (pid) => pid,
+  }));
+  assert.deepEqual(harness.sessionObserver, binding);
+  assert.equal(disposals, 1);
 });
 
 test("source bindings ignore generated build and installed dependency trees", async () => {
