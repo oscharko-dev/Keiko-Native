@@ -14,6 +14,32 @@ const lifecycleStateSet = new Set(LIFECYCLE_STATES);
 const activeRequestSources = LIFECYCLE_STATES.slice(0, 8);
 const planningActorRoles = new Set(["planner", "maintainer"]);
 const deliveryActorRoles = new Set(["implementer", "maintainer"]);
+const stateAlias = Object.freeze({
+  blocked: LIFECYCLE_STATES[6],
+  done: LIFECYCLE_STATES[8],
+  inProgress: LIFECYCLE_STATES[3],
+  new: LIFECYCLE_STATES[0],
+  prOpen: LIFECYCLE_STATES[4],
+  ready: LIFECYCLE_STATES[2],
+  review: LIFECYCLE_STATES[5],
+  triaged: LIFECYCLE_STATES[1],
+  waiting: LIFECYCLE_STATES[7],
+});
+const edgeAliasRows = Object.freeze([
+  ["new", "triaged blocked waiting"],
+  ["triaged", "ready blocked waiting new"],
+  ["ready", "inProgress blocked waiting new"],
+  ["inProgress", "ready prOpen blocked waiting new"],
+  ["prOpen", "ready inProgress review blocked waiting new"],
+  ["review", "prOpen inProgress blocked waiting new done"],
+  ["blocked", "waiting new triaged ready inProgress prOpen"],
+  ["waiting", "blocked new triaged ready inProgress prOpen"],
+  ["done", "new"],
+]);
+
+function aliasedStates(aliasList) {
+  return aliasList.split(" ").map((alias) => stateAlias[alias]);
+}
 
 function freezeEdgeMap(entries) {
   return Object.freeze(
@@ -23,85 +49,12 @@ function freezeEdgeMap(entries) {
   );
 }
 
-export const ALLOWED_LIFECYCLE_EDGES = freezeEdgeMap([
-  [
-    "status: new",
-    ["status: triaged", "status: blocked", "status: waiting for user"],
-  ],
-  [
-    "status: triaged",
-    [
-      "status: ready",
-      "status: blocked",
-      "status: waiting for user",
-      "status: new",
-    ],
-  ],
-  [
-    "status: ready",
-    [
-      "status: in progress",
-      "status: blocked",
-      "status: waiting for user",
-      "status: new",
-    ],
-  ],
-  [
-    "status: in progress",
-    [
-      "status: ready",
-      "status: pr open",
-      "status: blocked",
-      "status: waiting for user",
-      "status: new",
-    ],
-  ],
-  [
-    "status: pr open",
-    [
-      "status: ready",
-      "status: in progress",
-      "status: ready for human review",
-      "status: blocked",
-      "status: waiting for user",
-      "status: new",
-    ],
-  ],
-  [
-    "status: ready for human review",
-    [
-      "status: pr open",
-      "status: in progress",
-      "status: blocked",
-      "status: waiting for user",
-      "status: new",
-      "status: done",
-    ],
-  ],
-  [
-    "status: blocked",
-    [
-      "status: waiting for user",
-      "status: new",
-      "status: triaged",
-      "status: ready",
-      "status: in progress",
-      "status: pr open",
-    ],
-  ],
-  [
-    "status: waiting for user",
-    [
-      "status: blocked",
-      "status: new",
-      "status: triaged",
-      "status: ready",
-      "status: in progress",
-      "status: pr open",
-    ],
-  ],
-  ["status: done", ["status: new"]],
-]);
+export const ALLOWED_LIFECYCLE_EDGES = freezeEdgeMap(
+  edgeAliasRows.map(([source, targets]) => [
+    stateAlias[source],
+    aliasedStates(targets),
+  ]),
+);
 
 function pair(source, target) {
   return Object.freeze({ source, target });
