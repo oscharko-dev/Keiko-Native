@@ -37,6 +37,7 @@ import {
   percentile,
   preparedSessionObserverFromEnvironment,
   redactionFailures,
+  redactionFindings,
   releaseHookScan,
   runCandidate,
   sanitizeCandidateEvidence,
@@ -1822,6 +1823,26 @@ test("detects retained identity and path fields", () => {
   assert.deepEqual(redactionFailures({ ok: true }), []);
   assert.ok(redactionFailures({ username: "person" }).length > 0);
   assert.ok(redactionFailures({ value: "/Users/person/work" }).length > 0);
+  assert.equal(
+    redactionFailures(
+      { value: "diagnostic-github-runner" },
+      { username: "runner" },
+    ).includes("local identity"),
+    false,
+  );
+  assert.equal(
+    redactionFindings(
+      {
+        candidateEvidence: {
+          c5451afeae2508609cb632055cbcbfa64831f6383bb0e2ae3e812da2ccaa2f88: {
+            environment: { referenceClass: "diagnostic-github-runner" },
+          },
+        },
+      },
+      { username: "runner" },
+    ).length,
+    0,
+  );
   assert.ok(
     redactionFailures({ value: "machine-name" }, { hostname: "machine-name" })
       .length > 0,

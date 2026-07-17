@@ -639,24 +639,44 @@ export function distribution(values) {
 
 function redactionPath(parent, segment) {
   if (typeof segment === "number") return `${parent}[${String(segment)}]`;
+  if (/^[a-f0-9]{32,}$/iu.test(segment))
+    return parent === "" ? "[key]" : `${parent}.[key]`;
   if (/^[A-Za-z][A-Za-z0-9_-]{0,63}$/u.test(segment))
     return parent === "" ? segment : `${parent}.${segment}`;
   return parent === "" ? "[key]" : `${parent}.[key]`;
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function retainedLocalIdentity(entry, observation) {
+  const home = observation.home;
+  if (typeof home === "string" && home.length >= 3 && entry.includes(home))
+    return true;
+  for (const value of [observation.hostname, observation.username].filter(
+    (item) => typeof item === "string" && item.length >= 3,
+  )) {
+    const escaped = escapeRegExp(value);
+    if (
+      entry === value ||
+      new RegExp(`(?:^|[\\s/\\\\:@])${escaped}(?:$|[\\s/\\\\:@])`, "u").test(
+        entry,
+      )
+    )
+      return true;
+  }
+  return false;
+}
+
 export function redactionFindings(value, observation = {}) {
-  const forbidden = [
-    observation.home,
-    observation.hostname,
-    observation.username,
-  ].filter((entry) => typeof entry === "string" && entry.length >= 3);
   const findings = [];
   const add = (kind, path) => findings.push({ kind, path });
   const walk = (entry, path = "value", depth = 0) => {
     if (depth > 8) return;
     if (typeof entry === "string") {
       if (/\/Users\/|file:\/\/|[A-Za-z]:\\/u.test(entry)) add("raw path", path);
-      if (forbidden.some((forbiddenEntry) => entry.includes(forbiddenEntry)))
+      if (retainedLocalIdentity(entry, observation))
         add("local identity", path);
       const trimmed = entry.trim();
       if (
