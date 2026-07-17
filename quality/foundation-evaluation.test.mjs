@@ -29,6 +29,7 @@ import {
   buildDarwinSessionObserver,
   candidateOutputSnapshot,
   closedCandidateDiagnostic,
+  closedCandidateDiagnostics,
   distribution,
   governedCheckout,
   inventory,
@@ -382,6 +383,34 @@ test("retains only one allowlisted candidate failure diagnostic", () => {
     "/Users/local/private credential\n",
   ])
     assert.equal(closedCandidateDiagnostic(Buffer.from(stderr)), "unavailable");
+});
+
+test("projects only closed Slint diagnostic statuses", () => {
+  assert.deepEqual(
+    closedCandidateDiagnostics({
+      candidate: "slint-femtovg",
+      metrics: {
+        client: {
+          darkAppearance: true,
+          focusVisible: false,
+          imeValue: "かなa",
+          inputToPaintMs: 12,
+          scaleFactor: 2,
+        },
+      },
+    }),
+    {
+      appearance: "accepted",
+      composition: "accepted",
+      focus: "rejected",
+      input: "accepted",
+      scale: "accepted",
+    },
+  );
+  assert.equal(
+    closedCandidateDiagnostics({ candidate: "unknown", localPath: "/private" }),
+    undefined,
+  );
 });
 
 test("captures terminal output appended after the previous poll", () => {

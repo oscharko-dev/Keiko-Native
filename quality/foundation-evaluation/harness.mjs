@@ -197,6 +197,46 @@ function closedCandidateCode(evidence) {
   return code ?? "unavailable";
 }
 
+function closedStatus(condition, present) {
+  return !present ? "unavailable" : condition ? "accepted" : "rejected";
+}
+
+export function closedCandidateDiagnostics(evidence) {
+  if (evidence?.candidate !== "slint-femtovg") return undefined;
+  const client = evidence?.metrics?.client;
+  if (client === null || typeof client !== "object" || Array.isArray(client))
+    return {
+      appearance: "unavailable",
+      composition: "unavailable",
+      focus: "unavailable",
+      input: "unavailable",
+      scale: "unavailable",
+    };
+  const has = (key) => Object.hasOwn(client, key);
+  return {
+    appearance: closedStatus(
+      client.darkAppearance === true,
+      has("darkAppearance"),
+    ),
+    composition: closedStatus(client.imeValue === "かなa", has("imeValue")),
+    focus: closedStatus(client.focusVisible === true, has("focusVisible")),
+    input: closedStatus(
+      typeof client.inputToPaintMs === "number" &&
+        Number.isFinite(client.inputToPaintMs) &&
+        client.inputToPaintMs >= 0 &&
+        client.inputToPaintMs <= 10_000,
+      has("inputToPaintMs"),
+    ),
+    scale: closedStatus(
+      typeof client.scaleFactor === "number" &&
+        Number.isFinite(client.scaleFactor) &&
+        client.scaleFactor >= 0.5 &&
+        client.scaleFactor <= 8,
+      has("scaleFactor"),
+    ),
+  };
+}
+
 export function sanitizedFailure(error, context = {}) {
   if (error?.foundationFailure !== undefined) return error.foundationFailure;
   const message = error instanceof Error ? error.message.toLowerCase() : "";
@@ -243,6 +283,9 @@ export function sanitizedFailure(error, context = {}) {
             ? "running"
             : "missing",
   };
+  const candidateDiagnostics = closedCandidateDiagnostics(context.evidence);
+  if (candidateDiagnostics !== undefined)
+    failure.diagnostics = candidateDiagnostics;
   if (candidateFailureDiagnostics.has(context.candidateDiagnostic))
     failure.diagnostic = context.candidateDiagnostic;
   if (failureStages.has(context.stage)) failure.stage = context.stage;
