@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-07-17.
+Accepted, 2026-07-17.
 
 ## Context
 
@@ -123,13 +123,18 @@ transition produces sanitized operational evidence, but neither the label nor it
 the planning contract. Triaged work is non-executable and has no current readiness. Ready is the
 later state reached only when the exact planning contract independently passes readiness.
 
-The configured GitHub `status:*` label names must exactly equal this nine-state canonical set. The
-canonical `docs/qa/issue-lifecycle.md` list, this ADR's table, the lifecycle module enum, allowed
-transition graph, workflow event coverage, repository activation/runbook inventory, and exhaustive
-fixtures must also have exact set equality. A repository contract test fails on any added, removed,
-or renamed status until documentation, state table, workflows, and fixtures are updated together
-through a new accepted decision when semantics change. Live activation and drift probes fail on
-provider-label disagreement; they never mutate labels without explicit authority.
+The live configured GitHub `status:*` label names are provider evidence and must continue to equal
+this nine-state canonical set. Before lifecycle activation or cutover, issue #21 must atomically
+update the canonical `docs/qa/issue-lifecycle.md` list, lifecycle module enum, allowed transition
+graph, workflow event coverage, repository-activation runbook inventory, exhaustive fixtures, and
+every other projection to exact equality with this ADR's table. Until that implementation merges,
+the runbook's current eight-label inventory is a known pre-decision state and cannot prove
+nine-state conformance.
+
+At cutover, the repository contract test fails on any added, removed, or renamed status until all
+projections are updated together through a new accepted decision when semantics change. Live
+activation and drift probes fail on provider-label disagreement; they never mutate labels without
+explicit authority.
 
 Every trusted lifecycle, normal-PR, publication, and merge-group metadata run reloads the complete
 provider label-name set and rejects a mismatch. The activation merge-group run must observe exact
@@ -242,8 +247,8 @@ unassigned, labeled, unlabeled, closed, and reopened. Assignment is a claim only
 assignee, and current Execution Authority validate; unassignment is a release only when no accepted
 PR remains. No label gesture can claim work: validated assignment or the repository-owned claim
 mechanism alone owns entry to in progress. The PR workflow consumes the relevant
-`pull_request_target` activities, including opened, reopened, synchronize, converted-to-draft,
-ready-for-review, and closed. Validated normal-delivery PR topology alone owns entry to PR open; a
+`pull_request_target` activities, including opened, reopened, synchronize, converted_to_draft,
+ready_for_review, and closed. Validated normal-delivery PR topology alone owns entry to PR open; a
 canonical publication PR never changes lifecycle. The protected handoff coordinator alone owns
 entry to ready for human review. It verifies the repository, issue
 identity, event action and delivery identity, sender, current actor permission, accepted planning or
