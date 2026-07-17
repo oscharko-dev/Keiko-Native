@@ -902,3 +902,27 @@ test("fails closed when lifecycle workflow or coverage wiring drifts", async () 
     await rm(root, { force: true, recursive: true });
   }
 });
+
+test("fails closed when lifecycle workflow permissions drift", async () => {
+  const root = await fixtureRepository();
+  try {
+    const workflowPath = join(root, ".github/workflows/issue-lifecycle.yml");
+    const workflow = await readFile(workflowPath, "utf8");
+    await writeFile(
+      workflowPath,
+      workflow.replace("      issues: read", "      issues: write"),
+    );
+    const result = await validateRepository(root);
+    const failures = result.failures.join("\n");
+    assert.match(
+      failures,
+      /Issue lifecycle workflow permission drift, missing marker:       issues: read/u,
+    );
+    assert.match(
+      failures,
+      /Issue lifecycle must not request write permissions: issues/u,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});

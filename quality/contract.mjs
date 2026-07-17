@@ -100,6 +100,14 @@ const issueLifecycleMarkers = [
   "node quality/issue-lifecycle-action.mjs",
 ];
 
+const issueLifecyclePermissionMarkers = [
+  "permissions: {}",
+  "    permissions:",
+  "      contents: read",
+  "      issues: read",
+  "      pull-requests: read",
+];
+
 const pullRequestContractMarkers = [
   "types:",
   "opened",
@@ -714,10 +722,30 @@ function bracketList(marker, text) {
   );
 }
 
+function workflowWritePermissions(workflow) {
+  return workflow
+    .split(/\r?\n/u)
+    .map(
+      (line) =>
+        /^\s*([A-Za-z][A-Za-z-]*):\s*(?:write|write-all)\s*(?:#.*)?$/u.exec(
+          line,
+        )?.[1],
+    )
+    .filter((name) => name !== undefined);
+}
+
 function issueLifecycleWorkflowFailures(workflow) {
   const failures = issueLifecycleMarkers
     .filter((marker) => !workflow.includes(marker))
     .map((marker) => `Issue lifecycle workflow is missing marker: ${marker}.`);
+  failures.push(
+    ...issueLifecyclePermissionMarkers
+      .filter((marker) => !workflow.includes(marker))
+      .map(
+        (marker) =>
+          `Issue lifecycle workflow permission drift, missing marker: ${marker}.`,
+      ),
+  );
   const triggerTypes = bracketList("types", workflow);
   if (
     JSON.stringify(triggerTypes) !== JSON.stringify(issueLifecycleTriggerTypes)
@@ -727,8 +755,11 @@ function issueLifecycleWorkflowFailures(workflow) {
     );
   if (workflow.includes("pull_request_target"))
     failures.push("Issue lifecycle must not use pull_request_target.");
-  if (workflow.includes("contents: write"))
-    failures.push("Issue lifecycle must not request contents write.");
+  const writePermissions = [...new Set(workflowWritePermissions(workflow))];
+  if (writePermissions.length > 0)
+    failures.push(
+      `Issue lifecycle must not request write permissions: ${writePermissions.join(", ")}.`,
+    );
   return failures;
 }
 
