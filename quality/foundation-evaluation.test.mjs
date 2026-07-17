@@ -282,6 +282,18 @@ test("keeps the release-like Tauri input editable without an evaluation hook", (
   assert.doesNotMatch(release, /evaluation|invoke|dispatch/u);
 });
 
+test("bounds Tauri diagnostic frame waits when runner animation frames pause", async () => {
+  const source = await readFile(
+    join(
+      import.meta.dirname,
+      "../experiments/tauri-renderer/web/evaluation/src/main.tsx",
+    ),
+    "utf8",
+  );
+  assert.match(source, /requestAnimationFrame\(finish\)/u);
+  assert.match(source, /setTimeout\(finish, 50\)/u);
+});
+
 test("uses the exact governed LaunchServices package invocation", () => {
   const arguments_ = launchServicesArguments({
     mode: "cold",

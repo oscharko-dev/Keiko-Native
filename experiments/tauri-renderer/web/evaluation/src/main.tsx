@@ -36,7 +36,16 @@ declare global {
 }
 
 function frame() {
-  return new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    requestAnimationFrame(finish);
+    setTimeout(finish, 50);
+  });
 }
 
 const requestSession = Array.from(
