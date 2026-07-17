@@ -87,13 +87,7 @@ function completeEvidenceRows(section, firstCell) {
 
 function governedArtifactReference(value) {
   const reference = optionValue(value ?? "");
-  return (
-    /^(?:sha256:[\da-f]{64}|sha512:[\da-f]{128})$/iu.test(reference) ||
-    /^artifact:[A-Za-z\d][A-Za-z\d._:-]{7,}$/u.test(reference) ||
-    /^https:\/\/github\.com\/[^/\s|]+\/[^/\s|]+\/actions\/runs\/\d+\/artifacts\/\d+$/u.test(
-      reference,
-    )
-  );
+  return /^(?:sha256:[\da-f]{64}|sha512:[\da-f]{128})$/iu.test(reference);
 }
 
 function exactEvidenceReference(value, head) {

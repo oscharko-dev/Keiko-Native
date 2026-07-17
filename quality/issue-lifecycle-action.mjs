@@ -64,6 +64,12 @@ function transitionRequestFailures(event, currentState, requestedTarget) {
   }).failures;
 }
 
+function currentLifecycleState(issue, event) {
+  const states = statusLabels(issue);
+  const requestedSource = event?.transitionRequest?.requestedSource;
+  return states.includes(requestedSource) ? requestedSource : states[0];
+}
+
 function unauthorizedRawLabelResult(enabled) {
   return enabled
     ? {
@@ -89,11 +95,11 @@ function desiredStateForLabelEvent(event, currentState, enabled) {
     : { desiredState: requestedTarget };
 }
 
-function desiredStateForClosure(event) {
+function desiredStateForClosure(event, issue) {
   if (event?.action !== "closed") return undefined;
   const closure = evaluateClosurePrecondition({
     completionEvidence: {
-      validated: event.issue?.state_reason === "completed",
+      validated: statusLabels(issue).includes(LIFECYCLE_STATES[5]),
     },
     reason: event.issue?.state_reason,
   });
@@ -103,14 +109,14 @@ function desiredStateForClosure(event) {
     : { desiredState: closure.target };
 }
 
-function desiredStateForEvent(event, readiness, currentState, enabled) {
+function desiredStateForEvent(event, readiness, currentState, enabled, issue) {
   if (event?.action === "reopened")
     return { desiredState: LIFECYCLE_STATES[0] };
   if (event?.action === "edited" && readiness.current !== true)
     return { desiredState: LIFECYCLE_STATES[0] };
   return (
     desiredStateForLabelEvent(event, currentState, enabled) ??
-    desiredStateForClosure(event) ??
+    desiredStateForClosure(event, issue) ??
     {}
   );
 }
@@ -278,10 +284,11 @@ async function reconcileDesiredStatus({
   repository,
   request,
 }) {
-  const labelFailure = exactLifecycleLabelFailure(issue);
-  if (labelFailure !== undefined) return labelFailure;
-  if (desiredState === undefined)
+  if (desiredState === undefined) {
+    const labelFailure = exactLifecycleLabelFailure(issue);
+    if (labelFailure !== undefined) return labelFailure;
     return { failures: [], outcome: "ignored", readiness };
+  }
 
   const reconciliation = planStatusLabelReconciliation(
     labelNames(issue),
@@ -334,7 +341,7 @@ export async function runIssueLifecycleAction({
   ]);
   const providerValidation = validateProviderStatusLabels(providerLabels);
   if (!providerValidation.ok) return failed(providerValidation.failures);
-  const currentState = statusLabels(issue)[0];
+  const currentState = currentLifecycleState(issue, event);
 
   const readiness = evaluateReadinessForIssue({
     comments,
@@ -342,7 +349,13 @@ export async function runIssueLifecycleAction({
     issue,
   });
   const enabled = enabledLifecycleActivation();
-  const desired = desiredStateForEvent(event, readiness, currentState, enabled);
+  const desired = desiredStateForEvent(
+    event,
+    readiness,
+    currentState,
+    enabled,
+    issue,
+  );
   if (desired?.outcome === "failed") return desired;
   const ignored = ignoredDesiredResult(desired, readiness);
   if (ignored !== undefined) return ignored;

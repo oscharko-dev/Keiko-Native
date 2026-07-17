@@ -292,6 +292,47 @@ test("removes lifecycle labels for non-completed closures", async (t) => {
   assert.deepEqual(unsupportedResult.failures, ["unsupported_closure_reason"]);
 });
 
+test("reconciles label-less reopen and overlapping requested labels", async (t) => {
+  const reopened = requestMock(t, { issueLabels: [] });
+  const reopenedResult = await runIssueLifecycleAction({
+    event: reopenedEvent,
+    request: reopened.request,
+  });
+  assert.equal(reopenedResult.outcome, "planned");
+  assert.deepEqual(reopenedResult.plan, {
+    apply: ["status: new"],
+    failures: [],
+    ok: true,
+    remove: [],
+  });
+
+  const overlap = requestMock(t, {
+    issueLabels: ["status: blocked", "status: ready"],
+  });
+  const overlapResult = await runIssueLifecycleAction({
+    event: {
+      action: "labeled",
+      label: { name: "status: blocked" },
+      issue: { number: 27 },
+      transitionRequest: {
+        actorRole: "implementer",
+        blockingCondition: "blocked by verification",
+        eventIdentity: "label-event-27",
+        requestedSource: "status: ready",
+      },
+    },
+    request: overlap.request,
+  });
+  assert.equal(overlapResult.outcome, "planned");
+  assert.equal(overlapResult.desiredState, "status: blocked");
+  assert.deepEqual(overlapResult.plan, {
+    apply: [],
+    failures: [],
+    ok: true,
+    remove: ["status: ready"],
+  });
+});
+
 test("runs the CLI wrapper with a hermetic event file", async (t) => {
   const eventPath = join(
     await mkdtemp(join(tmpdir(), "keiko-lifecycle-")),
@@ -352,6 +393,20 @@ test("covers alternate fail-closed and no-op lifecycle branches", async (t) => {
       remove: ["status: ready for human review"],
     },
   );
+
+  const prematureClosed = requestMock(t, { issueLabels: ["status: new"] });
+  const prematureClosedResult = await runIssueLifecycleAction({
+    event: {
+      action: "closed",
+      expectedReadinessCommentId: 101,
+      issue: { number: 27, state_reason: "completed" },
+    },
+    request: prematureClosed.request,
+  });
+  assert.equal(prematureClosedResult.outcome, "failed");
+  assert.deepEqual(prematureClosedResult.failures, [
+    "completion_evidence_required",
+  ]);
 
   const edited = requestMock(t, { issueLabels: ["status: ready"] });
   assert.equal(

@@ -49,7 +49,7 @@ test("parses short and exact issue references", () => {
   );
 });
 
-test("accepts governed artifact identifiers in acceptance evidence", () => {
+test("accepts self-verifying artifact digests in acceptance evidence", () => {
   const digestFixture = validPullRequestFixture();
   digestFixture.pullRequest.body = digestFixture.pullRequest.body.replace(
     "c".repeat(40),
@@ -64,9 +64,10 @@ test("accepts governed artifact identifiers in acceptance evidence", () => {
     "c".repeat(40),
     "artifact:macos-smoke-20260717",
   );
-  assert.deepEqual(validatePullRequestContract(artifactFixture), {
-    failures: [],
-  });
+  assert.match(
+    validatePullRequestContract(artifactFixture).failures.join("\n"),
+    /governed artifact identifier/u,
+  );
 });
 
 test("rejects stale readiness, wrong delivery, and unready issue state", () => {
