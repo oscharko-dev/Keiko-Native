@@ -29,6 +29,15 @@ The benchmark retained in [`foundation-benchmark.json`](foundation-benchmark.jso
 sanitized samples, source inventories, package digests, release-package hook scans, release
 composition proof, and computed distributions.
 
+Diagnostic GitHub runner evidence was collected in Actions run `29609865566` at exact head
+`96d1e6a7c894bebbce2d4374da858d83478a6d97`. The `macos-14` artifact
+`foundation-diagnostic-macos-14` has JSON SHA-256
+`7bf6a9ca0ba8f2fa94263118c62c317f6b9410a2fc0b0cba5228c323b688a870`; the `macos-26` artifact
+`foundation-diagnostic-macos-26` has JSON SHA-256
+`75e60e60666cf614628b901110a1a4707b22f2855d7263fcd3e66d25fd3756b9`. Both artifacts were validated
+against their SHA files, exact-head provenance, runner labels, and redaction denylist. These
+runner results are diagnostic only.
+
 ## Candidate bindings
 
 | Candidate | Source SHA-256                                                     | Lock SHA-256                                                                                                                                     | Evaluation package SHA-256                                         | Release-like package SHA-256                                       |

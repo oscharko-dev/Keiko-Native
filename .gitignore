@@ -143,12 +143,3 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
-
-# Issue #11 temporary Foundation evaluation output
-.foundation-evaluation/
-experiments/slint-renderer/target/
-experiments/tauri-renderer/frontend/
-experiments/tauri-renderer/frontend-evaluation/
-experiments/tauri-renderer/gen/
-experiments/tauri-renderer/target/
-experiments/tauri-renderer/web/node_modules/

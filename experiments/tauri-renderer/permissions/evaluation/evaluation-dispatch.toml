@@ -1,4 +1,0 @@
-[[permission]]
-identifier = "allow-evaluation-dispatch"
-description = "Allows only the closed issue 11 evaluation dispatch command."
-commands.allow = ["evaluation_dispatch"]

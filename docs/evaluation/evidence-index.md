@@ -24,6 +24,20 @@ and ADR/report records below are retained.
 | Benchmark count       | 20 cold and 30 warm launches per candidate; `quick=false`; alternating order |
 | Harness digest        | `2a59d4b95886c8bcb30517f277c30dda31446e96d60ec285661b1c6d52b4ca6f`           |
 
+## Diagnostic runner evidence
+
+GitHub Actions run `29609865566` (`Foundation evaluation diagnostic`) built, packaged, and ran the
+short diagnostic workload on `macos-14` and `macos-26` arm64 runners at exact head
+`96d1e6a7c894bebbce2d4374da858d83478a6d97`. Runner timing remains diagnostic only and does not
+replace the physical owner benchmark above. The downloaded artifacts were locally validated against
+their `.sha256` files, the exact head, `github-actions-diagnostic` provenance, runner labels,
+`quick=true`, four samples each, and the repository redaction denylist.
+
+| Runner   | Actions artifact                 | Benchmark ID                                                       | Diagnostic JSON SHA-256                                            |
+| -------- | -------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------ |
+| macos-14 | `foundation-diagnostic-macos-14` | `9c5029d7c5fad4c45403c70b0c1ff46618a9020a34310455893a373ebfdf3048` | `7bf6a9ca0ba8f2fa94263118c62c317f6b9410a2fc0b0cba5228c323b688a870` |
+| macos-26 | `foundation-diagnostic-macos-26` | `fb11b718fdee2cb05e4feb070e951bf3cf41c8a8b29968a6f1db34345edcd066` | `75e60e60666cf614628b901110a1a4707b22f2855d7263fcd3e66d25fd3756b9` |
+
 ## Candidate package bindings
 
 | Candidate | Source SHA-256                                                     | Lock SHA-256                                                                                                                                     | Evaluation package SHA-256                                         | Release-like package SHA-256                                       | Release-like bytes |

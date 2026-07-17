@@ -54,6 +54,14 @@ The retained decision records are:
 - [`licence-source-inventory.md`](../evaluation/licence-source-inventory.md), with exact-head
   dependency inventory summaries and productive review obligations.
 
+GitHub Actions run `29609865566` adds diagnostic `macos-14` and `macos-26` arm64 build, package,
+and quick timing evidence at exact head `96d1e6a7c894bebbce2d4374da858d83478a6d97`. The artifact
+JSON SHA-256 values are `7bf6a9ca0ba8f2fa94263118c62c317f6b9410a2fc0b0cba5228c323b688a870`
+(`foundation-diagnostic-macos-14`) and
+`75e60e60666cf614628b901110a1a4707b22f2855d7263fcd3e66d25fd3756b9`
+(`foundation-diagnostic-macos-26`). These runner results validate clean-checkout packageability
+and diagnostic harness execution only; they do not replace the physical owner benchmark authority.
+
 Tauri package and lock bindings:
 
 - source SHA-256 `6d2bca52902244e5b6784036cfb3fcc82defb7b1d6264dd3f55cf4c7e7e993f1`;
