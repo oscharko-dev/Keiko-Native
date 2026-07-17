@@ -10,8 +10,16 @@ import {
   validPullRequestFixture,
 } from "./pr-contract-test-fixture.mjs";
 
-test("accepts a current implementation-ready issue and complete PR evidence", () => {
+test("accepts a current lifecycle-eligible issue and complete PR evidence", () => {
   assert.deepEqual(validatePullRequestContract(validPullRequestFixture()), {
+    failures: [],
+  });
+  const reviewFixture = validPullRequestFixture();
+  reviewFixture.issue.labels = [
+    { name: "type: task" },
+    { name: "status: ready for human review" },
+  ];
+  assert.deepEqual(validatePullRequestContract(reviewFixture), {
     failures: [],
   });
 });
@@ -42,20 +50,52 @@ test("rejects stale readiness, wrong delivery, and unready issue state", () => {
     /[0-9a-f]{64}/u,
     "b".repeat(64),
   );
+  fixture.pullRequest.body = fixture.pullRequest.body.replace(
+    "c".repeat(40),
+    "d".repeat(40),
+  );
   const failures = validatePullRequestContract(fixture).failures.join("\n");
   assert.match(failures, /Accepted target branch does not match/u);
+  assert.match(failures, /must cite the pull-request head SHA/u);
   assert.match(failures, /must remain open/u);
-  assert.match(failures, /not status: ready/u);
+  assert.match(failures, /exactly one lifecycle status label/u);
   assert.match(failures, /current matching accepted readiness/u);
   assert.match(failures, /delivery target/u);
 });
 
-test("rejects a conflicting lifecycle label", () => {
-  const fixture = validPullRequestFixture();
-  fixture.issue.labels.push({ name: "status: new" });
+test("rejects every lifecycle state that is not PR eligible", () => {
+  for (const label of [
+    "status: new",
+    "status: triaged",
+    "status: ready",
+    "status: in progress",
+    "status: blocked",
+    "status: waiting for user",
+    "status: done",
+  ]) {
+    const fixture = validPullRequestFixture();
+    fixture.issue.labels = [{ name: "type: task" }, { name: label }];
+    assert.match(
+      validatePullRequestContract(fixture).failures.join("\n"),
+      /not pull-request eligible/u,
+      label,
+    );
+  }
+});
+
+test("rejects zero-label and multi-label lifecycle reloads", () => {
+  const zero = validPullRequestFixture();
+  zero.issue.labels = [{ name: "type: task" }];
   assert.match(
-    validatePullRequestContract(fixture).failures.join("\n"),
-    /conflicting lifecycle status/u,
+    validatePullRequestContract(zero).failures.join("\n"),
+    /exactly one lifecycle status label/u,
+  );
+
+  const multi = validPullRequestFixture();
+  multi.issue.labels.push({ name: "status: ready" });
+  assert.match(
+    validatePullRequestContract(multi).failures.join("\n"),
+    /exactly one lifecycle status label/u,
   );
 });
 
@@ -64,7 +104,7 @@ test("rejects incomplete PR evidence and unresolved template choices", () => {
   fixture.pullRequest.title = "short";
   fixture.pullRequest.body = fixture.pullRequest.body
     .replace(
-      "| AC1 | quality/pr-contract.test.mjs | abc123 | Pass |",
+      `| AC1 | quality/pr-contract.test.mjs | ${"c".repeat(40)} | Pass |`,
       "| AC1 | | | |",
     )
     .replace(

@@ -26,69 +26,31 @@ const requiredHeadings = [
   "Residual risks and follow-ups",
 ];
 
-const requiredCheckboxesBySection = new Map([
-  [
-    "Product and architecture alignment",
-    [
-      "implemented contract version and fingerprint match",
-      "change follows the Decision Addendum",
-      "Existing Keiko material was used only after",
-      "greenfield change creates no mandatory build-time or runtime dependency",
-      "Product authority, policy, evidence, and privileged effects remain",
-      "durable architecture change is recorded in an ADR",
-    ],
-  ],
-  [
-    "Acceptance journey evidence",
-    [
-      "Automated checks exercise user-visible outcomes",
-      "Required failure, recovery, accessibility, visual, and platform observations",
-    ],
-  ],
-  [
-    "Quality Plan settlement",
-    [
-      "Applicable positive, negative, boundary, failure, cancellation, and recovery behavior",
-      "actually wired production composition was tested",
-      "Applicable security, accessibility, performance, resource, visual, and platform evidence",
-      "Excluded quality areas retain the rationale",
-      "Secrets, credentials, raw customer content, private endpoints, and PII are absent",
-    ],
-  ],
-  [
-    "Verification",
-    [
-      "`npm ci --ignore-scripts`",
-      "`npm run quality`",
-      "`npm audit --audit-level=high`",
-      "Every declared native target-specific gate passed",
-      "reviewed the complete diff against requirements",
-    ],
-  ],
-  [
-    "Independent audit and findings",
-    [
-      "Findings are evidence-cited",
-      "Every confirmed finding is resolved",
-      "Verification and audit were repeated",
-    ],
-  ],
-  [
-    "Delivery",
-    [
-      "target branch matches the delivery path",
-      "Commits are signed and every required check",
-      "Advisory tools are not treated as required merge authority",
-      "Documentation, ADRs, contracts, known limitations, and follow-ups are current",
-      "draft pull request was not promoted",
-    ],
-  ],
-]);
+const requiredCheckboxesBySection = new Map(
+  Object.entries({
+    "Acceptance journey evidence":
+      "Automated checks exercise user-visible outcomes|Required failure, recovery, accessibility, visual, and platform observations",
+    Delivery:
+      "target branch matches the delivery path|Commits are signed and every required check|Advisory tools are not treated as required merge authority|Documentation, ADRs, contracts, known limitations, and follow-ups are current|draft pull request was not promoted",
+    "Independent audit and findings":
+      "Findings are evidence-cited|Every confirmed finding is resolved|Verification and audit were repeated",
+    "Product and architecture alignment":
+      "implemented contract version and fingerprint match|change follows the Decision Addendum|Existing Keiko material was used only after|greenfield change creates no mandatory build-time or runtime dependency|Product authority, policy, evidence, and privileged effects remain|durable architecture change is recorded in an ADR",
+    "Quality Plan settlement":
+      "Applicable positive, negative, boundary, failure, cancellation, and recovery behavior|actually wired production composition was tested|Applicable security, accessibility, performance, resource, visual, and platform evidence|Excluded quality areas retain the rationale|Secrets, credentials, raw customer content, private endpoints, and PII are absent",
+    Verification:
+      "`npm ci --ignore-scripts`|`npm run quality`|`npm audit --audit-level=high`|Every declared native target-specific gate passed|reviewed the complete diff against requirements",
+  }).map(([section, checks]) => [section, checks.split("|")]),
+);
 
 const epicBranchCheckboxes = [
   "accepted issue authorizes this epic-branch target",
   "Acceptance and audit evidence is complete",
 ];
+const deliveryEligibleLifecycleStates = new Set([
+  "status: pr open",
+  "status: ready for human review",
+]);
 
 function labelsToNames(labels) {
   return (Array.isArray(labels) ? labels : []).map((label) =>
@@ -113,13 +75,25 @@ function tableRows(section) {
     .filter((cells) => !cells.every((cell) => /^:?-{3,}:?$/u.test(cell)));
 }
 
-function hasCompleteEvidenceRow(section, firstCell) {
-  return tableRows(section).some(
+function completeEvidenceRows(section, firstCell) {
+  return tableRows(section).filter(
     (cells) =>
       cells.length >= 4 &&
       firstCell.test(cells[0]) &&
       cells.slice(0, 4).every((cell) => cell.length > 0),
   );
+}
+
+function exactHeadEvidenceFailures(sections, pullRequest) {
+  const head = pullRequest?.head?.sha;
+  if (!/^[\da-f]{40}$/iu.test(head ?? ""))
+    return ["Pull-request head SHA is missing or malformed."];
+  return completeEvidenceRows(
+    sections.get("Acceptance criteria and evidence"),
+    /^AC[1-9]\d*\b/u,
+  ).some((cells) => cells[2] !== head)
+    ? ["Acceptance-criteria evidence must cite the pull-request head SHA."]
+    : [];
 }
 
 function checkboxIsChecked(body, phrase) {
@@ -242,10 +216,10 @@ function scopeContractFailures(scope, pullRequest) {
 function evidenceFailures(sections) {
   const failures = [];
   if (
-    !hasCompleteEvidenceRow(
+    completeEvidenceRows(
       sections.get("Acceptance criteria and evidence"),
       /^AC[1-9]\d*\b/u,
-    )
+    ).length === 0
   )
     failures.push("Acceptance-criteria evidence has no complete result row.");
 
@@ -253,7 +227,7 @@ function evidenceFailures(sections) {
   failures.push(...applicabilityFailures(journey, "Acceptance Journey"));
   if (
     optionValue(fieldValue(journey, "Applicability")) === "Required" &&
-    !hasCompleteEvidenceRow(journey, /^J[1-9]\d*(?:\.[1-9]\d*)?\b/u)
+    completeEvidenceRows(journey, /^J[1-9]\d*(?:\.[1-9]\d*)?\b/u).length === 0
   )
     failures.push(
       "Required Acceptance Journey evidence has no complete result row.",
@@ -302,16 +276,15 @@ function acceptedIssueFailures(issue, acceptedIssueNumber, acceptedVersion) {
   if (issue.state !== "open")
     failures.push("The accepted issue must remain open.");
   const issueLabels = labelsToNames(issue.labels);
-  if (!issueLabels.includes("status: ready"))
-    failures.push("The accepted issue is not status: ready.");
-  if (
-    issueLabels.some(
-      (label) => label.startsWith("status: ") && label !== "status: ready",
-    )
-  )
+  const lifecycleLabels = issueLabels.filter((label) =>
+    label.startsWith("status: "),
+  );
+  if (lifecycleLabels.length !== 1)
     failures.push(
-      "The accepted issue has a conflicting lifecycle status label.",
+      "The accepted issue must have exactly one lifecycle status label.",
     );
+  else if (!deliveryEligibleLifecycleStates.has(lifecycleLabels[0]))
+    failures.push("The accepted issue lifecycle is not pull-request eligible.");
   const validation = validateIssueContract({
     body: issue.body,
     labels: issue.labels,
@@ -390,6 +363,7 @@ export function validatePullRequestContract({
     ...unresolvedPrFailures(body),
     ...scopeContractFailures(scope, pullRequest),
     ...evidenceFailures(sections),
+    ...exactHeadEvidenceFailures(sections, pullRequest),
     ...attestationFailures(sections, scope.acceptedTarget),
   );
 
