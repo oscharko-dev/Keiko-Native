@@ -84,6 +84,11 @@ function invariant(condition, message) {
 }
 
 const failureCategories = [
+  ["session helper rustc version", "session_observer_version"],
+  ["session helper source binding", "session_observer_source"],
+  ["session helper build", "session_observer_build"],
+  ["session helper executable", "session_observer_executable"],
+  ["session helper observation", "session_observer_observation"],
   ["already has a running candidate", "preexisting_process"],
   ["did not start the exact candidate", "launch_failed"],
   ["wrapper exited unsuccessfully", "launch_failed"],

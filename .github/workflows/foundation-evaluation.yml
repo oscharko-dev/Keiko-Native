@@ -69,6 +69,10 @@ jobs:
           cargo install cargo-bundle --version 0.11.0 --locked --root "$RUNNER_TEMP/cargo-bundle"
           cargo fetch --locked --manifest-path experiments/tauri-renderer/Cargo.toml
           cargo fetch --locked --manifest-path experiments/slint-renderer/Cargo.toml
+      - name: Verify governed session observer
+        run: |
+          set -euo pipefail
+          node --test --test-name-pattern='binds the Darwin session observer' quality/foundation-evaluation.test.mjs
       - name: Build, test, and package both candidates
         run: |
           set -euo pipefail

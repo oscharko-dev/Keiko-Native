@@ -323,6 +323,17 @@ test("failure reporting is closed and never exposes raw diagnostics or paths", (
     }).stage,
     "provenance",
   );
+  for (const [message, category] of [
+    [
+      "session helper rustc version is unauthorized",
+      "session_observer_version",
+    ],
+    ["session helper source binding is invalid", "session_observer_source"],
+    ["session helper build failed", "session_observer_build"],
+    ["session helper executable is invalid", "session_observer_executable"],
+    ["session helper observation failed", "session_observer_observation"],
+  ])
+    assert.equal(sanitizedFailure(new Error(message)).category, category);
   assert.equal(
     "stage" in
       sanitizedFailure(new Error("raw environment details"), {
