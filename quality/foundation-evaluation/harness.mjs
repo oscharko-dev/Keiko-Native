@@ -107,6 +107,14 @@ const failureCategories = [
   ["incomplete line", "invalid_output"],
   ["unexpected candidate stdout", "invalid_output"],
 ];
+const failureStages = new Set([
+  "checkout",
+  "configuration",
+  "environment",
+  "harness",
+  "provenance",
+  "session-observer",
+]);
 
 function closedCandidateCode(evidence) {
   const candidates = [
@@ -135,7 +143,7 @@ export function sanitizedFailure(error, context = {}) {
   const mode = ["cold", "warm"].includes(context.mode)
     ? context.mode
     : "unavailable";
-  return {
+  const failure = {
     app:
       context.appPid === undefined
         ? "missing"
@@ -169,6 +177,8 @@ export function sanitizedFailure(error, context = {}) {
             ? "running"
             : "missing",
   };
+  if (failureStages.has(context.stage)) failure.stage = context.stage;
+  return failure;
 }
 
 function failureError(error, context) {
@@ -176,6 +186,19 @@ function failureError(error, context) {
   const wrapped = new Error("foundation evaluation failed");
   wrapped.foundationFailure = failure;
   return wrapped;
+}
+
+function stageFailure(error, stage) {
+  if (error?.foundationFailure !== undefined) return error;
+  return failureError(error, { stage });
+}
+
+async function atEvaluationStage(stage, work) {
+  try {
+    return await work();
+  } catch (error) {
+    throw stageFailure(error, stage);
+  }
 }
 
 function normalizedPath(path) {
@@ -2409,21 +2432,31 @@ export async function benchmark(
   } = {},
 ) {
   invariant(!diagnostic || quick, "diagnostic timing must remain short");
-  const checkout = await governedCheckout(root);
+  const checkout = await atEvaluationStage("checkout", () =>
+    governedCheckout(root),
+  );
   const counts = quick ? QUICK_COUNTS : FULL_COUNTS;
   const schedule = buildSchedule(counts);
-  const observation = observeEnvironment({ diagnostic, environment });
+  const observation = await atEvaluationStage("environment", () =>
+    observeEnvironment({ diagnostic, environment }),
+  );
   invariant(
     quick || !observation.virtual,
     "virtual timing cannot be authoritative",
   );
-  const configuration = await loadConfiguration(root, environment);
+  const configuration = await atEvaluationStage("configuration", () =>
+    loadConfiguration(root, environment),
+  );
   const bindings = compactBindings(configuration);
-  const experiment = await experimentBinding(root, checkout, {
-    diagnostic,
-    environment,
-  });
-  const harness = await harnessBinding(root);
+  const experiment = await atEvaluationStage("provenance", () =>
+    experimentBinding(root, checkout, {
+      diagnostic,
+      environment,
+    }),
+  );
+  const harness = await atEvaluationStage("harness", () =>
+    harnessBinding(root),
+  );
   const candidateEvidence = {};
   const samples = [];
   const resultPath = resolve(
@@ -2437,10 +2470,8 @@ export async function benchmark(
     1_024,
   );
   invariant(rustcPath.startsWith("/"), "session helper rustc path is invalid");
-  return withDarwinSessionObserver(
-    root,
-    { rustcPath },
-    async (sessionObserver) => {
+  return atEvaluationStage("session-observer", () =>
+    withDarwinSessionObserver(root, { rustcPath }, async (sessionObserver) => {
       for (const entry of schedule) {
         try {
           const run = await runCandidate(
@@ -2535,7 +2566,7 @@ export async function benchmark(
       await writeJsonAtomic(resultPath, result, 0o600);
       await rm(partialPath, { force: true });
       return { result, resultPath };
-    },
+    }),
   );
 }
 

@@ -317,6 +317,19 @@ test("failure reporting is closed and never exposes raw diagnostics or paths", (
     ).category,
     "identity_contract",
   );
+  assert.equal(
+    sanitizedFailure(new Error("raw environment details"), {
+      stage: "provenance",
+    }).stage,
+    "provenance",
+  );
+  assert.equal(
+    "stage" in
+      sanitizedFailure(new Error("raw environment details"), {
+        stage: "not-allowlisted",
+      }),
+    false,
+  );
 });
 
 test("LaunchServices runner tracks the exact packaged process and bounded markers", async () => {
