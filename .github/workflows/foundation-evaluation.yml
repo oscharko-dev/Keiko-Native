@@ -61,6 +61,21 @@ jobs:
           test -n "${ImageOS:-}"
           test -n "${ImageVersion:-}"
           sw_vers -productVersion | grep -Eq '^[0-9]+\.[0-9]+(\.[0-9]+)?$'
+      - name: Prepare governed session observer
+        run: |
+          set -euo pipefail
+          observer_root="$RUNNER_TEMP/keiko-session-observer"
+          test ! -e "$observer_root"
+          mkdir -m 700 "$observer_root"
+          observer="$observer_root/session-observer"
+          "$KEIKO_FOUNDATION_RUSTC" --edition=2021 -O -o "$observer" quality/foundation-evaluation/session-observer.rs
+          chmod 700 "$observer"
+          test -f "$observer"
+          test ! -L "$observer"
+          observer_sha="$(shasum -a 256 "$observer" | awk '{print $1}')"
+          test "${#observer_sha}" = 64
+          printf 'KEIKO_FOUNDATION_SESSION_OBSERVER=%s\n' "$observer" >>"$GITHUB_ENV"
+          printf 'KEIKO_FOUNDATION_SESSION_OBSERVER_SHA256=%s\n' "$observer_sha" >>"$GITHUB_ENV"
       - name: Install locked dependencies and candidate packager
         run: |
           set -euo pipefail
@@ -69,10 +84,13 @@ jobs:
           cargo install cargo-bundle --version 0.11.0 --locked --root "$RUNNER_TEMP/cargo-bundle"
           cargo fetch --locked --manifest-path experiments/tauri-renderer/Cargo.toml
           cargo fetch --locked --manifest-path experiments/slint-renderer/Cargo.toml
-      - name: Verify governed session observer
+      - name: Verify prepared governed session observer
         run: |
           set -euo pipefail
-          node --test --test-name-pattern='binds the Darwin session observer' quality/foundation-evaluation.test.mjs
+          test -x "$KEIKO_FOUNDATION_SESSION_OBSERVER"
+          test "$(shasum -a 256 "$KEIKO_FOUNDATION_SESSION_OBSERVER" | awk '{print $1}')" = "$KEIKO_FOUNDATION_SESSION_OBSERVER_SHA256"
+          session="$("$KEIKO_FOUNDATION_SESSION_OBSERVER" "$$")"
+          printf '%s' "$session" | grep -Eq '^[1-9][0-9]*$'
       - name: Build, test, and package both candidates
         run: |
           set -euo pipefail

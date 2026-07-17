@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import {
   chmod,
   mkdtemp,
   mkdir,
+  readFile,
+  realpath,
   rm,
   symlink,
   writeFile,
@@ -255,6 +263,18 @@ function exactProcessCount(executable) {
     : result.stdout.toString("utf8").trim().split(/\s+/u).filter(Boolean)
         .length;
 }
+
+test("keeps the release-like Tauri input editable without an evaluation hook", () => {
+  const shell = readFileSync(
+    join(
+      import.meta.dirname,
+      "../experiments/tauri-renderer/web/shared/Shell.tsx",
+    ),
+    "utf8",
+  );
+  assert.match(shell, /defaultValue=\{inputValue\}/u);
+  assert.doesNotMatch(shell, /\bvalue=\{inputValue\}/u);
+});
 
 test("uses the exact governed LaunchServices package invocation", () => {
   const arguments_ = launchServicesArguments({
@@ -646,6 +666,97 @@ test(
     }
   },
 );
+
+test("reuses only an exact governed prepared session observer", async () => {
+  const repositoryRoot = join(import.meta.dirname, "..");
+  const preparedRoot = await mkdtemp(join(tmpdir(), "prepared-observer-"));
+  const executable = join(preparedRoot, "session-observer");
+  await writeFile(executable, "prepared fixture", { mode: 0o700 });
+  const executableSha256 = createHash("sha256")
+    .update(await readFile(executable))
+    .digest("hex");
+  const resolvedExecutable = await realpath(executable);
+  const result = (status, stdout = "", stderr = "", overrides = {}) => ({
+    error: undefined,
+    signal: null,
+    status,
+    stderr,
+    stdout,
+    ...overrides,
+  });
+  const observer = buildDarwinSessionObserver(repositoryRoot, {
+    architecture: "arm64",
+    platform: "darwin",
+    prepared: {
+      executable,
+      executableSha256,
+      root: preparedRoot,
+    },
+    run: (command, arguments_) => {
+      assert.equal(command, resolvedExecutable);
+      assert.deepEqual(arguments_, ["17"]);
+      return result(0, "17\n");
+    },
+  });
+  try {
+    assert.equal(observer.sessionFor(17), 17);
+    assert.deepEqual(observer.binding, {
+      executableSha256,
+      kind: "workflow-prepared",
+      sourceSha256:
+        "d37babdcf3cd0c7358cf99f015abcbc89b42246cceb48c0a44bd74f26e1c2a4c",
+    });
+  } finally {
+    observer.dispose();
+    assert.equal(existsSync(executable), true);
+    const preparedOptions = (overrides = {}) => ({
+      architecture: "arm64",
+      platform: "darwin",
+      prepared: {
+        executable,
+        executableSha256,
+        root: preparedRoot,
+        ...overrides,
+      },
+      run: () => result(0, "17\n"),
+    });
+    await chmod(executable, 0o600);
+    assert.throws(
+      () => buildDarwinSessionObserver(repositoryRoot, preparedOptions()),
+      /prepared session helper executable is invalid/u,
+    );
+    await chmod(executable, 0o700);
+    assert.throws(
+      () =>
+        buildDarwinSessionObserver(
+          repositoryRoot,
+          preparedOptions({ executableSha256: "0".repeat(64) }),
+        ),
+      /prepared session helper executable is invalid/u,
+    );
+    const containedRoot = join(preparedRoot, "contained");
+    await mkdir(containedRoot);
+    assert.throws(
+      () =>
+        buildDarwinSessionObserver(
+          repositoryRoot,
+          preparedOptions({ root: containedRoot }),
+        ),
+      /prepared session helper path is unauthorized/u,
+    );
+    const symlinkPath = join(preparedRoot, "observer-link");
+    await symlink(executable, symlinkPath);
+    assert.throws(
+      () =>
+        buildDarwinSessionObserver(
+          repositoryRoot,
+          preparedOptions({ executable: symlinkPath }),
+        ),
+      /prepared session helper executable is invalid/u,
+    );
+    await rm(preparedRoot, { force: true, recursive: true });
+  }
+});
 
 test("fails closed for compiler, source, build, and observer drift", async () => {
   const root = join(import.meta.dirname, "..");

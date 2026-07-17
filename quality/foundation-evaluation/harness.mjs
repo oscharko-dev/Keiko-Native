@@ -1556,6 +1556,7 @@ export function buildDarwinSessionObserver(
   {
     architecture = process.arch,
     platform = process.platform,
+    prepared,
     rustcPath,
     run = spawnSync,
   } = {},
@@ -1564,17 +1565,71 @@ export function buildDarwinSessionObserver(
     platform === "darwin" && architecture === "arm64",
     "session helper platform is unauthorized",
   );
-  invariant(
-    typeof rustcPath === "string" && rustcPath.startsWith("/"),
-    "session helper rustc path is invalid",
-  );
-  rustcPath = realpathSync(rustcPath);
   const options = {
     encoding: "utf8",
     env: safeLauncherEnvironment(),
     maxBuffer: 4_096,
     timeout: 30_000,
   };
+  const source = join(
+    repositoryRoot,
+    "quality/foundation-evaluation/session-observer.rs",
+  );
+  invariant(
+    sha256(readFileSync(source)) === SESSION_HELPER_SOURCE_SHA256,
+    "session helper source binding is invalid",
+  );
+  if (prepared !== undefined) {
+    invariant(
+      prepared !== null &&
+        typeof prepared === "object" &&
+        typeof prepared.root === "string" &&
+        prepared.root.startsWith("/") &&
+        typeof prepared.executable === "string" &&
+        prepared.executable.startsWith("/") &&
+        typeof prepared.executableSha256 === "string" &&
+        /^[a-f0-9]{64}$/u.test(prepared.executableSha256),
+      "prepared session helper contract is invalid",
+    );
+    const preparedRoot = realpathSync(prepared.root);
+    const preparedRootInfo = lstatSync(prepared.root);
+    invariant(
+      preparedRootInfo.isDirectory() &&
+        !preparedRootInfo.isSymbolicLink() &&
+        (preparedRootInfo.mode & 0o777) === 0o700,
+      "prepared session helper root is invalid",
+    );
+    const executable = realpathSync(prepared.executable);
+    const relativeExecutable = relative(preparedRoot, executable);
+    invariant(
+      relativeExecutable !== "" &&
+        relativeExecutable !== ".." &&
+        !relativeExecutable.startsWith(`..${sep}`),
+      "prepared session helper path is unauthorized",
+    );
+    const executableInfo = lstatSync(prepared.executable);
+    invariant(
+      executableInfo.isFile() &&
+        !executableInfo.isSymbolicLink() &&
+        executableInfo.nlink === 1 &&
+        (executableInfo.mode & 0o777) === 0o700 &&
+        sha256(readFileSync(executable)) === prepared.executableSha256,
+      "prepared session helper executable is invalid",
+    );
+    return sessionObserverForExecutable(executable, run, options, {
+      binding: {
+        executableSha256: prepared.executableSha256,
+        kind: "workflow-prepared",
+        sourceSha256: SESSION_HELPER_SOURCE_SHA256,
+      },
+      dispose: () => {},
+    });
+  }
+  invariant(
+    typeof rustcPath === "string" && rustcPath.startsWith("/"),
+    "session helper rustc path is invalid",
+  );
+  rustcPath = realpathSync(rustcPath);
   const version = run(rustcPath, ["--version", "--verbose"], options);
   invariant(
     version.status === 0 &&
@@ -1585,14 +1640,6 @@ export function buildDarwinSessionObserver(
         version.stdout,
       ),
     "session helper rustc version is unauthorized",
-  );
-  const source = join(
-    repositoryRoot,
-    "quality/foundation-evaluation/session-observer.rs",
-  );
-  invariant(
-    sha256(readFileSync(source)) === SESSION_HELPER_SOURCE_SHA256,
-    "session helper source binding is invalid",
   );
   const generatedRoot = mkdtempSync(join(tmpdir(), "keiko-session-observer-"));
   const executable = join(generatedRoot, "session-observer");
@@ -1629,8 +1676,25 @@ export function buildDarwinSessionObserver(
     rmSync(generatedRoot, { force: true, recursive: true });
     throw error;
   }
-  return {
+  return sessionObserverForExecutable(executable, run, options, {
+    binding: {
+      executableSha256: sha256(readFileSync(executable)),
+      kind: "locally-compiled",
+      sourceSha256: SESSION_HELPER_SOURCE_SHA256,
+    },
     dispose: () => rmSync(generatedRoot, { force: true, recursive: true }),
+  });
+}
+
+function sessionObserverForExecutable(
+  executable,
+  run,
+  options,
+  { binding, dispose },
+) {
+  return {
+    binding,
+    dispose,
     sessionFor(pid) {
       invariant(Number.isSafeInteger(pid) && pid > 0, "session PID is invalid");
       const result = run(executable, [String(pid)], {
@@ -2475,21 +2539,61 @@ export async function benchmark(
     1_024,
   );
   invariant(rustcPath.startsWith("/"), "session helper rustc path is invalid");
+  const prepared = diagnostic
+    ? {
+        executable: boundedString(
+          environment.KEIKO_FOUNDATION_SESSION_OBSERVER,
+          "KEIKO_FOUNDATION_SESSION_OBSERVER",
+          1_024,
+        ),
+        executableSha256: boundedString(
+          environment.KEIKO_FOUNDATION_SESSION_OBSERVER_SHA256,
+          "KEIKO_FOUNDATION_SESSION_OBSERVER_SHA256",
+          64,
+        ),
+        root: boundedString(environment.RUNNER_TEMP, "RUNNER_TEMP", 1_024),
+      }
+    : undefined;
   return atEvaluationStage("session-observer", () =>
-    withDarwinSessionObserver(root, { rustcPath }, async (sessionObserver) => {
-      for (const entry of schedule) {
-        try {
-          const run = await runCandidate(
-            configuration[entry.candidate],
-            entry,
-            observation,
-            { sessionObserver },
-          );
-          candidateEvidence[run.sample.candidateEvidenceSha256] =
-            run.evidencePayload;
-          samples.push(run.sample);
-        } catch (error) {
-          const failure = sanitizedFailure(error, entry);
+    withDarwinSessionObserver(
+      root,
+      { prepared, rustcPath },
+      async (sessionObserver) => {
+        harness.sessionObserver = sessionObserver.binding;
+        for (const entry of schedule) {
+          try {
+            const run = await runCandidate(
+              configuration[entry.candidate],
+              entry,
+              observation,
+              { sessionObserver },
+            );
+            candidateEvidence[run.sample.candidateEvidenceSha256] =
+              run.evidencePayload;
+            samples.push(run.sample);
+          } catch (error) {
+            const failure = sanitizedFailure(error, entry);
+            await writeJsonAtomic(
+              partialPath,
+              {
+                bindings,
+                candidateEvidence,
+                counts,
+                environment: observation,
+                evidenceSchemaVersion: EVIDENCE_SCHEMA_VERSION,
+                experiment,
+                failure,
+                incomplete: true,
+                quick,
+                samples,
+                schedule,
+                harness,
+              },
+              0o600,
+            );
+            throw failureError(error, entry);
+          }
+          const completedPairs = samples.length / CANDIDATES.length;
           await writeJsonAtomic(
             partialPath,
             {
@@ -2499,79 +2603,59 @@ export async function benchmark(
               environment: observation,
               evidenceSchemaVersion: EVIDENCE_SCHEMA_VERSION,
               experiment,
-              failure,
+              harness,
               incomplete: true,
               quick,
               samples,
               schedule,
-              harness,
             },
             0o600,
           );
-          throw failureError(error, entry);
+          if (
+            Number.isInteger(completedPairs) &&
+            !quick &&
+            completedPairs % 10 === 0
+          )
+            onProgress({
+              completedPairs,
+              totalPairs: schedule.length / CANDIDATES.length,
+            });
         }
-        const completedPairs = samples.length / CANDIDATES.length;
-        await writeJsonAtomic(
-          partialPath,
-          {
-            bindings,
-            candidateEvidence,
-            counts,
-            environment: observation,
-            evidenceSchemaVersion: EVIDENCE_SCHEMA_VERSION,
-            experiment,
-            harness,
-            incomplete: true,
-            quick,
-            samples,
-            schedule,
-          },
-          0o600,
+        const completedCheckout = await governedCheckout(root);
+        invariant(
+          sameJson(completedCheckout, checkout),
+          "governed checkout changed during evaluation",
         );
-        if (
-          Number.isInteger(completedPairs) &&
-          !quick &&
-          completedPairs % 10 === 0
-        )
-          onProgress({
-            completedPairs,
-            totalPairs: schedule.length / CANDIDATES.length,
-          });
-      }
-      const completedCheckout = await governedCheckout(root);
-      invariant(
-        sameJson(completedCheckout, checkout),
-        "governed checkout changed during evaluation",
-      );
-      const resultCore = {
-        bindings,
-        candidateEvidence,
-        counts,
-        environment: observation,
-        evidenceSchemaVersion: EVIDENCE_SCHEMA_VERSION,
-        experiment,
-        harness,
-        quick,
-        samples,
-        schedule,
-        summary: summarize(samples, bindings),
-      };
-      const result = {
-        benchmarkId: stableResultIdentity(resultCore),
-        ...resultCore,
-      };
-      invariant(
-        redactionFailures(result, {
-          home: userInfo().homedir,
-          hostname: hostname(),
-          username: userInfo().username,
-        }).length === 0,
-        "retained result failed redaction",
-      );
-      await writeJsonAtomic(resultPath, result, 0o600);
-      await rm(partialPath, { force: true });
-      return { result, resultPath };
-    }),
+        const resultCore = {
+          bindings,
+          candidateEvidence,
+          counts,
+          environment: observation,
+          evidenceSchemaVersion: EVIDENCE_SCHEMA_VERSION,
+          experiment,
+          harness,
+          quick,
+          samples,
+          schedule,
+          summary: summarize(samples, bindings),
+        };
+        const result = {
+          benchmarkId: stableResultIdentity(resultCore),
+          ...resultCore,
+        };
+        invariant(
+          redactionFailures(result, {
+            home: userInfo().homedir,
+            hostname: hostname(),
+            username: userInfo().username,
+          }).length === 0,
+          "retained result failed redaction",
+        );
+        await writeJsonAtomic(resultPath, result, 0o600);
+        await rm(partialPath, { force: true });
+        return { result, resultPath };
+      },
+    ),
   );
 }
 
