@@ -27,6 +27,7 @@ import {
   auditedHarnessBinding,
   buildSchedule,
   buildDarwinSessionObserver,
+  candidateOutputSnapshot,
   closedCandidateDiagnostic,
   distribution,
   governedCheckout,
@@ -381,6 +382,29 @@ test("retains only one allowlisted candidate failure diagnostic", () => {
     "/Users/local/private credential\n",
   ])
     assert.equal(closedCandidateDiagnostic(Buffer.from(stderr)), "unavailable");
+});
+
+test("captures terminal output appended after the previous poll", () => {
+  const stdout = Buffer.from(
+    "KEIKO_PRESENTED\nKEIKO_EVIDENCE:{}\nKEIKO_SHUTDOWN_START\n",
+  );
+  const snapshot = candidateOutputSnapshot(
+    stdout,
+    Buffer.from("KEIKO_DIAGNOSTIC_FAILURE:frontend-finish\n"),
+    "KEIKO_PRESENTED\n".length,
+  );
+  assert.equal(snapshot.candidateDiagnostic, "frontend-finish");
+  assert.equal(snapshot.stderrBytes, 41);
+  assert.equal(
+    snapshot.stdoutDelta.toString("utf8"),
+    "KEIKO_EVIDENCE:{}\nKEIKO_SHUTDOWN_START\n",
+  );
+  assert.equal(snapshot.stdoutBytes, stdout.length);
+  assert.equal(snapshot.truncated, false);
+  assert.equal(
+    candidateOutputSnapshot(Buffer.alloc(0), Buffer.alloc(0), 1).truncated,
+    true,
+  );
 });
 
 test("LaunchServices runner tracks the exact packaged process and bounded markers", async () => {

@@ -150,6 +150,25 @@ export function closedCandidateDiagnostic(stderr) {
   return matches.length === 1 ? matches[0] : "unavailable";
 }
 
+export function candidateOutputSnapshot(stdout, stderr, previousStdoutBytes) {
+  invariant(Buffer.isBuffer(stdout), "candidate stdout snapshot is invalid");
+  invariant(Buffer.isBuffer(stderr), "candidate stderr snapshot is invalid");
+  invariant(
+    Number.isSafeInteger(previousStdoutBytes) && previousStdoutBytes >= 0,
+    "candidate stdout offset is invalid",
+  );
+  const truncated = stdout.length < previousStdoutBytes;
+  return {
+    candidateDiagnostic: closedCandidateDiagnostic(stderr),
+    stderrBytes: stderr.length,
+    stdoutBytes: truncated ? previousStdoutBytes : stdout.length,
+    stdoutDelta: truncated
+      ? Buffer.alloc(0)
+      : stdout.subarray(previousStdoutBytes),
+    truncated,
+  };
+}
+
 function closedCandidateCode(evidence) {
   const candidates = [
     evidence?.journey?.finish?.code,
@@ -2052,6 +2071,22 @@ export async function runCandidate(
       }
     }
   };
+  const captureOutput = async () => {
+    const snapshot = candidateOutputSnapshot(
+      await boundedOutput(stdoutPath, MAX_STDOUT_BYTES, "candidate stdout"),
+      await boundedOutput(stderrPath, MAX_STDOUT_BYTES, "candidate stderr"),
+      stdoutBytes,
+    );
+    stderrBytes = snapshot.stderrBytes;
+    candidateDiagnostic = snapshot.candidateDiagnostic;
+    if (snapshot.truncated) {
+      outputFailure ??= new Error("candidate stdout was truncated");
+      escalate("candidate stdout was truncated");
+    } else if (snapshot.stdoutDelta.length > 0) {
+      consumeLines(snapshot.stdoutDelta);
+      stdoutBytes = snapshot.stdoutBytes;
+    }
+  };
 
   try {
     const terminalDeadline = started + BigInt(timeoutMs + 2_000) * 1_000_000n;
@@ -2063,25 +2098,7 @@ export async function runCandidate(
         "LaunchServices wrapper output exceeded its bound",
       );
 
-      const stdout = await boundedOutput(
-        stdoutPath,
-        MAX_STDOUT_BYTES,
-        "candidate stdout",
-      );
-      const stderr = await boundedOutput(
-        stderrPath,
-        MAX_STDOUT_BYTES,
-        "candidate stderr",
-      );
-      stderrBytes = stderr.length;
-      candidateDiagnostic = closedCandidateDiagnostic(stderr);
-      if (stdout.length < stdoutBytes) {
-        outputFailure ??= new Error("candidate stdout was truncated");
-        escalate("candidate stdout was truncated");
-      } else if (stdout.length > stdoutBytes) {
-        consumeLines(stdout.subarray(stdoutBytes));
-        stdoutBytes = stdout.length;
-      }
+      await captureOutput();
 
       if (appPid === undefined) {
         const matches = matchingProcesses(definition.executable).filter(
@@ -2128,13 +2145,15 @@ export async function runCandidate(
         appExitAt !== undefined
       ) {
         invariant(
-          stderr.length <= MAX_STDOUT_BYTES,
+          stderrBytes <= MAX_STDOUT_BYTES,
           "candidate stderr exceeded its bound",
         );
         break;
       }
       await pause();
     }
+
+    await captureOutput();
 
     invariant(
       appPid !== undefined && appGroup !== undefined,
