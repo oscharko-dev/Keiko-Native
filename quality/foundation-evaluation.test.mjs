@@ -518,6 +518,41 @@ test("diagnostic runner can bypass LaunchServices with the exact packaged execut
   }
 });
 
+test("diagnostic runner reports direct executable launch failures with candidate context", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foundation-missing-launch-"));
+  const executable = join(root, "missing-candidate");
+  try {
+    await assert.rejects(
+      () =>
+        runCandidate(
+          {
+            executable,
+            packagePath: join(root, "Candidate.app"),
+          },
+          { candidate: "tauri", iteration: 0, mode: "cold", sequence: 0 },
+          {},
+          {
+            launchMode: "direct-executable",
+            sessionObserver: unitSessionObserver,
+            timeoutMs: 1_000,
+          },
+        ),
+      (error) => {
+        const failure = sanitizedFailure(error);
+        assert.equal(failure.candidate, "tauri");
+        assert.equal(failure.category, "launch_failed");
+        assert.equal(failure.mode, "cold");
+        assert.equal(failure.sequence, 0);
+        assert.equal(failure.wrapper, "missing");
+        assert.equal(JSON.stringify(failure).includes(root), false);
+        return true;
+      },
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("LaunchServices runner bounds output and escalates timed-out process cleanup", async () => {
   for (const [scenario, pattern] of [
     ["oversized", "output_bound"],

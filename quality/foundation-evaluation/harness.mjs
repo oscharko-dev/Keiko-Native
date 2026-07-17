@@ -97,7 +97,9 @@ const failureCategories = [
   ["session helper executable", "session_observer_executable"],
   ["session helper observation", "session_observer_observation"],
   ["already has a running candidate", "preexisting_process"],
+  ["direct executable did not start", "launch_failed"],
   ["did not start the exact candidate", "launch_failed"],
+  ["spawn", "launch_failed"],
   ["wrapper exited unsuccessfully", "launch_failed"],
   ["exceeded its bound", "output_bound"],
   ["hard timeout", "timeout"],
@@ -1662,6 +1664,10 @@ function processExists(pid) {
 }
 
 function processGroupFor(pid) {
+  invariant(
+    Number.isSafeInteger(pid) && pid > 0,
+    "candidate process-group discovery failed",
+  );
   const result = spawnSync("/bin/ps", ["-o", "pgid=", "-p", String(pid)], {
     encoding: "utf8",
     timeout: 1_000,
@@ -2021,7 +2027,10 @@ export async function runCandidate(
           stdio: ["ignore", "pipe", "pipe"],
         },
       );
-  const wrapperGroup = wrapper.pid;
+  const wrapperGroup =
+    Number.isSafeInteger(wrapper.pid) && wrapper.pid > 0
+      ? wrapper.pid
+      : undefined;
   let fixtureGroup;
   let fixturePid;
   let fixtureExecutable;
@@ -2086,9 +2095,12 @@ export async function runCandidate(
       appRow !== undefined &&
       !processExists(fixturePid) &&
       processGroupMembers(fixtureGroup).length === 0 &&
-      markerProcessRows(fixtureMarker, snapshot).filter(
-        (row) => row.pid !== appPid && row.pid !== wrapper.pid,
-      ).length === 0 &&
+      markerProcessRows(fixtureMarker, snapshot).filter((row) => {
+        if (row.pid === appPid) return false;
+        if (Number.isSafeInteger(wrapper.pid) && row.pid === wrapper.pid)
+          return false;
+        return true;
+      }).length === 0 &&
       !runnerObservedCleanup
     ) {
       runnerObservedCleanup = true;
@@ -2113,8 +2125,8 @@ export async function runCandidate(
     wrapperExit = { code, signal };
   });
 
-  let appPid = directExecutable ? wrapper.pid : undefined;
-  let appGroup = directExecutable ? processGroupFor(wrapper.pid) : undefined;
+  let appPid;
+  let appGroup;
   let appExitAt;
   let evidence;
   let escalationAt;
@@ -2138,6 +2150,8 @@ export async function runCandidate(
     else killProcess(appPid, signal);
   };
   const signalWrapper = (signal) => {
+    if (wrapperGroup === undefined || !Number.isSafeInteger(wrapper.pid))
+      return;
     if (appPid !== undefined && appGroup === wrapperGroup) return;
     if (processExists(wrapper.pid)) killGroup(wrapperGroup, signal);
   };
@@ -2224,6 +2238,14 @@ export async function runCandidate(
   };
 
   try {
+    if (directExecutable) {
+      invariant(
+        Number.isSafeInteger(wrapper.pid) && wrapper.pid > 0,
+        `${entry.candidate} direct executable did not start`,
+      );
+      appPid = wrapper.pid;
+      appGroup = processGroupFor(appPid);
+    }
     const terminalDeadline = started + BigInt(timeoutMs + 2_000) * 1_000_000n;
     while (process.hrtime.bigint() < terminalDeadline) {
       observeFixture();
@@ -2405,7 +2427,7 @@ export async function runCandidate(
       stderrBytes,
       wrapperError,
       wrapperExit,
-      wrapperStarted: true,
+      wrapperStarted: wrapperGroup !== undefined,
     });
   } finally {
     if (
