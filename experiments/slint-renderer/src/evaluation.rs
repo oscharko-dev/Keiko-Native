@@ -218,6 +218,7 @@ impl Port {
 
 struct Measurements {
     started: Instant,
+    focus_visible: Option<bool>,
     input_started: Option<Instant>,
     input_to_paint_ms: Option<f64>,
     runtime_token: Option<String>,
@@ -434,6 +435,7 @@ pub fn run(ui: MainWindow) -> Result<(), slint::PlatformError> {
     let stage = Rc::new(Cell::new(0_u8));
     let measurements = Rc::new(RefCell::new(Measurements {
         started: Instant::now(),
+        focus_visible: None,
         input_started: None,
         input_to_paint_ms: None,
         runtime_token: None,
@@ -498,6 +500,7 @@ pub fn run(ui: MainWindow) -> Result<(), slint::PlatformError> {
                 }
                 4 => {
                     let mut values = measurements_for_render.borrow_mut();
+                    values.focus_visible = Some(ui.get_input_has_focus());
                     if values.runtime_to_ui_ms.is_none() {
                         let token = values.runtime_token.clone().unwrap_or_default();
                         let committed = port_for_render.borrow_mut().dispatch(&request(
@@ -522,14 +525,12 @@ pub fn run(ui: MainWindow) -> Result<(), slint::PlatformError> {
         ));
     }
 
-    // Capture focus while the primary window is still visible. Hiding it first
-    // clears the native focus state and would turn a successful journey into an
-    // invalid diagnostic.
+    let focus_visible = measurements.borrow().focus_visible.unwrap_or(false);
     ui.set_dark_mode(true);
     let diagnostics = UiDiagnostics {
         dark_appearance: ui.get_dark_mode(),
         composition: ui.get_input_text().as_str() == "かなa",
-        focus_visible: ui.get_input_has_focus(),
+        focus_visible,
         scale_factor: ui.window().scale_factor(),
     };
     ui.hide()?;
