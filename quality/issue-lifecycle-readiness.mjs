@@ -54,10 +54,11 @@ function eventInvalidation(event) {
   if (event === undefined || event.action === undefined) return undefined;
   if (event.action === "closed") return "closed";
   if (event.action === "reopened") return "reopened";
-  if (event.action === "edited" && event.editKind === "semantic")
-    return "semantic_edit";
-  if (event.action === "edited" && event.editKind === "wording")
-    return "wording_edit";
+  if (event.action === "edited") {
+    if (event.editKind === "semantic") return "semantic_edit";
+    if (event.editKind === "wording") return "wording_edit";
+    return "unclassified_edit";
+  }
   return undefined;
 }
 
