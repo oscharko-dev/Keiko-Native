@@ -835,6 +835,9 @@ test("reuses only an exact governed prepared session observer", async () => {
 test("maps diagnostic prepared observer to its governed helper root", async () => {
   const runnerTemp = await mkdtemp(join(tmpdir(), "runner-temp-"));
   const preparedRoot = join(runnerTemp, "keiko-session-observer");
+  const outsideRoot = await mkdtemp(
+    join(tmpdir(), "outside-session-observer-"),
+  );
   const executable = join(preparedRoot, "session-observer");
   const executableSha256 = "a".repeat(64);
   await mkdir(preparedRoot, { mode: 0o700 });
@@ -866,14 +869,17 @@ test("maps diagnostic prepared observer to its governed helper root", async () =
     assert.throws(
       () =>
         preparedSessionObserverFromEnvironment({
-          KEIKO_FOUNDATION_SESSION_OBSERVER:
-            "/tmp/keiko-outside-session-observer/session-observer",
+          KEIKO_FOUNDATION_SESSION_OBSERVER: join(
+            outsideRoot,
+            "session-observer",
+          ),
           KEIKO_FOUNDATION_SESSION_OBSERVER_SHA256: executableSha256,
           RUNNER_TEMP: runnerTemp,
         }),
       /prepared session helper root is unauthorized/u,
     );
   } finally {
+    await rm(outsideRoot, { force: true, recursive: true });
     await rm(runnerTemp, { force: true, recursive: true });
   }
 });

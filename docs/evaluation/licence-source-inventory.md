@@ -3,7 +3,7 @@
 ## Status and exact-head binding
 
 This inventory summarizes exact-head evidence for issue #11 contract v2 at commit
-`d576a5b652027250f3de0c97163f045c71f98c8b`. It is decision evidence, not final legal clearance for
+`7614c18d98077b96e1da89d0b7493515c96a042e`. It is decision evidence, not final legal clearance for
 a productive release. CH-3 and later release work must regenerate complete locked transitive
 licence, notice, SBOM, vulnerability, redistribution, updater, signing, notarization, and store-term
 evidence for the productive composition.
@@ -25,9 +25,12 @@ evidence for the productive composition.
 
 ### Exact inventory summary
 
-The Tauri inventory is bound to:
+The Tauri inventory is bound to two deliberately separate digest scopes:
 
-- source SHA-256 `dda377833a50c75da1881cfbf17f3505fecf46e8858e4a0c676c187b83f36125`;
+- benchmark candidate source SHA-256
+  `ec92ea434fe3474e894a8be1dd68d69393c42d4d2556509ab44178b85a9a1144`;
+- licence-inventory source-input SHA-256
+  `dda377833a50c75da1881cfbf17f3505fecf46e8858e4a0c676c187b83f36125`;
 - Cargo lock SHA-256 `8f3d027a9c87907d4f266f2135ab19bc78f6df23eabe8f88e34efe53b43737d3`;
 - npm lock SHA-256 `ff1b106cdee2f72dcb736839e019a257d78ac160c5b0dc36162480e099ebc739`;
 - full inventory SHA-256 `569df08d5ebc01e9104195206024b8ab323960cf2062522c8ed729160db4c564`; and

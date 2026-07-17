@@ -67,9 +67,12 @@ jobs:
           observer_root="$RUNNER_TEMP/keiko-session-observer"
           test ! -e "$observer_root"
           mkdir -m 700 "$observer_root"
+          chmod 700 "$observer_root"
           observer="$observer_root/session-observer"
           "$KEIKO_FOUNDATION_RUSTC" --edition=2021 -O -o "$observer" quality/foundation-evaluation/session-observer.rs
           chmod 700 "$observer"
+          test "$(stat -f '%Lp' "$observer_root")" = 700
+          test "$(stat -f '%Lp' "$observer")" = 700
           test -f "$observer"
           test ! -L "$observer"
           observer_sha="$(shasum -a 256 "$observer" | awk '{print $1}')"

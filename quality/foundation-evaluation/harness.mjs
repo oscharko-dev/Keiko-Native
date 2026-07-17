@@ -84,6 +84,11 @@ function invariant(condition, message) {
 }
 
 const failureCategories = [
+  ["prepared session helper contract", "session_observer_prepared"],
+  ["prepared session helper digest", "session_observer_prepared"],
+  ["prepared session helper executable", "session_observer_prepared"],
+  ["prepared session helper path", "session_observer_prepared"],
+  ["prepared session helper root", "session_observer_prepared"],
   ["session helper rustc version", "session_observer_version"],
   ["session helper source binding", "session_observer_source"],
   ["session helper build", "session_observer_build"],
@@ -2620,9 +2625,10 @@ export function preparedSessionObserverFromEnvironment(environment) {
     /^[a-f0-9]{64}$/u.test(executableSha256),
     "prepared session helper digest is invalid",
   );
-  const root = dirname(resolve(executable));
-  const runnerRoot = resolve(runnerTemp);
-  const relativeRoot = relative(runnerRoot, root);
+  const root = dirname(executable);
+  const runnerRoot = realpathSync(runnerTemp);
+  const preparedRoot = realpathSync(root);
+  const relativeRoot = relative(runnerRoot, preparedRoot);
   invariant(
     relativeRoot !== "" &&
       relativeRoot !== ".." &&
