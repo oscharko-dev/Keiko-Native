@@ -135,7 +135,20 @@ const candidateFailureDiagnostics = new Set([
   "frontend-startup",
   "frontend-synthetic-input",
   "host-evidence-invalid",
-  "host-watchdog-timeout",
+  "host-watchdog-accessibility",
+  "host-watchdog-bounded-work",
+  "host-watchdog-evaluation-failed",
+  "host-watchdog-finish",
+  "host-watchdog-fixture-process",
+  "host-watchdog-idle",
+  "host-watchdog-native-dialog",
+  "host-watchdog-ping",
+  "host-watchdog-prepare-renderer",
+  "host-watchdog-renderer-cycle",
+  "host-watchdog-runtime-event",
+  "host-watchdog-runtime-event-committed",
+  "host-watchdog-stable-shell",
+  "host-watchdog-startup",
 ]);
 
 export function closedCandidateDiagnostic(stderr) {

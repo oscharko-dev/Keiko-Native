@@ -150,6 +150,25 @@ enum Operation {
     Finish(Finish),
 }
 
+impl Operation {
+    const fn watchdog_diagnostic(&self) -> &'static str {
+        match self {
+            Self::PrepareRenderer => "host-watchdog-prepare-renderer",
+            Self::StableShell(_) => "host-watchdog-stable-shell",
+            Self::Ping => "host-watchdog-ping",
+            Self::AccessibilityResult(_) => "host-watchdog-accessibility",
+            Self::RuntimeEvent => "host-watchdog-runtime-event",
+            Self::RuntimeEventCommitted(_) => "host-watchdog-runtime-event-committed",
+            Self::BoundedWork(_) => "host-watchdog-bounded-work",
+            Self::NativeDialog => "host-watchdog-native-dialog",
+            Self::FixtureProcess => "host-watchdog-fixture-process",
+            Self::RendererCycle => "host-watchdog-renderer-cycle",
+            Self::EvaluationFailed(_) => "host-watchdog-evaluation-failed",
+            Self::Finish(_) => "host-watchdog-finish",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 enum FailureStage {
@@ -282,6 +301,7 @@ struct Journey {
 
 struct EvaluationState {
     authority_active: bool,
+    current_operation: Mutex<&'static str>,
     journey: Mutex<Journey>,
     fixture_ack: Option<String>,
     fixture_cleanup_ack: Option<String>,
@@ -425,16 +445,22 @@ pub fn run(builder: tauri::Builder<tauri::Wry>, context: tauri::Context<tauri::W
             let watchdog_handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(EVALUATION_WATCHDOG_MS));
-                emit_failure_once(
-                    &watchdog_handle,
-                    &watchdog_terminal,
-                    "host-watchdog-timeout",
-                );
+                let category = watchdog_handle
+                    .try_state::<EvaluationState>()
+                    .map(|state| {
+                        *state
+                            .current_operation
+                            .lock()
+                            .expect("current operation is available")
+                    })
+                    .unwrap_or("host-watchdog-startup");
+                emit_failure_once(&watchdog_handle, &watchdog_terminal, category);
             });
             Ok(())
         })
         .manage(EvaluationState {
             authority_active: true,
+            current_operation: Mutex::new("host-watchdog-idle"),
             journey: Mutex::new(Journey::default()),
             fixture_ack,
             fixture_cleanup_ack,
@@ -511,6 +537,11 @@ async fn evaluation_dispatch(app: AppHandle, window: WebviewWindow, envelope: Va
         return reply;
     }
 
+    let watchdog_diagnostic = envelope.operation.watchdog_diagnostic();
+    *state
+        .current_operation
+        .lock()
+        .expect("current operation is available") = watchdog_diagnostic;
     let mut reply = match envelope.operation {
         Operation::PrepareRenderer => prepare_renderer(&app, &window, &state),
         Operation::StableShell(data) => stable_shell(data, &state),
@@ -535,6 +566,10 @@ async fn evaluation_dispatch(app: AppHandle, window: WebviewWindow, envelope: Va
         }
         Operation::Finish(data) => finish(data, app.clone(), &state),
     };
+    *state
+        .current_operation
+        .lock()
+        .expect("current operation is available") = "host-watchdog-idle";
     reply.request_id = Some(request_id);
     reply
 }
@@ -1344,6 +1379,7 @@ mod tests {
     fn accessibility_summary_is_closed_and_bounded() {
         let state = EvaluationState {
             authority_active: true,
+            current_operation: Mutex::new("host-watchdog-idle"),
             journey: Mutex::new(Journey::default()),
             fixture_ack: None,
             fixture_cleanup_ack: None,

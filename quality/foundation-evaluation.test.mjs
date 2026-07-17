@@ -371,10 +371,10 @@ test("retains only one allowlisted candidate failure diagnostic", () => {
   assert.equal(
     closedCandidateDiagnostic(
       Buffer.from(
-        "/Users/local/private\nKEIKO_DIAGNOSTIC_FAILURE:frontend-renderer-cycle\nraw credential\n",
+        "/Users/local/private\nKEIKO_DIAGNOSTIC_FAILURE:host-watchdog-renderer-cycle\nraw credential\n",
       ),
     ),
-    "frontend-renderer-cycle",
+    "host-watchdog-renderer-cycle",
   );
   for (const stderr of [
     "KEIKO_DIAGNOSTIC_FAILURE:not-allowlisted\n",
