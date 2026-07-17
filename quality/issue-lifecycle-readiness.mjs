@@ -191,9 +191,7 @@ export function evaluateResumePrecondition({
     });
   if (pullRequest?.validated === true) return ok({ target: PR_OPEN });
   if (claim?.validated === true) return ok({ target: IN_PROGRESS });
-  return ok({
-    target: pauseEvidence.suspendedSource === REVIEW ? READY : READY,
-  });
+  return ok({ target: READY });
 }
 
 export function evaluateClosurePrecondition({ completionEvidence, reason }) {
