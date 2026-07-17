@@ -64,44 +64,55 @@ function transitionRequestFailures(event, currentState, requestedTarget) {
   }).failures;
 }
 
-function desiredStateForEvent(event, readiness, currentState, enabled) {
+function unauthorizedRawLabelResult(enabled) {
+  return enabled
+    ? {
+        failures: [
+          "Lifecycle label events require explicit transition authority.",
+        ],
+        outcome: "failed",
+      }
+    : { outcome: "ignored", reason: "raw_lifecycle_label_event" };
+}
+
+function desiredStateForLabelEvent(event, currentState, enabled) {
   const requestedTarget = labelRequestTarget(event);
-  if (requestedTarget !== undefined) {
-    if (!hasTransitionRequest(event))
-      return enabled
-        ? {
-            failures: [
-              "Lifecycle label events require explicit transition authority.",
-            ],
-            outcome: "failed",
-          }
-        : { outcome: "ignored", reason: "raw_lifecycle_label_event" };
-    const failures = transitionRequestFailures(
-      event,
-      currentState,
-      requestedTarget,
-    );
-    return failures.length > 0
-      ? { failures, outcome: "failed" }
-      : { desiredState: requestedTarget };
-  }
+  if (requestedTarget === undefined) return undefined;
+  if (!hasTransitionRequest(event)) return unauthorizedRawLabelResult(enabled);
+  const failures = transitionRequestFailures(
+    event,
+    currentState,
+    requestedTarget,
+  );
+  return failures.length > 0
+    ? { failures, outcome: "failed" }
+    : { desiredState: requestedTarget };
+}
+
+function desiredStateForClosure(event) {
+  if (event?.action !== "closed") return undefined;
+  const closure = evaluateClosurePrecondition({
+    completionEvidence: {
+      validated: event.issue?.state_reason === "completed",
+    },
+    reason: event.issue?.state_reason,
+  });
+  if (!closure.ok) return { failures: [closure.reason], outcome: "failed" };
+  return closure.removeLifecycleLabels === true
+    ? { removeLifecycleLabels: true }
+    : { desiredState: closure.target };
+}
+
+function desiredStateForEvent(event, readiness, currentState, enabled) {
   if (event?.action === "reopened")
     return { desiredState: LIFECYCLE_STATES[0] };
-  if (event?.action === "closed") {
-    const closure = evaluateClosurePrecondition({
-      completionEvidence: {
-        validated: event.issue?.state_reason === "completed",
-      },
-      reason: event.issue?.state_reason,
-    });
-    if (!closure.ok) return { failures: [closure.reason], outcome: "failed" };
-    return closure.removeLifecycleLabels === true
-      ? { removeLifecycleLabels: true }
-      : { desiredState: closure.target };
-  }
   if (event?.action === "edited" && readiness.current !== true)
     return { desiredState: LIFECYCLE_STATES[0] };
-  return {};
+  return (
+    desiredStateForLabelEvent(event, currentState, enabled) ??
+    desiredStateForClosure(event) ??
+    {}
+  );
 }
 
 function failed(failures) {

@@ -85,6 +85,22 @@ function completeEvidenceRows(section, firstCell) {
   );
 }
 
+function governedArtifactReference(value) {
+  const reference = optionValue(value ?? "");
+  return (
+    /^(?:sha256:[\da-f]{64}|sha512:[\da-f]{128})$/iu.test(reference) ||
+    /^artifact:[A-Za-z\d][A-Za-z\d._:-]{7,}$/u.test(reference) ||
+    /^https:\/\/github\.com\/[^/\s|]+\/[^/\s|]+\/actions\/runs\/\d+\/artifacts\/\d+$/u.test(
+      reference,
+    )
+  );
+}
+
+function exactEvidenceReference(value, head) {
+  const reference = optionValue(value ?? "");
+  return reference === head || governedArtifactReference(reference);
+}
+
 function exactHeadEvidenceFailures(sections, pullRequest) {
   const head = pullRequest?.head?.sha;
   if (!/^[\da-f]{40}$/iu.test(head ?? ""))
@@ -92,8 +108,10 @@ function exactHeadEvidenceFailures(sections, pullRequest) {
   return completeEvidenceRows(
     sections.get("Acceptance criteria and evidence"),
     /^AC[1-9]\d*\b/u,
-  ).some((cells) => cells[2] !== head)
-    ? ["Acceptance-criteria evidence must cite the pull-request head SHA."]
+  ).some((cells) => !exactEvidenceReference(cells[2], head))
+    ? [
+        "Acceptance-criteria evidence must cite the pull-request head SHA or a governed artifact identifier.",
+      ]
     : [];
 }
 

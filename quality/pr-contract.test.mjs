@@ -49,6 +49,26 @@ test("parses short and exact issue references", () => {
   );
 });
 
+test("accepts governed artifact identifiers in acceptance evidence", () => {
+  const digestFixture = validPullRequestFixture();
+  digestFixture.pullRequest.body = digestFixture.pullRequest.body.replace(
+    "c".repeat(40),
+    `sha256:${"a".repeat(64)}`,
+  );
+  assert.deepEqual(validatePullRequestContract(digestFixture), {
+    failures: [],
+  });
+
+  const artifactFixture = validPullRequestFixture();
+  artifactFixture.pullRequest.body = artifactFixture.pullRequest.body.replace(
+    "c".repeat(40),
+    "artifact:macos-smoke-20260717",
+  );
+  assert.deepEqual(validatePullRequestContract(artifactFixture), {
+    failures: [],
+  });
+});
+
 test("rejects stale readiness, wrong delivery, and unready issue state", () => {
   const fixture = validPullRequestFixture();
   fixture.issue.state = "closed";
