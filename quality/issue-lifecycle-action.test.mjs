@@ -401,14 +401,34 @@ test("covers alternate fail-closed and no-op lifecycle branches", async (t) => {
     "status: blocked",
   );
 
-  const invalidTransition = requestMock(t, { issueLabels: ["status: ready"] });
-  assert.equal(
-    await actionOutcome(
-      { ...labeledEvent, label: { name: "status: blocked" } },
-      invalidTransition.request,
-    ),
-    "failed",
-  );
+  const rawTransition = requestMock(t, { issueLabels: ["status: ready"] });
+  const rawResult = await runIssueLifecycleAction({
+    event: { ...labeledEvent, label: { name: "status: blocked" } },
+    request: rawTransition.request,
+  });
+  assert.equal(rawResult.outcome, "ignored");
+  assert.equal(rawResult.reason, "raw_lifecycle_label_event");
+
+  const enabledRawTransition = requestMock(t, {
+    issueLabels: ["status: ready"],
+  });
+  const previousRawActivation = process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
+  process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = "enabled";
+  try {
+    const enabledRawResult = await runIssueLifecycleAction({
+      event: { ...labeledEvent, label: { name: "status: blocked" } },
+      request: enabledRawTransition.request,
+    });
+    assert.equal(enabledRawResult.outcome, "failed");
+    assert.match(
+      enabledRawResult.failures.join("\n"),
+      /explicit transition authority/u,
+    );
+  } finally {
+    if (previousRawActivation === undefined)
+      delete process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
+    else process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = previousRawActivation;
+  }
 
   const malformedLabels = requestMock(t);
   await assert.rejects(

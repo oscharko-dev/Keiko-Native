@@ -43,6 +43,14 @@ function labelRequestTarget(event) {
   return label;
 }
 
+function hasTransitionRequest(event) {
+  return (
+    event?.transitionRequest !== undefined &&
+    event.transitionRequest !== null &&
+    typeof event.transitionRequest === "object"
+  );
+}
+
 function transitionRequestFailures(event, currentState, requestedTarget) {
   const transition = event?.transitionRequest ?? {};
   return validateTransitionRequest({
@@ -56,9 +64,18 @@ function transitionRequestFailures(event, currentState, requestedTarget) {
   }).failures;
 }
 
-function desiredStateForEvent(event, readiness, currentState) {
+function desiredStateForEvent(event, readiness, currentState, enabled) {
   const requestedTarget = labelRequestTarget(event);
   if (requestedTarget !== undefined) {
+    if (!hasTransitionRequest(event))
+      return enabled
+        ? {
+            failures: [
+              "Lifecycle label events require explicit transition authority.",
+            ],
+            outcome: "failed",
+          }
+        : { outcome: "ignored", reason: "raw_lifecycle_label_event" };
     const failures = transitionRequestFailures(
       event,
       currentState,
@@ -85,6 +102,10 @@ function desiredStateForEvent(event, readiness, currentState) {
   if (event?.action === "edited" && readiness.current !== true)
     return { desiredState: LIFECYCLE_STATES[0] };
   return {};
+}
+
+function failed(failures) {
+  return { failures, outcome: "failed" };
 }
 
 async function allIssueComments(repository, issueNumber, request) {
@@ -160,6 +181,127 @@ function verifyLifecycleLabelRemoval({
   return failures.length === 0 ? { ok: true } : { failures, ok: false };
 }
 
+function issueIdentity(issue) {
+  return issue.node_id ?? String(issue.id);
+}
+
+function readinessEvent(event) {
+  return event.action === "edited"
+    ? { action: "edited", editKind: event.editKind ?? "unknown" }
+    : { action: event.action };
+}
+
+function evaluateReadinessForIssue({ comments, event, issue }) {
+  return evaluateCurrentReadiness({
+    comments,
+    currentFingerprint: semanticIssueFingerprint(issue.body ?? "", issue.title),
+    currentVersion: /^- Contract version: `([^`]+)`$/mu.exec(
+      issue.body ?? "",
+    )?.[1],
+    event: readinessEvent(event),
+    expectedCommentId: event.expectedReadinessCommentId,
+  });
+}
+
+function enabledLifecycleActivation() {
+  return (
+    process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION === lifecycleActivationEnabled
+  );
+}
+
+function ignoredDesiredResult(desired, readiness) {
+  if (desired?.outcome !== "ignored") return undefined;
+  return {
+    failures: [],
+    outcome: "ignored",
+    readiness,
+    reason: desired.reason,
+  };
+}
+
+function exactLifecycleLabelFailure(issue) {
+  return statusLabels(issue).length === 1
+    ? undefined
+    : failed(["Issue lifecycle reload must contain exactly one status label."]);
+}
+
+async function reconcileLifecycleRemoval({
+  enabled,
+  issue,
+  issueNumber,
+  now,
+  readiness,
+  repository,
+  request,
+}) {
+  const reconciliation = planLifecycleLabelRemoval(issue);
+  if (!enabled)
+    return {
+      activation: "disabled",
+      now: now.toISOString(),
+      outcome: "planned",
+      plan: reconciliation,
+      readiness,
+      removeLifecycleLabels: true,
+    };
+  for (const label of reconciliation.remove)
+    await removeLabel(repository, issueNumber, label, request);
+  const readback = await reloadIssue(repository, issueNumber, request);
+  const verified = verifyLifecycleLabelRemoval({
+    actualIssueIdentity: issueIdentity(readback),
+    expectedIssueIdentity: issueIdentity(issue),
+    labels: labelNames(readback),
+  });
+  return verified.ok
+    ? { outcome: "applied", plan: reconciliation, removeLifecycleLabels: true }
+    : failed(verified.failures);
+}
+
+async function reconcileDesiredStatus({
+  desiredState,
+  enabled,
+  issue,
+  issueNumber,
+  now,
+  readiness,
+  repository,
+  request,
+}) {
+  const labelFailure = exactLifecycleLabelFailure(issue);
+  if (labelFailure !== undefined) return labelFailure;
+  if (desiredState === undefined)
+    return { failures: [], outcome: "ignored", readiness };
+
+  const reconciliation = planStatusLabelReconciliation(
+    labelNames(issue),
+    desiredState,
+  );
+  if (!reconciliation.ok) return failed(reconciliation.failures);
+  if (!enabled)
+    return {
+      activation: "disabled",
+      desiredState,
+      now: now.toISOString(),
+      outcome: "planned",
+      plan: reconciliation,
+      readiness,
+    };
+
+  for (const label of reconciliation.remove)
+    await removeLabel(repository, issueNumber, label, request);
+  await addLabels(repository, issueNumber, reconciliation.apply, request);
+  const readback = await reloadIssue(repository, issueNumber, request);
+  const verified = verifyStatusLabelReadback({
+    actualIssueIdentity: issueIdentity(readback),
+    desiredState,
+    expectedIssueIdentity: issueIdentity(issue),
+    labels: labelNames(readback),
+  });
+  return verified.ok
+    ? { desiredState, outcome: "applied", plan: reconciliation }
+    : failed(verified.failures);
+}
+
 export async function runIssueLifecycleAction({
   event,
   now = new Date(),
@@ -180,93 +322,39 @@ export async function runIssueLifecycleAction({
     allProviderLabels(repository, request),
   ]);
   const providerValidation = validateProviderStatusLabels(providerLabels);
-  if (!providerValidation.ok)
-    return { failures: providerValidation.failures, outcome: "failed" };
+  if (!providerValidation.ok) return failed(providerValidation.failures);
   const currentState = statusLabels(issue)[0];
 
-  const readiness = evaluateCurrentReadiness({
+  const readiness = evaluateReadinessForIssue({
     comments,
-    currentFingerprint: semanticIssueFingerprint(issue.body ?? "", issue.title),
-    currentVersion: /^- Contract version: `([^`]+)`$/mu.exec(
-      issue.body ?? "",
-    )?.[1],
-    event:
-      event.action === "edited"
-        ? { action: "edited", editKind: event.editKind ?? "unknown" }
-        : { action: event.action },
-    expectedCommentId: event.expectedReadinessCommentId,
+    event,
+    issue,
   });
-  const desired = desiredStateForEvent(event, readiness, currentState);
+  const enabled = enabledLifecycleActivation();
+  const desired = desiredStateForEvent(event, readiness, currentState, enabled);
   if (desired?.outcome === "failed") return desired;
-  const enabled =
-    process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION === lifecycleActivationEnabled;
-  if (desired.removeLifecycleLabels === true) {
-    const reconciliation = planLifecycleLabelRemoval(issue);
-    if (!enabled)
-      return {
-        activation: "disabled",
-        now: now.toISOString(),
-        outcome: "planned",
-        plan: reconciliation,
-        readiness,
-        removeLifecycleLabels: true,
-      };
-    for (const label of reconciliation.remove)
-      await removeLabel(repository, issueNumber, label, request);
-    const readback = await reloadIssue(repository, issueNumber, request);
-    const verified = verifyLifecycleLabelRemoval({
-      actualIssueIdentity: readback.node_id ?? String(readback.id),
-      expectedIssueIdentity: issue.node_id ?? String(issue.id),
-      labels: labelNames(readback),
-    });
-    return verified.ok
-      ? {
-          outcome: "applied",
-          plan: reconciliation,
-          removeLifecycleLabels: true,
-        }
-      : { failures: verified.failures, outcome: "failed" };
-  }
-  if (statusLabels(issue).length !== 1)
-    return {
-      failures: [
-        "Issue lifecycle reload must contain exactly one status label.",
-      ],
-      outcome: "failed",
-    };
-  const desiredState = desired.desiredState;
-  if (desiredState === undefined)
-    return { failures: [], outcome: "ignored", readiness };
-
-  const reconciliation = planStatusLabelReconciliation(
-    labelNames(issue),
-    desiredState,
-  );
-  if (!reconciliation.ok)
-    return { failures: reconciliation.failures, outcome: "failed" };
-  if (!enabled)
-    return {
-      activation: "disabled",
-      desiredState,
-      now: now.toISOString(),
-      outcome: "planned",
-      plan: reconciliation,
+  const ignored = ignoredDesiredResult(desired, readiness);
+  if (ignored !== undefined) return ignored;
+  if (desired.removeLifecycleLabels === true)
+    return reconcileLifecycleRemoval({
+      enabled,
+      issue,
+      issueNumber,
+      now,
       readiness,
-    };
-
-  for (const label of reconciliation.remove)
-    await removeLabel(repository, issueNumber, label, request);
-  await addLabels(repository, issueNumber, reconciliation.apply, request);
-  const readback = await reloadIssue(repository, issueNumber, request);
-  const verified = verifyStatusLabelReadback({
-    actualIssueIdentity: readback.node_id ?? String(readback.id),
-    desiredState,
-    expectedIssueIdentity: issue.node_id ?? String(issue.id),
-    labels: labelNames(readback),
+      repository,
+      request,
+    });
+  return reconcileDesiredStatus({
+    desiredState: desired.desiredState,
+    enabled,
+    issue,
+    issueNumber,
+    now,
+    readiness,
+    repository,
+    request,
   });
-  return verified.ok
-    ? { desiredState, outcome: "applied", plan: reconciliation }
-    : { failures: verified.failures, outcome: "failed" };
 }
 
 export async function runIssueLifecycleCli({

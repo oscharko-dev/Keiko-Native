@@ -48,6 +48,7 @@ const epicBranchCheckboxes = [
   "Acceptance and audit evidence is complete",
 ];
 const deliveryEligibleLifecycleStates = new Set([
+  "status: ready",
   "status: pr open",
   "status: ready for human review",
 ]);

@@ -14,6 +14,14 @@ test("accepts a current lifecycle-eligible issue and complete PR evidence", () =
   assert.deepEqual(validatePullRequestContract(validPullRequestFixture()), {
     failures: [],
   });
+  const readyFixture = validPullRequestFixture();
+  readyFixture.issue.labels = [
+    { name: "type: task" },
+    { name: "status: ready" },
+  ];
+  assert.deepEqual(validatePullRequestContract(readyFixture), {
+    failures: [],
+  });
   const reviewFixture = validPullRequestFixture();
   reviewFixture.issue.labels = [
     { name: "type: task" },
@@ -67,7 +75,6 @@ test("rejects every lifecycle state that is not PR eligible", () => {
   for (const label of [
     "status: new",
     "status: triaged",
-    "status: ready",
     "status: in progress",
     "status: blocked",
     "status: waiting for user",
