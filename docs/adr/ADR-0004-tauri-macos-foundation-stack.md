@@ -12,7 +12,7 @@ only by passing every absolute gate and the frozen replacement win-gate. Six add
 were limited to the source-backed paper screen in
 [`paper-screen.md`](../evaluation/paper-screen.md).
 
-Fresh evidence at commit `7614c18d98077b96e1da89d0b7493515c96a042e` selects Tauri. The evidence is
+Fresh evidence at commit `6a9fa49d86a82a698af5c1ac6e5da1690676dfaa` selects Tauri. The evidence is
 bound to #11 v2 readiness fingerprint
 `ee7934be0bfcc74630bfb071ec05c724ed97a2458d4b9238d60561292cc06469`, physical owner Apple M4
 16 GiB macOS 26.5.1 authority, 20 cold and 30 warm launches per candidate, release-like package
@@ -45,8 +45,8 @@ requires a superseding ADR.
 The retained decision records are:
 
 - [`foundation-benchmark.json`](../evaluation/foundation-benchmark.json), benchmark ID
-  `087910f94c8189526de1d143bf1dd9c2ffe2defac763f394da175cbd961d43ea`, file SHA-256
-  `23d558d7a5c4da7e719e0e2afd660648475c018255d25b3dbc0e498871f1a1b6`;
+  `f28abb0708d8d4ea2f775fd993b58f1703528cfc5a470f4d4a0d95acbec5f0a8`, file SHA-256
+  `d64e0d75cdcad6010fbd2be55cdc8f7939d25cde17342218117fe9b0b1425c40`;
 - [`foundation-decision-report.md`](../evaluation/foundation-decision-report.md), with hard-gate
   results, replacement formula, weighted matrix, dissent, and CH-3 handoff;
 - [`physical-observations.md`](../evaluation/physical-observations.md), with release-package
@@ -56,18 +56,18 @@ The retained decision records are:
 
 Tauri package and lock bindings:
 
-- source SHA-256 `ec92ea434fe3474e894a8be1dd68d69393c42d4d2556509ab44178b85a9a1144`;
+- source SHA-256 `6d2bca52902244e5b6784036cfb3fcc82defb7b1d6264dd3f55cf4c7e7e993f1`;
 - Cargo lock SHA-256 `8f3d027a9c87907d4f266f2135ab19bc78f6df23eabe8f88e34efe53b43737d3`;
 - npm lock SHA-256 `ff1b106cdee2f72dcb736839e019a257d78ac160c5b0dc36162480e099ebc739`;
-- evaluation package SHA-256 `35e8b3bb6dede3de8d0c9e3bd8b67d82df5b4ae3f3779db44935bebcaa5851ed`; and
+- evaluation package SHA-256 `9ec6a1ceec305b3fdd31592e12b6d94a15efc73dfd43305b9a83c915e6359b65`; and
 - release-like package SHA-256 `d7eef5852f4fc0c940a38a07b6871abf7b990e776ad9e209895d98f8f6e77ea3`.
 
 Slint package and lock bindings:
 
-- source SHA-256 `f4186fa3be5f91e66251dab30260f38affca42f73815c11c180293269111533b`;
+- source SHA-256 `ad580c84d68f942b53a7817dfa0825b501d0ba0748a8dfbe4d9ebe4f44eb2d56`;
 - Cargo lock SHA-256 `42e765941098f99e33c13b8951bb8f3fa934248b22adfe0f0ef30110ef5aa707`;
-- evaluation package SHA-256 `e502598551887711046e11c115f2973898f44712159315fc4c9c1a35e187b5ad`; and
-- release-like package SHA-256 `a9658ae1b67af425d41e10f27c8ac59d0ac33f17a688d9c4afa5cf87bd6fb6d8`.
+- evaluation package SHA-256 `07d276bbecee4d9cfaa541550892999e8358610f06722174ae8ba3a2f6dc1a0a`; and
+- release-like package SHA-256 `c0cee4e292c89ab2c442a893541df3fe1c7b9f173113822b44887d98f9b7134e`.
 
 Tauri passed all absolute benchmark hard gates and the physical VoiceOver, IME, Dark/Light
 appearance, scaling, release-hook exclusion, release-composition, and cleanup gates. Slint passed
@@ -75,7 +75,7 @@ several lifecycle and performance checks but failed input-to-paint p75/p95, gove
 semantic-tree automation, physical VoiceOver journey completeness, Dark appearance, the required
 Royalty-free attribution surface, and the Slint-owned integrated signed-update recipe. Slint also
 failed the frozen replacement formula: no comparable hard metric improved by 20%, input-to-paint
-p95 regressed 52.9%, and release-like payload size regressed 113.9%.
+p95 regressed 18.0%, and release-like payload size regressed 113.9%.
 
 ### Productive workspace and ownership
 
