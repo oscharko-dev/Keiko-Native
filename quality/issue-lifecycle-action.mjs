@@ -200,6 +200,20 @@ function hasTrustedPullRequestContractSuccess(event) {
   );
 }
 
+function hasRetainedPullRequestContractSuccess(event, result) {
+  return (
+    event?.otherOpenPullRequest?.id === result.pullRequestId &&
+    event.otherOpenPullRequest.contractValidated === true
+  );
+}
+
+function requiresRetainedPullRequestContract(event, result) {
+  return (
+    result.pullRequestId !== undefined &&
+    result.pullRequestId !== pullRequestIdentity(event?.pull_request)
+  );
+}
+
 function unauthorizedRawLabelResult(enabled) {
   return enabled
     ? {
@@ -298,10 +312,11 @@ function desiredStateForPullRequestEvent({
     sourceState: currentState,
   });
   if (result.ok) {
-    if (
-      [PR_OPEN, REVIEW].includes(result.target) &&
-      !hasTrustedPullRequestContractSuccess(event)
-    ) {
+    const targetRequiresContract = [PR_OPEN, REVIEW].includes(result.target);
+    const contractSucceeded = requiresRetainedPullRequestContract(event, result)
+      ? hasRetainedPullRequestContractSuccess(event, result)
+      : hasTrustedPullRequestContractSuccess(event);
+    if (targetRequiresContract && !contractSucceeded) {
       return enabled
         ? { failures: ["pr_contract_success_required"], outcome: "failed" }
         : { outcome: "ignored", reason: "pre_activation_pr_contract_required" };
@@ -383,10 +398,31 @@ function linkedOpenPullRequestEvidence(pullRequest, issueNumber, excludeId) {
     !/^[0-9a-f]{40}$/u.test(headSha ?? "")
   )
     return undefined;
-  return { id, validated: true };
+  return { headSha, id, validated: true };
 }
 
-async function firstLinkedOpenPullRequest(
+async function pullRequestContractStatusSucceeded(
+  repository,
+  headSha,
+  request,
+) {
+  try {
+    const status = await request(
+      `/repos/${repository}/commits/${headSha}/status`,
+    );
+    return (
+      Array.isArray(status?.statuses) &&
+      status.statuses.some(
+        (entry) =>
+          entry?.context === "PR contract" && entry?.state === "success",
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function firstValidatedLinkedOpenPullRequest(
   repository,
   issueNumber,
   request,
@@ -398,21 +434,42 @@ async function firstLinkedOpenPullRequest(
     );
     if (!Array.isArray(batch))
       throw new Error("Open pull requests response is malformed.");
-    const linked = batch
-      .map((pullRequest) =>
-        linkedOpenPullRequestEvidence(pullRequest, issueNumber, excludeId),
+    for (const pullRequest of batch) {
+      const linked = linkedOpenPullRequestEvidence(
+        pullRequest,
+        issueNumber,
+        excludeId,
+      );
+      if (
+        linked !== undefined &&
+        (await pullRequestContractStatusSucceeded(
+          repository,
+          linked.headSha,
+          request,
+        ))
       )
-      .find((pullRequest) => pullRequest !== undefined);
-    if (linked !== undefined) return linked;
+        return { contractValidated: true, id: linked.id, validated: true };
+    }
     if (batch.length < 100) return undefined;
   }
 }
 
 async function hasLinkedOpenPullRequest(repository, issueNumber, request) {
-  return (
-    (await firstLinkedOpenPullRequest(repository, issueNumber, request)) !==
-    undefined
-  );
+  for (let page = 1; ; page += 1) {
+    const batch = await request(
+      `/repos/${repository}/pulls?state=open&per_page=100&page=${page}`,
+    );
+    if (!Array.isArray(batch))
+      throw new Error("Open pull requests response is malformed.");
+    if (
+      batch.some(
+        (pullRequest) =>
+          linkedOpenPullRequestEvidence(pullRequest, issueNumber) !== undefined,
+      )
+    )
+      return true;
+    if (batch.length < 100) return false;
+  }
 }
 
 function needsOtherOpenPullRequestEvidence(event) {
@@ -460,7 +517,7 @@ async function eventWithDerivedEvidence({
       ),
     };
   if (needsOtherOpenPullRequestEvidence(event)) {
-    const otherOpenPullRequest = await firstLinkedOpenPullRequest(
+    const otherOpenPullRequest = await firstValidatedLinkedOpenPullRequest(
       repository,
       issueNumber,
       request,
