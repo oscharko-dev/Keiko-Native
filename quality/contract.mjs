@@ -127,6 +127,7 @@ const pullRequestContractMarkers = [
   "ref: dev",
   "statuses: write",
   "node quality/pr-contract-action.mjs",
+  "node quality/issue-lifecycle-action.mjs",
 ];
 
 const canonicalLifecycleStates = Object.freeze([

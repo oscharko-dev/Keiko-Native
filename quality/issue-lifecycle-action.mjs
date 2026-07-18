@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 import { githubRequestFor } from "./github-api.mjs";
+import { pullRequestIssueNumber } from "./pr-contract.mjs";
 import {
   LIFECYCLE_STATES,
   planStatusLabelReconciliation,
@@ -14,6 +15,7 @@ import {
   evaluateClaimRelease,
   evaluateClosurePrecondition,
   evaluateCurrentReadiness,
+  evaluatePullRequestTopology,
 } from "./issue-lifecycle-readiness.mjs";
 import { semanticIssueFingerprint } from "./issue-contract.mjs";
 
@@ -36,7 +38,9 @@ function statusLabels(issue) {
 }
 
 function eventIssueNumber(event) {
-  return event?.issue?.number;
+  return (
+    event?.issue?.number ?? pullRequestIssueNumber(event?.pull_request?.body)
+  );
 }
 
 function labelRequestTarget(event) {
@@ -76,6 +80,79 @@ function currentLifecycleState(issue, event) {
 function hasSoleLifecycleState(issue, state) {
   const states = statusLabels(issue);
   return states.length === 1 && states[0] === state;
+}
+
+function assignedLogins(issue) {
+  return new Set(
+    (Array.isArray(issue?.assignees) ? issue.assignees : [])
+      .map((assignee) => assignee?.login)
+      .filter((login) => typeof login === "string" && login.trim() !== ""),
+  );
+}
+
+function derivedAssignmentClaim(event, issue) {
+  const actor = event?.sender?.login;
+  const assignee = event?.assignee?.login;
+  if (typeof actor !== "string" || typeof assignee !== "string")
+    return undefined;
+  if (!assignedLogins(issue).has(assignee)) return undefined;
+  return {
+    id: `${issueIdentity(issue)}:assignment:${assignee}`,
+    validated: true,
+  };
+}
+
+function derivedAssignmentRelease(event, issue) {
+  const actor = event?.sender?.login;
+  const assignee = event?.assignee?.login;
+  if (typeof actor !== "string" || typeof assignee !== "string")
+    return undefined;
+  if (assignedLogins(issue).has(assignee)) return undefined;
+  return {
+    id: `${issueIdentity(issue)}:assignment-release:${assignee}`,
+    validated: true,
+  };
+}
+
+function pullRequestIdentity(pullRequest) {
+  if (
+    typeof pullRequest?.node_id === "string" &&
+    pullRequest.node_id.trim() !== ""
+  )
+    return pullRequest.node_id;
+  if (
+    Number.isInteger(pullRequest?.id) ||
+    (typeof pullRequest?.id === "string" && pullRequest.id.trim() !== "")
+  )
+    return String(pullRequest.id);
+  return undefined;
+}
+
+function pullRequestEvidence(event, issueNumber) {
+  const pullRequest = event?.pull_request;
+  const id = pullRequestIdentity(pullRequest);
+  const headSha = pullRequest?.head?.sha;
+  return {
+    id,
+    validated:
+      id !== undefined &&
+      pullRequestIssueNumber(pullRequest?.body) === issueNumber &&
+      /^[0-9a-f]{40}$/u.test(headSha ?? ""),
+  };
+}
+
+function pullRequestLifecycleEvent(event) {
+  if (event?.pull_request === undefined) return undefined;
+  if (["opened", "reopened"].includes(event.action)) return event.action;
+  if (
+    ["synchronize", "ready_for_review", "converted_to_draft"].includes(
+      event.action,
+    )
+  )
+    return "opened";
+  if (event.action === "closed" && event.pull_request?.merged !== true)
+    return "closed_unmerged";
+  return undefined;
 }
 
 function unauthorizedRawLabelResult(enabled) {
@@ -123,41 +200,93 @@ function inertMissingAuthorityResult(reason, enabled) {
   return enabled ? { failures: [reason], outcome: "failed" } : undefined;
 }
 
-function desiredStateForClaimEvent(event, readiness, currentState, enabled) {
+function desiredStateForClaimEvent(
+  event,
+  readiness,
+  currentState,
+  enabled,
+  issue,
+) {
   if (event?.action === "assigned") {
+    const claim = event.claim ?? derivedAssignmentClaim(event, issue);
     const result = evaluateClaimPrecondition({
-      claim: event.claim,
+      claim,
       readiness,
       sourceState: currentState,
     });
     if (result.ok) return { desiredState: result.target };
-    return event.claim === undefined
+    return claim === undefined
       ? inertMissingAuthorityResult(result.reason, enabled)
       : { failures: [result.reason], outcome: "failed" };
   }
   if (event?.action === "unassigned") {
+    const release = event.release ?? derivedAssignmentRelease(event, issue);
     const result = evaluateClaimRelease({
       hasOpenPullRequest: event.hasOpenPullRequest,
       readiness,
-      release: event.release,
+      release,
       sourceState: currentState,
     });
     if (result.ok) return { desiredState: result.target };
-    return event.release === undefined
+    return release === undefined
       ? inertMissingAuthorityResult(result.reason, enabled)
       : { failures: [result.reason], outcome: "failed" };
   }
   return undefined;
 }
 
-function desiredStateForEvent(event, readiness, currentState, enabled, issue) {
+function desiredStateForPullRequestEvent({
+  currentState,
+  enabled,
+  event,
+  issueNumber,
+  readiness,
+}) {
+  const prEvent = pullRequestLifecycleEvent(event);
+  if (prEvent === undefined) return undefined;
+  const result = evaluatePullRequestTopology({
+    claim: event.claim,
+    event: prEvent,
+    otherOpenPullRequest: event.otherOpenPullRequest,
+    pullRequest: pullRequestEvidence(event, issueNumber),
+    readiness,
+    sourceState: currentState,
+  });
+  if (result.ok) return { desiredState: result.target };
+  if (
+    !enabled &&
+    currentState === READY &&
+    result.reason === "lifecycle_edge_not_allowed"
+  )
+    return { outcome: "ignored", reason: "pre_activation_pr_ready_source" };
+  return { failures: [result.reason], outcome: "failed" };
+}
+
+function desiredStateForEvent(
+  event,
+  readiness,
+  currentState,
+  enabled,
+  issue,
+  issueNumber,
+) {
+  if (event?.pull_request !== undefined)
+    return (
+      desiredStateForPullRequestEvent({
+        currentState,
+        enabled,
+        event,
+        issueNumber,
+        readiness,
+      }) ?? {}
+    );
   if (event?.action === "reopened")
     return { desiredState: LIFECYCLE_STATES[0] };
   if (event?.action === "edited" && readiness.current !== true)
     return { desiredState: LIFECYCLE_STATES[0] };
   return (
     desiredStateForLabelEvent(event, currentState, enabled, readiness) ??
-    desiredStateForClaimEvent(event, readiness, currentState, enabled) ??
+    desiredStateForClaimEvent(event, readiness, currentState, enabled, issue) ??
     desiredStateForClosure(event, issue) ??
     {}
   );
@@ -266,6 +395,7 @@ function issueIdentity(issue) {
 }
 
 function readinessEvent(event) {
+  if (event?.pull_request !== undefined) return { action: "pull_request" };
   return event.action === "edited"
     ? { action: "edited", editKind: event.editKind ?? "unknown" }
     : { action: event.action };
@@ -419,6 +549,7 @@ export async function runIssueLifecycleAction({
     currentState,
     enabled,
     issue,
+    issueNumber,
   );
   if (desired?.outcome === "failed") return desired;
   const ignored = ignoredDesiredResult(desired, readiness);

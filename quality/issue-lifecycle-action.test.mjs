@@ -107,6 +107,20 @@ test("workflow loads protected dev code with read-only credentials", async () =>
   assert.match(workflow, /contents: read/u);
   assert.doesNotMatch(workflow, /contents: write/u);
   assert.doesNotMatch(workflow, /pull_request_target/u);
+
+  const pullRequestWorkflow = await readFile(
+    ".github/workflows/pr-contract.yml",
+    "utf8",
+  );
+  assert.match(pullRequestWorkflow, /pull_request_target:/u);
+  assert.match(
+    pullRequestWorkflow,
+    /run: node quality\/issue-lifecycle-action\.mjs/u,
+  );
+  assert.match(
+    pullRequestWorkflow,
+    /KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled/u,
+  );
 });
 
 test("reloads trusted issue state and plans reconciliation with activation disabled", async (t) => {
@@ -240,13 +254,17 @@ test("ignores events without a lifecycle destination and fails bad read-back", a
 });
 
 test("plans validated assignment claim and release transitions", async (t) => {
-  const claim = requestMock(t, { issueLabels: ["status: ready"] });
+  const claim = requestMock(t, {
+    issueLabels: ["status: ready"],
+    issueOverrides: { assignees: [{ login: "runner" }] },
+  });
   const claimResult = await runIssueLifecycleAction({
     event: {
       action: "assigned",
-      claim: { id: "claim-1", validated: true },
+      assignee: { login: "runner" },
       expectedReadinessCommentId: 101,
       issue: { number: 27 },
+      sender: { login: "maintainer" },
     },
     request: claim.request,
   });
@@ -278,6 +296,49 @@ test("plans validated assignment claim and release transitions", async (t) => {
     ok: true,
     remove: ["status: in progress"],
   });
+});
+
+test("plans pull request lifecycle topology from trusted PR events", async (t) => {
+  const opened = requestMock(t, { issueLabels: ["status: in progress"] });
+  const openedResult = await runIssueLifecycleAction({
+    event: {
+      action: "opened",
+      expectedReadinessCommentId: 101,
+      pull_request: {
+        body: "## Scope\n\n- Accepted issue: #27",
+        head: { sha: "a".repeat(40) },
+        node_id: "pr-node-40",
+      },
+    },
+    request: opened.request,
+  });
+  assert.equal(openedResult.outcome, "planned");
+  assert.equal(openedResult.desiredState, "status: pr open");
+  assert.deepEqual(openedResult.plan, {
+    apply: ["status: pr open"],
+    failures: [],
+    ok: true,
+    remove: ["status: in progress"],
+  });
+
+  const preActivationReady = requestMock(t, { issueLabels: ["status: ready"] });
+  const preActivationReadyResult = await runIssueLifecycleAction({
+    event: {
+      action: "opened",
+      expectedReadinessCommentId: 101,
+      pull_request: {
+        body: "## Scope\n\n- Accepted issue: #27",
+        head: { sha: "a".repeat(40) },
+        node_id: "pr-node-40",
+      },
+    },
+    request: preActivationReady.request,
+  });
+  assert.equal(preActivationReadyResult.outcome, "ignored");
+  assert.equal(
+    preActivationReadyResult.reason,
+    "pre_activation_pr_ready_source",
+  );
 });
 
 test("removes lifecycle labels for non-completed closures", async (t) => {
