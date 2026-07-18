@@ -159,6 +159,10 @@ test("snapshot runner cleans its private root when the isolated command fails", 
   try {
     await mkdir(join(root, "native/frontend"), { recursive: true });
     await writeFile(
+      join(root, "package.json"),
+      JSON.stringify({ private: true }),
+    );
+    await writeFile(
       join(root, "native/frontend/package.json"),
       JSON.stringify({ name: "fixture", version: "1.0.0" }),
     );

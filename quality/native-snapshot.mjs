@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  rename,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -38,7 +39,7 @@ export async function runNativeSnapshot({ mode, repositoryRoot }) {
       `${JSON.stringify({ files, head: captured.head, tree: captured.tree })}\n`,
       { mode: 0o600 },
     );
-    installFrontendDependencies(snapshotRoot, repositoryRoot);
+    await installFrontendDependencies(snapshotRoot, repositoryRoot);
     for (const path of GENERATED)
       await mkdir(join(snapshotRoot, path), { recursive: true });
     if (process.platform !== "win32") protectInputs(snapshotRoot);
@@ -130,7 +131,7 @@ function materialize(repositoryRoot, snapshotRoot, head, entries) {
     throw new Error("Immutable snapshot rejected extraction");
 }
 
-function installFrontendDependencies(snapshotRoot, repositoryRoot) {
+async function installFrontendDependencies(snapshotRoot, repositoryRoot) {
   const cacheResult = command("npm", ["config", "get", "cache"], {
     cwd: repositoryRoot,
   });
@@ -144,9 +145,16 @@ function installFrontendDependencies(snapshotRoot, repositoryRoot) {
     "--offline",
   ];
   if (cache) args.push("--cache", cache);
-  const result = command("npm", args, { cwd: snapshotRoot });
-  if (result.status !== 0 || result.error)
-    throw new Error("Immutable snapshot rejected dependency-install");
+  const rootPackage = join(snapshotRoot, "package.json");
+  const heldPackage = join(snapshotRoot, ".keiko-root-package-held");
+  await rename(rootPackage, heldPackage);
+  try {
+    const result = command("npm", args, { cwd: snapshotRoot });
+    if (result.status !== 0 || result.error)
+      throw new Error("Immutable snapshot rejected dependency-install");
+  } finally {
+    await rename(heldPackage, rootPackage);
+  }
 }
 
 function protectInputs(snapshotRoot) {
