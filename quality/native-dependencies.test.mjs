@@ -248,6 +248,101 @@ test("ordinary scored vulnerability identity and severity never degrade malforme
   }
 });
 
+test("scored advisories reconcile CVSS and database severity with the group score", () => {
+  const critical = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H";
+  for (const mutate of [
+    (advisory) => (advisory.severity = [{ score: critical, type: "CVSS_V3" }]),
+    (advisory) => (advisory.affected[0].database_specific.cvss = critical),
+    (advisory) =>
+      (advisory.affected[0].database_specific.categories = ["critical"]),
+    (advisory) =>
+      (advisory.affected[0].database_specific.severity = "critical"),
+  ]) {
+    const report = vulnerabilityResults({ severity: "3.9" });
+    mutate(finding(report).vulnerabilities[0]);
+    assert.throws(
+      () => evaluateVulnerabilityResults(report),
+      /Vulnerability policy rejected severity-coherence/u,
+    );
+  }
+
+  for (const [score, vector, blocked] of [
+    ["1.5", "CVSS:3.1/AV:P/AC:H/PR:H/UI:R/S:U/C:L/I:N/A:N", false],
+    ["5.3", "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N", true],
+    ["8.1", "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H", true],
+    ["9.8", critical, true],
+  ]) {
+    const report = vulnerabilityResults({ severity: score });
+    finding(report).vulnerabilities[0].severity = [
+      { score: vector, type: "CVSS_V3" },
+    ];
+    if (blocked)
+      assert.throws(
+        () => evaluateVulnerabilityResults(report),
+        /Vulnerability policy rejected moderate-or-higher/u,
+      );
+    else
+      assert.deepEqual(evaluateVulnerabilityResults(report), {
+        blocking: 0,
+        informationalUnmaintained: 0,
+        low: 1,
+      });
+  }
+
+  for (const [severity, category, blocked] of [
+    ["3.9", "low", false],
+    ["4.0", "moderate", true],
+    ["7.0", "high", true],
+    ["9.0", "critical", true],
+  ]) {
+    const report = vulnerabilityResults({ severity });
+    finding(
+      report,
+    ).vulnerabilities[0].affected[0].database_specific.categories = [category];
+    if (blocked)
+      assert.throws(
+        () => evaluateVulnerabilityResults(report),
+        /Vulnerability policy rejected moderate-or-higher/u,
+      );
+    else
+      assert.deepEqual(evaluateVulnerabilityResults(report), {
+        blocking: 0,
+        informationalUnmaintained: 0,
+        low: 1,
+      });
+  }
+});
+
+test("scored advisory severity rejects malformed and unknown representations", () => {
+  const critical = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H";
+  const mutations = [
+    (advisory) => (advisory.severity = []),
+    (advisory) => (advisory.severity = [{ score: critical, type: "CVSS_V4" }]),
+    (advisory) => (advisory.severity = [{ score: 9.8, type: "CVSS_V3" }]),
+    (advisory) =>
+      (advisory.severity = [{ score: `${critical}/AV:N`, type: "CVSS_V3" }]),
+    (advisory) =>
+      (advisory.severity = [
+        {
+          score: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H",
+          type: "CVSS_V3",
+        },
+      ]),
+    (advisory) => (advisory.affected[0].database_specific.cvss = "critical"),
+    (advisory) => (advisory.affected[0].database_specific.cvss = 9.8),
+    (advisory) => (advisory.affected[0].database_specific.severity = "unknown"),
+    (advisory) => (advisory.affected[0].database_specific.categories = [9]),
+  ];
+  for (const mutate of mutations) {
+    const report = vulnerabilityResults({ severity: "3.9" });
+    mutate(finding(report).vulnerabilities[0]);
+    assert.throws(
+      () => evaluateVulnerabilityResults(report),
+      /Vulnerability policy rejected/u,
+    );
+  }
+});
+
 function finding(report) {
   return report.results[0].packages[0];
 }

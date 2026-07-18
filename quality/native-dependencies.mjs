@@ -76,9 +76,16 @@ export function evaluateVulnerabilityResults(report) {
         throw vulnerabilityPolicyRejected("finding-shape");
       if (entry.groups.length === 0 || entry.vulnerabilities.length === 0)
         throw vulnerabilityPolicyRejected("empty-finding");
-      validateFindingBindings(entry.groups, entry.vulnerabilities);
+      const findingBindings = validateFindingBindings(
+        entry.groups,
+        entry.vulnerabilities,
+      );
       const classifications = entry.vulnerabilities.map((vulnerability) =>
-        vulnerabilityClassification(vulnerability, entry.package),
+        vulnerabilityClassification(
+          vulnerability,
+          entry.package,
+          findingBindings.get(vulnerability.id),
+        ),
       );
       if (
         classifications.includes("informational-unmaintained") &&
@@ -145,6 +152,7 @@ function validateFindingBindings(groups, vulnerabilities) {
   }
   const boundIds = new Set();
   const aliases = new Set();
+  const bindings = new Map();
   for (const group of groups) {
     if (
       !object(group) ||
@@ -157,6 +165,7 @@ function validateFindingBindings(groups, vulnerabilities) {
       if (!vulnerabilityIds.has(id) || boundIds.has(id))
         throw vulnerabilityPolicyRejected("group-advisory-binding");
       boundIds.add(id);
+      bindings.set(id, group);
     }
     for (const alias of group.aliases) {
       if (aliases.has(alias))
@@ -166,6 +175,7 @@ function validateFindingBindings(groups, vulnerabilities) {
   }
   if (boundIds.size !== vulnerabilityIds.size)
     throw vulnerabilityPolicyRejected("unbound-advisory");
+  return bindings;
 }
 
 function validIdList(values, allowEmpty) {
@@ -215,7 +225,7 @@ function validInformationalBindings(groups, vulnerabilities) {
   });
 }
 
-function vulnerabilityClassification(vulnerability, packageIdentity) {
+function vulnerabilityClassification(vulnerability, packageIdentity, group) {
   if (
     !Array.isArray(vulnerability.affected) ||
     vulnerability.affected.length === 0
@@ -238,7 +248,7 @@ function vulnerabilityClassification(vulnerability, packageIdentity) {
   const classification = classifications[0];
   if (classification === "informational-unmaintained")
     validateInformationalAdvisory(vulnerability, packageIdentity);
-  else validateScoredAdvisory(vulnerability);
+  else validateScoredAdvisory(vulnerability, group);
   return classification;
 }
 
@@ -317,13 +327,32 @@ function validateInformationalAdvisory(vulnerability, packageIdentity) {
     throw vulnerabilityPolicyRejected("informational-purl");
 }
 
-function validateScoredAdvisory(vulnerability) {
+function validateScoredAdvisory(vulnerability, group) {
   if (
     typeof vulnerability.schema_version !== "string" ||
     !/^1\.\d+\.\d+$/u.test(vulnerability.schema_version)
   )
     throw vulnerabilityPolicyRejected("scored-advisory-shape");
+  const claimedSeverities = [];
+  if (Object.hasOwn(vulnerability, "severity")) {
+    if (
+      !Array.isArray(vulnerability.severity) ||
+      vulnerability.severity.length !== 1
+    )
+      throw vulnerabilityPolicyRejected("severity-shape");
+    const [severity] = vulnerability.severity;
+    if (
+      !object(severity) ||
+      Object.keys(severity).toSorted().join(",") !== "score,type" ||
+      severity.type !== "CVSS_V3" ||
+      typeof severity.score !== "string"
+    )
+      throw vulnerabilityPolicyRejected("severity-shape");
+    claimedSeverities.push(severityBand(parseCvss31(severity.score)));
+  }
+  collectDatabaseSeverities(vulnerability.database_specific, claimedSeverities);
   for (const affected of vulnerability.affected) {
+    collectDatabaseSeverities(affected.database_specific, claimedSeverities);
     for (const range of affected.ranges) {
       if (
         !object(range) ||
@@ -346,6 +375,118 @@ function validateScoredAdvisory(vulnerability) {
         throw vulnerabilityPolicyRejected("scored-range-shape");
     }
   }
+  const groupBand = severityBand(severityScore(group));
+  if (claimedSeverities.some((severity) => severity !== groupBand))
+    throw vulnerabilityPolicyRejected("severity-coherence");
+}
+
+function collectDatabaseSeverities(database, severities) {
+  if (database === undefined) return;
+  if (!object(database)) throw vulnerabilityPolicyRejected("database-shape");
+  if (Object.hasOwn(database, "cvss")) {
+    if (database.cvss !== null && typeof database.cvss !== "string")
+      throw vulnerabilityPolicyRejected("cvss-shape");
+    if (typeof database.cvss === "string")
+      severities.push(severityBand(parseCvss31(database.cvss)));
+  }
+  if (Object.hasOwn(database, "severity")) {
+    const severity = normalizedSeverityBand(database.severity);
+    if (!severity) throw vulnerabilityPolicyRejected("severity-shape");
+    severities.push(severity);
+  }
+  if (Object.hasOwn(database, "categories")) {
+    if (
+      !Array.isArray(database.categories) ||
+      !database.categories.every((category) => typeof category === "string")
+    )
+      throw vulnerabilityPolicyRejected("category-shape");
+    for (const category of database.categories) {
+      const severity = normalizedSeverityBand(category);
+      if (severity) severities.push(severity);
+    }
+  }
+}
+
+function normalizedSeverityBand(value) {
+  if (typeof value !== "string") return undefined;
+  if (value === "medium") return "moderate";
+  return ["critical", "high", "low", "moderate"].includes(value)
+    ? value
+    : undefined;
+}
+
+function severityBand(score) {
+  if (!Number.isFinite(score) || score < 0 || score > 10)
+    throw vulnerabilityPolicyRejected("severity-range");
+  if (score < 4) return "low";
+  if (score < 7) return "moderate";
+  if (score < 9) return "high";
+  return "critical";
+}
+
+function parseCvss31(vector) {
+  const parts = vector.split("/");
+  if (parts.shift() !== "CVSS:3.1")
+    throw vulnerabilityPolicyRejected("cvss-version");
+  const metrics = new Map();
+  for (const part of parts) {
+    const [name, value, ...extra] = part.split(":");
+    if (!name || !value || extra.length > 0 || metrics.has(name))
+      throw vulnerabilityPolicyRejected("cvss-shape");
+    metrics.set(name, value);
+  }
+  const expected = ["A", "AC", "AV", "C", "I", "PR", "S", "UI"];
+  if (
+    metrics.size !== expected.length ||
+    expected.some((name) => !metrics.has(name))
+  )
+    throw vulnerabilityPolicyRejected("cvss-metrics");
+
+  const scope = metric(metrics, "S", { C: "C", U: "U" });
+  const attackVector = metric(metrics, "AV", {
+    A: 0.62,
+    L: 0.55,
+    N: 0.85,
+    P: 0.2,
+  });
+  const attackComplexity = metric(metrics, "AC", { H: 0.44, L: 0.77 });
+  const privilegesRequired = metric(
+    metrics,
+    "PR",
+    scope === "C"
+      ? { H: 0.5, L: 0.68, N: 0.85 }
+      : { H: 0.27, L: 0.62, N: 0.85 },
+  );
+  const userInteraction = metric(metrics, "UI", { N: 0.85, R: 0.62 });
+  const confidentiality = metric(metrics, "C", { H: 0.56, L: 0.22, N: 0 });
+  const integrity = metric(metrics, "I", { H: 0.56, L: 0.22, N: 0 });
+  const availability = metric(metrics, "A", { H: 0.56, L: 0.22, N: 0 });
+  const impactSubscore =
+    1 - (1 - confidentiality) * (1 - integrity) * (1 - availability);
+  const impact =
+    scope === "U"
+      ? 6.42 * impactSubscore
+      : 7.52 * (impactSubscore - 0.029) -
+        3.25 * Math.pow(impactSubscore * 0.9731 - 0.02, 13);
+  if (impact <= 0) return 0;
+  const exploitability =
+    8.22 *
+    attackVector *
+    attackComplexity *
+    privilegesRequired *
+    userInteraction;
+  const base =
+    scope === "U"
+      ? Math.min(impact + exploitability, 10)
+      : Math.min(1.08 * (impact + exploitability), 10);
+  return Math.ceil(base * 10 - 1e-10) / 10;
+}
+
+function metric(metrics, name, values) {
+  const value = metrics.get(name);
+  if (!Object.hasOwn(values, value))
+    throw vulnerabilityPolicyRejected("cvss-metric-value");
+  return values[value];
 }
 
 export async function captureDependencySnapshot({
