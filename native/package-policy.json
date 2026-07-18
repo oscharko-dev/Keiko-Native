@@ -17,13 +17,11 @@
     "(MIT OR Apache-2.0) AND Unicode-3.0",
     "0BSD OR MIT OR Apache-2.0",
     "Apache-2.0",
-    "Apache-2.0 / MIT",
     "Apache-2.0 AND MIT",
     "Apache-2.0 OR BSL-1.0",
     "Apache-2.0 OR MIT",
     "Apache-2.0 WITH LLVM-exception",
     "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
-    "Apache-2.0/MIT",
     "BSD-3-Clause",
     "BSD-3-Clause OR MIT OR Apache-2.0",
     "CC0-1.0 OR MIT-0 OR Apache-2.0",
@@ -33,11 +31,9 @@
     "MIT OR Apache-2.0 OR LGPL-2.1-or-later",
     "MIT OR Apache-2.0 OR Zlib",
     "MIT OR Zlib OR Apache-2.0",
-    "MIT/Apache-2.0",
     "MPL-2.0",
     "Unicode-3.0",
     "Unlicense OR MIT",
-    "Unlicense/MIT",
     "Zlib",
     "Zlib OR Apache-2.0 OR MIT"
   ],
@@ -57,12 +53,6 @@
       "name": "adler2",
       "source": "registry",
       "version": "2.0.1"
-    },
-    {
-      "license": "Apache-2.0 / MIT",
-      "name": "fnv",
-      "source": "registry",
-      "version": "1.0.7"
     },
     {
       "license": "Apache-2.0 AND MIT",
@@ -108,6 +98,12 @@
     },
     {
       "license": "Apache-2.0 OR MIT",
+      "name": "cesu8",
+      "source": "registry",
+      "version": "1.1.0"
+    },
+    {
+      "license": "Apache-2.0 OR MIT",
       "name": "ctor-proc-macro",
       "source": "registry",
       "version": "0.0.7"
@@ -141,6 +137,12 @@
       "name": "fastrand",
       "source": "registry",
       "version": "2.4.1"
+    },
+    {
+      "license": "Apache-2.0 OR MIT",
+      "name": "fnv",
+      "source": "registry",
+      "version": "1.0.7"
     },
     {
       "license": "Apache-2.0 OR MIT",
@@ -305,12 +307,6 @@
       "version": "0.35.3"
     },
     {
-      "license": "Apache-2.0/MIT",
-      "name": "cesu8",
-      "source": "registry",
-      "version": "1.1.0"
-    },
-    {
       "license": "BSD-3-Clause OR MIT OR Apache-2.0",
       "name": "num_enum_derive",
       "source": "registry",
@@ -354,6 +350,12 @@
     },
     {
       "license": "MIT OR Apache-2.0",
+      "name": "android_system_properties",
+      "source": "registry",
+      "version": "0.1.5"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
       "name": "anyhow",
       "source": "registry",
       "version": "1.0.103"
@@ -374,6 +376,12 @@
       "license": "MIT OR Apache-2.0",
       "name": "bitflags",
       "source": "registry",
+      "version": "1.3.2"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
+      "name": "bitflags",
+      "source": "registry",
       "version": "2.13.1"
     },
     {
@@ -381,6 +389,12 @@
       "name": "block-buffer",
       "source": "registry",
       "version": "0.10.4"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
+      "name": "bs58",
+      "source": "registry",
+      "version": "0.5.1"
     },
     {
       "license": "MIT OR Apache-2.0",
@@ -564,6 +578,24 @@
     },
     {
       "license": "MIT OR Apache-2.0",
+      "name": "foreign-types-macros",
+      "source": "registry",
+      "version": "0.2.3"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
+      "name": "foreign-types-shared",
+      "source": "registry",
+      "version": "0.3.1"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
+      "name": "foreign-types",
+      "source": "registry",
+      "version": "0.5.0"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
       "name": "form_urlencoded",
       "source": "registry",
       "version": "1.2.2"
@@ -702,6 +734,12 @@
     },
     {
       "license": "MIT OR Apache-2.0",
+      "name": "ident_case",
+      "source": "registry",
+      "version": "1.0.1"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
       "name": "idna",
       "source": "registry",
       "version": "1.1.0"
@@ -738,9 +776,21 @@
     },
     {
       "license": "MIT OR Apache-2.0",
+      "name": "jni",
+      "source": "registry",
+      "version": "0.21.1"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
       "name": "js-sys",
       "source": "registry",
       "version": "0.3.103"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
+      "name": "json-patch",
+      "source": "registry",
+      "version": "3.0.1"
     },
     {
       "license": "MIT OR Apache-2.0",
@@ -1056,6 +1106,12 @@
     },
     {
       "license": "MIT OR Apache-2.0",
+      "name": "siphasher",
+      "source": "registry",
+      "version": "1.0.3"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
       "name": "smallvec",
       "source": "registry",
       "version": "1.15.2"
@@ -1248,6 +1304,36 @@
     },
     {
       "license": "MIT OR Apache-2.0",
+      "name": "unic-char-property",
+      "source": "registry",
+      "version": "0.9.0"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
+      "name": "unic-char-range",
+      "source": "registry",
+      "version": "0.9.0"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
+      "name": "unic-common",
+      "source": "registry",
+      "version": "0.9.0"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
+      "name": "unic-ucd-ident",
+      "source": "registry",
+      "version": "0.9.0"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
+      "name": "unic-ucd-version",
+      "source": "registry",
+      "version": "0.9.0"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
       "name": "unicode-segmentation",
       "source": "registry",
       "version": "1.13.3"
@@ -1257,6 +1343,12 @@
       "name": "url",
       "source": "registry",
       "version": "2.5.8"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
+      "name": "version_check",
+      "source": "registry",
+      "version": "0.9.5"
     },
     {
       "license": "MIT OR Apache-2.0",
@@ -1305,6 +1397,24 @@
       "name": "web-sys",
       "source": "registry",
       "version": "0.3.103"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
+      "name": "winapi-i686-pc-windows-gnu",
+      "source": "registry",
+      "version": "0.4.0"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
+      "name": "winapi-x86_64-pc-windows-gnu",
+      "source": "registry",
+      "version": "0.4.0"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
+      "name": "winapi",
+      "source": "registry",
+      "version": "0.3.9"
     },
     {
       "license": "MIT OR Apache-2.0",
@@ -2093,120 +2203,6 @@
       "version": "0.55.0"
     },
     {
-      "license": "MIT/Apache-2.0",
-      "name": "android_system_properties",
-      "source": "registry",
-      "version": "0.1.5"
-    },
-    {
-      "license": "MIT/Apache-2.0",
-      "name": "bitflags",
-      "source": "registry",
-      "version": "1.3.2"
-    },
-    {
-      "license": "MIT/Apache-2.0",
-      "name": "bs58",
-      "source": "registry",
-      "version": "0.5.1"
-    },
-    {
-      "license": "MIT/Apache-2.0",
-      "name": "foreign-types-macros",
-      "source": "registry",
-      "version": "0.2.3"
-    },
-    {
-      "license": "MIT/Apache-2.0",
-      "name": "foreign-types-shared",
-      "source": "registry",
-      "version": "0.3.1"
-    },
-    {
-      "license": "MIT/Apache-2.0",
-      "name": "foreign-types",
-      "source": "registry",
-      "version": "0.5.0"
-    },
-    {
-      "license": "MIT/Apache-2.0",
-      "name": "ident_case",
-      "source": "registry",
-      "version": "1.0.1"
-    },
-    {
-      "license": "MIT/Apache-2.0",
-      "name": "jni",
-      "source": "registry",
-      "version": "0.21.1"
-    },
-    {
-      "license": "MIT/Apache-2.0",
-      "name": "json-patch",
-      "source": "registry",
-      "version": "3.0.1"
-    },
-    {
-      "license": "MIT/Apache-2.0",
-      "name": "siphasher",
-      "source": "registry",
-      "version": "1.0.3"
-    },
-    {
-      "license": "MIT/Apache-2.0",
-      "name": "unic-char-property",
-      "source": "registry",
-      "version": "0.9.0"
-    },
-    {
-      "license": "MIT/Apache-2.0",
-      "name": "unic-char-range",
-      "source": "registry",
-      "version": "0.9.0"
-    },
-    {
-      "license": "MIT/Apache-2.0",
-      "name": "unic-common",
-      "source": "registry",
-      "version": "0.9.0"
-    },
-    {
-      "license": "MIT/Apache-2.0",
-      "name": "unic-ucd-ident",
-      "source": "registry",
-      "version": "0.9.0"
-    },
-    {
-      "license": "MIT/Apache-2.0",
-      "name": "unic-ucd-version",
-      "source": "registry",
-      "version": "0.9.0"
-    },
-    {
-      "license": "MIT/Apache-2.0",
-      "name": "version_check",
-      "source": "registry",
-      "version": "0.9.5"
-    },
-    {
-      "license": "MIT/Apache-2.0",
-      "name": "winapi-i686-pc-windows-gnu",
-      "source": "registry",
-      "version": "0.4.0"
-    },
-    {
-      "license": "MIT/Apache-2.0",
-      "name": "winapi-x86_64-pc-windows-gnu",
-      "source": "registry",
-      "version": "0.4.0"
-    },
-    {
-      "license": "MIT/Apache-2.0",
-      "name": "winapi",
-      "source": "registry",
-      "version": "0.3.9"
-    },
-    {
       "license": "MPL-2.0",
       "name": "cssparser-macros",
       "source": "registry",
@@ -2364,21 +2360,21 @@
     },
     {
       "license": "Unlicense OR MIT",
-      "name": "winapi-util",
-      "source": "registry",
-      "version": "0.1.11"
-    },
-    {
-      "license": "Unlicense/MIT",
       "name": "same-file",
       "source": "registry",
       "version": "1.0.6"
     },
     {
-      "license": "Unlicense/MIT",
+      "license": "Unlicense OR MIT",
       "name": "walkdir",
       "source": "registry",
       "version": "2.5.0"
+    },
+    {
+      "license": "Unlicense OR MIT",
+      "name": "winapi-util",
+      "source": "registry",
+      "version": "0.1.11"
     },
     {
       "license": "Zlib OR Apache-2.0 OR MIT",

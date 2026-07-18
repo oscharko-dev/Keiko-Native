@@ -14,6 +14,11 @@ import {
   createNativePackageGate,
   nativePackageTestSupport,
 } from "./native-package.mjs";
+import {
+  commandFailure,
+  productiveRustEnv as createProductiveRustEnv,
+  sanitizeOutput,
+} from "./native-process.mjs";
 
 const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const nativeRoot = join(repositoryRoot, "native");
@@ -29,11 +34,8 @@ const ignoredNativeDirectories = new Set([
   "target",
 ]);
 
-function sanitizeOutput(value) {
-  return value
-    .replaceAll(/\/Users\/[^/\s]+/gu, "<redacted-path>")
-    .replaceAll(/\/home\/[^/\s]+/gu, "<redacted-path>")
-    .replaceAll(/[A-Z]:\\Users\\[^\\\s]+/gu, "<redacted-path>");
+function productiveRustEnv() {
+  return createProductiveRustEnv(repositoryRoot, sourceRevision());
 }
 
 function run(command, args, options = {}) {
@@ -43,8 +45,8 @@ function run(command, args, options = {}) {
     env: { ...process.env, ...options.env },
     maxBuffer: 30 * 1024 * 1024,
   });
-  if (result.status !== 0)
-    throw new Error(`${command} ${args[0] ?? ""} failed`);
+  if (result.status !== 0 || result.error)
+    throw commandFailure(command, args, result);
   if (!options.capture) {
     if (result.stdout) process.stdout.write(sanitizeOutput(result.stdout));
     if (result.stderr) process.stderr.write(sanitizeOutput(result.stderr));
@@ -237,7 +239,7 @@ async function build() {
         "native/Cargo.toml",
       ],
       {
-        env: { KEIKO_NATIVE_SOURCE_REVISION: sourceRevision() },
+        env: productiveRustEnv(),
       },
     );
   }
@@ -339,7 +341,9 @@ async function signing() {
 
 export const nativeGateTestSupport = {
   coverageFailures,
+  commandFailure,
   ...nativePackageTestSupport,
+  productiveRustEnv,
   sanitizeOutput,
   workspaceDependencyNames,
 };
@@ -354,6 +358,7 @@ const { acceptance, packageNative } = createNativePackageGate({
   packageRoot,
   repositoryRoot,
   run,
+  rustBuildEnv: productiveRustEnv,
   sourceRevision,
   targetRoot,
   testNative,

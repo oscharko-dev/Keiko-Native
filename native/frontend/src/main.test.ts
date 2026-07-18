@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const invoke = vi.fn(
-  async (_command: string, arguments_: { request: string }) => {
+  async (
+    _command: string,
+    arguments_: { generation: number; request: string },
+  ) => {
     const request = JSON.parse(arguments_.request) as { requestId: string };
     return JSON.stringify({
       schemaVersion: 1,
@@ -27,6 +30,10 @@ describe("production renderer composition", () => {
   beforeEach(() => {
     invoke.mockClear();
     render.mockClear();
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { __KEIKO_RENDERER_GENERATION: 7 },
+    });
   });
 
   it("validates two real-command roundtrips before startup completes", async () => {
@@ -37,7 +44,7 @@ describe("production renderer composition", () => {
     const { startRenderer } = await import("./main");
     invoke.mockClear();
 
-    await startRenderer(invoke);
+    await startRenderer(invoke, async () => 7);
 
     expect(invoke).toHaveBeenCalledTimes(2);
     expect(render).toHaveBeenCalled();
@@ -51,7 +58,7 @@ describe("production renderer composition", () => {
     const { startRenderer } = await import("./main");
     invoke.mockClear();
 
-    await startRenderer(invoke);
+    await startRenderer(invoke, async () => 7);
 
     expect(invoke).toHaveBeenCalledTimes(2);
   });

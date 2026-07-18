@@ -27,17 +27,43 @@ export interface HealthResponse {
 
 export type Invoke = (
   command: string,
-  arguments_: { request: string },
+  arguments_: { generation: number; request: string },
 ) => Promise<string>;
 export type RequestIdFactory = () => string;
+export type GenerationProvider = () => Promise<number>;
+
+const GENERATION_EVENT = "keiko-renderer-generation";
+
+export async function rendererGeneration(): Promise<number> {
+  const existing = Reflect.get(window, "__KEIKO_RENDERER_GENERATION");
+  if (validGeneration(existing)) return existing;
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      window.removeEventListener(GENERATION_EVENT, receive);
+      reject(new Error("renderer-generation-unavailable"));
+    }, 1000);
+    const receive = (event: Event) => {
+      const generation = event instanceof CustomEvent ? event.detail : null;
+      if (!validGeneration(generation)) return;
+      window.clearTimeout(timer);
+      window.removeEventListener(GENERATION_EVENT, receive);
+      resolve(generation);
+    };
+    window.addEventListener(GENERATION_EVENT, receive);
+  });
+}
 
 export function createRendererPort(
   invoke: Invoke,
   requestId: RequestIdFactory = () => `request-${crypto.randomUUID()}`,
+  generationProvider: GenerationProvider = rendererGeneration,
 ) {
   let sequence = 0;
 
   async function health(signal?: AbortSignal): Promise<HealthResponse> {
+    if (signal?.aborted) throw new Error("application-health-cancelled");
+    const generation = await generationProvider();
+    if (signal?.aborted) throw new Error("application-health-cancelled");
     const request: HealthRequest = {
       schemaVersion: 1,
       requestId: requestId(),
@@ -45,34 +71,63 @@ export function createRendererPort(
       timeoutMs: 1000,
       operation: { kind: "application-health" },
     };
-    const cancel = () => {
-      const cancellation: CancelRequest = {
-        schemaVersion: 1,
-        requestId: request.requestId,
+    return new Promise((resolve, reject) => {
+      let terminal = false;
+      const finish = () => signal?.removeEventListener("abort", cancel);
+      const fail = (message: string) => {
+        if (terminal) return;
+        terminal = true;
+        finish();
+        reject(new Error(message));
       };
-      void invoke("application_cancel", {
-        request: JSON.stringify(cancellation),
-      });
-    };
-    signal?.addEventListener("abort", cancel, { once: true });
-    try {
-      const encoded = await invoke("application_request", {
+      const cancel = () => {
+        if (terminal) return;
+        const cancellation: CancelRequest = {
+          schemaVersion: 1,
+          requestId: request.requestId,
+        };
+        void invoke("application_cancel", {
+          generation,
+          request: JSON.stringify(cancellation),
+        }).catch(() => undefined);
+        fail("application-health-cancelled");
+      };
+      signal?.addEventListener("abort", cancel, { once: true });
+      void invoke("application_request", {
+        generation,
         request: JSON.stringify(request),
-      });
-      const response: unknown = JSON.parse(encoded);
-      if (
-        !isHealthResponse(response) ||
-        response.requestId !== request.requestId
-      ) {
-        throw new Error("application-health-failed");
-      }
-      return response;
-    } finally {
-      signal?.removeEventListener("abort", cancel);
-    }
+      }).then(
+        (encoded) => {
+          if (terminal) return;
+          let response: unknown;
+          try {
+            response = JSON.parse(encoded);
+          } catch {
+            fail("application-health-failed");
+            return;
+          }
+          if (
+            !isHealthResponse(response) ||
+            response.requestId !== request.requestId
+          ) {
+            fail("application-health-failed");
+            return;
+          }
+          terminal = true;
+          finish();
+          resolve(response);
+        },
+        () => fail("application-health-failed"),
+      );
+      if (signal?.aborted) cancel();
+    });
   }
 
   return { health };
+}
+
+function validGeneration(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) > 0;
 }
 
 export function isHealthResponse(value: unknown): value is HealthResponse {

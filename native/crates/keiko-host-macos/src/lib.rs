@@ -99,12 +99,21 @@ impl HostLifecycle {
         self.session = None;
     }
 
-    pub fn current_sender(&self, window_label: &str, origin: &str) -> SenderContext {
+    pub fn sender_for_generation(
+        &self,
+        window_label: &str,
+        origin: &str,
+        generation: u64,
+    ) -> SenderContext {
         SenderContext {
             window_label: window_label.to_owned(),
             origin: origin.to_owned(),
-            generation: self.generation,
+            generation,
         }
+    }
+
+    pub fn current_generation(&self) -> Option<u64> {
+        self.session.as_ref().map(|session| session.generation)
     }
 
     pub fn begin_application_request(
@@ -178,6 +187,19 @@ impl HostLifecycle {
         accepted: AcceptedRequest,
         observation: ExecutionObservation,
     ) -> String {
+        let encoded = encode_success(&dispatch_health(
+            accepted.request.clone(),
+            current_build_identity(),
+        ));
+        self.complete_with_encoded(accepted, observation, encoded)
+    }
+
+    fn complete_with_encoded(
+        &mut self,
+        accepted: AcceptedRequest,
+        observation: ExecutionObservation,
+        encoded: String,
+    ) -> String {
         let (request_id, _, timeout_ms) = request_metadata(&accepted.request);
         let request_id = request_id.to_owned();
         let Some(in_flight) = self.in_flight.remove(&request_id) else {
@@ -187,7 +209,7 @@ impl HostLifecycle {
         if let Some(reason) = terminal_reason(observation, timeout_ms, cancelled) {
             return encode_error(&request_id, reason);
         }
-        encode_success(&dispatch_health(accepted.request, current_build_identity()))
+        encoded
     }
 
     fn validate_sender(&self, context: &SenderContext) -> Result<(), (String, ReasonCode)> {
@@ -252,9 +274,12 @@ pub fn is_bundled_origin(origin: &str) -> bool {
 
 #[cfg(feature = "tauri-host")]
 pub fn canonical_origin(url: Option<&tauri::Url>) -> String {
-    match url.map(|url| (url.scheme(), url.host_str())) {
-        Some(("tauri", Some("localhost"))) => "tauri://localhost".to_owned(),
-        Some(("http", Some("tauri.localhost"))) => "http://tauri.localhost".to_owned(),
+    let exact_authority = url.is_some_and(|url| {
+        url.username().is_empty() && url.password().is_none() && url.port().is_none()
+    });
+    match url.map(|url| (url.scheme(), url.host_str(), exact_authority)) {
+        Some(("tauri", Some("localhost"), true)) => "tauri://localhost".to_owned(),
+        Some(("http", Some("tauri.localhost"), true)) => "http://tauri.localhost".to_owned(),
         _ => String::new(),
     }
 }
@@ -278,6 +303,7 @@ pub fn application_request(
     lifecycle: &std::sync::Mutex<HostLifecycle>,
     window_label: &str,
     origin: &str,
+    generation: u64,
     request: &str,
 ) -> ApplicationRequestOutput {
     let accepted = {
@@ -285,7 +311,7 @@ pub fn application_request(
             Ok(lifecycle) => lifecycle,
             Err(_) => return failed_output(ReasonCode::InternalFailure),
         };
-        let sender = lifecycle.current_sender(window_label, origin);
+        let sender = lifecycle.sender_for_generation(window_label, origin, generation);
         match lifecycle.begin_application_request(&sender, request.as_bytes()) {
             Ok(accepted) => accepted,
             Err((request_id, reason)) => {
@@ -297,10 +323,26 @@ pub fn application_request(
         }
     };
     let acknowledged = accepted.sequence() == 2;
+    let started = std::time::Instant::now();
+    let encoded = encode_success(&dispatch_health(
+        accepted.request.clone(),
+        current_build_identity(),
+    ));
+    let completed_at_ms = u16::try_from(started.elapsed().as_millis()).unwrap_or(u16::MAX);
     std::thread::yield_now();
     let encoded = lifecycle.lock().map_or_else(
         |_| encode_error("unknown-request", ReasonCode::InternalFailure),
-        |mut lifecycle| lifecycle.complete_application_request(accepted),
+        |mut lifecycle| {
+            lifecycle.complete_with_encoded(
+                accepted,
+                ExecutionObservation {
+                    cancelled_at_ms: None,
+                    completed_at_ms: Some(completed_at_ms),
+                    host_available: true,
+                },
+                encoded,
+            )
+        },
     );
     ApplicationRequestOutput {
         acknowledged: acknowledged && encoded.contains("\"status\":\"healthy\""),
@@ -313,12 +355,13 @@ pub fn application_cancel(
     lifecycle: &std::sync::Mutex<HostLifecycle>,
     window_label: &str,
     origin: &str,
+    generation: u64,
     request: &str,
 ) -> String {
     lifecycle.lock().map_or_else(
         |_| encode_error("unknown-request", ReasonCode::InternalFailure),
         |mut lifecycle| {
-            let sender = lifecycle.current_sender(window_label, origin);
+            let sender = lifecycle.sender_for_generation(window_label, origin, generation);
             lifecycle.cancel_application_request(&sender, request.as_bytes())
         },
     )
@@ -334,3 +377,6 @@ fn failed_output(reason: ReasonCode) -> ApplicationRequestOutput {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, feature = "tauri-host"))]
+mod adapter_tests;

@@ -226,7 +226,7 @@ jobs:
         with:
           subject-path: sbom.cdx.json
 
-  native:
+  native-matrix:
     name: native (${{ matrix.runner }})
     strategy:
       fail-fast: false
@@ -274,3 +274,21 @@ jobs:
           path: native/target/keiko-native-package/acceptance-evidence.json
           if-no-files-found: error
           retention-days: 30
+
+  native:
+    name: native
+    if: ${{ always() }}
+    needs:
+      - native-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Aggregate native matrix results fail closed
+        env:
+          NATIVE_MATRIX_RESULT: ${{ needs.native-matrix.result }}
+        run: |
+          if [ "$NATIVE_MATRIX_RESULT" != "success" ]; then
+            echo "Native matrix did not succeed: $NATIVE_MATRIX_RESULT"
+            exit 1
+          fi

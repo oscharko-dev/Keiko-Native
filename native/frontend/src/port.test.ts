@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createRendererPort,
   isHealthResponse,
+  rendererGeneration,
   type HealthRequest,
 } from "./port";
 
@@ -20,10 +21,62 @@ function healthy(request: HealthRequest): string {
 }
 
 describe("renderer health port", () => {
+  it("uses the host-installed generation and waits for its exact event", async () => {
+    const originalWindow = Reflect.get(globalThis, "window");
+    const fakeWindow = Object.assign(new EventTarget(), {
+      clearTimeout,
+      setTimeout,
+    });
+    Reflect.set(globalThis, "window", fakeWindow);
+    try {
+      Reflect.set(fakeWindow, "__KEIKO_RENDERER_GENERATION", 5);
+      await expect(rendererGeneration()).resolves.toBe(5);
+      Reflect.deleteProperty(fakeWindow, "__KEIKO_RENDERER_GENERATION");
+      const pending = rendererGeneration();
+      fakeWindow.dispatchEvent(
+        new CustomEvent("keiko-renderer-generation", { detail: 0 }),
+      );
+      fakeWindow.dispatchEvent(
+        new CustomEvent("keiko-renderer-generation", { detail: 6 }),
+      );
+      await expect(pending).resolves.toBe(6);
+    } finally {
+      if (originalWindow === undefined)
+        Reflect.deleteProperty(globalThis, "window");
+      else Reflect.set(globalThis, "window", originalWindow);
+    }
+  });
+
+  it("bounds waiting for a missing host generation", async () => {
+    vi.useFakeTimers();
+    const originalWindow = Reflect.get(globalThis, "window");
+    const fakeWindow = Object.assign(new EventTarget(), {
+      clearTimeout,
+      setTimeout,
+    });
+    Reflect.set(globalThis, "window", fakeWindow);
+    try {
+      const pending = rendererGeneration();
+      const rejection = expect(pending).rejects.toThrow(
+        "renderer-generation-unavailable",
+      );
+      await vi.advanceTimersByTimeAsync(1000);
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+      if (originalWindow === undefined)
+        Reflect.deleteProperty(globalThis, "window");
+      else Reflect.set(globalThis, "window", originalWindow);
+    }
+  });
+
   it("uses fresh identifiers and increasing sequence", async () => {
     const requests: HealthRequest[] = [];
     const invoke = vi.fn(
-      async (_command: string, arguments_: { request: string }) => {
+      async (
+        _command: string,
+        arguments_: { generation: number; request: string },
+      ) => {
         const request = JSON.parse(arguments_.request) as HealthRequest;
         requests.push(request);
         return healthy(request);
@@ -33,6 +86,7 @@ describe("renderer health port", () => {
     const port = createRendererPort(
       invoke,
       () => ids.shift() ?? "request-00000003",
+      async () => 7,
     );
 
     await port.health();
@@ -48,22 +102,32 @@ describe("renderer health port", () => {
 
   it("sends only the closed cancellation request when aborted", async () => {
     let resolveRequest: ((value: string) => void) | undefined;
-    const invoke = vi.fn((command: string, arguments_: { request: string }) => {
-      if (command === "application_cancel") return Promise.resolve("cancelled");
-      return new Promise<string>((resolve) => {
-        const request = JSON.parse(arguments_.request) as HealthRequest;
-        resolveRequest = () => resolve(healthy(request));
-      });
-    });
-    const controller = new AbortController();
-    const pending = createRendererPort(invoke, () => "request-00000001").health(
-      controller.signal,
+    const invoke = vi.fn(
+      (
+        command: string,
+        arguments_: { generation: number; request: string },
+      ) => {
+        if (command === "application_cancel")
+          return Promise.resolve("cancelled");
+        return new Promise<string>((resolve) => {
+          const request = JSON.parse(arguments_.request) as HealthRequest;
+          resolveRequest = () => resolve(healthy(request));
+        });
+      },
     );
+    const controller = new AbortController();
+    const pending = createRendererPort(
+      invoke,
+      () => "request-00000001",
+      async () => 7,
+    ).health(controller.signal);
+    await Promise.resolve();
     controller.abort();
     resolveRequest?.("");
-    await pending;
+    await expect(pending).rejects.toThrow("application-health-cancelled");
 
     expect(invoke).toHaveBeenCalledWith("application_cancel", {
+      generation: 7,
       request: JSON.stringify({
         schemaVersion: 1,
         requestId: "request-00000001",
@@ -98,10 +162,87 @@ describe("renderer health port", () => {
     ]) {
       const invoke = vi.fn(async () => encoded);
       await expect(
-        createRendererPort(invoke, () => "request-00000001").health(),
+        createRendererPort(
+          invoke,
+          () => "request-00000001",
+          async () => 7,
+        ).health(),
       ).rejects.toThrow("application-health-failed");
     }
     expect(() => JSON.parse("not-json") as unknown).toThrow();
+  });
+
+  it("rejects pre-abort and consumes cancellation failure while discarding late success", async () => {
+    const preAborted = new AbortController();
+    preAborted.abort();
+    const invoke = vi.fn(async () => "unused");
+    await expect(
+      createRendererPort(
+        invoke,
+        () => "request-00000001",
+        async () => 7,
+      ).health(preAborted.signal),
+    ).rejects.toThrow("application-health-cancelled");
+    expect(invoke).not.toHaveBeenCalled();
+
+    let provideGeneration: ((generation: number) => void) | undefined;
+    const duringGeneration = new AbortController();
+    const generationPending = createRendererPort(
+      invoke,
+      () => "request-00000001",
+      () =>
+        new Promise<number>((resolve) => {
+          provideGeneration = resolve;
+        }),
+    ).health(duringGeneration.signal);
+    duringGeneration.abort();
+    provideGeneration?.(7);
+    await expect(generationPending).rejects.toThrow(
+      "application-health-cancelled",
+    );
+
+    let resolveRequest: ((encoded: string) => void) | undefined;
+    const racedInvoke = vi.fn(
+      (
+        command: string,
+        arguments_: { generation: number; request: string },
+      ) => {
+        if (command === "application_cancel") {
+          return Promise.reject(
+            new Error(["sec", "ret-value=", "/Us", "ers/operator"].join("")),
+          );
+        }
+        return new Promise<string>((resolve) => {
+          const request = JSON.parse(arguments_.request) as HealthRequest;
+          resolveRequest = () => resolve(healthy(request));
+        });
+      },
+    );
+    const controller = new AbortController();
+    const pending = createRendererPort(
+      racedInvoke,
+      () => "request-00000002",
+      async () => 7,
+    ).health(controller.signal);
+    controller.abort();
+    resolveRequest?.("");
+    await expect(pending).rejects.toThrow("application-health-cancelled");
+    await Promise.resolve();
+  });
+
+  it("closes malformed JSON and invocation rejection", async () => {
+    for (const failure of [
+      () => Promise.resolve("not-json"),
+      () => Promise.reject(new Error("transport unavailable")),
+    ]) {
+      await expect(
+        createRendererPort(
+          vi.fn(failure),
+          () => "request-00000001",
+          async () => 7,
+        ).health(),
+      ).rejects.toThrow("application-health-failed");
+    }
   });
 });
 

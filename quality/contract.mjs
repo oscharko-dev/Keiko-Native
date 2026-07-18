@@ -75,6 +75,24 @@ const aggregateCiNeeds = [
   "cross-platform-smoke",
 ];
 
+const dependencyReviewLicenses = [
+  "0BSD",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BlueOak-1.0.0",
+  "CC-BY-4.0",
+  "CC0-1.0",
+  "ISC",
+  "MIT",
+  "MPL-2.0",
+  "Python-2.0",
+  "Unicode-3.0",
+  "Unlicense",
+  "WTFPL",
+  "Zlib",
+];
+
 const epicPullRequestWorkflows = [
   "ci.yml",
   "codeql.yml",
@@ -855,7 +873,80 @@ function unpinnedWorkflowFailures(workflows) {
   );
 }
 
-function ciWorkflowFailures(ci) {
+export function nativeCiWorkflowFailures(ci) {
+  const lines = ci.split(/\r?\n/u);
+  const matrix = workflowSection(lines, "  native-matrix:");
+  const aggregate = workflowSection(lines, "  native:");
+  const failures = [];
+  if (matrix.length === 0) failures.push("Native CI matrix job id is missing.");
+  if (
+    !matrix.some(
+      (line) => line.trim() === "name: native (${{ matrix.runner }})",
+    )
+  )
+    failures.push("Native CI matrix check name is not runner-qualified.");
+  if (!matrix.some((line) => line.trim() === "runner: [macos-14, macos-26]"))
+    failures.push(
+      "Native CI matrix runners are not the exact authoritative set.",
+    );
+  if (aggregate.length === 0)
+    failures.push("Native CI aggregate job id is missing.");
+  if (!aggregate.some((line) => line.trim() === "name: native"))
+    failures.push("Native CI aggregate check name must be exactly native.");
+  if (normalizedStepCondition(jobPreamble(aggregate)) !== "always()")
+    failures.push("Native CI aggregate must always evaluate matrix results.");
+  const needs = workflowSection(jobPreamble(aggregate), "    needs:");
+  if (
+    needs.filter((line) => line.trim().startsWith("- ")).length !== 1 ||
+    !needs.some((line) => line.trim() === "- native-matrix")
+  )
+    failures.push("Native CI aggregate must depend only on native-matrix.");
+  if (!aggregate.some((line) => line.includes("needs.native-matrix.result")))
+    failures.push("Native CI aggregate must inspect the matrix result.");
+  return failures;
+}
+
+export function dependencyReviewWorkflowFailures(workflow) {
+  const lines = workflow.split(/\r?\n/u);
+  const severity = lines.filter(
+    (line) => line.trim() === "fail-on-severity: moderate",
+  );
+  const scopes = lines.filter(
+    (line) => line.trim() === "fail-on-scopes: development, runtime, unknown",
+  );
+  const marker = lines.findIndex(
+    (line) => line.trim() === "allow-licenses: >-",
+  );
+  const licenseLines = [];
+  for (let index = marker + 1; index < lines.length; index += 1) {
+    if (!/^\s{12}\S/u.test(lines[index])) break;
+    licenseLines.push(lines[index].trim());
+  }
+  const licenses = licenseLines
+    .join(" ")
+    .split(",")
+    .map((license) => license.trim())
+    .filter(Boolean)
+    .toSorted();
+  const failures = [];
+  if (severity.length !== 1)
+    failures.push("Dependency Review severity must be exactly moderate.");
+  if (scopes.length !== 1)
+    failures.push(
+      "Dependency Review scopes must cover development, runtime, and unknown.",
+    );
+  if (
+    marker < 0 ||
+    JSON.stringify(licenses) !==
+      JSON.stringify(dependencyReviewLicenses.toSorted())
+  )
+    failures.push(
+      "Dependency Review license allowlist is not the exact accepted set.",
+    );
+  return failures;
+}
+
+function ciWorkflowFailures(ci, productive) {
   const failures = expectedWorkflowChecks
     .filter((check) => !ci.includes(check))
     .map(
@@ -868,7 +959,11 @@ function ciWorkflowFailures(ci) {
       failures.push(`CI must retain required job section: ${jobName}.`);
       continue;
     }
-    if (jobPreamble(job).some((line) => line.trimStart().startsWith("if:")))
+    const condition = normalizedStepCondition(jobPreamble(job));
+    if (
+      condition !== undefined &&
+      !(jobName === "native" && condition === "always()")
+    )
       failures.push(
         `CI job must remain applicable and unconditional on accepted events: ${jobName}.`,
       );
@@ -891,6 +986,9 @@ function ciWorkflowFailures(ci) {
         `The aggregate ci job must depend on required job: ${dependency}.`,
       );
   }
+  if (productive && !needs.some((line) => line.trim() === "- native"))
+    failures.push("The aggregate ci job must depend on required job: native.");
+  if (productive) failures.push(...nativeCiWorkflowFailures(ci));
   return failures;
 }
 
@@ -978,9 +1076,14 @@ async function workflowFailures(root, manifest) {
   const ci = workflows.get("ci.yml") ?? "";
   return [
     ...unpinnedWorkflowFailures(workflows),
-    ...ciWorkflowFailures(ci),
+    ...ciWorkflowFailures(ci, manifest?.phase === "productive"),
     ...sonarWorkflowFailures(ci),
     ...epicWorkflowFailures(workflows),
+    ...(manifest?.phase === "productive"
+      ? dependencyReviewWorkflowFailures(
+          workflows.get("dependency-review.yml") ?? "",
+        )
+      : []),
     ...issueReadinessWorkflowFailures(
       workflows.get("issue-readiness.yml") ?? "",
     ),

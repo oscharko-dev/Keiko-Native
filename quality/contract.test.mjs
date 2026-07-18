@@ -5,8 +5,10 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  dependencyReviewWorkflowFailures,
   isProductiveSource,
   isSafeRepositoryPath,
+  nativeCiWorkflowFailures,
   normalizeRepositoryPath,
   sonarRequiredForEvent,
   sonarWorkflowFailures,
@@ -629,6 +631,7 @@ async function fixtureRepository() {
       "      - core-quality",
       "      - coverage-sonar",
       "      - cross-platform-smoke",
+      "      - native",
       "    steps:",
       "      - run: verify-results",
       "  actionlint:",
@@ -647,10 +650,21 @@ async function fixtureRepository() {
       "    name: Build, scan, SBOM, smoke",
       "    steps:",
       "      - run: build-scan-sbom-smoke",
-      "  native:",
-      "    name: native",
+      "  native-matrix:",
+      "    name: native (${{ matrix.runner }})",
+      "    strategy:",
+      "      matrix:",
+      "        runner: [macos-14, macos-26]",
       "    steps:",
       "      - run: native",
+      "  native:",
+      "    name: native",
+      "    if: ${{ always() }}",
+      "    needs:",
+      "      - native-matrix",
+      "    steps:",
+      "      - env:",
+      "          RESULT: ${{ needs.native-matrix.result }}",
     ].join("\n"),
   );
   for (const name of [
@@ -667,6 +681,14 @@ async function fixtureRepository() {
     ];
     if (name !== "dependency-review.yml")
       lines.push("  push:", "    branches:", '      - "epic/**"');
+    else
+      lines.push(
+        "fail-on-severity: moderate",
+        "fail-on-scopes: development, runtime, unknown",
+        "allow-licenses: >-",
+        "            0BSD, Apache-2.0, BSD-2-Clause, BSD-3-Clause, BlueOak-1.0.0, CC-BY-4.0,",
+        "            CC0-1.0, ISC, MIT, MPL-2.0, Python-2.0, Unicode-3.0, Unlicense, WTFPL, Zlib",
+      );
     await writeFile(join(root, ".github/workflows", name), lines.join("\n"));
   }
   await writeFile(
@@ -1135,5 +1157,59 @@ test("rejects undeclared Gitar rules and configuration surfaces", async () => {
     );
   } finally {
     await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("native CI exposes one exact aggregate check over separate matrix legs", () => {
+  const valid = [
+    "jobs:",
+    "  native-matrix:",
+    "    name: native (${{ matrix.runner }})",
+    "    strategy:",
+    "      matrix:",
+    "        runner: [macos-14, macos-26]",
+    "  native:",
+    "    name: native",
+    "    if: ${{ always() }}",
+    "    needs:",
+    "      - native-matrix",
+    "    steps:",
+    "      - env:",
+    "          RESULT: ${{ needs.native-matrix.result }}",
+  ].join("\n");
+  assert.deepEqual(nativeCiWorkflowFailures(valid), []);
+  for (const mutation of [
+    valid.replace("native-matrix:", "native-other:"),
+    valid.replace("name: native (${{ matrix.runner }})", "name: native"),
+    valid.replace("macos-14, macos-26", "macos-14"),
+    valid.replace("name: native\n", "name: native result\n"),
+    valid.replace("if: ${{ always() }}", "if: ${{ success() }}"),
+    valid.replace("- native-matrix", "- native-other"),
+    valid.replace("needs.native-matrix.result", "needs.native-other.result"),
+  ]) {
+    assert.ok(nativeCiWorkflowFailures(mutation).length > 0);
+  }
+});
+
+test("dependency review closes severity, scopes and accepted SPDX licenses", () => {
+  const valid = [
+    "        with:",
+    "          fail-on-severity: moderate",
+    "          fail-on-scopes: development, runtime, unknown",
+    "          allow-licenses: >-",
+    "            0BSD, Apache-2.0, BSD-2-Clause, BSD-3-Clause, BlueOak-1.0.0, CC-BY-4.0,",
+    "            CC0-1.0, ISC, MIT, MPL-2.0, Python-2.0, Unicode-3.0, Unlicense, WTFPL, Zlib",
+    "          retry-on-snapshot-warnings: true",
+  ].join("\n");
+  assert.deepEqual(dependencyReviewWorkflowFailures(valid), []);
+  for (const mutation of [
+    valid.replace("moderate", "high"),
+    valid.replace("development, runtime, unknown", "runtime"),
+    valid.replace("MPL-2.0, ", ""),
+    valid.replace("Unicode-3.0, ", ""),
+    valid.replace(", Zlib", ""),
+    valid.replace("Zlib", "Zlib-plus"),
+  ]) {
+    assert.ok(dependencyReviewWorkflowFailures(mutation).length > 0);
   }
 });

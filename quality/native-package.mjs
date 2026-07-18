@@ -1,4 +1,3 @@
-import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
@@ -8,10 +7,25 @@ import {
   packagePolicyFailures,
   redactionMatches,
 } from "./native-contract.mjs";
+import {
+  defaultProcessControl,
+  runPackagedLifecycle,
+} from "./native-lifecycle.mjs";
 
 function sortedInventory(entries) {
   return entries.toSorted((left, right) =>
     JSON.stringify(left).localeCompare(JSON.stringify(right)),
+  );
+}
+
+function normalizeLicense(license) {
+  return (
+    {
+      "Apache-2.0 / MIT": "Apache-2.0 OR MIT",
+      "Apache-2.0/MIT": "Apache-2.0 OR MIT",
+      "MIT/Apache-2.0": "MIT OR Apache-2.0",
+      "Unlicense/MIT": "Unlicense OR MIT",
+    }[license] ?? license
   );
 }
 
@@ -68,7 +82,8 @@ function packagedShellEvidence({
       "host-unavailable",
       "shutting-down",
     ],
-    elapsedMs: lifecycle.elapsedMs,
+    acknowledgementMs: lifecycle.acknowledgementMs,
+    shutdownMs: lifecycle.shutdownMs,
     cleanupOwnedDescendants: lifecycle.cleanupOwnedDescendants,
     redaction: "closed",
   };
@@ -88,8 +103,10 @@ export function createNativePackageGate({
   nativeRoot,
   onMacOs,
   packageRoot,
+  processControl = defaultProcessControl,
   repositoryRoot,
   run,
+  rustBuildEnv,
   sourceRevision,
   targetRoot,
   testNative,
@@ -99,7 +116,7 @@ export function createNativePackageGate({
   async function dependencyInventory() {
     const cargo = sortedInventory(
       cargoMetadata().packages.map(({ license, name, source, version }) => ({
-        license,
+        license: normalizeLicense(license),
         name,
         source: source === null ? "workspace" : "registry",
         version,
@@ -113,7 +130,7 @@ export function createNativePackageGate({
         .filter(([path]) => path !== "")
         .map(([path, metadata]) => ({
           dev: metadata.dev === true,
-          license: metadata.license,
+          license: normalizeLicense(metadata.license),
           name: path.replace(/^node_modules\//u, ""),
           version: metadata.version,
         })),
@@ -131,7 +148,7 @@ export function createNativePackageGate({
       ["build", "--config", "tauri.conf.json", "--bundles", "app"],
       {
         cwd: join(nativeRoot, "apps/keiko-desktop"),
-        env: { KEIKO_NATIVE_SOURCE_REVISION: sourceRevision() },
+        env: rustBuildEnv(),
       },
     );
     await cp(
@@ -150,26 +167,39 @@ export function createNativePackageGate({
       await readFile(join(nativeRoot, "package-policy.json"), "utf8"),
     );
     const dependencies = await dependencyInventory();
+    const noticePath = join(
+      appRoot,
+      "Contents/Resources/THIRD-PARTY-NOTICES.json",
+    );
+    const notice = JSON.parse(await readFile(noticePath, "utf8"));
+    run("plutil", ["-lint", join(appRoot, "Contents/Info.plist")]);
+    const executableType = run(
+      "file",
+      [join(appRoot, "Contents/MacOS/keiko-native-desktop")],
+      { capture: true },
+    );
+    if (!executableType.includes("Mach-O 64-bit executable arm64"))
+      throw new Error("Package executable class rejected");
+    const fileClasses = {
+      "Contents/Info.plist": "plist",
+      "Contents/MacOS/keiko-native-desktop": "mach-o-executable",
+      "Contents/Resources/THIRD-PARTY-NOTICES.json": "dependency-notice",
+    };
     const failures = packagePolicyFailures({
       ...dependencies,
+      fileClasses,
       files,
       policy,
     });
-    const notice = JSON.parse(
-      await readFile(
-        join(appRoot, "Contents/Resources/THIRD-PARTY-NOTICES.json"),
-        "utf8",
-      ),
-    );
-    if (
-      notice.schema !== "keiko-native-third-party-notices/v1" ||
-      JSON.stringify(notice.cargoInventory) !==
-        JSON.stringify(dependencies.cargo) ||
-      JSON.stringify(notice.npmInventory) !==
-        JSON.stringify(dependencies.npm) ||
-      JSON.stringify(notice.acceptedSpdxExpressions) !==
-        JSON.stringify(policy.acceptedSpdxExpressions)
-    ) {
+    const expectedNotice = {
+      schema: "keiko-native-third-party-notices/v1",
+      target: policy.target,
+      locks: policy.expectedLocks,
+      acceptedSpdxExpressions: policy.acceptedSpdxExpressions,
+      cargoInventory: dependencies.cargo,
+      npmInventory: dependencies.npm,
+    };
+    if (JSON.stringify(notice) !== JSON.stringify(expectedNotice)) {
       failures.push("third-party-notice-content");
     }
     if (
@@ -184,14 +214,6 @@ export function createNativePackageGate({
       failures.push("npm-lock-digest");
     if (failures.length > 0)
       throw new Error(`Native package rejected: ${failures.join(",")}`);
-    run("plutil", ["-lint", join(appRoot, "Contents/Info.plist")]);
-    const executableType = run(
-      "file",
-      [join(appRoot, "Contents/MacOS/keiko-native-desktop")],
-      { capture: true },
-    );
-    if (!executableType.includes("Mach-O 64-bit executable arm64"))
-      throw new Error("Package executable class rejected");
     const manifest = packageManifest({
       files,
       policySha256: await digest(join(nativeRoot, "package-policy.json")),
@@ -203,74 +225,13 @@ export function createNativePackageGate({
     await writeFile(join(packageRoot, "package-manifest.json"), encoded);
   }
 
-  function descendantCount(processGroup) {
-    const result = spawnSync("pgrep", ["-g", String(processGroup)], {
-      encoding: "utf8",
-    });
-    if (![0, 1].includes(result.status))
-      throw new Error("Process cleanup inspection failed");
-    return result.stdout.trim().split("\n").filter(Boolean).length;
-  }
-
-  function terminateProcessGroup(child) {
-    if (child.exitCode !== null) return;
-    try {
-      process.kill(-child.pid, "SIGKILL");
-    } catch {}
-  }
-
   async function launchPackagedShell() {
     const executable = join(appRoot, "Contents/MacOS/keiko-native-desktop");
-    const startedAt = performance.now();
-    const child = spawn(executable, [], {
-      cwd: packageRoot,
-      detached: true,
-      stdio: ["ignore", "ignore", "pipe"],
+    return runPackagedLifecycle({
+      executable,
+      packageRoot,
+      processControl,
     });
-    try {
-      await new Promise((resolve, reject) => {
-        let output = "";
-        const timer = setTimeout(() => {
-          terminateProcessGroup(child);
-          reject(new Error("Packaged health acknowledgement timed out"));
-        }, 5000);
-        child.stderr.setEncoding("utf8");
-        child.stderr.on("data", (chunk) => {
-          output = `${output}${chunk}`.slice(-1024);
-          if (!output.includes("keiko-native-health-ack/v1 sequence=2")) return;
-          clearTimeout(timer);
-          resolve();
-        });
-        child.once("exit", () => {
-          clearTimeout(timer);
-          reject(new Error("Packaged shell exited before acknowledgement"));
-        });
-        child.once("error", (error) => {
-          clearTimeout(timer);
-          reject(error);
-        });
-      });
-      run("osascript", [
-        "-e",
-        'tell application id "dev.oscharko.keiko-native" to quit',
-      ]);
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          terminateProcessGroup(child);
-          reject(new Error("Packaged shell did not shut down within 5000 ms"));
-        }, 5000);
-        child.once("exit", () => {
-          clearTimeout(timer);
-          resolve();
-        });
-      });
-      return {
-        cleanupOwnedDescendants: descendantCount(child.pid),
-        elapsedMs: Math.round(performance.now() - startedAt),
-      };
-    } finally {
-      terminateProcessGroup(child);
-    }
   }
 
   async function acceptance() {

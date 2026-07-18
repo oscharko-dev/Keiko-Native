@@ -11,11 +11,18 @@ use tauri::{Manager, RunEvent, State, WebviewWindow, WindowEvent};
 fn application_request(
     window: WebviewWindow,
     lifecycle: State<'_, Mutex<HostLifecycle>>,
+    generation: u64,
     request: String,
 ) -> String {
     let url = window.url().ok();
     let origin = canonical_origin(url.as_ref());
-    let output = dispatch_application_request(lifecycle.inner(), window.label(), &origin, &request);
+    let output = dispatch_application_request(
+        lifecycle.inner(),
+        window.label(),
+        &origin,
+        generation,
+        &request,
+    );
     if output.acknowledged {
         eprintln!("keiko-native-health-ack/v1 sequence=2");
     }
@@ -26,11 +33,18 @@ fn application_request(
 fn application_cancel(
     window: WebviewWindow,
     lifecycle: State<'_, Mutex<HostLifecycle>>,
+    generation: u64,
     request: String,
 ) -> String {
     let url = window.url().ok();
     let origin = canonical_origin(url.as_ref());
-    dispatch_application_cancel(lifecycle.inner(), window.label(), &origin, &request)
+    dispatch_application_cancel(
+        lifecycle.inner(),
+        window.label(),
+        &origin,
+        generation,
+        &request,
+    )
 }
 
 fn navigation_policy<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
@@ -48,12 +62,27 @@ fn main() {
             application_cancel
         ])
         .on_page_load(|webview, payload| {
-            if webview.label() == "main"
-                && payload.event() == PageLoadEvent::Started
-                && is_bundled_navigation(payload.url())
-                && let Ok(mut lifecycle) = webview.state::<Mutex<HostLifecycle>>().lock()
-            {
-                lifecycle.begin_renderer_session();
+            if webview.label() != "main" || !is_bundled_navigation(payload.url()) {
+                return;
+            }
+            if payload.event() == PageLoadEvent::Started {
+                if let Ok(mut lifecycle) = webview.state::<Mutex<HostLifecycle>>().lock() {
+                    lifecycle.begin_renderer_session();
+                }
+            } else if payload.event() == PageLoadEvent::Finished {
+                let generation = webview
+                    .state::<Mutex<HostLifecycle>>()
+                    .lock()
+                    .ok()
+                    .and_then(|lifecycle| lifecycle.current_generation());
+                if let Some(generation) = generation {
+                    let script = format!(
+                        "Object.defineProperty(window,'__KEIKO_RENDERER_GENERATION',{{value:{generation},configurable:false,writable:false}});window.dispatchEvent(new CustomEvent('keiko-renderer-generation',{{detail:{generation}}}));"
+                    );
+                    if webview.eval(&script).is_err() {
+                        eprintln!("keiko-renderer-generation-install-failed");
+                    }
+                }
             }
         })
         .on_web_content_process_terminate(|webview| {

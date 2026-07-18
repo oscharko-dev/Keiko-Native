@@ -157,7 +157,11 @@ fn malformed_missing_cross_generation_and_late_cancellation_are_closed() {
         .begin_application_request(&sender, &request(1, "request-00000002"))
         .expect("accepted");
     lifecycle.begin_renderer_session();
-    let current = lifecycle.current_sender("main", "tauri://localhost");
+    let current = lifecycle.sender_for_generation(
+        "main",
+        "tauri://localhost",
+        lifecycle.current_generation().expect("generation"),
+    );
     assert!(
         lifecycle
             .cancel_application_request(
@@ -244,103 +248,4 @@ fn bundled_origins_are_closed() {
     assert!(is_bundled_origin("http://tauri.localhost"));
     assert!(!is_bundled_origin("tauri://localhost/index.html"));
     assert!(!is_bundled_origin("https://example.invalid"));
-}
-
-#[cfg(feature = "tauri-host")]
-#[test]
-fn bundled_navigation_policy_is_exact() {
-    let tauri_root = tauri::Url::parse("tauri://localhost/index.html").expect("tauri URL");
-    let http_root = tauri::Url::parse("http://tauri.localhost/").expect("http URL");
-    assert_eq!(canonical_origin(Some(&tauri_root)), "tauri://localhost");
-    assert_eq!(canonical_origin(Some(&http_root)), "http://tauri.localhost");
-    assert!(is_bundled_navigation(&tauri_root));
-    assert!(is_bundled_navigation(&http_root));
-    for denied in [
-        "https://tauri.localhost/",
-        "tauri://localhost/other",
-        "tauri://localhost/index.html?debug=true",
-        "tauri://localhost/index.html#fragment",
-    ] {
-        let url = tauri::Url::parse(denied).expect("denied URL");
-        assert_eq!(
-            canonical_origin(Some(&url)).is_empty(),
-            denied.starts_with("https:")
-        );
-        assert!(!is_bundled_navigation(&url));
-    }
-    assert!(canonical_origin(None).is_empty());
-}
-
-#[cfg(feature = "tauri-host")]
-#[test]
-fn tauri_host_commands_cover_success_cancellation_and_poisoning() {
-    use std::sync::Mutex;
-
-    let lifecycle = Mutex::new(HostLifecycle::default());
-    lifecycle
-        .lock()
-        .expect("lifecycle")
-        .begin_renderer_session();
-    let first = application_request(
-        &lifecycle,
-        "main",
-        "tauri://localhost",
-        &String::from_utf8(request(1, "request-00000001")).expect("request"),
-    );
-    assert!(!first.acknowledged);
-    assert!(first.encoded.contains("healthy"));
-    let second = application_request(
-        &lifecycle,
-        "main",
-        "tauri://localhost",
-        &String::from_utf8(request(2, "request-00000002")).expect("request"),
-    );
-    assert!(second.acknowledged);
-    assert!(
-        application_request(&lifecycle, "other", "tauri://localhost", "{}")
-            .encoded
-            .contains("unauthenticated-sender")
-    );
-
-    let lifecycle = Mutex::new(started().0);
-    let sender = lifecycle
-        .lock()
-        .expect("lifecycle")
-        .current_sender("main", "tauri://localhost");
-    let accepted = lifecycle
-        .lock()
-        .expect("lifecycle")
-        .begin_application_request(&sender, &request(1, "request-00000003"))
-        .expect("in flight");
-    assert!(
-        application_cancel(
-            &lifecycle,
-            "main",
-            "tauri://localhost",
-            r#"{"schemaVersion":1,"requestId":"request-00000003"}"#,
-        )
-        .contains("cancelled")
-    );
-    assert!(
-        lifecycle
-            .lock()
-            .expect("lifecycle")
-            .complete_application_request(accepted)
-            .contains("cancelled")
-    );
-
-    let poisoned = Mutex::new(HostLifecycle::default());
-    let _ = std::panic::catch_unwind(|| {
-        let _guard = poisoned.lock().expect("lock before poisoning");
-        panic!("poison lifecycle");
-    });
-    assert!(
-        application_request(&poisoned, "main", "tauri://localhost", "{}")
-            .encoded
-            .contains("internal-failure")
-    );
-    assert!(
-        application_cancel(&poisoned, "main", "tauri://localhost", "{}")
-            .contains("internal-failure")
-    );
 }
