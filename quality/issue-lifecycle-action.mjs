@@ -10,6 +10,8 @@ import {
   verifyStatusLabelReadback,
 } from "./issue-lifecycle.mjs";
 import {
+  evaluateClaimPrecondition,
+  evaluateClaimRelease,
   evaluateClosurePrecondition,
   evaluateCurrentReadiness,
 } from "./issue-lifecycle-readiness.mjs";
@@ -117,6 +119,37 @@ function desiredStateForClosure(event, issue) {
     : { desiredState: closure.target };
 }
 
+function inertMissingAuthorityResult(reason, enabled) {
+  return enabled ? { failures: [reason], outcome: "failed" } : undefined;
+}
+
+function desiredStateForClaimEvent(event, readiness, currentState, enabled) {
+  if (event?.action === "assigned") {
+    const result = evaluateClaimPrecondition({
+      claim: event.claim,
+      readiness,
+      sourceState: currentState,
+    });
+    if (result.ok) return { desiredState: result.target };
+    return event.claim === undefined
+      ? inertMissingAuthorityResult(result.reason, enabled)
+      : { failures: [result.reason], outcome: "failed" };
+  }
+  if (event?.action === "unassigned") {
+    const result = evaluateClaimRelease({
+      hasOpenPullRequest: event.hasOpenPullRequest,
+      readiness,
+      release: event.release,
+      sourceState: currentState,
+    });
+    if (result.ok) return { desiredState: result.target };
+    return event.release === undefined
+      ? inertMissingAuthorityResult(result.reason, enabled)
+      : { failures: [result.reason], outcome: "failed" };
+  }
+  return undefined;
+}
+
 function desiredStateForEvent(event, readiness, currentState, enabled, issue) {
   if (event?.action === "reopened")
     return { desiredState: LIFECYCLE_STATES[0] };
@@ -124,6 +157,7 @@ function desiredStateForEvent(event, readiness, currentState, enabled, issue) {
     return { desiredState: LIFECYCLE_STATES[0] };
   return (
     desiredStateForLabelEvent(event, currentState, enabled, readiness) ??
+    desiredStateForClaimEvent(event, readiness, currentState, enabled) ??
     desiredStateForClosure(event, issue) ??
     {}
   );

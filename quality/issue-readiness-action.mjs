@@ -8,6 +8,7 @@ import { fieldValue } from "./markdown-contract.mjs";
 
 const readinessMarker = "<!-- keiko-native-readiness -->";
 const allowedPermissions = new Set(["admin", "maintain", "triage", "write"]);
+const initialReadySourceLabels = new Set(["status: new", "status: triaged"]);
 const githubRequest = githubRequestFor("keiko-native-issue-readiness");
 
 export function readinessRecordFromComments(comments) {
@@ -224,7 +225,7 @@ export async function runIssueReadinessAction({ event, now = new Date() }) {
       (label) =>
         label?.name?.startsWith("status: ") &&
         label.name !== "status: ready" &&
-        !(isInitialRequest && label.name === "status: new"),
+        !(isInitialRequest && initialReadySourceLabels.has(label.name)),
     )
   )
     validation.failures.push(
@@ -252,6 +253,7 @@ export async function runIssueReadinessAction({ event, now = new Date() }) {
   });
   if (decision.outcome === "accept") {
     await removeLabel(repository, issue.number, "status: new");
+    await removeLabel(repository, issue.number, "status: triaged");
     await postComment(repository, issue.number, comment);
   } else {
     await removeLabel(repository, issue.number, "status: ready");

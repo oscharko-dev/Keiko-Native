@@ -239,6 +239,47 @@ test("ignores events without a lifecycle destination and fails bad read-back", a
   assert.match(result.failures.join("\n"), /does not equal the desired state/u);
 });
 
+test("plans validated assignment claim and release transitions", async (t) => {
+  const claim = requestMock(t, { issueLabels: ["status: ready"] });
+  const claimResult = await runIssueLifecycleAction({
+    event: {
+      action: "assigned",
+      claim: { id: "claim-1", validated: true },
+      expectedReadinessCommentId: 101,
+      issue: { number: 27 },
+    },
+    request: claim.request,
+  });
+  assert.equal(claimResult.outcome, "planned");
+  assert.equal(claimResult.desiredState, "status: in progress");
+  assert.deepEqual(claimResult.plan, {
+    apply: ["status: in progress"],
+    failures: [],
+    ok: true,
+    remove: ["status: ready"],
+  });
+
+  const release = requestMock(t, { issueLabels: ["status: in progress"] });
+  const releaseResult = await runIssueLifecycleAction({
+    event: {
+      action: "unassigned",
+      expectedReadinessCommentId: 101,
+      hasOpenPullRequest: false,
+      issue: { number: 27 },
+      release: { id: "release-1", validated: true },
+    },
+    request: release.request,
+  });
+  assert.equal(releaseResult.outcome, "planned");
+  assert.equal(releaseResult.desiredState, "status: ready");
+  assert.deepEqual(releaseResult.plan, {
+    apply: ["status: ready"],
+    failures: [],
+    ok: true,
+    remove: ["status: in progress"],
+  });
+});
+
 test("removes lifecycle labels for non-completed closures", async (t) => {
   const planned = requestMock(t, {
     issueLabels: ["status: ready", "status: blocked"],
@@ -674,6 +715,33 @@ test("covers alternate fail-closed and no-op lifecycle branches", async (t) => {
     if (previousRawActivation === undefined)
       delete process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
     else process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = previousRawActivation;
+  }
+
+  const enabledRawAssignment = requestMock(t, {
+    issueLabels: ["status: ready"],
+  });
+  const previousAssignmentActivation =
+    process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
+  process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = "enabled";
+  try {
+    const enabledRawAssignmentResult = await runIssueLifecycleAction({
+      event: {
+        action: "assigned",
+        expectedReadinessCommentId: 101,
+        issue: { number: 27 },
+      },
+      request: enabledRawAssignment.request,
+    });
+    assert.equal(enabledRawAssignmentResult.outcome, "failed");
+    assert.deepEqual(enabledRawAssignmentResult.failures, [
+      "validated_claim_required",
+    ]);
+  } finally {
+    if (previousAssignmentActivation === undefined)
+      delete process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
+    else
+      process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION =
+        previousAssignmentActivation;
   }
 
   const malformedLabels = requestMock(t);

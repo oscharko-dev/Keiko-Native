@@ -296,6 +296,33 @@ test("rejects an initial readiness request with a conflicting lifecycle status",
   assert.match(result.reasons.join("\n"), /conflicting lifecycle status/u);
 });
 
+test("accepts an initial readiness request from triaged", async (t) => {
+  const calls = installGitHubFetchMock(t);
+  const event = issueEvent({
+    issue: {
+      body: validTaskBody(),
+      labels: [
+        { name: "type: task" },
+        { name: "status: triaged" },
+        { name: "status: ready" },
+      ],
+      number: 42,
+      title: "Implement governed workspace opening",
+    },
+  });
+
+  const result = await runIssueReadinessAction({ event });
+
+  assert.equal(result.outcome, "accept");
+  assert.ok(
+    calls.some(
+      (call) =>
+        call.method === "DELETE" &&
+        call.url.endsWith("/labels/status%3A%20triaged"),
+    ),
+  );
+});
+
 test("executes a rejected readiness request fail closed", async (t) => {
   const calls = installGitHubFetchMock(t, {
     permission: "read",

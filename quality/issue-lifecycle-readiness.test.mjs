@@ -193,6 +193,14 @@ test("requires validated claims and pull-request topology for active states", ()
     }),
     "open_pull_request_retained",
   );
+  assertReason(
+    evaluateClaimRelease({
+      readiness: current,
+      release: { validated: true },
+      sourceState: "status: in progress",
+    }),
+    "pull_request_evidence_required",
+  );
 });
 
 test("evaluates PR open and unmerged-close recovery topology", () => {

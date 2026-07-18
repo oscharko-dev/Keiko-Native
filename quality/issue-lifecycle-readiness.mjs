@@ -124,6 +124,8 @@ export function evaluateClaimRelease({
   if (sourceState !== IN_PROGRESS) failures.push("in_progress_source_required");
   if (release?.validated !== true) failures.push("validated_release_required");
   if (hasOpenPullRequest === true) failures.push("open_pull_request_retained");
+  if (hasOpenPullRequest === undefined)
+    failures.push("pull_request_evidence_required");
   return failures.length > 0 ? fail(failures[0]) : ok({ target: READY });
 }
 
