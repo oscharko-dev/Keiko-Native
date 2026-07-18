@@ -22,6 +22,7 @@ import {
 } from "./native-package.mjs";
 import {
   commandFailure,
+  isDirectInvocation,
   productiveRustEnv as createProductiveRustEnv,
   runNativeGateCli,
   sanitizeOutput,
@@ -389,8 +390,7 @@ export async function main(mode) {
   await command();
   await snapshotGuard?.assertUnchanged("after-mode");
 }
-
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isDirectInvocation(process.argv[1], fileURLToPath(import.meta.url))) {
   const execute = inExactSnapshot()
     ? main
     : (mode) => runNativeSnapshot({ mode, repositoryRoot });

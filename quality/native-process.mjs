@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -45,6 +46,19 @@ export async function runNativeGateCli(
   } catch (error) {
     writeError(sanitizeDiagnostic(error?.message ?? String(error)));
     return 1;
+  }
+}
+
+export function isDirectInvocation(
+  argumentPath,
+  modulePath,
+  canonicalize = realpathSync,
+) {
+  if (!argumentPath) return false;
+  try {
+    return canonicalize(argumentPath) === canonicalize(modulePath);
+  } catch {
+    return false;
   }
 }
 

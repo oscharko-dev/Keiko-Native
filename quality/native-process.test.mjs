@@ -1,7 +1,36 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runNativeGateCli } from "./native-process.mjs";
+import { isDirectInvocation, runNativeGateCli } from "./native-process.mjs";
+
+test("gate CLI recognizes canonical aliases without accepting another module", () => {
+  const aliases = new Map([
+    ["/var/snapshot/native-gate.mjs", "/private/var/snapshot/native-gate.mjs"],
+    [
+      "/private/var/snapshot/native-gate.mjs",
+      "/private/var/snapshot/native-gate.mjs",
+    ],
+    ["/private/var/snapshot/other.mjs", "/private/var/snapshot/other.mjs"],
+  ]);
+  const canonicalize = (path) => aliases.get(path);
+  assert.equal(
+    isDirectInvocation(
+      "/var/snapshot/native-gate.mjs",
+      "/private/var/snapshot/native-gate.mjs",
+      canonicalize,
+    ),
+    true,
+  );
+  assert.equal(
+    isDirectInvocation(
+      "/private/var/snapshot/other.mjs",
+      "/private/var/snapshot/native-gate.mjs",
+      canonicalize,
+    ),
+    false,
+  );
+  assert.equal(isDirectInvocation(undefined, "module", canonicalize), false);
+});
 
 test("top-level diagnostics remove PII while retaining actionable status", async () => {
   const diagnostics = [];
