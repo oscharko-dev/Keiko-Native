@@ -81,7 +81,7 @@ export function workflowToolchainFailures(workflow, requiredJobs = []) {
       .map(({ index }) => index)
       .toSorted((left, right) => left - right)[0];
     if (firstNpm === undefined) continue;
-    const activationName = job.indexOf("- name: Activate exact npm 11.16.0");
+    const activationName = job.indexOf("- name: Verify exact npm 11.16.0");
     const activationEnd =
       activationName < 0 ? -1 : job.indexOf("\n      - ", activationName + 1);
     const activation = job.slice(
@@ -116,11 +116,8 @@ function validActivationStep(activation) {
   return (
     activation.replaceAll("\r", "").trimEnd() ===
     [
-      "- name: Activate exact npm 11.16.0",
-      "        run: |",
-      "          corepack enable npm",
-      "          corepack install --global npm@11.16.0",
-      "          node quality/check-toolchain.mjs",
+      "- name: Verify exact npm 11.16.0",
+      "        run: node quality/check-toolchain.mjs",
     ].join("\n")
   );
 }

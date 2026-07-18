@@ -5,7 +5,193 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 
-import { captureDependencySnapshot } from "./native-dependencies.mjs";
+import {
+  captureDependencySnapshot,
+  createTargetVulnerabilityInventory,
+  evaluateVulnerabilityResults,
+} from "./native-dependencies.mjs";
+
+test("derives an OSV inventory only from the filtered Cargo resolve graph", () => {
+  const metadata = {
+    packages: [
+      cargoPackage("app", "0.1.0", null),
+      cargoPackage("safe", "1.2.3"),
+      cargoPackage("linux-only", "4.5.6"),
+    ],
+    resolve: {
+      nodes: [
+        { dependencies: ["safe-id"], id: "app-id" },
+        { dependencies: [], id: "safe-id" },
+      ],
+    },
+  };
+  metadata.packages[0].id = "app-id";
+  metadata.packages[1].id = "safe-id";
+  metadata.packages[2].id = "linux-id";
+
+  assert.deepEqual(createTargetVulnerabilityInventory(metadata), {
+    results: [
+      {
+        packages: [
+          {
+            package: {
+              ecosystem: "crates.io",
+              name: "safe",
+              version: "1.2.3",
+            },
+          },
+        ],
+        source: {
+          path: "native/Cargo.lock#aarch64-apple-darwin",
+          type: "lockfile",
+        },
+      },
+    ],
+  });
+});
+
+test("target vulnerability inventory rejects incomplete or unsupported Cargo metadata", () => {
+  for (const metadata of [
+    {},
+    { packages: [], resolve: { nodes: [] } },
+    {
+      packages: [
+        cargoPackage("git-dependency", "1.0.0", "git+https://invalid"),
+      ],
+      resolve: { nodes: [{ dependencies: [], id: "git-id" }] },
+    },
+    {
+      packages: [cargoPackage("safe", "1.0.0")],
+      resolve: { nodes: [{ dependencies: [], id: "missing-id" }] },
+    },
+  ]) {
+    assert.throws(
+      () => createTargetVulnerabilityInventory(metadata),
+      /Target dependency inventory rejected/u,
+    );
+  }
+});
+
+function cargoPackage(
+  name,
+  version,
+  source = "registry+https://github.com/rust-lang/crates.io-index",
+) {
+  return { id: `${name}-id`, name, source, version };
+}
+
+test("vulnerability policy retains unmaintained signals and enforces moderate", () => {
+  assert.deepEqual(evaluateVulnerabilityResults({ results: [] }), {
+    blocking: 0,
+    informationalUnmaintained: 0,
+    low: 0,
+  });
+  assert.deepEqual(
+    evaluateVulnerabilityResults(
+      vulnerabilityResults({ informational: "unmaintained", severity: "" }),
+    ),
+    { blocking: 0, informationalUnmaintained: 1, low: 0 },
+  );
+  assert.deepEqual(
+    evaluateVulnerabilityResults(vulnerabilityResults({ severity: "3.9" })),
+    { blocking: 0, informationalUnmaintained: 0, low: 1 },
+  );
+  assert.throws(
+    () =>
+      evaluateVulnerabilityResults(vulnerabilityResults({ severity: "4.0" })),
+    /Vulnerability policy rejected moderate-or-higher/u,
+  );
+});
+
+test("vulnerability policy fails closed on malformed, unknown, mixed, or patched signals", () => {
+  const mutations = [
+    {},
+    { results: {} },
+    vulnerabilityResults({ severity: "unknown" }),
+    vulnerabilityResults({ severity: "" }),
+    vulnerabilityResults({ informational: "unsound", severity: "" }),
+    vulnerabilityResults({
+      fixed: "1.0.1",
+      informational: "unmaintained",
+      severity: "",
+    }),
+    vulnerabilityResults({
+      informational: "unmaintained",
+      mixed: true,
+      severity: "",
+    }),
+  ];
+  for (const mutation of mutations)
+    assert.throws(
+      () => evaluateVulnerabilityResults(mutation),
+      /Vulnerability policy rejected/u,
+    );
+});
+
+function vulnerabilityResults({
+  fixed,
+  informational,
+  mixed = false,
+  severity,
+}) {
+  const id = "RUSTSEC-2025-0001";
+  const affected = (classification) => ({
+    database_specific:
+      classification === undefined
+        ? { categories: [], cvss: null }
+        : {
+            categories: [],
+            cvss: null,
+            informational: classification,
+            source: `https://github.com/rustsec/advisory-db/blob/osv/crates/${id}.json`,
+          },
+    package: {
+      ecosystem: "crates.io",
+      name: "fixture",
+      purl: "pkg:cargo/fixture",
+    },
+    ranges: [
+      {
+        events: [
+          { introduced: "0.0.0-0" },
+          ...(fixed === undefined ? [] : [{ fixed }]),
+        ],
+        type: "SEMVER",
+      },
+    ],
+  });
+  return {
+    results: [
+      {
+        packages: [
+          {
+            groups: [{ aliases: [id], ids: [id], max_severity: severity }],
+            package: {
+              ecosystem: "crates.io",
+              name: "fixture",
+              version: "1.0.0",
+            },
+            vulnerabilities: [
+              {
+                affected: [
+                  affected(informational),
+                  ...(mixed ? [affected(undefined)] : []),
+                ],
+                database_specific: { license: "CC0-1.0" },
+                id,
+                schema_version: "1.7.3",
+              },
+            ],
+          },
+        ],
+        source: {
+          path: "native/target/osv/native-macos-arm64.osv-scanner.json",
+          type: "lockfile",
+        },
+      },
+    ],
+  };
+}
 
 test("captures a deterministic exact npm-ci dependency inventory", async () => {
   const fixture = await dependencyFixture();

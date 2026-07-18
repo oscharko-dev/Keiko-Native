@@ -76,6 +76,7 @@ test("macOS release build receives the captured revision without a second lookup
   const rustRevisions = [];
   try {
     const { packageNative } = createNativePackageGate({
+      architecture: "arm64",
       build: async (revision) => assert.equal(revision, captured),
       captureRepositoryState: () => ({
         assertUnchanged() {},

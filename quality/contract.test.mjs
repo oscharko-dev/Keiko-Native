@@ -513,6 +513,8 @@ async function fixtureRepository() {
     "docs/product/source-baseline.md",
     "docs/qa/repository-activation.md",
     "package.json",
+    "quality/check-native-vulnerability-results.mjs",
+    "quality/generate-native-vulnerability-inventory.mjs",
     "quality/github-api.mjs",
     "quality/github-reference.mjs",
     "quality/issue-contract.mjs",
@@ -622,15 +624,23 @@ async function fixtureRepository() {
       "    branches:",
       '      - "epic/**"',
     ];
-    if (name !== "dependency-review.yml")
+    if (name === "codeql.yml")
       lines.push("  push:", "    branches:", '      - "epic/**"');
-    else {
+    else if (name === "dependency-review.yml") {
       lines.push(
         "permissions: {}",
         "jobs:",
         governedWorkflowJobs["dependency-review"],
       );
-    }
+    } else
+      lines.push(
+        "  push:",
+        "    branches:",
+        '      - "epic/**"',
+        "permissions: {}",
+        "jobs:",
+        governedWorkflowJobs["osv-scan"],
+      );
     await writeFile(join(root, ".github/workflows", name), lines.join("\n"));
   }
   await writeFile(
@@ -1194,11 +1204,18 @@ test("mutation workflow pins cargo-mutants execution to Rust 1.92", () => {
   }
 });
 
-test("dependency review closes severity, scopes and accepted SPDX licenses", () => {
+test("dependency review closes target-aware vulnerability and license policy", () => {
   const valid = [
+    "        run: node quality/generate-native-vulnerability-inventory.mjs",
+    "          scan-args: |-",
+    "            --lockfile=package-lock.json",
+    "            --lockfile=native/frontend/package-lock.json",
+    "            --lockfile=osv-scanner:native/target/osv/native-macos-arm64.osv-scanner.json",
+    "          node quality/check-native-vulnerability-results.mjs",
     "        with:",
     "          fail-on-severity: moderate",
     "          fail-on-scopes: development, runtime, unknown",
+    "          vulnerability-check: false",
     "          allow-licenses: >-",
     "            0BSD, Apache-2.0, BSD-2-Clause, BSD-3-Clause, BlueOak-1.0.0, CC-BY-4.0,",
     "            CC0-1.0, ISC, MIT, MPL-2.0, Python-2.0, Unicode-3.0, Unlicense, WTFPL, Zlib",
@@ -1208,6 +1225,17 @@ test("dependency review closes severity, scopes and accepted SPDX licenses", () 
   for (const mutation of [
     valid.replace("moderate", "high"),
     valid.replace("development, runtime, unknown", "runtime"),
+    valid.replace("vulnerability-check: false", "vulnerability-check: true"),
+    valid.replace(
+      "generate-native-vulnerability-inventory.mjs",
+      "native/Cargo.lock",
+    ),
+    valid.replace("check-native-vulnerability-results.mjs", "smoke.mjs"),
+    valid.replace(
+      "--lockfile=osv-scanner:native/target/osv/native-macos-arm64.osv-scanner.json",
+      "--lockfile=native/Cargo.lock",
+    ),
+    `${valid}\n            --recursive`,
     valid.replace("MPL-2.0, ", ""),
     valid.replace("Unicode-3.0, ", ""),
     valid.replace(", Zlib", ""),

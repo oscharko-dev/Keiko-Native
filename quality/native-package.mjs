@@ -107,6 +107,7 @@ export const nativePackageTestSupport = {
 };
 
 export function createNativePackageGate({
+  architecture = process.arch,
   build,
   captureOutputTree,
   captureRepositoryState,
@@ -162,7 +163,7 @@ export function createNativePackageGate({
   }
 
   async function packageNative(repositoryState) {
-    if (!onMacOs() || process.arch !== "arm64")
+    if (!onMacOs() || architecture !== "arm64")
       throw new Error("native:package requires Apple Silicon macOS");
     repositoryState ??= await captureRepositoryState();
     const revision = repositoryState.expectedHead;

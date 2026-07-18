@@ -12,11 +12,42 @@ const setupNode = step(
   "          package-manager-cache: false",
 );
 const activation = step(
-  "      - name: Activate exact npm 11.16.0",
+  "      - name: Verify exact npm 11.16.0",
+  "        run: node quality/check-toolchain.mjs",
+);
+const installRustMetadata = step(
+  "      - name: Install exact Rust metadata toolchain",
+  "        run: rustup toolchain install 1.92.0 --profile minimal",
+);
+const generateTargetVulnerabilityInventory = step(
+  "      - name: Derive declared macOS arm64 vulnerability inventory",
+  "        run: node quality/generate-native-vulnerability-inventory.mjs",
+);
+const downloadOsvScanner = step(
+  "      - name: Download and verify OSV Scanner 2.3.8",
   "        run: |",
-  "          corepack enable npm",
-  "          corepack install --global npm@11.16.0",
-  "          node quality/check-toolchain.mjs",
+  "          curl --proto '=https' -sSfL \"https://github.com/google/osv-scanner/releases/download/v2.3.8/osv-scanner_linux_amd64\" -o native/target/osv/osv-scanner",
+  '          echo "bc98e15319ed0d515e3f9235287ba53cdc5535d576d24fd573978ecfe9ab92dc  native/target/osv/osv-scanner" | sha256sum --check',
+  "          chmod 0700 native/target/osv/osv-scanner",
+);
+const enforceTargetVulnerabilityPolicy = step(
+  "      - name: Enforce target-aware moderate vulnerability policy",
+  "        run: |",
+  "          scan_status=0",
+  "          native/target/osv/osv-scanner --format=json --output-file=native/target/osv/native-macos-arm64-results.json --lockfile=package-lock.json --lockfile=native/frontend/package-lock.json --lockfile=osv-scanner:native/target/osv/native-macos-arm64.osv-scanner.json || scan_status=$?",
+  '          if [ "$scan_status" -ne 0 ] && [ "$scan_status" -ne 1 ]; then',
+  '            echo "OSV Scanner failed before producing governed results."',
+  "            exit 1",
+  "          fi",
+  "          node quality/check-native-vulnerability-results.mjs",
+);
+const uploadVulnerabilityResults = step(
+  "      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+  "        with:",
+  "          name: native-macos-arm64-osv-results",
+  "          path: native/target/osv/native-macos-arm64-results.json",
+  "          if-no-files-found: error",
+  "          retention-days: 30",
 );
 const run = (command) => `      - run: ${command}`;
 export const governedWorkflowJobSteps = Object.freeze({
@@ -148,11 +179,18 @@ export const governedWorkflowJobSteps = Object.freeze({
   ),
   "dependency-review": sequence(
     checkout,
+    setupNode,
+    installRustMetadata,
+    generateTargetVulnerabilityInventory,
+    downloadOsvScanner,
+    enforceTargetVulnerabilityPolicy,
+    uploadVulnerabilityResults,
     step(
       "      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0",
       "        with:",
       "          fail-on-severity: moderate",
       "          fail-on-scopes: development, runtime, unknown",
+      "          vulnerability-check: false",
       "          allow-licenses: >-",
       "            0BSD, Apache-2.0, BSD-2-Clause, BSD-3-Clause, BlueOak-1.0.0, CC-BY-4.0,",
       "            CC0-1.0, ISC, MIT, MPL-2.0, Python-2.0, Unicode-3.0, Unlicense, WTFPL,",
@@ -163,6 +201,15 @@ export const governedWorkflowJobSteps = Object.freeze({
       "          warn-on-openssf-scorecard-level: 5",
       "          show-patched-versions: true",
     ),
+  ),
+  "osv-scan": sequence(
+    checkout,
+    setupNode,
+    installRustMetadata,
+    generateTargetVulnerabilityInventory,
+    downloadOsvScanner,
+    enforceTargetVulnerabilityPolicy,
+    uploadVulnerabilityResults,
   ),
   native: sequence(
     step(
@@ -352,6 +399,13 @@ const governedJobPreambles = Object.freeze({
     "    permissions:",
     "      contents: read",
   ],
+  "osv-scan": [
+    "    name: Scan dependency lockfiles",
+    "    runs-on: ubuntu-latest",
+    "    timeout-minutes: 15",
+    "    permissions:",
+    "      contents: read",
+  ],
   "verify-pinned-shas": [
     "    name: Verify pinned action SHAs",
     "    runs-on: ubuntu-latest",
@@ -397,4 +451,5 @@ export const requiredGovernedWorkflowJobs = Object.freeze({
   ]),
   "dependency-review.yml": Object.freeze(["dependency-review"]),
   "mutation-security.yml": Object.freeze(["native-mutation-security"]),
+  "osv-scanner.yml": Object.freeze(["osv-scan"]),
 });

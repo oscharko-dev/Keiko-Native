@@ -151,9 +151,30 @@ The quality control plane uses exactly Node.js 24.18.0 and npm 11.16.0. Root `en
 `devEngines`, `packageManager`, and the sole `.npmrc` setting (`engine-strict=true`) fail closed on
 toolchain drift before installation or scripts. The direct `quality` and `native:dependencies`
 entry points also run the dependency-free exact-toolchain checker. Every workflow job that consumes
-npm first installs exact Node through the pinned setup action, activates npm 11.16.0 through the
-Corepack bundled with that Node release, and runs the same checker before any npm command. Contract
-tests reject missing, conditional, reordered, or version-ranged activation.
+npm first installs the exact Node distribution through the pinned setup action and verifies its
+bundled npm 11.16.0 before any npm command. Workflows do not replace the bundled executable with
+Corepack shims. Contract tests reject missing, conditional, reordered, or version-drifted
+verification.
+
+Cargo's committed lock is intentionally cross-target, while the declared native deliverable is
+only `aarch64-apple-darwin`. Vulnerability workflows therefore derive a transient inventory from
+the exact locked Cargo resolve graph filtered to that target, then scan it with the checksum-pinned
+OSV 2.3.8 binary together with both npm locks. A closed result validator enforces the repository's
+moderate threshold. Missing or unknown severity fails closed unless RustSec classifies every
+affected record only as `informational: unmaintained`, supplies no CVSS score or patched range, and
+matches the expected schema and source. Mixed, malformed, patched-informational, low, moderate,
+high, and critical records remain distinguishable; moderate and above block. GitHub Dependency
+Review retains its exact diff, scope, license, and OpenSSF checks; only its platform-blind
+vulnerability decision is disabled in favor of the target-aware OSV step in the same read-only job.
+No advisory exception, ignore list, warning mode, universal-Cargo-lock scan, or lowered threshold is
+permitted.
+
+Tauri 2.11.5 reaches `urlpattern` 0.3.0 through `tauri-utils` 2.9.3 on macOS arm64. That frozen stack
+currently retains five visible RustSec informational-unmaintained signals with no patched version:
+`unic-char-property` (RUSTSEC-2025-0081), `unic-char-range` (RUSTSEC-2025-0075), `unic-common`
+(RUSTSEC-2025-0080), `unic-ucd-ident` (RUSTSEC-2025-0100), and `unic-ucd-version`
+(RUSTSEC-2025-0098). They remain in the uploaded exact-head OSV results and are not advisory
+exceptions or claims of zero findings.
 
 The Linux `core-quality` job runs `quality:control`, the portable Node and repository-contract suite
 shared with root `quality`. The full root `quality` command then runs every native gate and is

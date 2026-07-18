@@ -46,6 +46,8 @@ const requiredFiles = [
   "package.json",
   "quality/github-api.mjs",
   "quality/github-reference.mjs",
+  "quality/check-native-vulnerability-results.mjs",
+  "quality/generate-native-vulnerability-inventory.mjs",
   "quality/issue-contract.mjs",
   "quality/issue-readiness-action.mjs",
   "quality/markdown-contract.mjs",
@@ -955,6 +957,23 @@ export function dependencyReviewWorkflowFailures(workflow) {
   const scopes = lines.filter(
     (line) => line.trim() === "fail-on-scopes: development, runtime, unknown",
   );
+  const delegatedVulnerabilityCheck = lines.filter(
+    (line) => line.trim() === "vulnerability-check: false",
+  );
+  const targetInventory = lines.filter(
+    (line) =>
+      line.trim() ===
+      "run: node quality/generate-native-vulnerability-inventory.mjs",
+  );
+  const targetScan = lines.filter((line) =>
+    line.includes(
+      "--lockfile=osv-scanner:native/target/osv/native-macos-arm64.osv-scanner.json",
+    ),
+  );
+  const targetPolicy = lines.filter(
+    (line) =>
+      line.trim() === "node quality/check-native-vulnerability-results.mjs",
+  );
   const marker = lines.findIndex(
     (line) => line.trim() === "allow-licenses: >-",
   );
@@ -975,6 +994,28 @@ export function dependencyReviewWorkflowFailures(workflow) {
   if (scopes.length !== 1)
     failures.push(
       "Dependency Review scopes must cover development, runtime, and unknown.",
+    );
+  if (delegatedVulnerabilityCheck.length !== 1)
+    failures.push(
+      "Dependency Review must delegate its platform-blind vulnerability check exactly once.",
+    );
+  if (
+    targetInventory.length !== 1 ||
+    targetScan.length !== 1 ||
+    targetPolicy.length !== 1
+  )
+    failures.push(
+      "Dependency Review must scan the exact declared macOS arm64 dependency inventory.",
+    );
+  if (
+    lines.some(
+      (line) =>
+        line.includes("--recursive") ||
+        line.includes("--lockfile=native/Cargo.lock"),
+    )
+  )
+    failures.push(
+      "Dependency Review vulnerability scanning must not consume the universal Cargo lock graph.",
     );
   if (
     marker < 0 ||

@@ -98,11 +98,22 @@ test("npm ci and guarded entry points fail on wrong Node or npm versions", async
         ["run", "native:dependencies"],
         ["run", "quality"],
       ]) {
-        const result = spawnSync("npm", args, {
-          cwd: root,
-          encoding: "utf8",
-          maxBuffer: 1024 * 1024,
-        });
+        const npmCli = process.env.npm_execpath;
+        const result = npmCli
+          ? spawnSync(
+              process.env.npm_node_execpath ?? process.execPath,
+              [npmCli, ...args],
+              {
+                cwd: root,
+                encoding: "utf8",
+                maxBuffer: 1024 * 1024,
+              },
+            )
+          : spawnSync("npm", args, {
+              cwd: root,
+              encoding: "utf8",
+              maxBuffer: 1024 * 1024,
+            });
         assert.notEqual(result.status, 0);
         assert.match(`${result.stdout}${result.stderr}`, /EBADDEVENGINES/u);
         assert.doesNotMatch(String(result.stdout), /should-not-run/u);
@@ -113,12 +124,8 @@ test("npm ci and guarded entry points fail on wrong Node or npm versions", async
   }
 });
 
-test("every npm workflow consumer activates and verifies the exact toolchain first", async () => {
-  const activationCommands = [
-    "corepack enable npm",
-    "corepack install --global npm@11.16.0",
-    "node quality/check-toolchain.mjs",
-  ];
+test("every npm workflow consumer verifies the setup-node toolchain first", async () => {
+  const activationCommands = ["node quality/check-toolchain.mjs"];
   for (const name of ["ci.yml", "mutation-security.yml"]) {
     const workflow = await readFile(
       join(import.meta.dirname, "../.github/workflows", name),
@@ -126,48 +133,23 @@ test("every npm workflow consumer activates and verifies the exact toolchain fir
     );
     assert.deepEqual(workflowToolchainFailures(workflow), []);
     const mutations = [
-      workflow.replace("corepack enable npm", "corepack enable pnpm"),
-      workflow.replace(
-        "corepack install --global npm@11.16.0",
-        "corepack install --global npm@11",
-      ),
       workflow.replace("node quality/check-toolchain.mjs", "node --version"),
       workflow.replace(
-        "      - name: Activate exact npm 11.16.0\n",
-        "      - name: Activate exact npm 11.16.0\n        if: false\n",
+        "      - name: Verify exact npm 11.16.0\n",
+        "      - name: Verify exact npm 11.16.0\n        if: false\n",
       ),
       workflow.replace(
+        "        run: node quality/check-toolchain.mjs",
+        "        run: npm ci --ignore-scripts\n      - run: node quality/check-toolchain.mjs",
+      ),
+      workflow.replace(
+        "        run: node quality/check-toolchain.mjs",
+        "        run: true || node quality/check-toolchain.mjs",
+      ),
+      workflow.replace(
+        "      - name: Verify exact npm 11.16.0\n",
         [
-          "          corepack enable npm",
-          "          corepack install --global npm@11.16.0",
-          "          node quality/check-toolchain.mjs",
-        ].join("\n"),
-        [
-          "          corepack enable npm",
-          "          node quality/check-toolchain.mjs",
-          "          corepack install --global npm@11.16.0",
-        ].join("\n"),
-      ),
-      workflow.replace(
-        "          corepack enable npm",
-        "          npm ci --ignore-scripts\n          corepack enable npm",
-      ),
-      workflow.replace(
-        "          corepack enable npm",
-        "          true || corepack enable npm",
-      ),
-      workflow.replace(
-        "          corepack install --global npm@11.16.0",
-        "          true || corepack install --global npm@11.16.0",
-      ),
-      workflow.replace(
-        "          node quality/check-toolchain.mjs",
-        "          true || node quality/check-toolchain.mjs",
-      ),
-      workflow.replace(
-        "      - name: Activate exact npm 11.16.0\n",
-        [
-          "      - name: Activate exact npm 11.16.0",
+          "      - name: Verify exact npm 11.16.0",
           "        continue-on-error: true",
           "",
         ].join("\n"),
@@ -175,23 +157,22 @@ test("every npm workflow consumer activates and verifies the exact toolchain fir
       ...activationCommands.flatMap((command) =>
         ["/usr/bin/true", "echo"].map((prefix) =>
           workflow.replace(
-            `          ${command}`,
-            `          ${prefix} ${command}`,
+            `        run: ${command}`,
+            `        run: ${prefix} ${command}`,
           ),
         ),
       ),
       workflow.replace(
-        "        run: |\n          corepack enable npm",
+        "        run: node quality/check-toolchain.mjs",
         [
           "        env:",
           "          OWNED: unsafe",
-          "        run: |",
-          "          corepack enable npm",
+          "        run: node quality/check-toolchain.mjs",
         ].join("\n"),
       ),
       workflow.replace(
-        "        run: |\n          corepack enable npm",
-        "        shell: bash\n        run: |\n          corepack enable npm",
+        "        run: node quality/check-toolchain.mjs",
+        "        shell: bash\n        run: node quality/check-toolchain.mjs",
       ),
       ...addInheritedWorkflowControls(workflow),
       ...addInheritedJobControls(workflow),
@@ -272,11 +253,8 @@ test("workflow activation cannot leak across uppercase or underscored jobs", () 
     "      - uses: actions/setup-node@0123456789012345678901234567890123456789",
     "        with:",
     '          node-version: "24.18.0"',
-    "      - name: Activate exact npm 11.16.0",
-    "        run: |",
-    "          corepack enable npm",
-    "          corepack install --global npm@11.16.0",
-    "          node quality/check-toolchain.mjs",
+    "      - name: Verify exact npm 11.16.0",
+    "        run: node quality/check-toolchain.mjs",
     "  Consumer_JOB:",
     "    steps:",
     "      - run: npm install",
@@ -288,11 +266,8 @@ test("workflow activation cannot leak across uppercase or underscored jobs", () 
 
 function moveFirstActivationAfterNpm(workflow) {
   const block = [
-    "      - name: Activate exact npm 11.16.0",
-    "        run: |",
-    "          corepack enable npm",
-    "          corepack install --global npm@11.16.0",
-    "          node quality/check-toolchain.mjs",
+    "      - name: Verify exact npm 11.16.0",
+    "        run: node quality/check-toolchain.mjs",
     "",
   ].join("\n");
   return workflow
