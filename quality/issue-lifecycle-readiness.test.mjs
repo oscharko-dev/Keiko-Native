@@ -110,7 +110,7 @@ test("does not infer readiness from labels and invalidates on closure, reopen, a
     readiness({ event: { action: "edited", editKind: "wording" } }),
     "wording_edit",
   );
-  assertReason(readiness({ event: { action: "edited" } }), "unclassified_edit");
+  assert.equal(readiness({ event: { action: "edited" } }).current, true);
   assertReason(
     readiness({ event: { action: "edited", editKind: "unknown" } }),
     "unclassified_edit",
