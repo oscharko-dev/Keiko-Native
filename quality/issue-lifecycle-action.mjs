@@ -26,6 +26,7 @@ import { semanticIssueFingerprint } from "./issue-contract.mjs";
 
 const lifecycleActivationEnabled = "enabled";
 const pullRequestContractSuccess = "success";
+const githubActionsAppId = "15368";
 const githubRequest = githubRequestFor("keiko-native-issue-lifecycle");
 const assignmentClaimPermissions = new Set(["admin", "maintain", "write"]);
 const devHumanMergers = new Set(["niko4417", "oscharko"]);
@@ -193,6 +194,8 @@ function pullRequestLifecycleEvent(event) {
   if (event.action === "ready_for_review") return "opened";
   if (event.action === "synchronize") return "opened";
   if (event.action === "converted_to_draft") return "opened";
+  if (event.action === "closed" && event.pull_request?.merged === true)
+    return "closed_merged";
   if (event.action === "closed" && event.pull_request?.merged !== true)
     return "closed_unmerged";
   return undefined;
@@ -310,7 +313,10 @@ function desiredStateForPullRequestEvent({
     claim: event.claim,
     event: prEvent,
     otherOpenPullRequest: event.otherOpenPullRequest,
-    pullRequest: pullRequestEvidence(event, issueNumber),
+    pullRequest:
+      prEvent === "closed_merged"
+        ? event.currentMergedPullRequest
+        : pullRequestEvidence(event, issueNumber),
     readiness,
     sourceState: currentState,
   });
@@ -335,9 +341,12 @@ function desiredStateForPullRequestEvent({
           };
     const targetRequiresContract =
       [PR_OPEN, REVIEW].includes(result.target) && !reviewDemotion;
-    const contractSucceeded = requiresRetainedPullRequestContract(event, result)
-      ? hasRetainedPullRequestContractSuccess(event, result)
-      : hasTrustedPullRequestContractSuccess(event);
+    const contractSucceeded =
+      prEvent === "closed_merged"
+        ? event.currentMergedPullRequest?.validated === true
+        : requiresRetainedPullRequestContract(event, result)
+          ? hasRetainedPullRequestContractSuccess(event, result)
+          : hasTrustedPullRequestContractSuccess(event);
     if (targetRequiresContract && !contractSucceeded) {
       return enabled
         ? { failures: ["pr_contract_success_required"], outcome: "failed" }
@@ -433,13 +442,33 @@ async function requiredPullRequestStatusesSucceeded(
     const status = await request(
       `/repos/${repository}/commits/${headSha}/status`,
     );
-    if (!Array.isArray(status?.statuses)) return false;
-    const successfulContexts = new Set(
-      status.statuses
-        .filter((entry) => entry?.state === "success")
-        .map((entry) => entry?.context),
+    if (
+      status?.sha !== headSha ||
+      status?.repository?.full_name !== repository ||
+      !Array.isArray(status?.statuses)
+    )
+      return false;
+    return requiredContexts.every((context) => {
+      const current = status.statuses.find(
+        (entry) => entry?.context === context,
+      );
+      return (
+        current?.state === "success" && statusProducedByGitHubActions(current)
+      );
+    });
+  } catch {
+    return false;
+  }
+}
+
+function statusProducedByGitHubActions(status) {
+  try {
+    const avatar = new URL(status?.avatar_url);
+    return (
+      avatar.protocol === "https:" &&
+      avatar.hostname === "avatars.githubusercontent.com" &&
+      avatar.pathname === `/in/${githubActionsAppId}`
     );
-    return requiredContexts.every((context) => successfulContexts.has(context));
   } catch {
     return false;
   }
@@ -551,6 +580,69 @@ function needsCurrentPullRequestEvidence(event) {
   );
 }
 
+function needsMergedPullRequestEvidence(event) {
+  return (
+    event?.pull_request !== undefined &&
+    event.action === "closed" &&
+    event.pull_request?.merged === true
+  );
+}
+
+async function currentMergedPullRequestEvidence(
+  event,
+  issue,
+  repository,
+  request,
+) {
+  const eventPullRequest = event.pull_request;
+  const number = eventPullRequest?.number;
+  if (!Number.isInteger(number)) return { validated: false };
+  try {
+    const current = await request(`/repos/${repository}/pulls/${number}`);
+    const currentIdentity = pullRequestIdentity(current);
+    const eventIdentity = pullRequestIdentity(eventPullRequest);
+    const currentUpdatedAt = Date.parse(current?.updated_at ?? "");
+    const issueUpdatedAt = Date.parse(issue?.updated_at ?? "");
+    const headSha = current?.head?.sha;
+    const completedIssue =
+      issue?.state === "closed" &&
+      issue?.state_reason === "completed" &&
+      (hasSoleLifecycleState(issue, REVIEW) ||
+        hasSoleLifecycleState(issue, LIFECYCLE_STATES[8]));
+    const validated =
+      current?.number === number &&
+      currentIdentity !== undefined &&
+      currentIdentity === eventIdentity &&
+      current?.base?.ref === eventPullRequest?.base?.ref &&
+      current?.head?.sha === eventPullRequest?.head?.sha &&
+      current?.head?.ref === eventPullRequest?.head?.ref &&
+      current?.body === eventPullRequest?.body &&
+      current?.state === "closed" &&
+      current?.merged === true &&
+      eventPullRequest?.state === "closed" &&
+      eventPullRequest?.merged === true &&
+      current?.updated_at === eventPullRequest?.updated_at &&
+      Number.isFinite(currentUpdatedAt) &&
+      Number.isFinite(issueUpdatedAt) &&
+      (completedIssue || currentUpdatedAt > issueUpdatedAt) &&
+      pullRequestDeliveryIdentityMatches({ issue, pullRequest: current }) &&
+      acceptedDeliveryBoundary(current) &&
+      /^[0-9a-f]{40}$/u.test(headSha ?? "") &&
+      (await retainedPullRequestStatusesSucceeded(
+        repository,
+        headSha,
+        request,
+      ));
+    return {
+      completedIssue,
+      id: validated ? currentIdentity : undefined,
+      validated,
+    };
+  } catch {
+    return { validated: false };
+  }
+}
+
 async function currentPullRequestEvidence(event, issue, repository, request) {
   const eventPullRequest = event.pull_request;
   const number = eventPullRequest?.number;
@@ -643,6 +735,16 @@ async function eventWithDerivedEvidence({
         issueNumber,
         request,
         pullRequestIdentity(event.pull_request),
+      ),
+    };
+  if (needsMergedPullRequestEvidence(event))
+    evidencedEvent = {
+      ...evidencedEvent,
+      currentMergedPullRequest: await currentMergedPullRequestEvidence(
+        event,
+        issue,
+        repository,
+        request,
       ),
     };
   return evidencedEvent;

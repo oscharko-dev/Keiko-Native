@@ -63,6 +63,9 @@ function requestMock(
       "Issue contract current": "success",
       "PR contract": "success",
     },
+    commitStatusProducers = {},
+    commitStatusEntries,
+    commitStatusOverrides = {},
     failures = {},
     issueLabels,
     issueOverrides,
@@ -88,10 +91,18 @@ function requestMock(
     if (path.includes("/comments?")) return comments;
     if (path.includes("/commits/") && path.endsWith("/status"))
       return {
-        statuses: Object.entries(commitStatuses).map(([context, state]) => ({
-          context,
-          state,
-        })),
+        repository: { full_name: "keiko/Keiko-Native" },
+        sha: path.match(/\/commits\/([0-9a-f]{40})\/status$/u)?.[1],
+        statuses:
+          commitStatusEntries ??
+          Object.entries(commitStatuses).map(([context, state]) => ({
+            avatar_url:
+              commitStatusProducers[context] ??
+              "https://avatars.githubusercontent.com/in/15368?v=4",
+            context,
+            state,
+          })),
+        ...commitStatusOverrides,
       };
     if (path.includes("/labels?"))
       return LIFECYCLE_STATES.map((name) => ({ name }));
@@ -1111,6 +1122,296 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
     remove: ["status: ready for human review"],
   });
 
+  const mergedHead = "9".repeat(40);
+  const mergedBody = [
+    "## Scope",
+    "",
+    "- Accepted issue: #27",
+    "- Accepted target branch: `dev`",
+    "- Actual source branch: `codex/27-lifecycle`",
+  ].join("\n");
+  const mergedPullRequest = {
+    base: { ref: "dev" },
+    body: mergedBody,
+    head: { ref: "codex/27-lifecycle", sha: mergedHead },
+    merged: true,
+    merged_by: { login: "Niko4417" },
+    node_id: "pr-node-merged",
+    number: 44,
+    state: "closed",
+    updated_at: "2026-07-17T12:00:01Z",
+  };
+  const mergedClose = requestMock(t, {
+    issueLabels: ["status: ready for human review"],
+    pullRequestDetails: { 44: mergedPullRequest },
+  });
+  const mergedCloseResult = await runIssueLifecycleAction({
+    event: { action: "closed", pull_request: mergedPullRequest },
+    request: mergedClose.request,
+  });
+  assert.equal(mergedCloseResult.outcome, "planned");
+  assert.equal(
+    mergedCloseResult.desiredState,
+    "status: ready for human review",
+  );
+
+  const intermediateMergedClose = requestMock(t, {
+    issueLabels: ["status: pr open"],
+    pullRequestDetails: { 44: mergedPullRequest },
+  });
+  const intermediateMergedCloseResult = await runIssueLifecycleAction({
+    event: { action: "closed", pull_request: mergedPullRequest },
+    request: intermediateMergedClose.request,
+  });
+  assert.equal(intermediateMergedCloseResult.outcome, "planned");
+  assert.equal(
+    intermediateMergedCloseResult.desiredState,
+    "status: in progress",
+  );
+
+  const closedReadinessComments = [
+    machineReadinessComment(),
+    {
+      body: readinessComment({
+        actor: "planner",
+        decision: { outcome: "reject", reasons: ["closed"] },
+        now: "2026-07-17T12:00:02.000Z",
+        validation,
+      }),
+      id: 102,
+      user: {
+        id: 41898282,
+        login: "github-actions[bot]",
+        type: "Bot",
+      },
+    },
+  ];
+  const mergedAfterCompletedClosure = requestMock(t, {
+    comments: closedReadinessComments,
+    issueLabels: ["status: done"],
+    issueOverrides: {
+      state: "closed",
+      state_reason: "completed",
+      updated_at: "2026-07-17T12:00:02Z",
+    },
+    pullRequestDetails: { 44: mergedPullRequest },
+  });
+  const mergedAfterCompletedClosureResult = await runIssueLifecycleAction({
+    event: { action: "closed", pull_request: mergedPullRequest },
+    request: mergedAfterCompletedClosure.request,
+  });
+  assert.equal(mergedAfterCompletedClosureResult.outcome, "planned");
+  assert.equal(mergedAfterCompletedClosureResult.desiredState, "status: done");
+
+  const mergedDuringCompletedClosure = requestMock(t, {
+    comments: closedReadinessComments,
+    issueLabels: ["status: ready for human review"],
+    issueOverrides: {
+      state: "closed",
+      state_reason: "completed",
+      updated_at: "2026-07-17T12:00:02Z",
+    },
+    pullRequestDetails: { 44: mergedPullRequest },
+  });
+  const mergedDuringCompletedClosureResult = await runIssueLifecycleAction({
+    event: { action: "closed", pull_request: mergedPullRequest },
+    request: mergedDuringCompletedClosure.request,
+  });
+  assert.equal(mergedDuringCompletedClosureResult.outcome, "planned");
+  assert.equal(mergedDuringCompletedClosureResult.desiredState, "status: done");
+
+  const spoofedRetainedStatus = requestMock(t, {
+    commitStatusProducers: {
+      "Issue contract current":
+        "https://avatars.githubusercontent.com/u/41898282?v=4",
+      "PR contract": "https://avatars.githubusercontent.com/u/41898282?v=4",
+    },
+    issueLabels: ["status: pr open"],
+    pullRequests: [
+      {
+        body: "## Scope\n\n- Accepted issue: #27",
+        head: { sha: "e".repeat(40) },
+        node_id: "pr-node-spoofed",
+      },
+    ],
+  });
+  const spoofedRetainedStatusResult = await runIssueLifecycleAction({
+    event: {
+      action: "closed",
+      pull_request: {
+        body: "## Scope\n\n- Accepted issue: #27",
+        head: { sha: "f".repeat(40) },
+        merged: false,
+        node_id: "pr-node-closed",
+      },
+    },
+    request: spoofedRetainedStatus.request,
+  });
+  assert.equal(spoofedRetainedStatusResult.outcome, "planned");
+  assert.equal(spoofedRetainedStatusResult.desiredState, "status: ready");
+
+  const activationBeforeMergedFailures =
+    process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
+  process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = "enabled";
+  try {
+    for (const [name, overrides] of [
+      [
+        "stale head",
+        { head: { ref: "codex/27-lifecycle", sha: "8".repeat(40) } },
+      ],
+      ["open state", { state: "open" }],
+      ["stale event", { updated_at: "2026-07-17T12:00:02Z" }],
+      [
+        "wrong source",
+        { head: { ref: "codex/28-lifecycle", sha: mergedHead } },
+      ],
+      ["wrong target", { base: { ref: "epic/27-lifecycle" } }],
+      ["unauthorized dev merger", { merged_by: { login: "merge-bot[bot]" } }],
+    ]) {
+      const rejectedMergedClose = requestMock(t, {
+        issueLabels: ["status: ready for human review"],
+        pullRequestDetails: { 44: { ...mergedPullRequest, ...overrides } },
+      });
+      const rejectedMergedCloseResult = await runIssueLifecycleAction({
+        event: { action: "closed", pull_request: mergedPullRequest },
+        request: rejectedMergedClose.request,
+      });
+      assert.equal(rejectedMergedCloseResult.outcome, "failed", name);
+      assert.deepEqual(
+        rejectedMergedCloseResult.failures,
+        ["validated_pr_required"],
+        name,
+      );
+    }
+
+    const staleIssueMergedClose = requestMock(t, {
+      issueLabels: ["status: ready for human review"],
+      issueOverrides: { updated_at: "2026-07-17T12:00:02Z" },
+      pullRequestDetails: { 44: mergedPullRequest },
+    });
+    const staleIssueMergedCloseResult = await runIssueLifecycleAction({
+      event: { action: "closed", pull_request: mergedPullRequest },
+      request: staleIssueMergedClose.request,
+    });
+    assert.equal(staleIssueMergedCloseResult.outcome, "failed");
+    assert.deepEqual(staleIssueMergedCloseResult.failures, [
+      "validated_pr_required",
+    ]);
+
+    const missingIdentityMergedPullRequest = {
+      ...mergedPullRequest,
+      node_id: undefined,
+    };
+    const missingIdentityMergedClose = requestMock(t, {
+      issueLabels: ["status: ready for human review"],
+      pullRequestDetails: { 44: missingIdentityMergedPullRequest },
+    });
+    const missingIdentityMergedCloseResult = await runIssueLifecycleAction({
+      event: {
+        action: "closed",
+        pull_request: missingIdentityMergedPullRequest,
+      },
+      request: missingIdentityMergedClose.request,
+    });
+    assert.equal(missingIdentityMergedCloseResult.outcome, "failed");
+    assert.deepEqual(missingIdentityMergedCloseResult.failures, [
+      "validated_pr_required",
+    ]);
+
+    for (const [name, commitStatusEntries] of [
+      [
+        "untrusted producer",
+        [
+          {
+            avatar_url: "https://avatars.githubusercontent.com/u/41898282?v=4",
+            context: "PR contract",
+            state: "success",
+          },
+          {
+            avatar_url: "https://avatars.githubusercontent.com/in/15368?v=4",
+            context: "Issue contract current",
+            state: "success",
+          },
+        ],
+      ],
+      [
+        "malformed producer",
+        [
+          { avatar_url: "not-a-url", context: "PR contract", state: "success" },
+          {
+            avatar_url: "https://avatars.githubusercontent.com/in/15368?v=4",
+            context: "Issue contract current",
+            state: "success",
+          },
+        ],
+      ],
+      [
+        "newest failure",
+        [
+          {
+            avatar_url: "https://avatars.githubusercontent.com/in/15368?v=4",
+            context: "PR contract",
+            state: "failure",
+          },
+          {
+            avatar_url: "https://avatars.githubusercontent.com/in/15368?v=4",
+            context: "PR contract",
+            state: "success",
+          },
+          {
+            avatar_url: "https://avatars.githubusercontent.com/in/15368?v=4",
+            context: "Issue contract current",
+            state: "success",
+          },
+        ],
+      ],
+    ]) {
+      const rejectedMergedStatus = requestMock(t, {
+        commitStatusEntries,
+        issueLabels: ["status: ready for human review"],
+        pullRequestDetails: { 44: mergedPullRequest },
+      });
+      const rejectedMergedStatusResult = await runIssueLifecycleAction({
+        event: { action: "closed", pull_request: mergedPullRequest },
+        request: rejectedMergedStatus.request,
+      });
+      assert.equal(rejectedMergedStatusResult.outcome, "failed", name);
+      assert.deepEqual(
+        rejectedMergedStatusResult.failures,
+        ["validated_pr_required"],
+        name,
+      );
+    }
+
+    for (const [name, commitStatusOverrides] of [
+      ["wrong status head", { sha: "7".repeat(40) }],
+      ["wrong status repository", { repository: { full_name: "evil/replay" } }],
+      ["missing status head", { sha: undefined }],
+    ]) {
+      const rejectedStatusBinding = requestMock(t, {
+        commitStatusOverrides,
+        issueLabels: ["status: ready for human review"],
+        pullRequestDetails: { 44: mergedPullRequest },
+      });
+      const rejectedStatusBindingResult = await runIssueLifecycleAction({
+        event: { action: "closed", pull_request: mergedPullRequest },
+        request: rejectedStatusBinding.request,
+      });
+      assert.equal(rejectedStatusBindingResult.outcome, "failed", name);
+      assert.deepEqual(
+        rejectedStatusBindingResult.failures,
+        ["validated_pr_required"],
+        name,
+      );
+    }
+  } finally {
+    if (activationBeforeMergedFailures === undefined)
+      delete process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
+    else
+      process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION =
+        activationBeforeMergedFailures;
+  }
+
   const preActivationReady = requestMock(t, { issueLabels: ["status: ready"] });
   const preActivationReadyResult = await runIssueLifecycleAction({
     event: {
@@ -1545,6 +1846,40 @@ test("covers alternate fail-closed and no-op lifecycle branches", async (t) => {
   });
   assert.equal(staleIssueContractResult.outcome, "failed");
   assert.deepEqual(staleIssueContractResult.failures, [
+    "completion_evidence_required",
+  ]);
+
+  const closedWithSpoofedContractProducer = requestMock(t, {
+    commitStatusProducers: {
+      "Issue contract current":
+        "https://avatars.githubusercontent.com/u/41898282?v=4",
+      "PR contract": "https://avatars.githubusercontent.com/u/41898282?v=4",
+    },
+    issueLabels: ["status: ready for human review"],
+    issueOverrides: { state: "closed", state_reason: "completed" },
+    pullRequestDetails: {
+      40: {
+        base: { ref: "dev" },
+        body: finalDeliveryBody,
+        head: { sha: mergedHead },
+        merged: true,
+        merged_by: { login: "Niko4417" },
+        node_id: "pr-node-40",
+        number: 40,
+      },
+    },
+    pullRequests: [finalDeliveryCandidate],
+  });
+  const spoofedContractProducerResult = await runIssueLifecycleAction({
+    event: {
+      action: "closed",
+      expectedReadinessCommentId: 101,
+      issue: { number: 27, state_reason: "completed" },
+    },
+    request: closedWithSpoofedContractProducer.request,
+  });
+  assert.equal(spoofedContractProducerResult.outcome, "failed");
+  assert.deepEqual(spoofedContractProducerResult.failures, [
     "completion_evidence_required",
   ]);
 
