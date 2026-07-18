@@ -138,6 +138,66 @@ test("every npm workflow consumer activates and verifies the exact toolchain fir
   }
 });
 
+test("workflow detection covers npm and npx executables without matching quoted data", () => {
+  for (const run of [
+    "run: npm install --ignore-scripts",
+    "run: npx package-tool",
+    "run: FOO=owned npm.cmd exec fixture",
+    "run: command npx.cmd --yes fixture",
+    "run: cd workspace && npm audit --audit-level=high",
+    [
+      "run: |",
+      "  echo preparing",
+      "  npm exec fixture",
+      "  echo complete",
+    ].join("\n"),
+    ["run: >", "  sudo env OWNED=1", "  npx.cmd fixture"].join("\n"),
+    "run: bash -c 'npm ci --ignore-scripts'",
+    'run: sh -c "npx fixture"',
+    "run: pwsh -Command 'npm.cmd install'",
+    "run: cmd /c npx.cmd fixture",
+    'run: echo "$(npm --version)"',
+    "run: echo `npx --version`",
+    'run: bash -c "$OWNED_SCRIPT"',
+  ]) {
+    assert.ok(
+      workflowToolchainFailures(workflowFixture(run)).includes(
+        "workflow-npm-activation",
+      ),
+      run,
+    );
+  }
+  for (const run of [
+    'run: echo "npm install is documentation"',
+    "run: printf '%s' 'npx exec is documentation'",
+    "run: echo safe # npm install is a comment",
+  ]) {
+    assert.deepEqual(workflowToolchainFailures(workflowFixture(run)), [], run);
+  }
+});
+
+test("workflow activation cannot leak across uppercase or underscored jobs", () => {
+  const workflow = [
+    "jobs:",
+    "  Activated_Job:",
+    "    steps:",
+    "      - uses: actions/setup-node@0123456789012345678901234567890123456789",
+    "        with:",
+    '          node-version: "24.18.0"',
+    "      - name: Activate exact npm 11.16.0",
+    "        run: |",
+    "          corepack enable npm",
+    "          corepack install --global npm@11.16.0",
+    "          node quality/check-toolchain.mjs",
+    "  Consumer_JOB:",
+    "    steps:",
+    "      - run: npm install",
+  ].join("\n");
+  assert.ok(
+    workflowToolchainFailures(workflow).includes("workflow-npm-activation"),
+  );
+});
+
 function moveFirstActivationAfterNpm(workflow) {
   const block = [
     "      - name: Activate exact npm 11.16.0",
@@ -153,4 +213,18 @@ function moveFirstActivationAfterNpm(workflow) {
       "      - run: npm ci --ignore-scripts",
       `      - run: npm ci --ignore-scripts\n${block.trimEnd()}`,
     );
+}
+
+function workflowFixture(run) {
+  return [
+    "jobs:",
+    "  fixture:",
+    "    steps:",
+    "      - uses: actions/setup-node@0123456789012345678901234567890123456789",
+    "        with:",
+    '          node-version: "24.18.0"',
+    ...run
+      .split("\n")
+      .map((line, index) => `${index === 0 ? "      - " : "        "}${line}`),
+  ].join("\n");
 }

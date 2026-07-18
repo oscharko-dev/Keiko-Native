@@ -61,12 +61,13 @@ function exactDevEngine(value, name, version) {
 
 export function workflowToolchainFailures(workflow) {
   const failures = [];
-  const jobs = workflow.split(/(?=^  [a-z0-9-]+:\s*$)/mu);
+  const jobs = workflow.split(/(?=^  [A-Za-z0-9_-]+:\s*$)/mu);
   for (const job of jobs) {
-    const npmConsumer =
-      /^\s*- (?:name:.*\n\s+)?run: npm (?:audit|ci|run|sbom)\b/mu;
-    if (!npmConsumer.test(job)) continue;
-    const firstNpm = job.search(npmConsumer);
+    const firstNpm = runCommands(job)
+      .filter(({ command }) => containsNpmExecutable(command))
+      .map(({ index }) => index)
+      .toSorted((left, right) => left - right)[0];
+    if (firstNpm === undefined) continue;
     const activationName = job.indexOf("- name: Activate exact npm 11.16.0");
     const activationEnd =
       activationName < 0 ? -1 : job.indexOf("\n      - ", activationName + 1);
@@ -92,6 +93,181 @@ export function workflowToolchainFailures(workflow) {
       failures.push("workflow-node-version");
   }
   return failures;
+}
+
+function runCommands(job) {
+  const lines = job.split("\n");
+  const offsets = [];
+  let total = 0;
+  for (const line of lines) {
+    offsets.push(total);
+    total += line.length + 1;
+  }
+  const commands = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const match = /^(\s*)(?:-\s+)?run:\s*(.*)$/u.exec(line);
+    if (!match) continue;
+    const start = offsets[index];
+    const style = match[2].trim();
+    if (/^[|>][+-]?$/u.test(style)) {
+      const body = [];
+      const indentation = match[1].length;
+      while (index + 1 < lines.length) {
+        const next = lines[index + 1];
+        const nextIndent = /^\s*/u.exec(next)[0].length;
+        if (next.trim() && nextIndent <= indentation) break;
+        index += 1;
+        body.push(next.trimStart());
+      }
+      commands.push({ command: body.join("\n"), index: start });
+    } else {
+      commands.push({ command: unwrapYamlScalar(match[2]), index: start });
+    }
+  }
+  return commands;
+}
+
+function unwrapYamlScalar(value) {
+  const trimmed = value.trim();
+  if (
+    trimmed.length >= 2 &&
+    ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'")))
+  )
+    return trimmed.slice(1, -1);
+  return trimmed;
+}
+
+function containsNpmExecutable(command, depth = 0) {
+  if (depth > 4) return true;
+  for (const nested of commandSubstitutions(command))
+    if (containsNpmExecutable(nested, depth + 1)) return true;
+  const tokens = shellTokens(command);
+  let expectsCommand = true;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token.operator) {
+      expectsCommand = true;
+      continue;
+    }
+    if (!expectsCommand) continue;
+    const normalized = token.value.toLowerCase();
+    if (assignment(normalized) || commandPrefix(normalized)) continue;
+    if (/^(?:npm|npx)(?:\.cmd)?$/u.test(normalized)) return true;
+    if (
+      /^(?:ba|z|c|k)?sh$|^(?:power)?pwsh$|^powershell(?:\.exe)?$|^cmd(?:\.exe)?$/u.test(
+        normalized,
+      )
+    ) {
+      const flagIndex = tokens.findIndex(
+        (candidate, candidateIndex) =>
+          candidateIndex > index &&
+          !candidate.operator &&
+          /^(?:-c|-lc|-command|\/c)$/iu.test(candidate.value),
+      );
+      if (flagIndex >= 0) {
+        const script = tokens[flagIndex + 1]?.value;
+        if (!script || /\$(?!\()/u.test(script)) return true;
+        if (containsNpmExecutable(script, depth + 1)) return true;
+      }
+    }
+    expectsCommand = false;
+  }
+  return false;
+}
+
+function commandSubstitutions(command) {
+  let singleQuoted = false;
+  let visible = "";
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index];
+    if (character === "'" && command[index - 1] !== "\\") {
+      singleQuoted = !singleQuoted;
+      visible += " ";
+    } else visible += singleQuoted ? " " : character;
+  }
+  return [...visible.matchAll(/\$\(([^)]*)\)|`([^`]*)`/gu)].map(
+    (match) => match[1] ?? match[2],
+  );
+}
+
+function assignment(value) {
+  return (
+    /^[a-z_][a-z0-9_]*=/iu.test(value) ||
+    /^\$env:[a-z_][a-z0-9_]*=/iu.test(value)
+  );
+}
+
+function commandPrefix(value) {
+  return new Set([
+    "!",
+    "&",
+    "call",
+    "command",
+    "do",
+    "env",
+    "exec",
+    "if",
+    "nohup",
+    "sudo",
+    "then",
+    "time",
+    "until",
+    "while",
+  ]).has(value);
+}
+
+function shellTokens(command) {
+  const tokens = [];
+  let value = "";
+  let quote;
+  const emit = () => {
+    if (value) tokens.push({ operator: false, value });
+    value = "";
+  };
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index];
+    if (quote) {
+      if (character === quote) quote = undefined;
+      else if (
+        character === "\\" &&
+        quote === '"' &&
+        index + 1 < command.length
+      )
+        value += command[++index];
+      else value += character;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === "#" && value === "") {
+      while (index < command.length && command[index] !== "\n") index += 1;
+      emit();
+      tokens.push({ operator: true, value: "\n" });
+      continue;
+    }
+    if (/\s/u.test(character)) {
+      emit();
+      if (character === "\n") tokens.push({ operator: true, value: "\n" });
+      continue;
+    }
+    if (";|&()".includes(character)) {
+      emit();
+      if (
+        (character === "|" || character === "&") &&
+        command[index + 1] === character
+      )
+        index += 1;
+      tokens.push({ operator: true, value: character });
+      continue;
+    }
+    value += character;
+  }
+  emit();
+  return tokens;
 }
 
 export function enforceExactToolchain({
