@@ -58,6 +58,7 @@ function requestMock(
     failures = {},
     issueLabels,
     issueOverrides,
+    permission = "write",
     pullRequests = [],
   } = {},
 ) {
@@ -71,6 +72,10 @@ function requestMock(
     const status = failures[path] ?? failures[options.method ?? "GET"];
     if (status !== undefined)
       throw new Error(`GitHub API failed with ${status}`);
+    if (path.includes("/collaborators/") && path.endsWith("/permission")) {
+      if (permission === "error") throw new Error("GitHub API failed with 503");
+      return { permission };
+    }
     if (path.includes("/comments?")) return comments;
     if (path.includes("/labels?"))
       return LIFECYCLE_STATES.map((name) => ({ name }));
@@ -281,6 +286,39 @@ test("plans validated assignment claim and release transitions", async (t) => {
     ok: true,
     remove: ["status: ready"],
   });
+  assert.ok(
+    claim.calls.some((call) =>
+      call.path.includes("/collaborators/maintainer/permission"),
+    ),
+  );
+
+  const unauthorizedClaim = requestMock(t, {
+    issueLabels: ["status: ready"],
+    issueOverrides: { assignees: [{ login: "runner" }] },
+    permission: "read",
+  });
+  const previousActivation = process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
+  process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = "enabled";
+  try {
+    const unauthorizedClaimResult = await runIssueLifecycleAction({
+      event: {
+        action: "assigned",
+        assignee: { login: "runner" },
+        expectedReadinessCommentId: 101,
+        issue: { number: 27 },
+        sender: { login: "outside-collaborator" },
+      },
+      request: unauthorizedClaim.request,
+    });
+    assert.equal(unauthorizedClaimResult.outcome, "failed");
+    assert.deepEqual(unauthorizedClaimResult.failures, [
+      "validated_claim_required",
+    ]);
+  } finally {
+    if (previousActivation === undefined)
+      delete process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
+    else process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = previousActivation;
+  }
 
   const release = requestMock(t, { issueLabels: ["status: in progress"] });
   const releaseResult = await runIssueLifecycleAction({
@@ -1013,11 +1051,25 @@ test("covers alternate fail-closed and no-op lifecycle branches", async (t) => {
   assert.equal(
     (
       await runIssueLifecycleAction({
-        event: { action: "edited", issue: { number: 27 } },
+        event: {
+          action: "edited",
+          editKind: "semantic",
+          issue: { number: 27 },
+        },
         request: edited.request,
       })
     ).desiredState,
     "status: new",
+  );
+  const checkboxOnlyEdited = requestMock(t, { issueLabels: ["status: ready"] });
+  assert.equal(
+    (
+      await runIssueLifecycleAction({
+        event: { action: "edited", issue: { number: 27 } },
+        request: checkboxOnlyEdited.request,
+      })
+    ).outcome,
+    "ignored",
   );
 
   const stringLabelIssue = {
