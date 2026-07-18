@@ -29,8 +29,9 @@ function generation(overrides = {}) {
     ...overrides,
   };
 }
-const encodeGeneration = (overrides = {}) =>
-  encodeLifecycleGenerationV1(generation(overrides));
+const encode = (o = {}) => encodeLifecycleGenerationV1(generation(o));
+const pinnedDigest =
+  "9adc366cb6c949f03d4a3a09d886f01e487e209029e7e719bac67706c9ed6828";
 const pinnedBytes = Buffer.from(
   "record#509:field#64:string#6:domainstring#39:keiko-native.lifecycle-input-generation" +
     "field#23:string#6:schemauint#1:1" +
@@ -44,13 +45,11 @@ const pinnedBytes = Buffer.from(
     "field#70:string#6:inputsrecord#45:field#36:string#7:updatedstring#10:café\nline",
   "utf8",
 );
-
+// prettier-ignore
+const publicationVectors = [["ordinary", Buffer.from("record#523:field#64:string#6:domainstring#39:keiko-native.lifecycle-input-generationfield#23:string#6:schemauint#1:1field#32:string#9:algorithmenum#7:sha-256field#55:string#10:repositorystring#25:oscharko-dev/Keiko-Nativefield#30:string#11:pullRequestuint#2:42field#63:string#4:headstring#40:0123456789abcdef0123456789abcdef01234567field#32:string#4:laneenum#11:publicationfield#31:string#7:submodeenum#8:ordinaryfield#33:string#15:attemptSequenceuint#1:0field#70:string#6:inputsrecord#45:field#36:string#7:updatedstring#10:café\nline", "utf8"), "f2f8ef019fcaf1f109a6217b52f2205263fe68169e9f21651a79a46fc32ada4a"], ["migration", Buffer.from("record#524:field#64:string#6:domainstring#39:keiko-native.lifecycle-input-generationfield#23:string#6:schemauint#1:1field#32:string#9:algorithmenum#7:sha-256field#55:string#10:repositorystring#25:oscharko-dev/Keiko-Nativefield#30:string#11:pullRequestuint#2:42field#63:string#4:headstring#40:0123456789abcdef0123456789abcdef01234567field#32:string#4:laneenum#11:publicationfield#32:string#7:submodeenum#9:migrationfield#33:string#15:attemptSequenceuint#1:0field#70:string#6:inputsrecord#45:field#36:string#7:updatedstring#10:café\nline", "utf8"), "7392fbe74196864ecdb719f0b4614cd87a06e0d7cc79d2b4b88eefde2ece8ad9"]];
 test("pins the version-one generation bytes and lowercase SHA-256", () => {
   assert.deepEqual(encodeLifecycleGenerationV1(generation()), pinnedBytes);
-  assert.equal(
-    digestLifecycleGenerationV1(generation()),
-    "9adc366cb6c949f03d4a3a09d886f01e487e209029e7e719bac67706c9ed6828",
-  );
+  assert.equal(digestLifecycleGenerationV1(generation()), pinnedDigest);
   assert.deepEqual(decodeLifecycleGenerationV1(pinnedBytes), {
     ...generation(),
     inputs: {
@@ -58,6 +57,11 @@ test("pins the version-one generation bytes and lowercase SHA-256", () => {
       fields: [{ name: "updated", value: string("café\nline") }],
     },
   });
+  for (const [submode, bytes, digest] of publicationVectors) {
+    const input = generation({ lane: "publication", submode });
+    assert.deepEqual(encodeLifecycleGenerationV1(input), bytes);
+    assert.equal(digestLifecycleGenerationV1(input), digest);
+  }
 });
 test("byte counts prevent structural field collisions", () => {
   const first = {
@@ -221,8 +225,7 @@ test("rejects unknown domain, schema, algorithm, invalid scalars, and envelope o
   );
 });
 test("changes to every binding and recovery attempt separate generations", () => {
-  const base = generation();
-  const digest = digestLifecycleGenerationV1(base);
+  const digest = digestLifecycleGenerationV1(generation());
   for (const changed of [
     generation({ lane: "publication", submode: "ordinary" }),
     generation({ lane: "publication", submode: "migration" }),
@@ -342,15 +345,13 @@ test("rejects malformed byte containers and generation scalar types", () => {
     { lane: ["normal"] },
     { lane: "publication", submode: ["ordinary"] },
   ]) {
-    assert.throws(() => encodeGeneration(overrides), /enum|lane|submode/iu);
+    assert.throws(() => encode(overrides), /enum|lane|submode/iu);
   }
-  assert.throws(() => encodeGeneration({ lane: "constructor" }), {
+  assert.throws(() => encode({ lane: "constructor" }), {
     message: "unknown lane or invalid publication submode",
   });
-  assert.doesNotThrow(encodeGeneration);
-  assert.doesNotThrow(() =>
-    encodeGeneration({ lane: "publication", submode: "migration" }),
-  );
+  const migration = { lane: "publication", submode: "migration" };
+  assert.doesNotThrow(() => encode(migration));
   assert.throws(
     () => encodeLifecycleGenerationV1(generation({ inputs: [] })),
     /object/iu,
