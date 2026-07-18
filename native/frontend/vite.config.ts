@@ -6,6 +6,7 @@ if (!/^[0-9a-f]{40}$/u.test(expectedRevision ?? "")) {
 }
 
 export default defineConfig({
+  cacheDir: "dist/.vite-cache",
   build: {
     emptyOutDir: true,
     outDir: "dist",

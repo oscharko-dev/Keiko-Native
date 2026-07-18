@@ -41,8 +41,11 @@ export async function runNativeGateCli(
   writeError = console.error,
 ) {
   try {
-    await execute(mode);
-    return 0;
+    const exitCode = await execute(mode);
+    if (exitCode === undefined) return 0;
+    if (!Number.isInteger(exitCode) || exitCode < 0 || exitCode > 255)
+      throw new Error("Native gate returned an invalid exit code");
+    return exitCode;
   } catch (error) {
     writeError(sanitizeDiagnostic(error?.message ?? String(error)));
     return 1;

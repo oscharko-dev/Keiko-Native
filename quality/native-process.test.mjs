@@ -69,4 +69,13 @@ test("top-level diagnostics remove PII while retaining actionable status", async
     0,
   );
   assert.equal(diagnostics.length, 1);
+  assert.equal(await runNativeGateCli(async () => 7, "package"), 7);
+  assert.equal(
+    await runNativeGateCli(
+      async () => "0",
+      "package",
+      () => {},
+    ),
+    1,
+  );
 });

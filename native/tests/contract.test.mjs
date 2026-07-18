@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -46,4 +46,10 @@ test("productive roots named by ADR-0004 exist", () => {
   ]) {
     assert.equal(existsSync(join(root, rootPath)), true, rootPath);
   }
+});
+
+test("frontend cache stays inside the governed writable output root", () => {
+  const config = readFileSync(join(root, "frontend/vite.config.ts"), "utf8");
+  assert.match(config, /cacheDir: "dist\/\.vite-cache"/u);
+  assert.doesNotMatch(config, /cacheDir: "node_modules/u);
 });
