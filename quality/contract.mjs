@@ -1,6 +1,7 @@
 import { access, readFile, readdir } from "node:fs/promises";
 import { extname, join, relative, sep } from "node:path";
 
+import { canonicalCoverageCommand } from "./coverage-reporter.mjs";
 import { workflowToolchainFailures } from "./toolchain.mjs";
 import { nativeMatrixCommandFailures } from "./workflow-structure.mjs";
 import { requiredGovernedWorkflowJobs } from "./workflow-job-contracts.mjs";
@@ -186,6 +187,12 @@ const nativeCiCommands = [
 ];
 const qualityControlScript =
   "npm run native:dependencies && npm run check:contract && npm run lint && npm run format:check && npm run coverage && npm run build";
+
+export function coverageCommandFailures(command) {
+  return command === canonicalCoverageCommand
+    ? []
+    : ["Coverage command must retain exact bounded concurrency and reporter."];
+}
 
 const adr0004SourceRoots = [
   "native/crates/keiko-application/src/",
@@ -862,6 +869,7 @@ async function productiveCommandFailures(root, ci, manifest) {
     failures.push("Portable quality control composition must remain exact.");
   if (!localQuality.includes("npm run quality:control"))
     failures.push("Local quality must execute portable quality control.");
+  failures.push(...coverageCommandFailures(packageJson.scripts?.coverage));
   failures.push(
     ...manifest.nativeTargets.flatMap((target) =>
       Object.values(

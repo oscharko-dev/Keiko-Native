@@ -162,6 +162,12 @@ emitting or publishing package evidence. Both declared macOS runners execute the
 command set, including packaging, with stable Rust, rustfmt, clippy, and the pinned coverage-only
 nightly installed by the native matrix.
 
+Root coverage runs at exactly two concurrent test files. This retains bounded parallelism while
+preventing native filesystem helper compilers and race fixtures from oversubscribing a runner. The
+custom reporter emits one bounded failure line containing only sanitized test identity, failure
+type, error code, and the first message line; paths, URIs, credential-like values, long token-like
+values, control sequences, stacks, causes, and raw error objects are excluded.
+
 Productive native quality begins with the exact standalone frontend `npm ci` command owned by
 `native:dependencies`; install scripts and npm workspace inference are disabled. Each native gate
 captures the exact Git tree into a private mode-0700 snapshot and compiles the repository-owned

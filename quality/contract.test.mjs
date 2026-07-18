@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { canonicalCoverageCommand } from "./coverage-reporter.mjs";
 import {
   aggregateCiBindingFailures,
+  coverageCommandFailures,
   dependencyReviewWorkflowFailures,
   isProductiveSource,
   isSafeRepositoryPath,
@@ -925,6 +927,7 @@ test("fails closed for missing declared productive roots", async () => {
       JSON.stringify({
         scripts: Object.fromEntries([
           ...commandNames.map((command) => [command, "node --version"]),
+          ["coverage", canonicalCoverageCommand],
           ["quality:control", qualityControlScript],
           [
             "quality",
@@ -965,6 +968,7 @@ test("accepts declared productive source roots and targets", async () => {
       JSON.stringify({
         scripts: Object.fromEntries([
           ...commandNames.map((command) => [command, "node --version"]),
+          ["coverage", canonicalCoverageCommand],
           ["quality:control", qualityControlScript],
           [
             "quality",
@@ -1210,5 +1214,25 @@ test("dependency review closes severity, scopes and accepted SPDX licenses", () 
     valid.replace("Zlib", "Zlib-plus"),
   ]) {
     assert.ok(dependencyReviewWorkflowFailures(mutation).length > 0);
+  }
+});
+
+test("coverage command freezes deterministic bounded concurrency", async () => {
+  const packageContract = JSON.parse(
+    await readFile(join(import.meta.dirname, "../package.json"), "utf8"),
+  );
+  const command = packageContract.scripts.coverage;
+  assert.deepEqual(coverageCommandFailures(command), []);
+  for (const mutation of [
+    command.replace(" --test-concurrency=2", ""),
+    command.replace("--test-concurrency=2", "--test-concurrency=1"),
+    command.replace("--test-concurrency=2", "--test-concurrency=4"),
+    `${command} --test-concurrency=2`,
+    command.replace(
+      "--test-reporter=./quality/coverage-reporter.mjs",
+      "--test-reporter=spec",
+    ),
+  ]) {
+    assert.ok(coverageCommandFailures(mutation).length > 0);
   }
 });
