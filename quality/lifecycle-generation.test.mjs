@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-
 import {
   LIFECYCLE_GENERATION_DOMAIN,
   compareLifecycleGenerationDigestV1,
@@ -10,10 +9,8 @@ import {
   encodeCanonicalValueV1,
   encodeLifecycleGenerationV1,
 } from "./lifecycle-generation.mjs";
-
 const string = (value) => ({ type: "string", value });
 const enumeration = (value) => ({ type: "enum", value });
-
 function generation(overrides = {}) {
   return {
     domain: LIFECYCLE_GENERATION_DOMAIN,
@@ -32,7 +29,8 @@ function generation(overrides = {}) {
     ...overrides,
   };
 }
-
+const encodeGeneration = (overrides = {}) =>
+  encodeLifecycleGenerationV1(generation(overrides));
 const pinnedBytes = Buffer.from(
   "record#509:field#64:string#6:domainstring#39:keiko-native.lifecycle-input-generation" +
     "field#23:string#6:schemauint#1:1" +
@@ -179,7 +177,6 @@ test("rejects non-canonical and malformed encoded bytes", () => {
   reject(Buffer.from("null#1:x"), /null/iu);
   reject(Buffer.from("field#0:"), /field/iu);
 });
-
 test("rejects unknown domain, schema, algorithm, invalid scalars, and envelope order", () => {
   assert.throws(
     () => encodeLifecycleGenerationV1(generation({ domain: "changed" })),
@@ -223,13 +220,12 @@ test("rejects unknown domain, schema, algorithm, invalid scalars, and envelope o
     /field order/iu,
   );
 });
-
 test("changes to every binding and recovery attempt separate generations", () => {
   const base = generation();
   const digest = digestLifecycleGenerationV1(base);
   for (const changed of [
-    generation({ lane: "publication" }),
-    generation({ submode: "ordinary" }),
+    generation({ lane: "publication", submode: "ordinary" }),
+    generation({ lane: "publication", submode: "migration" }),
     generation({ inputs: string("changed") }),
     generation({ attemptSequence: 1 }),
   ]) {
@@ -237,7 +233,6 @@ test("changes to every binding and recovery attempt separate generations", () =>
     assert.equal(compareLifecycleGenerationDigestV1(changed, digest), false);
   }
 });
-
 test("comparator recomputes and constant-time compares a decoded 32-byte digest", () => {
   const input = generation();
   const digest = digestLifecycleGenerationV1(input);
@@ -257,7 +252,6 @@ test("comparator recomputes and constant-time compares a decoded 32-byte digest"
   );
   assert.equal(compareLifecycleGenerationDigestV1(input, null), false);
 });
-
 test("round-trips every version-one type and rejects noncanonical collection order", () => {
   const value = {
     type: "record",
@@ -292,7 +286,6 @@ test("round-trips every version-one type and rejects noncanonical collection ord
     /map/iu,
   );
 });
-
 test("fails closed across malformed node objects and scalar boundaries", () => {
   const reject = (value, pattern) =>
     assert.throws(() => encodeCanonicalValueV1(value), pattern);
@@ -308,7 +301,6 @@ test("fails closed across malformed node objects and scalar boundaries", () => {
   reject({ type: "map", entries: "no" }, /array/iu);
   reject({ type: "map", entries: [{ key: string("x") }] }, /missing/iu);
 });
-
 test("fails closed across malformed headers and structural field placement", () => {
   const reject = (text, pattern) =>
     assert.throws(
@@ -332,7 +324,6 @@ test("fails closed across malformed headers and structural field placement", () 
   reject("map#40:string#1:astring#1:xstring#1:astring#1:y", /duplicate/iu);
   reject("map#40:string#1:bstring#1:xstring#1:astring#1:y", /order/iu);
 });
-
 test("rejects malformed byte containers and generation scalar types", () => {
   assert.throws(() => decodeCanonicalValueV1("string#1:a"), /bytes/iu);
   assert.deepEqual(
@@ -343,20 +334,28 @@ test("rejects malformed byte containers and generation scalar types", () => {
     () => encodeLifecycleGenerationV1(generation({ repository: null })),
     /string/iu,
   );
-  assert.throws(
-    () => encodeLifecycleGenerationV1(generation({ lane: "Bad" })),
-    /enum/iu,
-  );
-  assert.throws(
-    () => encodeLifecycleGenerationV1(generation({ submode: "Bad" })),
-    /enum/iu,
+  for (const overrides of [
+    { lane: "unknown" },
+    { lane: "normal", submode: "ordinary" },
+    { lane: "publication", submode: null },
+    { lane: "publication", submode: "unknown" },
+    { lane: ["normal"] },
+    { lane: "publication", submode: ["ordinary"] },
+  ]) {
+    assert.throws(() => encodeGeneration(overrides), /enum|lane|submode/iu);
+  }
+  assert.throws(() => encodeGeneration({ lane: "constructor" }), {
+    message: "unknown lane or invalid publication submode",
+  });
+  assert.doesNotThrow(encodeGeneration);
+  assert.doesNotThrow(() =>
+    encodeGeneration({ lane: "publication", submode: "migration" }),
   );
   assert.throws(
     () => encodeLifecycleGenerationV1(generation({ inputs: [] })),
     /object/iu,
   );
 });
-
 test("decoder independently rejects unknown generation metadata and field types", () => {
   const node = decodeCanonicalValueV1(pinnedBytes);
   const changed = (name, value) => ({

@@ -9,11 +9,13 @@ const TAGS = new Set("record field string enum uint bool null list set map".spli
 const GENERATION_FIELDS = Object.freeze(
   "domain schema algorithm repository pullRequest head lane submode attemptSequence inputs".split(" "),
 );
+const SUBMODES = new Map();
+SUBMODES.set("normal", [null]);
+SUBMODES.set("publication", ["ordinary", "migration"]);
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
 function object(value, name) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
     throw new TypeError(`${name} must be an object`);
-  }
   return value;
 }
 function exactKeys(value, expected, name) {
@@ -27,15 +29,13 @@ function exactKeys(value, expected, name) {
     throw new TypeError(`${name} has unknown fields: ${unknown.join(", ")}`);
 }
 function normalizedString(value) {
-  if (typeof value !== "string" || !value.isWellFormed()) {
+  if (typeof value !== "string" || !value.isWellFormed())
     throw new TypeError("string must contain valid Unicode scalar values");
-  }
   return value.replace(/\r\n?/gu, "\n").normalize("NFC");
 }
 function enumValue(value) {
-  if (typeof value !== "string" || !/^[a-z][a-z0-9-]*$/u.test(value)) {
+  if (typeof value !== "string" || !/^[a-z][a-z0-9-]*$/u.test(value))
     throw new TypeError("enum must be canonical lowercase ASCII");
-  }
   return value;
 }
 function uintValue(value) {
@@ -305,19 +305,19 @@ function validateGeneration(value) {
     throw new TypeError("unknown generation domain");
   if (value.schema !== LIFECYCLE_GENERATION_SCHEMA)
     throw new TypeError("unknown generation schema");
-  if (value.algorithm !== LIFECYCLE_GENERATION_ALGORITHM) {
+  if (value.algorithm !== LIFECYCLE_GENERATION_ALGORITHM)
     throw new TypeError("unknown generation algorithm");
-  }
   normalizedString(value.repository);
   uintValue(value.pullRequest);
   if (
     typeof value.head !== "string" ||
     !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(value.head)
-  ) {
+  )
     throw new TypeError("head must be a lowercase hexadecimal commit identity");
-  }
   enumValue(value.lane);
   if (value.submode !== null) enumValue(value.submode);
+  if (!SUBMODES.get(value.lane)?.includes(value.submode))
+    throw new TypeError("unknown lane or invalid publication submode");
   uintValue(value.attemptSequence);
   object(value.inputs, "generation inputs");
 }
