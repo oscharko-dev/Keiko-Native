@@ -199,3 +199,79 @@ export const governedWorkflowJobSteps = Object.freeze({
     run("npm run check:contract"),
   ),
 });
+
+const governedJobPreambles = Object.freeze({
+  "build-scan-sbom-smoke": [
+    "    name: Build, scan, SBOM, smoke",
+    "    runs-on: ubuntu-latest",
+    "    timeout-minutes: 15",
+    "    permissions:",
+    "      attestations: write",
+    "      contents: read",
+    "      id-token: write",
+  ],
+  "core-quality": [
+    "    name: Core quality",
+    "    runs-on: ubuntu-latest",
+    "    timeout-minutes: 15",
+    "    permissions:",
+    "      contents: read",
+  ],
+  "coverage-sonar": [
+    "    name: Coverage and SonarCloud",
+    "    runs-on: ubuntu-latest",
+    "    timeout-minutes: 20",
+    "    permissions:",
+    "      contents: read",
+  ],
+  "cross-platform-smoke": [
+    "    name: Cross-platform smoke (${{ matrix.os }})",
+    "    strategy:",
+    "      fail-fast: false",
+    "      matrix:",
+    "        os: [ubuntu-latest, macos-latest, windows-latest]",
+    "    runs-on: ${{ matrix.os }}",
+    "    timeout-minutes: 15",
+    "    permissions:",
+    "      contents: read",
+  ],
+  "native-matrix": [
+    "    name: native (${{ matrix.runner }})",
+    "    strategy:",
+    "      fail-fast: false",
+    "      matrix:",
+    "        runner: [macos-14, macos-26]",
+    "    runs-on: ${{ matrix.runner }}",
+    "    timeout-minutes: 30",
+    "    permissions:",
+    "      contents: read",
+  ],
+  "native-mutation-security": [
+    "    name: Native mutation security",
+    "    runs-on: macos-14",
+    "    timeout-minutes: 45",
+    "    permissions:",
+    "      contents: read",
+  ],
+  "verify-pinned-shas": [
+    "    name: Verify pinned action SHAs",
+    "    runs-on: ubuntu-latest",
+    "    timeout-minutes: 5",
+    "    permissions:",
+    "      contents: read",
+  ],
+});
+
+export const governedWorkflowJobs = Object.freeze(
+  Object.fromEntries(
+    Object.entries(governedJobPreambles).map(([id, preamble]) => [
+      id,
+      [
+        `  ${id}:`,
+        ...preamble,
+        "    steps:",
+        ...governedWorkflowJobSteps[id],
+      ].join("\n"),
+    ]),
+  ),
+);

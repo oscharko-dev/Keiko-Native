@@ -163,6 +163,27 @@ test("clean repository rejects noncanonical npm steps and inherited keys", async
         "      - run: npm ci --ignore-scripts",
         "      - run: true\n      - run: npm ci --ignore-scripts",
       ),
+    (workflow) =>
+      workflow.replace(
+        "  core-quality:\n",
+        "  core-quality:\n    container: alpine:3.23\n",
+      ),
+    (workflow) =>
+      workflow.replace(
+        "  core-quality:\n",
+        [
+          "  core-quality:",
+          "    services:",
+          "      helper:",
+          "        image: alpine:3.23",
+          "",
+        ].join("\n"),
+      ),
+    (workflow) =>
+      workflow.replace(
+        "  core-quality:\n",
+        "  core-quality:\n    x-observation: true\n",
+      ),
   ];
   await rejectCleanArchiveMutations(mutations, /workflow-/u);
 });

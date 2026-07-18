@@ -1,4 +1,4 @@
-import { governedWorkflowJobSteps } from "./workflow-job-contracts.mjs";
+import { governedWorkflowJobs } from "./workflow-job-contracts.mjs";
 
 const jobBoundary = /(?=^  [A-Za-z0-9_-]+:\s*$)/mu;
 const stepBoundary = /(?=^      - )/mu;
@@ -81,14 +81,10 @@ export function workflowStepShapeFailures(workflow) {
 
 export function governedWorkflowJobFailures(workflow) {
   const failures = [];
-  for (const { id, steps } of workflowJobs(workflow)) {
-    const expected = governedWorkflowJobSteps[id];
+  for (const { id, source } of workflowJobs(workflow)) {
+    const expected = governedWorkflowJobs[id];
     if (!expected) continue;
-    const actual = steps.map((step) => step.trimEnd());
-    if (
-      actual.length !== expected.length ||
-      actual.some((step, index) => step !== expected[index])
-    )
+    if (source.trimEnd() !== expected)
       failures.push(`workflow-job-contract-${id}`);
   }
   return failures;
