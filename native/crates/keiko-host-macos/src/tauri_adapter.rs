@@ -49,6 +49,14 @@ pub fn begin_document(lifecycle: &Mutex<HostLifecycle>, nonce: Option<String>) -
         .is_ok_and(|mut lifecycle| activate_renderer_document(&mut lifecycle, nonce))
 }
 
+pub fn authority_install_script(lifecycle: &Mutex<HostLifecycle>) -> Option<String> {
+    lifecycle
+        .lock()
+        .ok()
+        .and_then(|lifecycle| lifecycle.current_document_authority())
+        .and_then(|(generation, nonce)| document_authority_script(generation, &nonce))
+}
+
 pub fn install_result(lifecycle: &Mutex<HostLifecycle>, succeeded: bool) {
     if succeeded {
         return;
@@ -130,12 +138,7 @@ pub fn handle_page_load<R: Runtime>(webview: &Webview<R>, payload: &PageLoadPayl
         }
         PageLoadDecision::InstallAuthority => {
             let lifecycle = webview.state::<Mutex<HostLifecycle>>();
-            let authority = lifecycle
-                .lock()
-                .ok()
-                .and_then(|lifecycle| lifecycle.current_document_authority());
-            let installed = authority
-                .and_then(|(generation, nonce)| document_authority_script(generation, &nonce))
+            let installed = authority_install_script(lifecycle.inner())
                 .is_some_and(|script| webview.eval(&script).is_ok());
             install_result(lifecycle.inner(), installed);
             if !installed {
@@ -246,5 +249,49 @@ mod tests {
                 keiko_ui_port::ReasonCode::ShuttingDown
             ))
         );
+    }
+
+    #[test]
+    fn failed_document_start_clears_finished_install_and_old_work() {
+        let lifecycle = Mutex::new(HostLifecycle::default());
+        for (index, replacement) in [None, Some("malformed".to_owned())].into_iter().enumerate() {
+            assert!(begin_document(&lifecycle, Some(nonce('a'))));
+            let accepted = {
+                let mut current = lifecycle.lock().expect("lifecycle");
+                let (generation, document_nonce) =
+                    current.current_document_authority().expect("old authority");
+                let sender = current.sender_for_document(
+                    "main",
+                    "tauri://localhost",
+                    generation,
+                    &document_nonce,
+                );
+                current
+                    .begin_application_request(
+                        &sender,
+                        format!(
+                            r#"{{"schemaVersion":1,"requestId":"request-0000000{}","sequence":1,"timeoutMs":1000,"operation":{{"kind":"application-health"}}}}"#,
+                            index + 1
+                        )
+                        .as_bytes(),
+                    )
+                    .expect("accepted old work")
+            };
+
+            assert!(!begin_document(&lifecycle, replacement));
+            assert!(authority_install_script(&lifecycle).is_none());
+            assert!(
+                lifecycle
+                    .lock()
+                    .expect("lifecycle")
+                    .complete_application_request(accepted)
+                    .contains("cancelled")
+            );
+        }
+
+        assert!(begin_document(&lifecycle, Some(nonce('c'))));
+        let script = authority_install_script(&lifecycle).expect("fresh install script");
+        assert!(script.contains("generation:3"));
+        assert!(script.contains(&nonce('c')));
     }
 }

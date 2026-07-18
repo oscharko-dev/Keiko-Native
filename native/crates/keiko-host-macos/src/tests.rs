@@ -297,6 +297,32 @@ fn document_nonce_is_unpredictable_outer_authority_and_fails_closed() {
 }
 
 #[test]
+fn accepted_document_start_always_retires_previous_authority_and_work() {
+    for replacement in [None, Some("malformed".to_owned())] {
+        let (mut lifecycle, sender) = started();
+        let old_generation = sender.generation;
+        let accepted = lifecycle
+            .begin_application_request(&sender, &request(1, "request-00000001"))
+            .expect("accepted old work");
+
+        assert!(!activate_renderer_document(&mut lifecycle, replacement));
+        assert!(lifecycle.current_document_authority().is_none());
+        assert!(
+            lifecycle
+                .complete_application_request(accepted)
+                .contains("cancelled")
+        );
+
+        assert!(activate_renderer_document(&mut lifecycle, Some(nonce('b'))));
+        let (new_generation, new_nonce) = lifecycle
+            .current_document_authority()
+            .expect("fresh authority");
+        assert!(new_generation > old_generation);
+        assert_eq!(new_nonce, nonce('b'));
+    }
+}
+
+#[test]
 fn bundled_origins_are_closed() {
     assert!(is_bundled_origin("tauri://localhost"));
     assert!(is_bundled_origin("http://tauri.localhost"));

@@ -270,6 +270,7 @@ pub fn activate_renderer_document(
     lifecycle: &mut HostLifecycle,
     document_nonce: Option<String>,
 ) -> bool {
+    lifecycle.renderer_lost();
     document_nonce
         .and_then(|nonce| lifecycle.begin_renderer_session(nonce))
         .is_some()
