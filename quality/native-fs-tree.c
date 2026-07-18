@@ -29,6 +29,14 @@ static int swap_entries(int parent, const char *left, const char *right) {
 #endif
 }
 
+static void rollback_publication(int parent, const char *leaf,
+                                 const char *staging, int replaced) {
+  remove_entry(parent, leaf);
+  if (replaced && renameat(parent, staging, parent, leaf))
+    fail("publish-rollback");
+  (void)fsync(parent);
+}
+
 static void copy_regular(int source_parent, const char *name, int dest_parent) {
   int source =
       openat(source_parent, name, O_RDONLY | O_NONBLOCK | O_NOFOLLOW);
@@ -117,9 +125,10 @@ void copy_directory(int source, int destination, const char *exclude,
   if (fstat(source, &directory_after) ||
       !same_stat(&directory_before, &directory_after))
     fail("directory-changed");
+  if (fsync(destination)) fail("copy-directory-sync");
 }
 
-static void remove_entry(int parent, const char *name) {
+void remove_entry(int parent, const char *name) {
   struct stat entry;
   if (fstatat(parent, name, &entry, AT_SYMLINK_NOFOLLOW)) {
     if (errno == ENOENT) return;
@@ -143,7 +152,8 @@ static void remove_entry(int parent, const char *name) {
 
 void print_tree(int root, const char *prefix, const char *exclude, int depth) {
   struct stat directory_before, directory_after;
-  if (fstat(root, &directory_before)) fail("list-directory-stat");
+  if (fsync(root) || fstat(root, &directory_before))
+    fail("list-directory-stat");
   DIR *directory = fdopendir(dup(root));
   if (!directory) fail("list-open");
   struct dirent *entry;
@@ -172,24 +182,14 @@ void print_tree(int root, const char *prefix, const char *exclude, int depth) {
     fail("list-directory-changed");
 }
 
-void publish_tree(int source, int destination_root, const char *path) {
-  chain_t chain = {0};
-  char leaf[NAME_MAX + 1];
-  int parent = open_parent(destination_root, path, 1, &chain, leaf);
-  refresh_chain(&chain);
-  char staging[NAME_MAX + 1];
-  if (snprintf(staging, sizeof(staging), ".keiko-stage-%ld", (long)getpid()) >=
-      (int)sizeof(staging)) fail("stage-name");
-  if (mkdirat(parent, staging, 0700)) fail("stage-create");
-  int stage = openat(parent, staging, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
-  if (stage < 0) fail("stage-open");
-  copy_directory(source, stage, NULL, 0);
+void publish_staged(int parent, chain_t *chain, const char *leaf,
+                    const char *staging, int stage) {
   if (fsync(stage)) fail("stage-sync");
   struct stat stage_before, stage_named;
   if (fstat(stage, &stage_before)) fail("stage-stat");
-  refresh_chain_leaf(&chain);
+  refresh_chain_leaf(chain);
   test_barrier();
-  verify_chain(&chain, 1);
+  verify_chain(chain, 1);
   if (fstat(stage, &stage_named) || !same_stat(&stage_before, &stage_named) ||
       fstatat(parent, staging, &stage_named, AT_SYMLINK_NOFOLLOW) ||
       !same_stat(&stage_before, &stage_named))
@@ -210,14 +210,49 @@ void publish_tree(int source, int destination_root, const char *path) {
     remove_entry(parent, staging);
     fail("publish-rename");
   }
-  struct stat published, stage_after;
+  struct stat published, stage_after, parent_before, parent_after;
+  if (fstat(parent, &parent_before)) fail("publish-parent-stat");
+  test_barrier_at("published-leaf");
+  if (fstat(parent, &parent_after) ||
+      !same_stat(&parent_before, &parent_after) || fstat(stage, &stage_after) ||
+      fstatat(parent, leaf, &published, AT_SYMLINK_NOFOLLOW) ||
+      !same_stat(&stage_after, &published)) {
+    rollback_publication(parent, leaf, staging, replaced);
+    close(stage);
+    fail("publish-rebound");
+  }
+  if (fsync(parent)) {
+    rollback_publication(parent, leaf, staging, replaced);
+    close(stage);
+    fail("publish-sync");
+  }
   if (fstat(stage, &stage_after) ||
       fstatat(parent, leaf, &published, AT_SYMLINK_NOFOLLOW) ||
-      !same_stat(&stage_after, &published))
+      !same_stat(&stage_after, &published)) {
+    rollback_publication(parent, leaf, staging, replaced);
+    close(stage);
     fail("publish-rebound");
-  if (replaced) remove_entry(parent, staging);
-  if (fsync(parent)) fail("publish-sync");
+  }
+  if (replaced) {
+    remove_entry(parent, staging);
+    if (fsync(parent)) fail("publish-cleanup-sync");
+  }
   close(stage);
-  refresh_chain_leaf(&chain);
-  close_chain(&chain, 1);
+  refresh_chain_leaf(chain);
+  close_chain(chain, 1);
+}
+
+void publish_tree(int source, int destination_root, const char *path) {
+  chain_t chain = {0};
+  char leaf[NAME_MAX + 1];
+  int parent = open_parent(destination_root, path, 1, &chain, leaf);
+  refresh_chain(&chain);
+  char staging[NAME_MAX + 1];
+  if (snprintf(staging, sizeof(staging), ".keiko-stage-%ld", (long)getpid()) >=
+      (int)sizeof(staging)) fail("stage-name");
+  if (mkdirat(parent, staging, 0700)) fail("stage-create");
+  int stage = openat(parent, staging, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+  if (stage < 0) fail("stage-open");
+  copy_directory(source, stage, NULL, 0);
+  publish_staged(parent, &chain, leaf, staging, stage);
 }

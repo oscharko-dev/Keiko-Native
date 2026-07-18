@@ -18,6 +18,7 @@ export const NATIVE_FS_SOURCES = [
   "quality/native-fs-main.c",
   "quality/native-fs-helper.c",
   "quality/native-fs-tree.c",
+  "quality/native-fs-bound.c",
   "quality/native-fs-helper.h",
   "quality/native-fs-internal.h",
 ];
@@ -137,7 +138,7 @@ export function createNativeFs(helperPath, expected) {
     operation,
     root,
     relativePath,
-    { encoding, input, rest = [] } = {},
+    { encoding, fds = [], input, rest = [] } = {},
   ) {
     assertPrivateExecutableRoot(dirname(helperPath));
     const executable = openSync(
@@ -159,7 +160,7 @@ export function createNativeFs(helperPath, expected) {
           encoding,
           input,
           maxBuffer: 64 * 1024 * 1024,
-          stdio: "pipe",
+          stdio: fds.length > 0 ? ["ignore", "pipe", "pipe", ...fds] : "pipe",
         },
       );
       if (result.status !== 0 || result.error) {
@@ -221,6 +222,28 @@ export function createNativeFs(helperPath, expected) {
     publish(sourceRoot, sourcePath, destinationRoot, destinationPath) {
       invoke("publish", sourceRoot, sourcePath, {
         rest: [assertBoundRoot(destinationRoot), destinationPath],
+      });
+    },
+    publishBound(destinationRoot, destinationPath, entries) {
+      const rest = [String(entries.length)];
+      for (const entry of entries) {
+        rest.push(
+          entry.type,
+          entry.mode,
+          entry.path,
+          [
+            entry.metadata.dev,
+            entry.metadata.ino,
+            entry.metadata.mode,
+            entry.metadata.size,
+            entry.metadata.mtimeNs,
+            entry.metadata.ctimeNs,
+          ].join(":"),
+        );
+      }
+      invoke("publish-bound", destinationRoot, destinationPath, {
+        fds: entries.map(({ fd }) => fd),
+        rest,
       });
     },
     read(root, path, encoding) {

@@ -163,6 +163,42 @@ test(
 );
 
 test(
+  "publication rolls back a mismatched post-swap leaf",
+  { skip: !supported },
+  async () => {
+    await fixture(async ({ helper, root }) => {
+      const source = join(root, "source");
+      const destination = join(root, "destination");
+      await mkdir(source);
+      await mkdir(join(destination, "delivery"), { recursive: true });
+      await writeFile(join(source, "new"), "new");
+      await writeFile(join(destination, "delivery/old"), "old");
+      const race = startBarrier(
+        helper,
+        ["publish", source, ".", destination, "delivery"],
+        undefined,
+        "published-leaf",
+      );
+      await race.ready;
+      await rename(
+        join(destination, "delivery"),
+        join(destination, "moved-new"),
+      );
+      await mkdir(join(destination, "delivery"));
+      await writeFile(join(destination, "delivery/hostile"), "hostile");
+      assert.equal((await race.release()).status, 1);
+      assert.equal(
+        await readFile(join(destination, "delivery/old"), "utf8"),
+        "old",
+      );
+      await assert.rejects(readFile(join(destination, "delivery/hostile")), {
+        code: "ENOENT",
+      });
+    });
+  },
+);
+
+test(
   "symlink creation rejects transient final-entry rebinding",
   { skip: !supported },
   async () => {

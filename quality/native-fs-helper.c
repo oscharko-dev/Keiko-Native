@@ -67,7 +67,8 @@ void verify_chain(chain_t *chain, int metadata) {
   for (size_t i = 0; i < chain->count; i++) {
     struct stat after, named;
     if (fstat(chain->fd[i], &after) ||
-        (metadata && !same_parent(&chain->before[i], &after)))
+        (metadata && i >= chain->metadata_start &&
+         !same_parent(&chain->before[i], &after)))
       fail("parent-changed");
     if (i && chain->name[i][0] &&
         (fstatat(chain->fd[i - 1], chain->name[i], &named,
@@ -97,7 +98,7 @@ void refresh_chain_leaf(chain_t *chain) {
       chain->before[i] = after;
 }
 
-static int open_absolute(const char *path, int create, chain_t *chain) {
+int open_absolute(const char *path, int create, chain_t *chain) {
   if (path[0] != '/') fail("root-not-absolute");
   int current = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
   if (current < 0) fail("root-open");
@@ -120,6 +121,7 @@ static int open_absolute(const char *path, int create, chain_t *chain) {
     current = next;
     remember(chain, current, part);
   }
+  chain->metadata_start = chain->count - 1;
   return current;
 }
 
@@ -281,6 +283,7 @@ static int open_dir_at_path(int root, const char *path, int create,
 
 int native_fs_run(int argc, char **argv) {
   if (argc < 4) fail("usage");
+  if (!strcmp(argv[1], "publish-bound")) return run_publish_bound(argc, argv);
   chain_t root_chain = {0};
   int root = open_absolute(argv[2], 0, &root_chain);
   if (!strcmp(argv[1], "read") && argc == 4) read_file(root, argv[3], STDOUT_FILENO);
@@ -291,12 +294,13 @@ int native_fs_run(int argc, char **argv) {
     if (fsync(file)) fail("write-sync");
     struct stat written;
     if (fstat(file, &written)) fail("written-stat");
+    close(file);
+    if (fsync(chain.fd[chain.count - 1])) fail("write-parent-sync");
     verify_file_path(root, argv[3], &written);
     refresh_chain_leaf(&chain);
     test_barrier_at("write-complete");
     verify_chain(&chain, 1);
     verify_file_path(root, argv[3], &written);
-    close(file);
     close_chain(&chain, 1);
   } else if (!strcmp(argv[1], "mkdir") && argc == 4) {
     chain_t chain = {0};

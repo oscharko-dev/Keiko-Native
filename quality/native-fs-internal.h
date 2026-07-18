@@ -17,6 +17,7 @@ typedef struct {
   char name[MAX_DEPTH][NAME_MAX + 1];
   struct stat before[MAX_DEPTH];
   size_t count;
+  size_t metadata_start;
 } chain_t;
 
 void fail(const char *category);
@@ -30,9 +31,14 @@ void test_barrier(void);
 void test_barrier_at(const char *point);
 int open_parent(int root, const char *path, int create, chain_t *chain,
                 char leaf[NAME_MAX + 1]);
+int open_absolute(const char *path, int create, chain_t *chain);
 void copy_directory(int source, int destination, const char *exclude,
                     int depth);
 void print_tree(int root, const char *prefix, const char *exclude, int depth);
+void publish_staged(int parent, chain_t *chain, const char *leaf,
+                    const char *staging, int stage);
+void remove_entry(int parent, const char *name);
 void publish_tree(int source, int destination_root, const char *path);
+int run_publish_bound(int argc, char **argv);
 
 #endif

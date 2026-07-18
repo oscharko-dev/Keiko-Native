@@ -14,6 +14,7 @@ import { join, relative } from "node:path";
 
 import { captureDependencySnapshot } from "./native-dependencies.mjs";
 import { compileNativeFsHelper, NATIVE_FS_SOURCES } from "./native-fs.mjs";
+import { publishValidatedPackage } from "./native-package-publication.mjs";
 
 const GENERATED = [
   "native/apps/keiko-desktop/gen",
@@ -126,12 +127,22 @@ export async function runNativeSnapshot({ mode, repositoryRoot }) {
         repositoryRoot,
         "native/target/keiko-native-package",
       );
-      nativeFs.publish(
-        outputRoot,
-        "keiko-native-package",
-        repositoryRoot,
-        relative(repositoryRoot, delivery),
-      );
+      publishValidatedPackage({
+        cargoLockSha256: files.find(({ path }) => path === "native/Cargo.lock")
+          ?.sha256,
+        destinationPath: relative(repositoryRoot, delivery),
+        destinationRoot: repositoryRoot,
+        mode,
+        nativeFs,
+        npmLockSha256: files.find(
+          ({ path }) => path === "native/frontend/package-lock.json",
+        )?.sha256,
+        packageRoot: join(outputRoot, "keiko-native-package"),
+        policySha256: files.find(
+          ({ path }) => path === "native/package-policy.json",
+        )?.sha256,
+        revision: captured.head,
+      });
     }
     return 0;
   } finally {
