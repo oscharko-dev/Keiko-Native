@@ -186,11 +186,19 @@ async function addLabels(repository, issueNumber, labels, request) {
 }
 
 function planLifecycleLabelRemoval(issue) {
+  const labels = labelNames(issue);
+  if (!Array.isArray(labels))
+    return {
+      apply: [],
+      failures: ["Issue lifecycle labels are unavailable."],
+      ok: false,
+      remove: [],
+    };
   return {
     apply: [],
     failures: [],
     ok: true,
-    remove: statusLabels(issue),
+    remove: labels.filter((name) => name?.startsWith("status: ")),
   };
 }
 
@@ -273,6 +281,7 @@ async function reconcileLifecycleRemoval({
   request,
 }) {
   const reconciliation = planLifecycleLabelRemoval(issue);
+  if (!reconciliation.ok) return failed(reconciliation.failures);
   if (!enabled)
     return {
       activation: "disabled",

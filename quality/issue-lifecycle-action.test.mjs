@@ -315,6 +315,29 @@ test("removes lifecycle labels for non-completed closures", async (t) => {
     /read-back labels are unavailable/u,
   );
 
+  const missingInitialLabels = requestMock(t);
+  const missingInitialLabelsResult = await runIssueLifecycleAction({
+    event: {
+      action: "closed",
+      issue: { number: 27, state_reason: "not_planned" },
+    },
+    request: async (path, options) => {
+      if (path.endsWith("/issues/27")) {
+        const { labels, ...withoutLabels } = issue(["status: ready"], {
+          state: "closed",
+          state_reason: "not_planned",
+        });
+        return withoutLabels;
+      }
+      return missingInitialLabels.request(path, options);
+    },
+  });
+  assert.equal(missingInitialLabelsResult.outcome, "failed");
+  assert.match(
+    missingInitialLabelsResult.failures.join("\n"),
+    /lifecycle labels are unavailable/u,
+  );
+
   const unsupported = requestMock(t, {
     issueLabels: ["status: ready"],
     issueOverrides: { state: "closed", state_reason: "unsupported" },
