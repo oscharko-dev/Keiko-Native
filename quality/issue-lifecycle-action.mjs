@@ -401,7 +401,7 @@ function linkedOpenPullRequestEvidence(pullRequest, issueNumber, excludeId) {
   return { headSha, id, validated: true };
 }
 
-async function pullRequestContractStatusSucceeded(
+async function retainedPullRequestStatusesSucceeded(
   repository,
   headSha,
   request,
@@ -410,12 +410,14 @@ async function pullRequestContractStatusSucceeded(
     const status = await request(
       `/repos/${repository}/commits/${headSha}/status`,
     );
-    return (
-      Array.isArray(status?.statuses) &&
-      status.statuses.some(
-        (entry) =>
-          entry?.context === "PR contract" && entry?.state === "success",
-      )
+    if (!Array.isArray(status?.statuses)) return false;
+    const successfulContexts = new Set(
+      status.statuses
+        .filter((entry) => entry?.state === "success")
+        .map((entry) => entry?.context),
+    );
+    return ["PR contract", "Issue contract current"].every((context) =>
+      successfulContexts.has(context),
     );
   } catch {
     return false;
@@ -442,7 +444,7 @@ async function firstValidatedLinkedOpenPullRequest(
       );
       if (
         linked !== undefined &&
-        (await pullRequestContractStatusSucceeded(
+        (await retainedPullRequestStatusesSucceeded(
           repository,
           linked.headSha,
           request,

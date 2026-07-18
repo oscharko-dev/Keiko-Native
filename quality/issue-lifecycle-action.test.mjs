@@ -55,6 +55,10 @@ function requestMock(
   t,
   {
     comments = [machineReadinessComment()],
+    commitStatuses = {
+      "Issue contract current": "success",
+      "PR contract": "success",
+    },
     failures = {},
     issueLabels,
     issueOverrides,
@@ -77,6 +81,13 @@ function requestMock(
       return { permission };
     }
     if (path.includes("/comments?")) return comments;
+    if (path.includes("/commits/") && path.endsWith("/status"))
+      return {
+        statuses: Object.entries(commitStatuses).map(([context, state]) => ({
+          context,
+          state,
+        })),
+      };
     if (path.includes("/labels?"))
       return LIFECYCLE_STATES.map((name) => ({ name }));
     if (path.includes("/pulls?")) return pullRequests;
@@ -568,7 +579,6 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
   const closedWithAnotherOpenResult = await runIssueLifecycleAction({
     event: {
       action: "closed",
-      prContract: { validated: true },
       pull_request: {
         body: "## Scope\n\n- Accepted issue: #27",
         head: { sha: "f".repeat(40) },
@@ -591,6 +601,49 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
       call.path.includes("/pulls?state=open&per_page=100&page=1"),
     ),
   );
+  assert.ok(
+    closedWithAnotherOpen.calls.some((call) =>
+      call.path.endsWith(`/commits/${"e".repeat(40)}/status`),
+    ),
+  );
+
+  const closedWithFailedIssueContract = requestMock(t, {
+    commitStatuses: {
+      "Issue contract current": "failure",
+      "PR contract": "success",
+    },
+    issueLabels: ["status: pr open"],
+    pullRequests: [
+      {
+        body: "## Scope\n\n- Accepted issue: #27",
+        head: { sha: "e".repeat(40) },
+        node_id: "pr-node-42",
+      },
+    ],
+  });
+  const closedWithFailedIssueContractResult = await runIssueLifecycleAction({
+    event: {
+      action: "closed",
+      pull_request: {
+        body: "## Scope\n\n- Accepted issue: #27",
+        head: { sha: "f".repeat(40) },
+        merged: false,
+        node_id: "pr-node-41",
+      },
+    },
+    request: closedWithFailedIssueContract.request,
+  });
+  assert.equal(closedWithFailedIssueContractResult.outcome, "planned");
+  assert.equal(
+    closedWithFailedIssueContractResult.desiredState,
+    "status: ready",
+  );
+  assert.deepEqual(closedWithFailedIssueContractResult.plan, {
+    apply: ["status: ready"],
+    failures: [],
+    ok: true,
+    remove: ["status: pr open"],
+  });
 
   const closedWithOnlyStaleSelfOpen = requestMock(t, {
     issueLabels: ["status: pr open"],

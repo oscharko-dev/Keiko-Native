@@ -10,16 +10,16 @@ import {
   validPullRequestFixture,
 } from "./pr-contract-test-fixture.mjs";
 
-test("accepts a current lifecycle-eligible issue and complete PR evidence", () => {
+test("accepts claimed or PR-active work with complete PR evidence", () => {
   assert.deepEqual(validatePullRequestContract(validPullRequestFixture()), {
     failures: [],
   });
-  const readyFixture = validPullRequestFixture();
-  readyFixture.issue.labels = [
+  const claimedFixture = validPullRequestFixture();
+  claimedFixture.issue.labels = [
     { name: "type: task" },
-    { name: "status: ready" },
+    { name: "status: in progress" },
   ];
-  assert.deepEqual(validatePullRequestContract(readyFixture), {
+  assert.deepEqual(validatePullRequestContract(claimedFixture), {
     failures: [],
   });
   const reviewFixture = validPullRequestFixture();
@@ -96,7 +96,7 @@ test("rejects every lifecycle state that is not PR eligible", () => {
   for (const label of [
     "status: new",
     "status: triaged",
-    "status: in progress",
+    "status: ready",
     "status: blocked",
     "status: waiting for user",
     "status: done",
