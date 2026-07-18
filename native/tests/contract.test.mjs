@@ -50,6 +50,11 @@ test("productive roots named by ADR-0004 exist", () => {
 
 test("frontend cache stays inside the governed writable output root", () => {
   const config = readFileSync(join(root, "frontend/vite.config.ts"), "utf8");
+  const frontendPackage = JSON.parse(
+    readFileSync(join(root, "frontend/package.json"), "utf8"),
+  );
   assert.match(config, /cacheDir: "dist\/\.vite-cache"/u);
   assert.doesNotMatch(config, /cacheDir: "node_modules/u);
+  for (const script of ["build", "coverage", "test"])
+    assert.match(frontendPackage.scripts[script], /--configLoader runner/u);
 });
