@@ -180,53 +180,57 @@ test("snapshot manifest binds declared input bytes and detects drift", async () 
   }
 });
 
-test("snapshot runner cleans its private root when the isolated command fails", async () => {
-  const root = await mkdtemp(join(tmpdir(), "keiko-snapshot-cleanup-"));
-  try {
-    await mkdir(join(root, "native/frontend"), { recursive: true });
-    await mkdir(join(root, "native/frontend/node_modules"));
-    await writeFile(
-      join(root, "package.json"),
-      JSON.stringify({ private: true }),
-    );
-    await writeFile(
-      join(root, "native/frontend/package.json"),
-      JSON.stringify({ name: "fixture", version: "1.0.0" }),
-    );
-    await writeFile(
-      join(root, "native/frontend/package-lock.json"),
-      JSON.stringify({
-        lockfileVersion: 3,
-        name: "fixture",
-        packages: { "": { name: "fixture", version: "1.0.0" } },
-        requires: true,
-        version: "1.0.0",
-      }),
-    );
-    for (const path of NATIVE_FS_SOURCES) {
-      await mkdir(dirname(join(root, path)), { recursive: true });
-      await cp(join(repositoryRoot, path), join(root, path));
+test(
+  "snapshot runner cleans its private root when the isolated command fails",
+  { skip: process.platform === "win32" },
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "keiko-snapshot-cleanup-"));
+    try {
+      await mkdir(join(root, "native/frontend"), { recursive: true });
+      await mkdir(join(root, "native/frontend/node_modules"));
+      await writeFile(
+        join(root, "package.json"),
+        JSON.stringify({ private: true }),
+      );
+      await writeFile(
+        join(root, "native/frontend/package.json"),
+        JSON.stringify({ name: "fixture", version: "1.0.0" }),
+      );
+      await writeFile(
+        join(root, "native/frontend/package-lock.json"),
+        JSON.stringify({
+          lockfileVersion: 3,
+          name: "fixture",
+          packages: { "": { name: "fixture", version: "1.0.0" } },
+          requires: true,
+          version: "1.0.0",
+        }),
+      );
+      for (const path of NATIVE_FS_SOURCES) {
+        await mkdir(dirname(join(root, path)), { recursive: true });
+        await cp(join(repositoryRoot, path), join(root, path));
+      }
+      git(root, ["init"]);
+      git(root, ["config", "user.email", "fixture@invalid"]);
+      git(root, ["config", "user.name", "Fixture"]);
+      git(root, ["add", "."]);
+      git(root, ["commit", "-m", "fixture"]);
+      const before = (await readdir(tmpdir())).filter((name) =>
+        name.startsWith("keiko-native-snapshot-"),
+      );
+      await assert.rejects(
+        runNativeSnapshot({ mode: "security", repositoryRoot: root }),
+        /Immutable snapshot rejected dependency-missing-npm-ci-marker/u,
+      );
+      const after = (await readdir(tmpdir())).filter((name) =>
+        name.startsWith("keiko-native-snapshot-"),
+      );
+      assert.deepEqual(after, before);
+    } finally {
+      await rm(root, { force: true, recursive: true });
     }
-    git(root, ["init"]);
-    git(root, ["config", "user.email", "fixture@invalid"]);
-    git(root, ["config", "user.name", "Fixture"]);
-    git(root, ["add", "."]);
-    git(root, ["commit", "-m", "fixture"]);
-    const before = (await readdir(tmpdir())).filter((name) =>
-      name.startsWith("keiko-native-snapshot-"),
-    );
-    await assert.rejects(
-      runNativeSnapshot({ mode: "security", repositoryRoot: root }),
-      /Immutable snapshot rejected dependency-missing-npm-ci-marker/u,
-    );
-    const after = (await readdir(tmpdir())).filter((name) =>
-      name.startsWith("keiko-native-snapshot-"),
-    );
-    assert.deepEqual(after, before);
-  } finally {
-    await rm(root, { force: true, recursive: true });
-  }
-});
+  },
+);
 
 function git(repository, args) {
   const result = spawnSync("git", args, {

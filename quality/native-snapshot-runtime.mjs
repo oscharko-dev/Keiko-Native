@@ -73,6 +73,11 @@ export async function readOpenedRegular(path, containmentRoot = dirname(path)) {
   }
   let handle;
   try {
+    const openedEntry = await lstat(path);
+    if (openedEntry.isSymbolicLink())
+      throw new Error("Immutable snapshot rejected unavailable-file");
+    if (!openedEntry.isFile())
+      throw new Error("Immutable snapshot rejected non-regular-output");
     handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     const metadata = await handle.stat();
     if (!metadata.isFile())

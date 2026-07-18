@@ -14,6 +14,7 @@ import { dirname, isAbsolute, join, relative } from "node:path";
 import test from "node:test";
 
 import {
+  canonicalLineEndings,
   enforceExactToolchain,
   exactToolchainFailures,
   workflowToolchainFailures,
@@ -319,9 +320,11 @@ test("npm_execpath-unset validation never invokes a PATH npm shim", async () => 
 test("every npm workflow consumer verifies the setup-node toolchain first", async () => {
   const activationCommands = ["node quality/check-toolchain.mjs"];
   for (const name of ["ci.yml", "mutation-security.yml"]) {
-    const workflow = await readFile(
-      join(import.meta.dirname, "../.github/workflows", name),
-      "utf8",
+    const workflow = canonicalLineEndings(
+      await readFile(
+        join(import.meta.dirname, "../.github/workflows", name),
+        "utf8",
+      ),
     );
     assert.deepEqual(workflowToolchainFailures(workflow), []);
     const mutations = [

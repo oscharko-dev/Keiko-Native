@@ -535,28 +535,38 @@ test("captures a deterministic exact npm-ci dependency inventory", async () => {
   }
 });
 
-test("rejects dependency symlinks and special files", async () => {
-  for (const category of ["symlink", "special"]) {
+test("rejects dependency symlinks", async () => {
+  const fixture = await dependencyFixture();
+  try {
+    const hostile = join(fixture.modules, "fixture/hostile");
+    await symlink("package.json", hostile);
+    await assert.rejects(
+      capture(fixture.frontend, join(fixture.root, "snapshot")),
+      /symbolic-link/u,
+    );
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true });
+  }
+});
+
+test(
+  "rejects dependency special files",
+  { skip: process.platform === "win32" },
+  async () => {
     const fixture = await dependencyFixture();
     try {
       const hostile = join(fixture.modules, "fixture/hostile");
-      if (category === "symlink") await symlink("package.json", hostile);
-      else {
-        const result = spawnSync("mkfifo", [hostile]);
-        assert.equal(result.status, 0);
-      }
+      const result = spawnSync("mkfifo", [hostile]);
+      assert.equal(result.status, 0);
       await assert.rejects(
         capture(fixture.frontend, join(fixture.root, "snapshot")),
-        new RegExp(
-          category === "symlink" ? "symbolic-link" : "special-entry",
-          "u",
-        ),
+        /special-entry/u,
       );
     } finally {
       await rm(fixture.root, { force: true, recursive: true });
     }
-  }
-});
+  },
+);
 
 test("rejects lock, marker, identity, inventory, and top-level drift", async () => {
   const mutations = [

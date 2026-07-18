@@ -250,7 +250,7 @@ test("clean repository exact-binds fail-closed and security jobs", async () => {
       const root = await cleanArchive();
       try {
         const path = join(root, ".github/workflows", workflowName);
-        const source = await readFile(path, "utf8");
+        const source = canonicalWorkflow(await readFile(path, "utf8"));
         const mutation = mutate(source);
         if (mutation === source) {
           misses.push(`${workflowName}:${marker}:${kind}:mutation`);
@@ -295,7 +295,7 @@ test("vulnerability evidence upload retains failure results without running afte
       const root = await cleanArchive();
       try {
         const path = join(root, ".github/workflows", workflowName);
-        const source = await readFile(path, "utf8");
+        const source = canonicalWorkflow(await readFile(path, "utf8"));
         const mutation = mutate(source);
         if (mutation === source) {
           misses.push(`${workflowName}:${String(index)}:mutation`);
@@ -319,7 +319,10 @@ async function rejectCleanArchiveMutations(mutations, expected) {
     const root = await cleanArchive();
     try {
       const path = join(root, ".github/workflows/ci.yml");
-      await writeFile(path, mutate(await readFile(path, "utf8")));
+      await writeFile(
+        path,
+        mutate(canonicalWorkflow(await readFile(path, "utf8"))),
+      );
       const result = await validateRepository(root);
       if (!expected.test(result.failures.join("\n"))) misses.push(index);
     } finally {
@@ -351,4 +354,8 @@ async function cleanArchive() {
   });
   assert.equal(extract.status, 0, String(extract.stderr));
   return root;
+}
+
+function canonicalWorkflow(source) {
+  return source.replaceAll("\r\n", "\n");
 }
