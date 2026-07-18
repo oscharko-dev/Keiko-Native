@@ -10,7 +10,7 @@ import {
   validPullRequestFixture,
 } from "./pr-contract-test-fixture.mjs";
 
-test("accepts claimed or PR-active work with complete PR evidence", () => {
+test("accepts legacy-ready or active-lifecycle work in its governed mode", () => {
   assert.deepEqual(validatePullRequestContract(validPullRequestFixture()), {
     failures: [],
   });
@@ -19,17 +19,50 @@ test("accepts claimed or PR-active work with complete PR evidence", () => {
     { name: "type: task" },
     { name: "status: in progress" },
   ];
-  assert.deepEqual(validatePullRequestContract(claimedFixture), {
-    failures: [],
-  });
+  assert.deepEqual(
+    validatePullRequestContract({
+      ...claimedFixture,
+      lifecycleActivation: "enabled",
+    }),
+    { failures: [] },
+  );
+  const prOpenFixture = validPullRequestFixture();
+  prOpenFixture.issue.labels = [
+    { name: "type: task" },
+    { name: "status: pr open" },
+  ];
+  assert.deepEqual(
+    validatePullRequestContract({
+      ...prOpenFixture,
+      lifecycleActivation: "enabled",
+    }),
+    { failures: [] },
+  );
   const reviewFixture = validPullRequestFixture();
   reviewFixture.issue.labels = [
     { name: "type: task" },
     { name: "status: ready for human review" },
   ];
-  assert.deepEqual(validatePullRequestContract(reviewFixture), {
-    failures: [],
-  });
+  assert.deepEqual(
+    validatePullRequestContract({
+      ...reviewFixture,
+      lifecycleActivation: "enabled",
+    }),
+    { failures: [] },
+  );
+});
+
+test("accepts legacy ready work while lifecycle activation is disabled", () => {
+  const fixture = validPullRequestFixture();
+  fixture.issue.labels = [{ name: "type: task" }, { name: "status: ready" }];
+
+  assert.deepEqual(
+    validatePullRequestContract({
+      ...fixture,
+      lifecycleActivation: "disabled",
+    }),
+    { failures: [] },
+  );
 });
 
 test("parses short and exact issue references", () => {
@@ -92,11 +125,13 @@ test("rejects stale readiness, wrong delivery, and unready issue state", () => {
   assert.match(failures, /delivery target/u);
 });
 
-test("rejects every lifecycle state that is not PR eligible", () => {
+test("rejects every lifecycle state that is not eligible in the current mode", () => {
   for (const label of [
     "status: new",
     "status: triaged",
-    "status: ready",
+    "status: in progress",
+    "status: pr open",
+    "status: ready for human review",
     "status: blocked",
     "status: waiting for user",
     "status: done",
@@ -109,6 +144,35 @@ test("rejects every lifecycle state that is not PR eligible", () => {
       label,
     );
   }
+
+  for (const label of [
+    "status: new",
+    "status: triaged",
+    "status: ready",
+    "status: blocked",
+    "status: waiting for user",
+    "status: done",
+  ]) {
+    const fixture = validPullRequestFixture();
+    fixture.issue.labels = [{ name: "type: task" }, { name: label }];
+    assert.match(
+      validatePullRequestContract({
+        ...fixture,
+        lifecycleActivation: "enabled",
+      }).failures.join("\n"),
+      /not pull-request eligible/u,
+      label,
+    );
+  }
+
+  const malformed = validPullRequestFixture();
+  assert.match(
+    validatePullRequestContract({
+      ...malformed,
+      lifecycleActivation: "unexpected",
+    }).failures.join("\n"),
+    /activation mode is invalid/u,
+  );
 });
 
 test("rejects zero-label and multi-label lifecycle reloads", () => {

@@ -140,6 +140,10 @@ test("workflow loads protected dev code with read-only credentials", async () =>
   assert.match(pullRequestWorkflow, /cancel-in-progress: false/u);
   assert.match(
     pullRequestWorkflow,
+    /KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled/u,
+  );
+  assert.match(
+    pullRequestWorkflow,
     /uses: \.\/\.github\/workflows\/issue-lifecycle\.yml/u,
   );
   assert.match(

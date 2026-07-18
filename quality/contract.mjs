@@ -132,6 +132,7 @@ const pullRequestContractMarkers = [
   "issue-number: ${{ steps.contract.outputs.issue-number }}",
   "ref: dev",
   "statuses: write",
+  "KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
   "node quality/pr-contract-action.mjs",
   "uses: ./.github/workflows/issue-lifecycle.yml",
   "issue_number: ${{ needs.contract.outputs.issue-number }}",

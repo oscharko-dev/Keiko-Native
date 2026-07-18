@@ -47,7 +47,9 @@ const epicBranchCheckboxes = [
   "accepted issue authorizes this epic-branch target",
   "Acceptance and audit evidence is complete",
 ];
-const deliveryEligibleLifecycleStates = new Set([
+const lifecycleActivationModes = new Set(["disabled", "enabled"]);
+const legacyDeliveryEligibleLifecycleStates = new Set(["status: ready"]);
+const activeDeliveryEligibleLifecycleStates = new Set([
   "status: in progress",
   "status: pr open",
   "status: ready for human review",
@@ -280,7 +282,12 @@ function attestationFailures(sections, acceptedTarget) {
   return [...requiredFailures, ...epicFailures];
 }
 
-function acceptedIssueFailures(issue, acceptedIssueNumber, acceptedVersion) {
+function acceptedIssueFailures(
+  issue,
+  acceptedIssueNumber,
+  acceptedVersion,
+  lifecycleActivation,
+) {
   const failures = [];
   if (acceptedIssueNumber !== issue.number)
     failures.push(
@@ -296,7 +303,16 @@ function acceptedIssueFailures(issue, acceptedIssueNumber, acceptedVersion) {
     failures.push(
       "The accepted issue must have exactly one lifecycle status label.",
     );
-  else if (!deliveryEligibleLifecycleStates.has(lifecycleLabels[0]))
+  const deliveryEligibleLifecycleStates =
+    lifecycleActivation === "enabled"
+      ? activeDeliveryEligibleLifecycleStates
+      : legacyDeliveryEligibleLifecycleStates;
+  if (!lifecycleActivationModes.has(lifecycleActivation))
+    failures.push("Pull-request lifecycle activation mode is invalid.");
+  else if (
+    lifecycleLabels.length === 1 &&
+    !deliveryEligibleLifecycleStates.has(lifecycleLabels[0])
+  )
     failures.push("The accepted issue lifecycle is not pull-request eligible.");
   const validation = validateIssueContract({
     body: issue.body,
@@ -361,6 +377,7 @@ export function pullRequestAcceptedTarget(body) {
 export function validatePullRequestContract({
   comments,
   issue,
+  lifecycleActivation = "disabled",
   pullRequest,
   repository,
 }) {
@@ -393,6 +410,7 @@ export function validatePullRequestContract({
     issue,
     scope.acceptedIssueNumber,
     scope.acceptedVersion,
+    lifecycleActivation,
   );
   failures.push(
     ...issueContract.failures,

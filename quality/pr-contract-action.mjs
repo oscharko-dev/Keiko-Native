@@ -72,6 +72,8 @@ export async function runPullRequestContractAction({ event }) {
   const result = validatePullRequestContract({
     comments,
     issue,
+    lifecycleActivation:
+      process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION ?? "disabled",
     pullRequest,
     repository,
   });
