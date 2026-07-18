@@ -191,7 +191,7 @@ const qualityControlScript =
 export function coverageCommandFailures(command) {
   return command === canonicalCoverageCommand
     ? []
-    : ["Coverage command must retain exact bounded concurrency and reporter."];
+    : ["Coverage command must retain exact serial execution and reporter."];
 }
 
 const adr0004SourceRoots = [

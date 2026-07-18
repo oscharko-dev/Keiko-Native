@@ -36,7 +36,7 @@ const coverageModules = Object.freeze([
 
 export const canonicalCoverageCommand = [
   "node --test",
-  "--test-concurrency=2",
+  "--test-concurrency=1",
   "--experimental-test-coverage",
   ...coverageModules.map(
     (module) => `--test-coverage-include=quality/${module}`,
@@ -49,11 +49,19 @@ export const canonicalCoverageCommand = [
 ].join(" ");
 
 const safeMetadata = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/u;
+const tokenLikeMetadata = /^[A-Za-z0-9+_=-]{24,}$/u;
+
+function stripTerminalSequences(value) {
+  return value
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\|$)/gu, "")
+    .replace(/\u009d[^\u0007\u009c]*(?:\u0007|\u009c|$)/gu, "")
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
+    .replace(/\u001b[@-_]/gu, "");
+}
 
 function sanitizeDiagnostic(value, maximum, fallback) {
   if (typeof value !== "string") return fallback;
-  let sanitized = sanitizeOutput(value)
-    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
+  let sanitized = stripTerminalSequences(sanitizeOutput(value))
     .split(/[\r\n]/u, 1)[0]
     .replace(/[\u0000-\u001f\u007f]/gu, " ");
   if (/^\s*[\[{]/u.test(sanitized)) sanitized = "<redacted-structured-output>";
@@ -63,7 +71,15 @@ function sanitizeDiagnostic(value, maximum, fallback) {
         /\b(authorization|cookie|password|secret|token|api[-_]?key)\s*[:=]\s*[^\s,;]+/giu,
         "$1=<redacted>",
       )
+      .replace(
+        /\b(authorization\s*:?[ \t]*bearer)[ \t]+[^\s,;]+/giu,
+        "$1 <redacted>",
+      )
       .replace(/\b(?:https?|file):\/\/[^\s"'<>]+/giu, "<uri>")
+      .replace(
+        /\\\\[^\\\s"'<>|]+\\(?:[^\\\s"'<>|]+\\)*[^\\\s"'<>|]+/gu,
+        "<path>",
+      )
       .replace(/\b[A-Za-z]:[\\/][^\s"'<>|]+/gu, "<path>")
       .replace(/\/(?:[^\s"'<>/]+\/)*[^\s"'<>/]+/gu, "<path>")
       .replace(/<redacted-path>(?:<path>)?/gu, "<path>")
@@ -79,7 +95,9 @@ function sanitizeDiagnostic(value, maximum, fallback) {
 }
 
 function metadata(value) {
-  return typeof value === "string" && safeMetadata.test(value)
+  return typeof value === "string" &&
+    safeMetadata.test(value) &&
+    !tokenLikeMetadata.test(value)
     ? value
     : "unknown";
 }

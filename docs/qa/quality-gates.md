@@ -162,8 +162,8 @@ emitting or publishing package evidence. Both declared macOS runners execute the
 command set, including packaging, with stable Rust, rustfmt, clippy, and the pinned coverage-only
 nightly installed by the native matrix.
 
-Root coverage runs at exactly two concurrent test files. This retains bounded parallelism while
-preventing native filesystem helper compilers and race fixtures from oversubscribing a runner. The
+Root coverage runs exactly one test file at a time. Serial execution prevents native filesystem
+helper compilers and race fixtures from intermittently contending for shared runner resources. The
 custom reporter emits one bounded failure line containing only sanitized test identity, failure
 type, error code, and the first message line; paths, URIs, credential-like values, long token-like
 values, control sequences, stacks, causes, and raw error objects are excluded.

@@ -172,3 +172,85 @@ test("failure diagnostics handle hostile and missing error metadata", () => {
     "✖ (unnamed test) [unknown:unknown] Test failed without a bounded diagnostic.\n",
   );
 });
+
+test("failure diagnostics reject token-like metadata at the safe boundary", () => {
+  assert.equal(
+    failureDiagnostic({
+      details: {
+        error: {
+          code: "A".repeat(32),
+          failureType: "B".repeat(24),
+          message: "bounded assertion failure",
+        },
+      },
+      name: "metadata boundary",
+    }),
+    "✖ metadata boundary [unknown:unknown] bounded assertion failure\n",
+  );
+  assert.equal(
+    failureDiagnostic({
+      details: {
+        error: {
+          code: "A".repeat(23),
+          failureType: "testCodeFailure",
+          message: "bounded assertion failure",
+        },
+      },
+      name: "metadata boundary",
+    }),
+    `✖ metadata boundary [testCodeFailure:${"A".repeat(23)}] bounded assertion failure\n`,
+  );
+});
+
+test("failure diagnostics redact bearer credentials, UNC paths, and OSC controls", () => {
+  const diagnostic = failureDiagnostic({
+    details: {
+      error: {
+        code: "ERR_ASSERTION",
+        failureType: "testCodeFailure",
+        message: [
+          "Authorization Bearer short-secret",
+          String.raw`\\private-server\customer\record`,
+          "\u001b]0;customer-secret\u0007visible failure",
+        ].join(" "),
+      },
+    },
+    name: [
+      "hostile transport",
+      "Authorization Bearer name-secret",
+      String.raw`\\name-server\customer\record`,
+      "\u001b]0;name-secret\u0007visible name",
+    ].join(" "),
+  });
+  assert.equal(
+    diagnostic,
+    "✖ hostile transport Authorization Bearer <redacted> <path> visible name [testCodeFailure:ERR_ASSERTION] Authorization Bearer <redacted> <path> visible failure\n",
+  );
+  for (const forbidden of [
+    "short-secret",
+    "name-secret",
+    "private-server",
+    "name-server",
+    "customer\\record",
+    "]0;customer-secret",
+  ]) {
+    assert.ok(!diagnostic.includes(forbidden));
+  }
+});
+
+test("failure diagnostics retain adjacent non-secret authorization and terminal text", () => {
+  assert.equal(
+    failureDiagnostic({
+      details: {
+        error: {
+          code: "ERR_AUTHORIZATION",
+          failureType: "testCodeFailure",
+          message:
+            "Authorization failed; bearer policy unavailable; visible text",
+        },
+      },
+      name: "useful diagnostic",
+    }),
+    "✖ useful diagnostic [testCodeFailure:ERR_AUTHORIZATION] Authorization failed; bearer policy unavailable; visible text\n",
+  );
+});

@@ -1217,17 +1217,17 @@ test("dependency review closes severity, scopes and accepted SPDX licenses", () 
   }
 });
 
-test("coverage command freezes deterministic bounded concurrency", async () => {
+test("coverage command freezes deterministic serial execution", async () => {
   const packageContract = JSON.parse(
     await readFile(join(import.meta.dirname, "../package.json"), "utf8"),
   );
   const command = packageContract.scripts.coverage;
   assert.deepEqual(coverageCommandFailures(command), []);
   for (const mutation of [
-    command.replace(" --test-concurrency=2", ""),
-    command.replace("--test-concurrency=2", "--test-concurrency=1"),
-    command.replace("--test-concurrency=2", "--test-concurrency=4"),
-    `${command} --test-concurrency=2`,
+    command.replace(" --test-concurrency=1", ""),
+    command.replace("--test-concurrency=1", "--test-concurrency=2"),
+    command.replace("--test-concurrency=1", "--test-concurrency=4"),
+    `${command} --test-concurrency=1`,
     command.replace(
       "--test-reporter=./quality/coverage-reporter.mjs",
       "--test-reporter=spec",
