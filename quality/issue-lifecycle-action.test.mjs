@@ -123,6 +123,7 @@ test("workflow loads protected dev code with read-only credentials", async () =>
     pullRequestWorkflow,
     /KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled/u,
   );
+  assert.match(pullRequestWorkflow, /KEIKO_PR_CONTRACT_RESULT=success/u);
   assert.match(pullRequestWorkflow, /if: always\(\)/u);
   assert.match(pullRequestWorkflow, /closed/u);
 });
@@ -355,6 +356,7 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
     event: {
       action: "opened",
       expectedReadinessCommentId: 101,
+      prContract: { validated: true },
       pull_request: {
         body: "## Scope\n\n- Accepted issue: #27",
         draft: false,
@@ -376,12 +378,47 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
     remove: ["status: in progress"],
   });
 
+  const activatedMissingContract = requestMock(t, {
+    issueLabels: ["status: in progress"],
+  });
+  const previousActivation = process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
+  const previousContractResult = process.env.KEIKO_PR_CONTRACT_RESULT;
+  process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = "enabled";
+  delete process.env.KEIKO_PR_CONTRACT_RESULT;
+  try {
+    const activatedMissingContractResult = await runIssueLifecycleAction({
+      event: {
+        action: "opened",
+        expectedReadinessCommentId: 101,
+        pull_request: {
+          body: "## Scope\n\n- Accepted issue: #27",
+          draft: false,
+          head: { sha: "d".repeat(40) },
+          node_id: "pr-node-41",
+        },
+      },
+      request: activatedMissingContract.request,
+    });
+    assert.equal(activatedMissingContractResult.outcome, "failed");
+    assert.deepEqual(activatedMissingContractResult.failures, [
+      "pr_contract_success_required",
+    ]);
+  } finally {
+    if (previousActivation === undefined)
+      delete process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
+    else process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = previousActivation;
+    if (previousContractResult === undefined)
+      delete process.env.KEIKO_PR_CONTRACT_RESULT;
+    else process.env.KEIKO_PR_CONTRACT_RESULT = previousContractResult;
+  }
+
   const readyForReview = requestMock(t, {
     issueLabels: ["status: pr open"],
   });
   const readyForReviewResult = await runIssueLifecycleAction({
     event: {
       action: "ready_for_review",
+      prContract: { validated: true },
       pull_request: {
         body: "## Scope\n\n- Accepted issue: #27",
         head: { sha: "c".repeat(40) },

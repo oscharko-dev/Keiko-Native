@@ -21,8 +21,10 @@ import { readinessRecordFromComments } from "./issue-readiness-action.mjs";
 import { semanticIssueFingerprint } from "./issue-contract.mjs";
 
 const lifecycleActivationEnabled = "enabled";
+const pullRequestContractSuccess = "success";
 const githubRequest = githubRequestFor("keiko-native-issue-lifecycle");
 const READY = LIFECYCLE_STATES[2];
+const REVIEW = LIFECYCLE_STATES[5];
 
 function labelNames(issue) {
   return Array.isArray(issue?.labels)
@@ -156,6 +158,13 @@ function pullRequestLifecycleEvent(event) {
   return undefined;
 }
 
+function hasTrustedPullRequestContractSuccess(event) {
+  return (
+    event?.prContract?.validated === true ||
+    process.env.KEIKO_PR_CONTRACT_RESULT === pullRequestContractSuccess
+  );
+}
+
 function unauthorizedRawLabelResult(enabled) {
   return enabled
     ? {
@@ -253,7 +262,17 @@ function desiredStateForPullRequestEvent({
     readiness,
     sourceState: currentState,
   });
-  if (result.ok) return { desiredState: result.target };
+  if (result.ok) {
+    if (
+      result.target === REVIEW &&
+      !hasTrustedPullRequestContractSuccess(event)
+    ) {
+      return enabled
+        ? { failures: ["pr_contract_success_required"], outcome: "failed" }
+        : { outcome: "ignored", reason: "pre_activation_pr_contract_required" };
+    }
+    return { desiredState: result.target };
+  }
   if (!enabled)
     return { outcome: "ignored", reason: "pre_activation_pr_topology" };
   return { failures: [result.reason], outcome: "failed" };

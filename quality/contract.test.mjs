@@ -513,6 +513,7 @@ async function fixtureRepository() {
       "ref: dev",
       "statuses: write",
       "node quality/pr-contract-action.mjs",
+      "KEIKO_PR_CONTRACT_RESULT=success",
       "if: always()",
       "node quality/issue-lifecycle-action.mjs",
     ].join("\n"),

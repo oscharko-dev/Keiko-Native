@@ -46,7 +46,9 @@ jobs:
       - name: Validate issue, readiness, evidence, and delivery authority
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: node quality/pr-contract-action.mjs
+        run: |
+          node quality/pr-contract-action.mjs
+          echo "KEIKO_PR_CONTRACT_RESULT=success" >> "$GITHUB_ENV"
       - name: Compute the inert PR lifecycle decision
         if: always()
         env:

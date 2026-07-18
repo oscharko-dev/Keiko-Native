@@ -158,6 +158,22 @@ test("requires validated claims and pull-request topology for active states", ()
     }),
     "current_readiness_required",
   );
+  assertReason(
+    evaluateClaimPrecondition({
+      claim: { id: "claim-1", validated: true },
+      readiness: current,
+      sourceState: "status: blocked",
+    }),
+    "ready_source_required",
+  );
+  assertReason(
+    evaluateClaimPrecondition({
+      claim: { id: "claim-1", validated: true },
+      readiness: current,
+      sourceState: "status: waiting for user",
+    }),
+    "ready_source_required",
+  );
   assert.deepEqual(
     evaluateClaimRelease({
       hasOpenPullRequest: false,

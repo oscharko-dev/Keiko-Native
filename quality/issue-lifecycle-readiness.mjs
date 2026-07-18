@@ -105,10 +105,8 @@ function topologyResult(source, target, extra = {}) {
 }
 
 export function evaluateClaimPrecondition({ claim, readiness, sourceState }) {
-  const failures = [
-    ...requireCurrent(readiness),
-    ...validEdge(sourceState, IN_PROGRESS),
-  ];
+  const failures = [...requireCurrent(readiness)];
+  if (sourceState !== READY) failures.push("ready_source_required");
   if (claim?.validated !== true) failures.push("validated_claim_required");
   return failures.length > 0
     ? fail(failures[0])
