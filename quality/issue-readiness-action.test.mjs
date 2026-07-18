@@ -194,6 +194,7 @@ test("invalidates readiness when the issue closes or the ready label is removed"
     }),
     {
       outcome: "reject",
+      lifecycleOwned: true,
       reasons: ["A closed issue cannot remain implementation ready."],
     },
   );
@@ -263,6 +264,93 @@ test("renders actionable rejected readiness evidence", () => {
   assert.match(comment, /Issue readiness rejected/u);
   assert.match(comment, /Scope is empty/u);
   assert.match(comment, /status: new/u);
+});
+
+test("leaves closed lifecycle reconciliation to the lifecycle workflow", async (t) => {
+  const calls = installGitHubFetchMock(t);
+  const result = await runIssueReadinessAction({
+    event: issueEvent({
+      action: "closed",
+      issue: {
+        body: validTaskBody(),
+        labels: [
+          { name: "type: task" },
+          { name: "status: ready for human review" },
+        ],
+        number: 42,
+        title: "Implement governed workspace opening",
+      },
+    }),
+  });
+
+  assert.equal(result.outcome, "reject");
+  assert.equal(result.lifecycleOwned, true);
+  assert.equal(calls.filter((call) => call.method === "DELETE").length, 0);
+  assert.equal(
+    calls.filter(
+      (call) => call.method === "POST" && call.url.endsWith("/labels"),
+    ).length,
+    0,
+  );
+  assert.ok(
+    calls.some(
+      (call) => call.method === "POST" && call.url.endsWith("/comments"),
+    ),
+  );
+});
+
+test("invalidates stale readiness retained by a paused issue", async (t) => {
+  const body = validTaskBody();
+  const title = "Implement governed workspace opening";
+  const accepted = readinessComment({
+    actor: "planner",
+    decision: { outcome: "accept", reasons: [] },
+    now: "2026-07-16T12:00:00.000Z",
+    validation: {
+      failures: [],
+      fingerprint: semanticIssueFingerprint(body, title),
+      version: "v1",
+    },
+  });
+  const calls = installGitHubFetchMock(t, {
+    comments: [
+      {
+        body: accepted,
+        id: 1,
+        user: {
+          id: 41898282,
+          login: "github-actions[bot]",
+          type: "Bot",
+        },
+      },
+    ],
+  });
+
+  const result = await runIssueReadinessAction({
+    event: issueEvent({
+      action: "edited",
+      issue: {
+        body: `${body}\n\nChanged governed scope.`,
+        labels: [{ name: "type: task" }, { name: "status: blocked" }],
+        number: 42,
+        title,
+      },
+    }),
+  });
+
+  assert.equal(result.outcome, "reject");
+  assert.ok(
+    calls.some(
+      (call) =>
+        call.method === "DELETE" &&
+        call.url.endsWith("/labels/status%3A%20blocked"),
+    ),
+  );
+  assert.ok(
+    calls.some(
+      (call) => call.method === "POST" && call.url.endsWith("/labels"),
+    ),
+  );
 });
 
 test("executes the accepted readiness label transition", async (t) => {

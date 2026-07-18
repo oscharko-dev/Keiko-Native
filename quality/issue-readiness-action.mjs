@@ -14,6 +14,8 @@ const currentReadinessLifecycleLabels = new Set([
   "status: in progress",
   "status: pr open",
   "status: ready for human review",
+  "status: blocked",
+  "status: waiting for user",
 ]);
 const prTrackedLifecycleLabels = new Set([
   "status: pr open",
@@ -74,6 +76,7 @@ export function decideReadiness({
     (action === "unlabeled" && label === "status: ready");
   if (action === "closed" && currentReadinessLifecycle)
     return {
+      lifecycleOwned: true,
       outcome: "reject",
       reasons: ["A closed issue cannot remain implementation ready."],
     };
@@ -132,7 +135,9 @@ export function readinessComment({ actor, decision, now, validation }) {
     "",
     accepted
       ? "This exact contract is `Implementation Ready` while `status: ready` remains present."
-      : "The issue remains non-executable with `status: new` until validation succeeds.",
+      : decision.lifecycleOwned
+        ? "Readiness is invalidated; the lifecycle workflow owns closed-state reconciliation."
+        : "The issue remains non-executable with `status: new` until validation succeeds.",
   );
   return lines.join("\n");
 }
@@ -304,6 +309,11 @@ async function applyReadinessDecision({
     await removeLabel(repository, issueNumber, "status: new");
     await removeLabel(repository, issueNumber, "status: triaged");
     await postComment(repository, issueNumber, comment);
+    return;
+  }
+  if (decision.lifecycleOwned) {
+    await postComment(repository, issueNumber, comment);
+    await invalidateLinkedPullRequestContracts(repository, issueNumber);
     return;
   }
   for (const status of statuses)
