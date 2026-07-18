@@ -144,6 +144,12 @@ function containsNpmExecutable(command, depth = 0) {
   for (const nested of commandSubstitutions(command))
     if (containsNpmExecutable(nested, depth + 1)) return true;
   const tokens = shellTokens(command);
+  if (
+    tokens.some(
+      (token) => !token.operator && containsLexicalNpmToken(token.value),
+    )
+  )
+    return true;
   let expectsCommand = true;
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
@@ -175,6 +181,12 @@ function containsNpmExecutable(command, depth = 0) {
     expectsCommand = false;
   }
   return false;
+}
+
+function containsLexicalNpmToken(value) {
+  return value
+    .split(/[^A-Za-z0-9_.-]+/u)
+    .some((token) => /^(?:npm|npx)(?:\.cmd)?$/iu.test(token));
 }
 
 function commandSubstitutions(command) {

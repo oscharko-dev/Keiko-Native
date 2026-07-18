@@ -138,7 +138,7 @@ test("every npm workflow consumer activates and verifies the exact toolchain fir
   }
 });
 
-test("workflow detection covers npm and npx executables without matching quoted data", () => {
+test("workflow detection covers every npm and npx lexical token", () => {
   for (const run of [
     "run: npm install --ignore-scripts",
     "run: npx package-tool",
@@ -156,6 +156,13 @@ test("workflow detection covers npm and npx executables without matching quoted 
     'run: sh -c "npx fixture"',
     "run: pwsh -Command 'npm.cmd install'",
     "run: cmd /c npx.cmd fixture",
+    "run: env -i npm ci",
+    "run: sudo -u root npm install",
+    "run: command -- npm audit",
+    "run: eval 'npm ci'",
+    "run: xargs npm",
+    'run: echo "npm install is documentation"',
+    "run: printf '%s' 'npx exec is documentation'",
     'run: echo "$(npm --version)"',
     "run: echo `npx --version`",
     'run: bash -c "$OWNED_SCRIPT"',
@@ -167,13 +174,24 @@ test("workflow detection covers npm and npx executables without matching quoted 
       run,
     );
   }
-  for (const run of [
-    'run: echo "npm install is documentation"',
-    "run: printf '%s' 'npx exec is documentation'",
-    "run: echo safe # npm install is a comment",
-  ]) {
+  for (const run of ["run: echo safe # npm install is a comment"]) {
     assert.deepEqual(workflowToolchainFailures(workflowFixture(run)), [], run);
   }
+  assert.deepEqual(
+    workflowToolchainFailures(
+      [
+        "# npm install is a YAML comment",
+        "name: npm install is workflow metadata",
+        "jobs:",
+        "  fixture:",
+        "    name: npx is job metadata",
+        "    steps:",
+        "      - name: npm is step metadata",
+        "        run: echo safe",
+      ].join("\n"),
+    ),
+    [],
+  );
 });
 
 test("workflow activation cannot leak across uppercase or underscored jobs", () => {
