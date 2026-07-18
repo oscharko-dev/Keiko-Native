@@ -348,7 +348,7 @@ function validateScoredAdvisory(vulnerability, group) {
       typeof severity.score !== "string"
     )
       throw vulnerabilityPolicyRejected("severity-shape");
-    claimedSeverities.push(severityBand(parseCvss31(severity.score)));
+    claimedSeverities.push(severityBand(cvss31BaseScore(severity.score)));
   }
   collectDatabaseSeverities(vulnerability.database_specific, claimedSeverities);
   for (const affected of vulnerability.affected) {
@@ -387,7 +387,7 @@ function collectDatabaseSeverities(database, severities) {
     if (database.cvss !== null && typeof database.cvss !== "string")
       throw vulnerabilityPolicyRejected("cvss-shape");
     if (typeof database.cvss === "string")
-      severities.push(severityBand(parseCvss31(database.cvss)));
+      severities.push(severityBand(cvss31BaseScore(database.cvss)));
   }
   if (Object.hasOwn(database, "severity")) {
     const severity = normalizedSeverityBand(database.severity);
@@ -403,15 +403,18 @@ function collectDatabaseSeverities(database, severities) {
     for (const category of database.categories) {
       const severity = normalizedSeverityBand(category);
       if (severity) severities.push(severity);
+      else if (!/^[a-z][a-z0-9-]*$/u.test(category))
+        throw vulnerabilityPolicyRejected("category-shape");
     }
   }
 }
 
 function normalizedSeverityBand(value) {
   if (typeof value !== "string") return undefined;
-  if (value === "medium") return "moderate";
-  return ["critical", "high", "low", "moderate"].includes(value)
-    ? value
+  const normalized = value.toLowerCase();
+  if (normalized === "medium") return "moderate";
+  return ["critical", "high", "low", "moderate"].includes(normalized)
+    ? normalized
     : undefined;
 }
 
@@ -424,7 +427,7 @@ function severityBand(score) {
   return "critical";
 }
 
-function parseCvss31(vector) {
+export function cvss31BaseScore(vector) {
   const parts = vector.split("/");
   if (parts.shift() !== "CVSS:3.1")
     throw vulnerabilityPolicyRejected("cvss-version");
@@ -467,7 +470,7 @@ function parseCvss31(vector) {
     scope === "U"
       ? 6.42 * impactSubscore
       : 7.52 * (impactSubscore - 0.029) -
-        3.25 * Math.pow(impactSubscore * 0.9731 - 0.02, 13);
+        3.25 * Math.pow(impactSubscore - 0.02, 15);
   if (impact <= 0) return 0;
   const exploitability =
     8.22 *

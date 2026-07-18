@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   captureDependencySnapshot,
   createTargetVulnerabilityInventory,
+  cvss31BaseScore,
   evaluateVulnerabilityResults,
 } from "./native-dependencies.mjs";
 
@@ -342,6 +343,111 @@ test("scored advisory severity rejects malformed and unknown representations", (
     );
   }
 });
+
+test("CVSS 3.1 Scope Changed base scores match the FIRST equation exhaustively", () => {
+  let vectors = 0;
+  for (const attackVector of ["N", "A", "L", "P"])
+    for (const attackComplexity of ["L", "H"])
+      for (const privilegesRequired of ["N", "L", "H"])
+        for (const userInteraction of ["N", "R"])
+          for (const confidentiality of ["N", "L", "H"])
+            for (const integrity of ["N", "L", "H"])
+              for (const availability of ["N", "L", "H"]) {
+                const metrics = {
+                  A: availability,
+                  AC: attackComplexity,
+                  AV: attackVector,
+                  C: confidentiality,
+                  I: integrity,
+                  PR: privilegesRequired,
+                  S: "C",
+                  UI: userInteraction,
+                };
+                const vector = cvssVector(metrics);
+                assert.equal(
+                  cvss31BaseScore(vector),
+                  firstCvss31BaseScore(metrics),
+                  vector,
+                );
+                vectors += 1;
+              }
+  assert.equal(vectors, 1296);
+  assert.equal(
+    cvss31BaseScore("CVSS:3.1/AV:P/AC:H/PR:L/UI:N/S:C/C:H/I:H/A:L"),
+    7,
+  );
+});
+
+test("database severity normalizes exact canonical OSV and GitHub enum casing", () => {
+  for (const [score, severity, blocked] of [
+    ["3.9", "LOW", false],
+    ["4.0", "MODERATE", true],
+    ["4.0", "MEDIUM", true],
+    ["7.0", "HIGH", true],
+    ["9.0", "CRITICAL", true],
+  ]) {
+    for (const field of ["severity", "categories"]) {
+      const report = vulnerabilityResults({ severity: score });
+      const database =
+        finding(report).vulnerabilities[0].affected[0].database_specific;
+      database[field] = field === "categories" ? [severity] : severity;
+      if (blocked)
+        assert.throws(
+          () => evaluateVulnerabilityResults(report),
+          /Vulnerability policy rejected moderate-or-higher/u,
+        );
+      else
+        assert.deepEqual(evaluateVulnerabilityResults(report), {
+          blocking: 0,
+          informationalUnmaintained: 0,
+          low: 1,
+        });
+    }
+  }
+  for (const severity of [" MODERATE", "MODERATE ", "MODERATE!", "UNKNOWN"])
+    for (const field of ["severity", "categories"]) {
+      const report = vulnerabilityResults({ severity: "3.9" });
+      const database =
+        finding(report).vulnerabilities[0].affected[0].database_specific;
+      database[field] = field === "categories" ? [severity] : severity;
+      assert.throws(
+        () => evaluateVulnerabilityResults(report),
+        /Vulnerability policy rejected/u,
+      );
+    }
+});
+
+function cvssVector(metrics) {
+  return `CVSS:3.1/AV:${metrics.AV}/AC:${metrics.AC}/PR:${metrics.PR}/UI:${metrics.UI}/S:${metrics.S}/C:${metrics.C}/I:${metrics.I}/A:${metrics.A}`;
+}
+
+function firstCvss31BaseScore(metrics) {
+  const values = {
+    A: { H: 0.56, L: 0.22, N: 0 },
+    AC: { H: 0.44, L: 0.77 },
+    AV: { A: 0.62, L: 0.55, N: 0.85, P: 0.2 },
+    C: { H: 0.56, L: 0.22, N: 0 },
+    I: { H: 0.56, L: 0.22, N: 0 },
+    PR: { H: 0.5, L: 0.68, N: 0.85 },
+    UI: { N: 0.85, R: 0.62 },
+  };
+  const iss =
+    1 -
+    (1 - values.C[metrics.C]) *
+      (1 - values.I[metrics.I]) *
+      (1 - values.A[metrics.A]);
+  const impact = 7.52 * (iss - 0.029) - 3.25 * Math.pow(iss - 0.02, 15);
+  if (impact <= 0) return 0;
+  const exploitability =
+    8.22 *
+    values.AV[metrics.AV] *
+    values.AC[metrics.AC] *
+    values.PR[metrics.PR] *
+    values.UI[metrics.UI];
+  return (
+    Math.ceil(Math.min(1.08 * (impact + exploitability), 10) * 10 - 1e-10) / 10
+  );
+}
 
 function finding(report) {
   return report.results[0].packages[0];
