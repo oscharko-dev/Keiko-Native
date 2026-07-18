@@ -9,15 +9,19 @@ const ignoredLaunchers = new Set([".bin"]);
 
 export async function captureDependencySnapshot({
   frontendRoot,
+  listFiles = (root) => filesBelow(root, ignoredLaunchers, root),
+  listTopLevel = async (root) =>
+    (await readdir(root, { withFileTypes: true })).map(({ name }) => name),
+  readRegular = readOpenedRegular,
   snapshotRoot,
+  sourceRoot = join(frontendRoot, "node_modules"),
   writeFile,
 }) {
-  const sourceRoot = join(frontendRoot, "node_modules");
-  const lockBytes = await readOpenedRegular(
+  const lockBytes = await readRegular(
     join(frontendRoot, "package-lock.json"),
     frontendRoot,
   );
-  const paths = await filesBelow(sourceRoot, ignoredLaunchers, sourceRoot);
+  const paths = await listFiles(sourceRoot);
   const relativePaths = paths.map((path) =>
     portable(relative(sourceRoot, path)),
   );
@@ -27,16 +31,16 @@ export async function captureDependencySnapshot({
 
   const lock = parseJson(lockBytes, "dependency-lock");
   const markerSource = paths[relativePaths.indexOf(markerPath)];
-  const markerBytes = await readOpenedRegular(markerSource, sourceRoot);
+  const markerBytes = await readRegular(markerSource, sourceRoot);
   const marker = parseJson(markerBytes, "npm-ci-marker");
   const roots = validateInventory(lock, marker, relativePaths);
-  await validateTopLevel(sourceRoot, roots);
+  await validateTopLevel(sourceRoot, roots, listTopLevel);
   const contents = [];
   for (const [index, source] of paths.entries())
     contents.push(
       source === markerSource
         ? markerBytes
-        : await readOpenedRegular(source, sourceRoot),
+        : await readRegular(source, sourceRoot),
     );
   validatePackageIdentities(marker, relativePaths, contents);
 
@@ -44,8 +48,10 @@ export async function captureDependencySnapshot({
   for (const [index, source] of paths.entries()) {
     const bytes = contents[index];
     const path = relativePaths[index];
-    const destination = join(snapshotRoot, ...path.split("/"));
-    await writeFile(destination, bytes);
+    if (writeFile) {
+      const destination = join(snapshotRoot, ...path.split("/"));
+      await writeFile(destination, bytes);
+    }
     files.push({ path, sha256: digest(bytes) });
   }
   const lockSha256 = digest(lockBytes);
@@ -54,6 +60,14 @@ export async function captureDependencySnapshot({
     Buffer.from(JSON.stringify({ files, lockSha256, markerSha256 })),
   );
   return { files, lockSha256, markerSha256, treeSha256 };
+}
+
+async function validateTopLevel(sourceRoot, roots, listTopLevel) {
+  const allowed = new Set([".bin", ".package-lock.json"]);
+  for (const root of roots)
+    allowed.add(root.startsWith("@") ? root.split("/")[0] : root);
+  for (const name of await listTopLevel(sourceRoot))
+    if (!allowed.has(name)) throw rejected("unexpected-top-level");
 }
 
 function validatePackageIdentities(marker, paths, contents) {
@@ -100,15 +114,6 @@ function validateInventory(lock, marker, paths) {
       throw rejected("unexpected-entry");
   }
   return roots;
-}
-
-async function validateTopLevel(sourceRoot, roots) {
-  const allowed = new Set([".bin", ".package-lock.json"]);
-  for (const root of roots)
-    allowed.add(root.startsWith("@") ? root.split("/")[0] : root);
-  for (const entry of await readdir(sourceRoot, { withFileTypes: true })) {
-    if (!allowed.has(entry.name)) throw rejected("unexpected-top-level");
-  }
 }
 
 function parseJson(bytes, category) {

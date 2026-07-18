@@ -37,6 +37,7 @@ import {
   snapshotPaths,
 } from "./native-snapshot-runtime.mjs";
 import { runNativeSnapshot } from "./native-snapshot.mjs";
+import { createNativePackageIo } from "./native-package-io.mjs";
 
 const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const nativeRoot = join(repositoryRoot, "native");
@@ -49,14 +50,9 @@ const packageRoot = outputRoot
   ? join(outputRoot, "keiko-native-package")
   : join(targetRoot, "keiko-native-package");
 const stableCargo = ["+1.92.0"];
-const ignoredNativeDirectories = new Set([
-  "coverage",
-  "dist",
-  "gen",
-  "node_modules",
-  "target",
-]);
-
+const ignoredNativeDirectories = new Set(
+  "coverage dist gen node_modules target".split(" "),
+);
 function productiveRustEnv(revision = sourceRevision()) {
   return createProductiveRustEnv(repositoryRoot, revision);
 }
@@ -350,7 +346,6 @@ const { acceptance, packageNative } = createNativePackageGate({
       ? createSnapshotGuard(repositoryRoot)
       : createExactHeadGuard(readGit),
   cargoMetadata,
-  filesBelow,
   frontendRoot,
   nativeRoot,
   onMacOs,
@@ -362,6 +357,11 @@ const { acceptance, packageNative } = createNativePackageGate({
   rustBuildEnv: productiveRustEnv,
   targetRoot,
   testNative,
+  ...createNativePackageIo({
+    fallbackFilesBelow: filesBelow,
+    outputRoot,
+    packageRoot,
+  }),
 });
 
 const modes = {

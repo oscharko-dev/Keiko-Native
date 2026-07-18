@@ -2,18 +2,18 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   chmod,
-  cp,
   mkdir,
   mkdtemp,
+  lstat,
   readFile,
+  realpath,
   rm,
-  symlink,
-  writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join, relative } from "node:path";
 
 import { captureDependencySnapshot } from "./native-dependencies.mjs";
+import { compileNativeFsHelper, NATIVE_FS_SOURCES } from "./native-fs.mjs";
 
 const GENERATED = [
   "native/apps/keiko-desktop/gen",
@@ -22,47 +22,79 @@ const GENERATED = [
 ];
 
 export async function runNativeSnapshot({ mode, repositoryRoot }) {
-  const temporaryRoot = await mkdtemp(join(tmpdir(), "keiko-native-snapshot-"));
+  const suppliedRepositoryRoot = repositoryRoot;
+  const metadata = await lstat(suppliedRepositoryRoot);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink())
+    throw new Error("Immutable snapshot rejected repository-root");
+  repositoryRoot = await realpath(suppliedRepositoryRoot);
+  if (
+    repositoryRoot !== suppliedRepositoryRoot &&
+    repositoryRoot !== `/private${suppliedRepositoryRoot}`
+  ) {
+    throw new Error("Immutable snapshot rejected repository-root-alias");
+  }
+  const createdRoot = await mkdtemp(join(tmpdir(), "keiko-native-snapshot-"));
+  const temporaryRoot = await realpath(createdRoot);
   await chmod(temporaryRoot, 0o700);
   const snapshotRoot = join(temporaryRoot, "repository");
   const dependencyRoot = join(temporaryRoot, "dependencies");
   const outputRoot = join(temporaryRoot, "output");
   const manifestPath = join(temporaryRoot, "manifest.json");
   try {
-    await mkdir(dependencyRoot);
-    const dependencies = await captureDependencySnapshot({
-      frontendRoot: join(repositoryRoot, "native/frontend"),
-      snapshotRoot: dependencyRoot,
-      async writeFile(path, bytes) {
-        await mkdir(dirname(path), { recursive: true });
-        await writeFile(path, bytes, { mode: 0o555 });
-      },
-    });
     const captured = captureRepository(repositoryRoot);
     await mkdir(snapshotRoot);
+    await mkdir(dependencyRoot);
     await mkdir(outputRoot);
     materialize(repositoryRoot, snapshotRoot, captured.head, captured.entries);
     const files = [];
     for (const entry of captured.entries) {
       const bytes = await readFile(join(snapshotRoot, entry.path));
       files.push({
+        blob: entry.blob,
         path: entry.path,
         sha256: createHash("sha256").update(bytes).digest("hex"),
       });
     }
-    await writeFile(
-      manifestPath,
+    const helperPath = join(temporaryRoot, "native-fs-helper");
+    const nativeFs = compileNativeFsHelper({
+      expectedSources: NATIVE_FS_SOURCES.map((path) =>
+        files.find((entry) => entry.path === path),
+      ),
+      outputPath: helperPath,
+      snapshotRoot,
+      tree: captured.tree,
+    });
+    const sourceModules = join(repositoryRoot, "native/frontend/node_modules");
+    nativeFs.copyTree(sourceModules, ".", dependencyRoot, ".", ".bin");
+    const dependencyInventory = nativeFs.list(dependencyRoot);
+    const dependencies = await captureDependencySnapshot({
+      frontendRoot: join(snapshotRoot, "native/frontend"),
+      listFiles: () =>
+        dependencyInventory
+          .filter(({ type }) => type === "F")
+          .map(({ path }) => join(dependencyRoot, ...path.split("/"))),
+      listTopLevel: () => [
+        ...new Set(dependencyInventory.map(({ path }) => path.split("/")[0])),
+      ],
+      readRegular(path, root) {
+        return nativeFs.read(root, relative(root, path));
+      },
+      snapshotRoot: dependencyRoot,
+      sourceRoot: dependencyRoot,
+    });
+    nativeFs.write(
+      temporaryRoot,
+      "manifest.json",
       `${JSON.stringify({ dependencies, files, head: captured.head, tree: captured.tree })}\n`,
-      { mode: 0o600 },
+      0o600,
     );
     const lockEntry = files.find(
       ({ path }) => path === "native/frontend/package-lock.json",
     );
     if (lockEntry?.sha256 !== dependencies.lockSha256)
       throw new Error("Immutable snapshot rejected dependency-lock-drift");
-    await installFrontendDependencies(snapshotRoot, dependencyRoot);
-    for (const path of GENERATED)
-      await mkdir(join(snapshotRoot, path), { recursive: true });
+    installFrontendDependencies(nativeFs, snapshotRoot, dependencyRoot);
+    for (const path of GENERATED) nativeFs.mkdir(snapshotRoot, path);
     if (process.platform !== "win32") protectInputs(snapshotRoot);
     const result = command(
       process.execPath,
@@ -73,6 +105,7 @@ export async function runNativeSnapshot({ mode, repositoryRoot }) {
           ...process.env,
           CARGO_TARGET_DIR: join(outputRoot, "cargo-target"),
           KEIKO_NATIVE_OUTPUT_ROOT: outputRoot,
+          KEIKO_NATIVE_FS_HELPER: helperPath,
           KEIKO_NATIVE_SNAPSHOT_MANIFEST: manifestPath,
           KEIKO_NATIVE_SOURCE_REVISION: captured.head,
         },
@@ -93,15 +126,17 @@ export async function runNativeSnapshot({ mode, repositoryRoot }) {
         repositoryRoot,
         "native/target/keiko-native-package",
       );
-      await rm(delivery, { force: true, recursive: true });
-      await cp(join(outputRoot, "keiko-native-package"), delivery, {
-        recursive: true,
-      });
+      nativeFs.publish(
+        outputRoot,
+        "keiko-native-package",
+        repositoryRoot,
+        relative(repositoryRoot, delivery),
+      );
     }
     return 0;
   } finally {
     command("chmod", ["-R", "u+w", temporaryRoot]);
-    await rm(temporaryRoot, { force: true, recursive: true });
+    await rm(createdRoot, { force: true, recursive: true });
   }
 }
 
@@ -126,12 +161,12 @@ function captureRepository(repositoryRoot) {
     .split("\0")
     .filter(Boolean)
     .map((record) => {
-      const match = /^(100644|100755) blob [0-9a-f]{40}\t([^\0]+)$/u.exec(
+      const match = /^(100644|100755) blob ([0-9a-f]{40})\t([^\0]+)$/u.exec(
         record,
       );
-      if (!match || invalidPath(match[2]))
+      if (!match || invalidPath(match[3]))
         throw new Error("Immutable snapshot rejected tree-entry");
-      return { mode: match[1], path: match[2] };
+      return { blob: match[2], mode: match[1], path: match[3] };
     });
   return { entries, head, tree };
 }
@@ -152,18 +187,25 @@ function materialize(repositoryRoot, snapshotRoot, head, entries) {
     throw new Error("Immutable snapshot rejected extraction");
 }
 
-async function installFrontendDependencies(snapshotRoot, dependencyRoot) {
-  const destination = join(snapshotRoot, "native/frontend/node_modules");
-  await cp(dependencyRoot, destination, { recursive: true });
-  const bin = join(destination, ".bin");
-  await mkdir(bin);
+function installFrontendDependencies(nativeFs, snapshotRoot, dependencyRoot) {
+  nativeFs.copyTree(
+    dependencyRoot,
+    ".",
+    join(snapshotRoot, "native/frontend"),
+    "node_modules",
+  );
+  nativeFs.mkdir(snapshotRoot, "native/frontend/node_modules/.bin");
   for (const [name, target] of Object.entries({
     tauri: "../@tauri-apps/cli/tauri.js",
     tsc: "../typescript/bin/tsc",
     vite: "../vite/bin/vite.js",
     vitest: "../vitest/vitest.mjs",
   })) {
-    await symlink(target, join(bin, name));
+    nativeFs.symlink(
+      snapshotRoot,
+      `native/frontend/node_modules/.bin/${name}`,
+      target,
+    );
   }
 }
 

@@ -97,6 +97,7 @@ export const nativePackageTestSupport = {
 
 export function createNativePackageGate({
   build,
+  captureOutputTree,
   captureRepositoryState,
   cargoMetadata,
   filesBelow,
@@ -104,6 +105,10 @@ export function createNativePackageGate({
   nativeRoot,
   onMacOs,
   packageRoot,
+  preparePackageRoot = async () => {
+    await rm(packageRoot, { force: true, recursive: true });
+    await mkdir(packageRoot, { recursive: true });
+  },
   processControl = defaultProcessControl,
   readInputFile = readFile,
   readOutputFile = readFile,
@@ -112,6 +117,10 @@ export function createNativePackageGate({
   rustBuildEnv,
   targetRoot,
   testNative,
+  writeOutputFile = async (path, bytes, mode) => {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, bytes, mode === undefined ? undefined : { mode });
+  },
 }) {
   const appRoot = join(packageRoot, "Keiko Native.app");
 
@@ -147,8 +156,7 @@ export function createNativePackageGate({
     await build(revision);
     await repositoryState.assertUnchanged("after-build");
     if (!onMacOs()) return revision;
-    await rm(packageRoot, { force: true, recursive: true });
-    await mkdir(packageRoot, { recursive: true });
+    await preparePackageRoot();
     run(
       join(frontendRoot, "node_modules/.bin/tauri"),
       ["build", "--config", "tauri.conf.json", "--bundles", "app"],
@@ -161,24 +169,25 @@ export function createNativePackageGate({
       targetRoot,
       "release/bundle/macos/Keiko Native.app",
     );
+    if (captureOutputTree)
+      await captureOutputTree(builtAppRoot, packageRoot, "Keiko Native.app");
+    const inventoryRoot = captureOutputTree ? appRoot : builtAppRoot;
     const files = await Promise.all(
-      (await filesBelow(builtAppRoot)).map(async (path) => ({
-        bytes: await readOutputFile(path, builtAppRoot),
-        path: relative(builtAppRoot, path).split("\\").join("/"),
+      (await filesBelow(inventoryRoot)).map(async (path) => ({
+        bytes: await readOutputFile(path, inventoryRoot),
+        path: relative(inventoryRoot, path).split("\\").join("/"),
         sha256: "",
       })),
     );
     for (const file of files)
       file.sha256 = createHash("sha256").update(file.bytes).digest("hex");
-    await mkdir(appRoot, { recursive: true });
-    for (const file of files) {
-      const destination = join(appRoot, file.path);
-      await mkdir(dirname(destination), { recursive: true });
-      await writeFile(destination, file.bytes, {
-        mode:
+    if (!captureOutputTree)
+      for (const file of files)
+        await writeOutputFile(
+          join(appRoot, file.path),
+          file.bytes,
           file.path === "Contents/MacOS/keiko-native-desktop" ? 0o755 : 0o644,
-      });
-    }
+        );
     const policy = JSON.parse(
       await readInputFile(join(nativeRoot, "package-policy.json"), "utf8"),
     );
@@ -252,7 +261,7 @@ export function createNativePackageGate({
     const encoded = `${JSON.stringify(manifest, null, 2)}\n`;
     if (redactionMatches(encoded).length > 0)
       throw new Error("Package evidence failed redaction");
-    await writeFile(join(packageRoot, "package-manifest.json"), encoded);
+    await writeOutputFile(join(packageRoot, "package-manifest.json"), encoded);
     await repositoryState.assertUnchanged("after-package-evidence");
     return revision;
   }
@@ -309,7 +318,10 @@ export function createNativePackageGate({
       failures.push("evidence-redaction-match");
     if (failures.length > 0)
       throw new Error(`Acceptance evidence rejected: ${failures.join(",")}`);
-    await writeFile(join(packageRoot, "acceptance-evidence.json"), encoded);
+    await writeOutputFile(
+      join(packageRoot, "acceptance-evidence.json"),
+      encoded,
+    );
     await repositoryState.assertUnchanged("after-acceptance-evidence");
   }
 

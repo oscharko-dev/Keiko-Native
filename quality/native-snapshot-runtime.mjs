@@ -3,7 +3,17 @@ import { constants } from "node:fs";
 import { lstat, open, readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 
+import { createNativeFs } from "./native-fs.mjs";
+
 let cachedManifest;
+let cachedFilesystem;
+
+function filesystem() {
+  const path = process.env.KEIKO_NATIVE_FS_HELPER;
+  if (!path) return undefined;
+  cachedFilesystem ??= createNativeFs(path);
+  return cachedFilesystem;
+}
 
 async function manifest() {
   if (cachedManifest !== undefined) return cachedManifest;
@@ -46,6 +56,21 @@ export async function readSnapshotInput(path, repositoryRoot, encoding) {
 }
 
 export async function readOpenedRegular(path, containmentRoot = dirname(path)) {
+  const nativeFs = filesystem();
+  if (nativeFs) {
+    const contained = relative(containmentRoot, path);
+    if (
+      contained === "" ||
+      contained.startsWith(`..${sep}`) ||
+      isAbsolute(contained)
+    )
+      throw new Error("Immutable snapshot rejected output-escape");
+    try {
+      return nativeFs.read(containmentRoot, contained.split(sep).join("/"));
+    } catch {
+      throw new Error("Immutable snapshot rejected unavailable-file");
+    }
+  }
   let handle;
   try {
     handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -71,6 +96,38 @@ export async function readOpenedRegular(path, containmentRoot = dirname(path)) {
   } finally {
     await handle?.close();
   }
+}
+
+export function copySnapshotOutputTree(
+  sourceRoot,
+  sourcePath,
+  destinationRoot,
+  destinationPath,
+) {
+  const nativeFs = filesystem();
+  if (!nativeFs) return false;
+  nativeFs.copyTree(sourceRoot, sourcePath, destinationRoot, destinationPath);
+  return true;
+}
+
+export function listSnapshotOutput(root, path = ".") {
+  const nativeFs = filesystem();
+  if (!nativeFs) return undefined;
+  return nativeFs.list(root, path);
+}
+
+export function mkdirSnapshotOutput(root, path) {
+  const nativeFs = filesystem();
+  if (!nativeFs) return false;
+  nativeFs.mkdir(root, path);
+  return true;
+}
+
+export function writeSnapshotOutput(root, path, bytes, mode) {
+  const nativeFs = filesystem();
+  if (!nativeFs) return false;
+  nativeFs.write(root, path, bytes, mode);
+  return true;
 }
 
 export async function createSnapshotGuard(repositoryRoot) {
@@ -108,5 +165,6 @@ function digest(bytes) {
 export const nativeSnapshotRuntimeTestSupport = {
   reset() {
     cachedManifest = undefined;
+    cachedFilesystem = undefined;
   },
 };

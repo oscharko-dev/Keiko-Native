@@ -149,14 +149,31 @@ the complete local suite before another push. GitHub is remote-only validation, 
 
 Productive native quality begins with the exact standalone frontend `npm ci` command owned by
 `native:dependencies`; install scripts and npm workspace inference are disabled. Each native gate
-then copies that installation into a private snapshot before capturing the exact Git tree. The
-snapshot requires the npm-ci hidden lock marker, binds it to the committed lock and exact installed
-package inventory, rejects unexpected or non-regular inputs, and retains a deterministic digest of
-every copied dependency byte. It becomes read-only before the native command starts, and the command
-never reads the original `node_modules` after source capture. This proves reproducibility of the
-installed tree used by the gate; it does not independently reproduce npm registry tarball-integrity
-verification. That residual trust remains with the preceding exact npm-ci operation and npm's
-verification of the committed integrity records.
+captures the exact Git tree into a private mode-0700 snapshot and compiles the repository-owned
+native filesystem quality helper from the five expected Git blobs. The runner verifies the source
+set, Git-blob IDs, SHA-256 digests, and tree identity before compilation and verifies the sources
+again before publishing the private mode-0700 executable. The private snapshot is the trust boundary
+for compiler input: mutable workspace paths are never compiler inputs, and compiler failure,
+unexpected output, or detected source drift cleans the temporary output and fails closed.
+
+On macOS and Linux, that dependency-free POSIX C helper performs mutable dependency, generated
+package, evidence, and delivery operations through descriptor-relative traversal. It rejects
+symlinked components, non-regular files, replacements, concurrent changes, and root-identity drift.
+Writes use exclusive no-follow creation. Existing delivery directories are atomically exchanged
+with a fully staged tree (`renameatx_np` on macOS and `renameat2` on Linux); an unavailable atomic
+exchange fails closed instead of degrading to a non-atomic replacement. The runner accepts only the
+canonical `/var` to `/private/var` macOS system alias during private-root creation and does not
+resolve a caller-supplied final root symlink.
+
+The helper copies the installed frontend dependencies into the private snapshot before inventory.
+The snapshot requires the npm-ci hidden lock marker, binds it to the committed lock and exact
+installed package inventory (including empty or unexpected top-level entries), rejects unexpected
+or non-regular inputs, and retains a deterministic digest of every copied dependency byte. It
+becomes read-only before the native command starts, and the command never reads the original
+`node_modules` after capture. This proves reproducibility of the installed tree used by the gate;
+it does not independently reproduce npm registry tarball-integrity verification. That residual
+trust remains with the preceding exact npm-ci operation and npm's verification of the committed
+integrity records.
 
 The bootstrap quality control plane deliberately keeps third-party execution surface minimal:
 Prettier is the only npm development dependency. Markdown policy and LCOV generation are local,

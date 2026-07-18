@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  cp,
   mkdir,
   mkdtemp,
   readdir,
@@ -11,10 +12,12 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { filesBelow } from "./native-files.mjs";
+import { NATIVE_FS_SOURCES } from "./native-fs.mjs";
 import {
   nativeSnapshotTestSupport,
   runNativeSnapshot,
@@ -26,6 +29,8 @@ import {
   readSnapshotInput,
   snapshotPaths,
 } from "./native-snapshot-runtime.mjs";
+
+const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
 test("captured Git tree ignores final and parent workspace swaps", async () => {
   const root = await mkdtemp(join(tmpdir(), "keiko-snapshot-git-"));
@@ -198,6 +203,10 @@ test("snapshot runner cleans its private root when the isolated command fails", 
         version: "1.0.0",
       }),
     );
+    for (const path of NATIVE_FS_SOURCES) {
+      await mkdir(dirname(join(root, path)), { recursive: true });
+      await cp(join(repositoryRoot, path), join(root, path));
+    }
     git(root, ["init"]);
     git(root, ["config", "user.email", "fixture@invalid"]);
     git(root, ["config", "user.name", "Fixture"]);
