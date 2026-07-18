@@ -58,6 +58,7 @@ function requestMock(
     failures = {},
     issueLabels,
     issueOverrides,
+    pullRequests = [],
   } = {},
 ) {
   const calls = [];
@@ -73,6 +74,7 @@ function requestMock(
     if (path.includes("/comments?")) return comments;
     if (path.includes("/labels?"))
       return LIFECYCLE_STATES.map((name) => ({ name }));
+    if (path.includes("/pulls?")) return pullRequests;
     if (path.includes("/issues/27")) return issue(issueLabels, issueOverrides);
     return {};
   };
@@ -121,6 +123,7 @@ test("workflow loads protected dev code with read-only credentials", async () =>
     pullRequestWorkflow,
     /KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled/u,
   );
+  assert.match(pullRequestWorkflow, /closed/u);
 });
 
 test("reloads trusted issue state and plans reconciliation with activation disabled", async (t) => {
@@ -296,6 +299,28 @@ test("plans validated assignment claim and release transitions", async (t) => {
     ok: true,
     remove: ["status: in progress"],
   });
+
+  const rawRelease = requestMock(t, {
+    issueLabels: ["status: in progress"],
+    issueOverrides: { assignees: [] },
+  });
+  const rawReleaseResult = await runIssueLifecycleAction({
+    event: {
+      action: "unassigned",
+      assignee: { login: "runner" },
+      expectedReadinessCommentId: 101,
+      issue: { number: 27 },
+      sender: { login: "maintainer" },
+    },
+    request: rawRelease.request,
+  });
+  assert.equal(rawReleaseResult.outcome, "planned");
+  assert.equal(rawReleaseResult.desiredState, "status: ready");
+  assert.ok(
+    rawRelease.calls.some((call) =>
+      call.path.includes("/pulls?state=open&per_page=100&page=1"),
+    ),
+  );
 });
 
 test("plans pull request lifecycle topology from trusted PR events", async (t) => {
@@ -319,6 +344,32 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
     failures: [],
     ok: true,
     remove: ["status: in progress"],
+  });
+
+  const readyForReview = requestMock(t, {
+    issueLabels: ["status: pr open"],
+  });
+  const readyForReviewResult = await runIssueLifecycleAction({
+    event: {
+      action: "ready_for_review",
+      pull_request: {
+        body: "## Scope\n\n- Accepted issue: #27",
+        head: { sha: "c".repeat(40) },
+        node_id: "pr-node-40",
+      },
+    },
+    request: readyForReview.request,
+  });
+  assert.equal(readyForReviewResult.outcome, "planned");
+  assert.equal(
+    readyForReviewResult.desiredState,
+    "status: ready for human review",
+  );
+  assert.deepEqual(readyForReviewResult.plan, {
+    apply: ["status: ready for human review"],
+    failures: [],
+    ok: true,
+    remove: ["status: pr open"],
   });
 
   const preActivationReady = requestMock(t, { issueLabels: ["status: ready"] });

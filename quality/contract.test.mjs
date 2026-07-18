@@ -508,7 +508,7 @@ async function fixtureRepository() {
       "    branches:",
       "      - dev",
       '      - "epic/**"',
-      "types: [opened, edited, reopened, synchronize, ready_for_review, converted_to_draft]",
+      "types: [opened, edited, reopened, synchronize, ready_for_review, converted_to_draft, closed]",
       "name: Evaluate trusted PR metadata",
       "ref: dev",
       "statuses: write",

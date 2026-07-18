@@ -17,6 +17,7 @@ import {
   evaluateCurrentReadiness,
   evaluatePullRequestTopology,
 } from "./issue-lifecycle-readiness.mjs";
+import { readinessRecordFromComments } from "./issue-readiness-action.mjs";
 import { semanticIssueFingerprint } from "./issue-contract.mjs";
 
 const lifecycleActivationEnabled = "enabled";
@@ -144,11 +145,8 @@ function pullRequestEvidence(event, issueNumber) {
 function pullRequestLifecycleEvent(event) {
   if (event?.pull_request === undefined) return undefined;
   if (["opened", "reopened"].includes(event.action)) return event.action;
-  if (
-    ["synchronize", "ready_for_review", "converted_to_draft"].includes(
-      event.action,
-    )
-  )
+  if (event.action === "ready_for_review") return "ready_for_review";
+  if (["synchronize", "converted_to_draft"].includes(event.action))
     return "opened";
   if (event.action === "closed" && event.pull_request?.merged !== true)
     return "closed_unmerged";
@@ -318,6 +316,42 @@ async function allProviderLabels(repository, request) {
   }
 }
 
+async function hasLinkedOpenPullRequest(repository, issueNumber, request) {
+  for (let page = 1; ; page += 1) {
+    const batch = await request(
+      `/repos/${repository}/pulls?state=open&per_page=100&page=${page}`,
+    );
+    if (!Array.isArray(batch))
+      throw new Error("Open pull requests response is malformed.");
+    if (
+      batch.some(
+        (pullRequest) =>
+          pullRequestIssueNumber(pullRequest?.body) === issueNumber,
+      )
+    )
+      return true;
+    if (batch.length < 100) return false;
+  }
+}
+
+async function eventWithDerivedEvidence({
+  event,
+  issueNumber,
+  repository,
+  request,
+}) {
+  if (event?.action !== "unassigned" || event.hasOpenPullRequest !== undefined)
+    return event;
+  return {
+    ...event,
+    hasOpenPullRequest: await hasLinkedOpenPullRequest(
+      repository,
+      issueNumber,
+      request,
+    ),
+  };
+}
+
 async function reloadIssue(repository, issueNumber, request) {
   const issue = await request(`/repos/${repository}/issues/${issueNumber}`);
   if (
@@ -398,6 +432,9 @@ function readinessEvent(event) {
 }
 
 function evaluateReadinessForIssue({ comments, event, issue }) {
+  const expectedCommentId =
+    event.expectedReadinessCommentId ??
+    readinessRecordFromComments(comments)?.commentId;
   return evaluateCurrentReadiness({
     comments,
     currentFingerprint: semanticIssueFingerprint(issue.body ?? "", issue.title),
@@ -405,7 +442,7 @@ function evaluateReadinessForIssue({ comments, event, issue }) {
       issue.body ?? "",
     )?.[1],
     event: readinessEvent(event),
-    expectedCommentId: event.expectedReadinessCommentId,
+    expectedCommentId,
   });
 }
 
@@ -539,8 +576,14 @@ export async function runIssueLifecycleAction({
     issue,
   });
   const enabled = enabledLifecycleActivation();
-  const desired = desiredStateForEvent(
+  const evidencedEvent = await eventWithDerivedEvidence({
     event,
+    issueNumber,
+    repository,
+    request,
+  });
+  const desired = desiredStateForEvent(
+    evidencedEvent,
     readiness,
     currentState,
     enabled,

@@ -123,6 +123,7 @@ const pullRequestContractMarkers = [
   "synchronize",
   "ready_for_review",
   "converted_to_draft",
+  "closed",
   "name: Evaluate trusted PR metadata",
   "ref: dev",
   "statuses: write",
