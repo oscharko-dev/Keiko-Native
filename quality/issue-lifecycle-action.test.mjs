@@ -280,6 +280,31 @@ test("removes lifecycle labels for non-completed closures", async (t) => {
   assert.equal(appliedResult.removeLifecycleLabels, true);
   assert.equal(deleteCount, 2);
 
+  let malformedDeleteCount = 0;
+  const malformedReadback = requestMock(t, {
+    issueLabels: ["status: ready", "status: blocked"],
+  });
+  const malformedResult = await runIssueLifecycleAction({
+    event: {
+      action: "closed",
+      issue: { number: 27, state_reason: "not_planned" },
+    },
+    request: async (path, options) => {
+      if (path.includes("/issues/27") && malformedDeleteCount === 2) {
+        const { labels, ...withoutLabels } = issue([]);
+        return withoutLabels;
+      }
+      const response = await malformedReadback.request(path, options);
+      if (options?.method === "DELETE") malformedDeleteCount += 1;
+      return response;
+    },
+  });
+  assert.equal(malformedResult.outcome, "failed");
+  assert.match(
+    malformedResult.failures.join("\n"),
+    /read-back labels are unavailable/u,
+  );
+
   const unsupported = requestMock(t, { issueLabels: ["status: ready"] });
   const unsupportedResult = await runIssueLifecycleAction({
     event: {
@@ -405,6 +430,22 @@ test("covers alternate fail-closed and no-op lifecycle branches", async (t) => {
   });
   assert.equal(prematureClosedResult.outcome, "failed");
   assert.deepEqual(prematureClosedResult.failures, [
+    "completion_evidence_required",
+  ]);
+
+  const conflictedClosed = requestMock(t, {
+    issueLabels: ["status: ready for human review", "status: blocked"],
+  });
+  const conflictedClosedResult = await runIssueLifecycleAction({
+    event: {
+      action: "closed",
+      expectedReadinessCommentId: 101,
+      issue: { number: 27, state_reason: "completed" },
+    },
+    request: conflictedClosed.request,
+  });
+  assert.equal(conflictedClosedResult.outcome, "failed");
+  assert.deepEqual(conflictedClosedResult.failures, [
     "completion_evidence_required",
   ]);
 

@@ -70,6 +70,11 @@ function currentLifecycleState(issue, event) {
   return states.includes(requestedSource) ? requestedSource : states[0];
 }
 
+function hasSoleLifecycleState(issue, state) {
+  const states = statusLabels(issue);
+  return states.length === 1 && states[0] === state;
+}
+
 function unauthorizedRawLabelResult(enabled) {
   return enabled
     ? {
@@ -99,7 +104,7 @@ function desiredStateForClosure(event, issue) {
   if (event?.action !== "closed") return undefined;
   const closure = evaluateClosurePrecondition({
     completionEvidence: {
-      validated: statusLabels(issue).includes(LIFECYCLE_STATES[5]),
+      validated: hasSoleLifecycleState(issue, LIFECYCLE_STATES[5]),
     },
     reason: event.issue?.state_reason,
   });
@@ -190,9 +195,11 @@ function verifyLifecycleLabelRemoval({
   const failures = [];
   if (actualIssueIdentity !== expectedIssueIdentity)
     failures.push("Issue identity changed during lifecycle reconciliation.");
-  const remaining = (labels ?? []).filter((name) =>
-    name?.startsWith("status: "),
-  );
+  if (!Array.isArray(labels))
+    failures.push("Issue lifecycle read-back labels are unavailable.");
+  const remaining = Array.isArray(labels)
+    ? labels.filter((name) => name?.startsWith("status: "))
+    : [];
   if (remaining.length > 0)
     failures.push("Issue lifecycle read-back still contains status labels.");
   return failures.length === 0 ? { ok: true } : { failures, ok: false };
