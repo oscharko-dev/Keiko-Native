@@ -164,9 +164,11 @@ nightly installed by the native matrix.
 
 Root coverage runs exactly one test file at a time. Serial execution prevents native filesystem
 helper compilers and race fixtures from intermittently contending for shared runner resources. The
-custom reporter emits one bounded failure line containing only sanitized test identity, failure
-type, error code, and the first message line; paths, URIs, credential-like values, long token-like
-values, control sequences, stacks, causes, and raw error objects are excluded.
+custom reporter emits one bounded failure line containing validated failure type and error code.
+Test identity and message fields retain only ordinary allowlisted ASCII diagnostics; any path, URI,
+email, structured marker, credential or key marker, long token-like value, control byte, or other
+non-allowlisted character replaces the whole field with a stable placeholder. Stacks, causes, and
+raw error objects are never emitted.
 
 Productive native quality begins with the exact standalone frontend `npm ci` command owned by
 `native:dependencies`; install scripts and npm workspace inference are disabled. Each native gate

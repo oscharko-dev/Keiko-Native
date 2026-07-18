@@ -50,44 +50,24 @@ export const canonicalCoverageCommand = [
 
 const safeMetadata = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/u;
 const tokenLikeMetadata = /^[A-Za-z0-9+_=-]{24,}$/u;
-
-function stripTerminalSequences(value) {
-  return value
-    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\|$)/gu, "")
-    .replace(/\u009d[^\u0007\u009c]*(?:\u0007|\u009c|$)/gu, "")
-    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
-    .replace(/\u001b[@-_]/gu, "");
-}
+const safeDiagnosticCharacters = /^[A-Za-z0-9 .,:;!?()_+=%-]*$/u;
+const sensitiveDiagnosticMarker =
+  /\b(?:api[-_ ]?key|authorization|bearer|cookie|credential|password|private[-_ ]?key|secret|token)\b/iu;
+const tokenLikeDiagnostic =
+  /(?:^|[^A-Za-z0-9+_=-])[A-Za-z0-9+_=-]{24,}(?=$|[^A-Za-z0-9+_=-])/u;
+const redactedDiagnostic = "<redacted-diagnostic>";
 
 function sanitizeDiagnostic(value, maximum, fallback) {
   if (typeof value !== "string") return fallback;
-  let sanitized = stripTerminalSequences(sanitizeOutput(value))
-    .split(/[\r\n]/u, 1)[0]
-    .replace(/[\u0000-\u001f\u007f]/gu, " ");
-  if (/^\s*[\[{]/u.test(sanitized)) sanitized = "<redacted-structured-output>";
-  else
-    sanitized = sanitized
-      .replace(
-        /\b(authorization|cookie|password|secret|token|api[-_]?key)\s*[:=]\s*[^\s,;]+/giu,
-        "$1=<redacted>",
-      )
-      .replace(
-        /\b(authorization\s*:?[ \t]*bearer)[ \t]+[^\s,;]+/giu,
-        "$1 <redacted>",
-      )
-      .replace(/\b(?:https?|file):\/\/[^\s"'<>]+/giu, "<uri>")
-      .replace(
-        /\\\\[^\\\s"'<>|]+\\(?:[^\\\s"'<>|]+\\)*[^\\\s"'<>|]+/gu,
-        "<path>",
-      )
-      .replace(/\b[A-Za-z]:[\\/][^\s"'<>|]+/gu, "<path>")
-      .replace(/\/(?:[^\s"'<>/]+\/)*[^\s"'<>/]+/gu, "<path>")
-      .replace(/<redacted-path>(?:<path>)?/gu, "<path>")
-      .replace(/\{[^{}]*\}|\[[^\[\]]*\]/gu, "<redacted-structured-output>")
-      .replace(/(["'`])(?:\\.|(?!\1).)*\1/gu, "<value>")
-      .replace(/\b[A-Za-z0-9+_=-]{24,}\b/gu, "<redacted>")
-      .replace(/\s+/gu, " ")
-      .trim();
+  const sharedSanitized = sanitizeOutput(value);
+  if (
+    sharedSanitized !== value ||
+    !safeDiagnosticCharacters.test(value) ||
+    sensitiveDiagnosticMarker.test(value) ||
+    tokenLikeDiagnostic.test(value)
+  )
+    return redactedDiagnostic;
+  let sanitized = value.trim();
   if (!sanitized) return fallback;
   if (sanitized.length > maximum)
     sanitized = `${sanitized.slice(0, maximum - 1)}…`;
@@ -97,6 +77,7 @@ function sanitizeDiagnostic(value, maximum, fallback) {
 function metadata(value) {
   return typeof value === "string" &&
     safeMetadata.test(value) &&
+    !sensitiveDiagnosticMarker.test(value) &&
     !tokenLikeMetadata.test(value)
     ? value
     : "unknown";

@@ -5,7 +5,7 @@ import { join } from "node:path";
 export function sanitizeOutput(value) {
   return value
     .replaceAll(
-      /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----/gu,
+      /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----[\s\S]*$/gu,
       "<redacted-private-key>",
     )
     .replaceAll(/\/Users\/[^/\s]+/gu, "<redacted-path>")

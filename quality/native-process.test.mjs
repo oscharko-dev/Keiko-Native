@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isDirectInvocation, runNativeGateCli } from "./native-process.mjs";
+import {
+  isDirectInvocation,
+  runNativeGateCli,
+  sanitizeOutput,
+} from "./native-process.mjs";
 
 test("gate CLI recognizes canonical aliases without accepting another module", () => {
   const aliases = new Map([
@@ -77,5 +81,27 @@ test("top-level diagnostics remove PII while retaining actionable status", async
       () => {},
     ),
     1,
+  );
+});
+
+test("shared output sanitization closes private-key block markers without an end marker", () => {
+  for (const marker of [
+    "PGP PRIVATE KEY BLOCK",
+    "PRIVATE KEY",
+    "EC PRIVATE KEY",
+    "OPENSSH PRIVATE KEY",
+  ]) {
+    assert.equal(
+      sanitizeOutput(`failure -----BEGIN ${marker}----- material`),
+      "failure <redacted-private-key>",
+    );
+  }
+  assert.equal(
+    sanitizeOutput("PRIVATE KEY policy check failed"),
+    "PRIVATE KEY policy check failed",
+  );
+  assert.equal(
+    sanitizeOutput("-----BEGIN PUBLIC KEY----- public-material"),
+    "-----BEGIN PUBLIC KEY----- public-material",
   );
 });

@@ -77,7 +77,7 @@ test("reports threshold status from measured coverage", () => {
   );
 });
 
-test("failure diagnostics are bounded and redact paths, secrets, and stacks", () => {
+test("failure diagnostics are bounded and fail closed for paths, secrets, and stacks", () => {
   const diagnostic = failureDiagnostic({
     details: {
       error: {
@@ -100,9 +100,9 @@ test("failure diagnostics are bounded and redact paths, secrets, and stacks", ()
     },
     name: "fixture /Users/customer/private/workspace secret=owned",
   });
-  assert.match(
+  assert.equal(
     diagnostic,
-    /^✖ fixture <path> secret=<redacted> \[testCodeFailure:ERR_ASSERTION\] /u,
+    "✖ <redacted-diagnostic> [testCodeFailure:ERR_ASSERTION] <redacted-diagnostic>\n",
   );
   assert.ok(diagnostic.length <= 512);
   for (const forbidden of [
@@ -133,7 +133,7 @@ test("structured failure messages are replaced instead of exposing payloads", ()
       },
       name: "structured assertion",
     }),
-    "✖ structured assertion [testCodeFailure:ERR_ASSERTION] <redacted-structured-output>\n",
+    "✖ structured assertion [testCodeFailure:ERR_ASSERTION] <redacted-diagnostic>\n",
   );
 });
 
@@ -159,7 +159,7 @@ test("reporter emits only the sanitized bounded failure diagnostic", async () =>
   assert.deepEqual(output, [failureDiagnostic(event.data)]);
   assert.equal(
     output[0],
-    "✖ fixture [testCodeFailure:ERR_TEST_FAILURE] failed at <path>\n",
+    "✖ fixture [testCodeFailure:ERR_TEST_FAILURE] <redacted-diagnostic>\n",
   );
 });
 
@@ -169,7 +169,7 @@ test("failure diagnostics handle hostile and missing error metadata", () => {
       details: { error: {}, type: "bad type with spaces" },
       name: "\u0000".repeat(300),
     }),
-    "✖ (unnamed test) [unknown:unknown] Test failed without a bounded diagnostic.\n",
+    "✖ <redacted-diagnostic> [unknown:unknown] Test failed without a bounded diagnostic.\n",
   );
 });
 
@@ -202,6 +202,30 @@ test("failure diagnostics reject token-like metadata at the safe boundary", () =
   );
 });
 
+test("failure diagnostics reject credential-like metadata", () => {
+  for (const value of [
+    "Authorization",
+    "Bearer",
+    "private_key",
+    "secret",
+    "token",
+  ]) {
+    assert.equal(
+      failureDiagnostic({
+        details: {
+          error: {
+            code: value,
+            failureType: value,
+            message: "bounded assertion failure",
+          },
+        },
+        name: "metadata closure",
+      }),
+      "✖ metadata closure [unknown:unknown] bounded assertion failure\n",
+    );
+  }
+});
+
 test("failure diagnostics redact bearer credentials, UNC paths, and OSC controls", () => {
   const diagnostic = failureDiagnostic({
     details: {
@@ -224,7 +248,7 @@ test("failure diagnostics redact bearer credentials, UNC paths, and OSC controls
   });
   assert.equal(
     diagnostic,
-    "✖ hostile transport Authorization Bearer <redacted> <path> visible name [testCodeFailure:ERR_ASSERTION] Authorization Bearer <redacted> <path> visible failure\n",
+    "✖ <redacted-diagnostic> [testCodeFailure:ERR_ASSERTION] <redacted-diagnostic>\n",
   );
   for (const forbidden of [
     "short-secret",
@@ -238,7 +262,7 @@ test("failure diagnostics redact bearer credentials, UNC paths, and OSC controls
   }
 });
 
-test("failure diagnostics retain adjacent non-secret authorization and terminal text", () => {
+test("failure diagnostics fail closed for credential markers", () => {
   assert.equal(
     failureDiagnostic({
       details: {
@@ -251,6 +275,113 @@ test("failure diagnostics retain adjacent non-secret authorization and terminal 
       },
       name: "useful diagnostic",
     }),
-    "✖ useful diagnostic [testCodeFailure:ERR_AUTHORIZATION] Authorization failed; bearer policy unavailable; visible text\n",
+    "✖ useful diagnostic [testCodeFailure:ERR_AUTHORIZATION] <redacted-diagnostic>\n",
   );
+});
+
+test("failure diagnostics fail closed for relative and spaced paths in every field", () => {
+  const diagnostic = failureDiagnostic({
+    details: {
+      error: {
+        code: "ERR_ASSERTION",
+        failureType: "testCodeFailure",
+        message:
+          "failed at /private/customer records/record.mjs:17 and C:\\private folder\\customer\\record.mjs:18",
+      },
+    },
+    name: String.raw`private\customer\record.mjs:17`,
+  });
+  assert.equal(
+    diagnostic,
+    "✖ <redacted-diagnostic> [testCodeFailure:ERR_ASSERTION] <redacted-diagnostic>\n",
+  );
+  for (const forbidden of [
+    "private\\customer",
+    "customer records",
+    "private folder",
+    "record.mjs",
+  ]) {
+    assert.ok(!diagnostic.includes(forbidden));
+  }
+});
+
+test("failure diagnostics fail closed for every ECMA control-string family", () => {
+  const hostileValues = [
+    "\u009b31mC1-CSI-secret",
+    "\u001bP1;2|DCS-secret\u001b\\visible",
+    "\u001b_APC-secret\u0007visible",
+    "\u001b^PM-secret\u001b\\visible",
+    "\u001bXSOS-secret",
+    "\u0090C1-DCS-secret\u009cvisible",
+    "\u009fC1-APC-secret\u0007visible",
+    "\u009eC1-PM-secret\u009cvisible",
+    "\u0098C1-SOS-secret",
+  ];
+  for (const value of hostileValues) {
+    const diagnostic = failureDiagnostic({
+      details: {
+        error: {
+          code: "ERR_ASSERTION",
+          failureType: "testCodeFailure",
+          message: value,
+        },
+      },
+      name: value,
+    });
+    assert.equal(
+      diagnostic,
+      "✖ <redacted-diagnostic> [testCodeFailure:ERR_ASSERTION] <redacted-diagnostic>\n",
+    );
+    assert.doesNotMatch(diagnostic, /secret|\u001b|[\u0080-\u009f]/u);
+  }
+});
+
+test("failure diagnostics retain ordinary bounded ASCII text", () => {
+  assert.equal(
+    failureDiagnostic({
+      details: {
+        error: {
+          code: "ERR_ASSERTION",
+          failureType: "testCodeFailure",
+          message: "Expected status 7 but received 9; retry is unavailable.",
+        },
+      },
+      name: "ordinary deterministic assertion",
+    }),
+    "✖ ordinary deterministic assertion [testCodeFailure:ERR_ASSERTION] Expected status 7 but received 9; retry is unavailable.\n",
+  );
+});
+
+test("failure diagnostics fail closed at the padded token boundary", () => {
+  assert.equal(
+    failureDiagnostic({
+      details: {
+        error: {
+          code: "ERR_ASSERTION",
+          failureType: "testCodeFailure",
+          message: `${"A".repeat(22)}==`,
+        },
+      },
+      name: "A".repeat(23),
+    }),
+    `✖ ${"A".repeat(23)} [testCodeFailure:ERR_ASSERTION] <redacted-diagnostic>\n`,
+  );
+});
+
+test("failure diagnostics fail closed for private-key markers in every field", () => {
+  const diagnostic = failureDiagnostic({
+    details: {
+      error: {
+        code: "ERR_ASSERTION",
+        failureType: "testCodeFailure",
+        message: "-----BEGIN EC PRIVATE KEY----- message-material",
+      },
+    },
+    name: "-----BEGIN PGP PRIVATE KEY BLOCK----- name-material",
+  });
+  assert.equal(
+    diagnostic,
+    "✖ <redacted-diagnostic> [testCodeFailure:ERR_ASSERTION] <redacted-diagnostic>\n",
+  );
+  assert.doesNotMatch(diagnostic, /PGP|EC PRIVATE|material/u);
 });
