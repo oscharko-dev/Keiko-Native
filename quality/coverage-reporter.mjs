@@ -1,8 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, sep } from "node:path";
 
-import { sanitizeOutput } from "./native-process.mjs";
-
 const coverageModules = Object.freeze([
   "contract.mjs",
   "coverage-reporter.mjs",
@@ -48,59 +46,21 @@ export const canonicalCoverageCommand = [
   "quality/*.test.mjs",
 ].join(" ");
 
-const safeMetadata = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/u;
-const tokenLikeMetadata = /^[A-Za-z0-9+_=-]{24,}$/u;
-const safeDiagnosticCharacters = /^[A-Za-z0-9 .,:;!?()_+=%-]*$/u;
-const sensitiveDiagnosticMarker =
-  /\b(?:api[-_ ]?key|authorization|bearer|cookie|credential|password|private[-_ ]?key|secret|token)\b/iu;
-const tokenLikeDiagnostic =
-  /(?:^|[^A-Za-z0-9+_=-])[A-Za-z0-9+_=-]{24,}(?=$|[^A-Za-z0-9+_=-])/u;
-const uriSchemeDiagnostic = /\b[A-Za-z][A-Za-z0-9+.-]*:[^ ]/u;
-const driveRelativeDiagnostic = /\b[A-Za-z]:[A-Za-z0-9._-]/u;
-const filenameDiagnostic =
-  /\b[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_+-]+)*\.[A-Za-z][A-Za-z0-9_+-]{0,15}(?::\d+(?::\d+)?)?(?=$|[ .,;!?()])/u;
-const redactedDiagnostic = "<redacted-diagnostic>";
+const failureTypes = new Set(["testCodeFailure"]);
+const errorCodes = new Set(["ERR_ASSERTION", "ERR_TEST_FAILURE"]);
 
-function sanitizeDiagnostic(value, maximum, fallback) {
-  if (typeof value !== "string") return fallback;
-  const sharedSanitized = sanitizeOutput(value);
-  if (
-    sharedSanitized !== value ||
-    !safeDiagnosticCharacters.test(value) ||
-    sensitiveDiagnosticMarker.test(value) ||
-    tokenLikeDiagnostic.test(value) ||
-    uriSchemeDiagnostic.test(value) ||
-    driveRelativeDiagnostic.test(value) ||
-    filenameDiagnostic.test(value)
-  )
-    return redactedDiagnostic;
-  let sanitized = value.trim();
-  if (!sanitized) return fallback;
-  if (sanitized.length > maximum)
-    sanitized = `${sanitized.slice(0, maximum - 1)}…`;
-  return sanitized;
-}
-
-function metadata(value) {
-  return typeof value === "string" &&
-    safeMetadata.test(value) &&
-    !sensitiveDiagnosticMarker.test(value) &&
-    !tokenLikeMetadata.test(value)
-    ? value
-    : "unknown";
+function metadata(value, catalog) {
+  return typeof value === "string" && catalog.has(value) ? value : "unknown";
 }
 
 export function failureDiagnostic(data) {
   const error = data?.details?.error;
-  const name = sanitizeDiagnostic(data?.name, 120, "(unnamed test)");
-  const type = metadata(error?.failureType ?? data?.details?.type);
-  const code = metadata(error?.code);
-  const message = sanitizeDiagnostic(
-    typeof error === "string" ? error : error?.message,
-    240,
-    "Test failed without a bounded diagnostic.",
+  const type = metadata(
+    error?.failureType ?? data?.details?.type,
+    failureTypes,
   );
-  return `✖ ${name} [${type}:${code}] ${message}\n`;
+  const code = metadata(error?.code, errorCodes);
+  return `✖ test failed [${type}:${code}]. Rerun npm test locally with the standard reporter.\n`;
 }
 
 function repositoryPath(workingDirectory, path) {
@@ -180,8 +140,6 @@ async function writeCoverage(summary) {
 
 export default async function* coverageReporter(source) {
   for await (const event of source) {
-    if (event.type === "test:pass" && event.data.nesting === 0)
-      yield `✔ ${event.data.name}\n`;
     if (event.type === "test:fail") yield failureDiagnostic(event.data);
     if (event.type === "test:coverage")
       yield `${await writeCoverage(event.data.summary)}\n`;

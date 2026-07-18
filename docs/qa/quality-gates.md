@@ -164,11 +164,11 @@ nightly installed by the native matrix.
 
 Root coverage runs exactly one test file at a time. Serial execution prevents native filesystem
 helper compilers and race fixtures from intermittently contending for shared runner resources. The
-custom reporter emits one bounded failure line containing validated failure type and error code.
-Test identity and message fields retain only ordinary allowlisted ASCII diagnostics; any path, URI,
-email, structured marker, credential or key marker, long token-like value, control byte, or other
-non-allowlisted character replaces the whole field with a stable placeholder. Stacks, causes, and
-raw error objects are never emitted.
+custom reporter suppresses pass-event names and emits no arbitrary test identity or failure-message
+text. A failure contains only fixed rerun guidance plus failure type and error code selected from
+strict closed catalogs; every unknown metadata value becomes `unknown`. Stacks, causes, paths,
+payloads, and raw error objects are never emitted. LCOV source paths remain independently validated
+as repository-contained paths.
 
 Productive native quality begins with the exact standalone frontend `npm ci` command owned by
 `native:dependencies`; install scripts and npm workspace inference are disabled. Each native gate
