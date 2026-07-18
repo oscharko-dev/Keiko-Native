@@ -76,13 +76,19 @@ export function evaluateVulnerabilityResults(report) {
         throw vulnerabilityPolicyRejected("finding-shape");
       if (entry.groups.length === 0 || entry.vulnerabilities.length === 0)
         throw vulnerabilityPolicyRejected("empty-finding");
+      validateFindingBindings(entry.groups, entry.vulnerabilities);
       const classifications = entry.vulnerabilities.map((vulnerability) =>
-        informationalUnmaintained(vulnerability, entry.package),
+        vulnerabilityClassification(vulnerability, entry.package),
       );
-      if (classifications.some(Boolean) && !classifications.every(Boolean))
+      if (
+        classifications.includes("informational-unmaintained") &&
+        classifications.includes("scored")
+      )
         throw vulnerabilityPolicyRejected("mixed-finding");
-      if (classifications.every(Boolean)) {
-        if (entry.groups.some((group) => !validInformationalGroup(group)))
+      if (
+        classifications.every((value) => value === "informational-unmaintained")
+      ) {
+        if (!validInformationalBindings(entry.groups, entry.vulnerabilities))
           throw vulnerabilityPolicyRejected("informational-severity");
         summary.informationalUnmaintained += entry.vulnerabilities.length;
         continue;
@@ -113,21 +119,75 @@ function validVulnerabilitySource(source) {
 function validVulnerablePackage(value) {
   return (
     object(value) &&
-    typeof value.ecosystem === "string" &&
-    value.ecosystem.length > 0 &&
+    ["crates.io", "npm"].includes(value.ecosystem) &&
     typeof value.name === "string" &&
-    value.name.length > 0 &&
+    validPackageName(value.ecosystem, value.name) &&
     typeof value.version === "string" &&
-    value.version.length > 0
+    value.version.length > 0 &&
+    !/[\s\u0000-\u001f\u007f]/u.test(value.version)
+  );
+}
+
+function validPackageName(ecosystem, name) {
+  if (ecosystem === "crates.io")
+    return /^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(name);
+  return /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/u.test(name);
+}
+
+function validateFindingBindings(groups, vulnerabilities) {
+  const vulnerabilityIds = new Set();
+  for (const vulnerability of vulnerabilities) {
+    if (!object(vulnerability) || !validAdvisoryId(vulnerability.id))
+      throw vulnerabilityPolicyRejected("advisory-identity");
+    if (vulnerabilityIds.has(vulnerability.id))
+      throw vulnerabilityPolicyRejected("duplicate-advisory");
+    vulnerabilityIds.add(vulnerability.id);
+  }
+  const boundIds = new Set();
+  const aliases = new Set();
+  for (const group of groups) {
+    if (
+      !object(group) ||
+      Object.keys(group).toSorted().join(",") !== "aliases,ids,max_severity" ||
+      !validIdList(group.ids, false) ||
+      !validIdList(group.aliases, true)
+    )
+      throw vulnerabilityPolicyRejected("group-shape");
+    for (const id of group.ids) {
+      if (!vulnerabilityIds.has(id) || boundIds.has(id))
+        throw vulnerabilityPolicyRejected("group-advisory-binding");
+      boundIds.add(id);
+    }
+    for (const alias of group.aliases) {
+      if (aliases.has(alias))
+        throw vulnerabilityPolicyRejected("duplicate-alias");
+      aliases.add(alias);
+    }
+  }
+  if (boundIds.size !== vulnerabilityIds.size)
+    throw vulnerabilityPolicyRejected("unbound-advisory");
+}
+
+function validIdList(values, allowEmpty) {
+  return (
+    Array.isArray(values) &&
+    (allowEmpty || values.length > 0) &&
+    new Set(values).size === values.length &&
+    values.every(validAdvisoryId)
+  );
+}
+
+function validAdvisoryId(value) {
+  return (
+    typeof value === "string" &&
+    /^(?:RUSTSEC-\d{4}-\d{4}|CVE-\d{4}-\d{4,}|GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4})$/u.test(
+      value,
+    )
   );
 }
 
 function severityScore(group) {
   if (
-    !object(group) ||
-    !Array.isArray(group.ids) ||
-    group.ids.length === 0 ||
-    !Array.isArray(group.aliases) ||
     typeof group.max_severity !== "string" ||
     !/^(?:0|[1-9]|10)(?:\.\d+)?$/u.test(group.max_severity)
   )
@@ -138,61 +198,154 @@ function severityScore(group) {
   return score;
 }
 
-function validInformationalGroup(group) {
-  return (
-    object(group) &&
-    Array.isArray(group.ids) &&
-    group.ids.length > 0 &&
-    group.ids.every((id) => /^RUSTSEC-\d{4}-\d{4}$/u.test(id)) &&
-    Array.isArray(group.aliases) &&
-    group.aliases.every((id) => /^RUSTSEC-\d{4}-\d{4}$/u.test(id)) &&
-    group.max_severity === ""
-  );
+function validInformationalBindings(groups, vulnerabilities) {
+  if (groups.length !== vulnerabilities.length) return false;
+  const groupsById = new Map(groups.map((group) => [group.ids[0], group]));
+  if (groupsById.size !== groups.length) return false;
+  return vulnerabilities.every(({ id }) => {
+    const group = groupsById.get(id);
+    return (
+      /^RUSTSEC-\d{4}-\d{4}$/u.test(id) &&
+      group?.ids.length === 1 &&
+      group.ids[0] === id &&
+      group.aliases.length === 1 &&
+      group.aliases[0] === id &&
+      group.max_severity === ""
+    );
+  });
 }
 
-function informationalUnmaintained(vulnerability, packageIdentity) {
+function vulnerabilityClassification(vulnerability, packageIdentity) {
   if (
-    !object(vulnerability) ||
-    !/^RUSTSEC-\d{4}-\d{4}$/u.test(vulnerability.id ?? "") ||
-    vulnerability.schema_version !== "1.7.3" ||
     !Array.isArray(vulnerability.affected) ||
     vulnerability.affected.length === 0
   )
     throw vulnerabilityPolicyRejected("advisory-shape");
-  let informational = true;
+  const classifications = [];
   for (const affected of vulnerability.affected) {
-    const classification = affected?.database_specific;
-    const affectedPackage = affected?.package;
+    validateAffectedPackage(affected, packageIdentity);
+    const informational = affected.database_specific?.informational;
+    if (informational !== undefined && informational !== "unmaintained")
+      throw vulnerabilityPolicyRejected("informational-classification");
+    classifications.push(
+      informational === "unmaintained"
+        ? "informational-unmaintained"
+        : "scored",
+    );
+  }
+  if (new Set(classifications).size !== 1)
+    throw vulnerabilityPolicyRejected("mixed-advisory");
+  const classification = classifications[0];
+  if (classification === "informational-unmaintained")
+    validateInformationalAdvisory(vulnerability, packageIdentity);
+  else validateScoredAdvisory(vulnerability);
+  return classification;
+}
+
+function validateAffectedPackage(affected, packageIdentity) {
+  if (
+    !object(affected) ||
+    !object(affected.package) ||
+    affected.package.ecosystem !== packageIdentity.ecosystem ||
+    affected.package.name !== packageIdentity.name ||
+    typeof affected.package.purl !== "string" ||
+    !validPurl(affected.package.purl, packageIdentity) ||
+    !Array.isArray(affected.ranges) ||
+    affected.ranges.length === 0
+  )
+    throw vulnerabilityPolicyRejected("affected-shape");
+}
+
+function validPurl(purl, packageIdentity) {
+  const prefix =
+    packageIdentity.ecosystem === "crates.io" ? "pkg:cargo/" : "pkg:npm/";
+  if (!purl.startsWith(prefix) || /[?#]/u.test(purl)) return false;
+  try {
+    return (
+      decodeURIComponent(purl.slice(prefix.length)) === packageIdentity.name
+    );
+  } catch {
+    return false;
+  }
+}
+
+function validateInformationalAdvisory(vulnerability, packageIdentity) {
+  if (
+    !/^RUSTSEC-\d{4}-\d{4}$/u.test(vulnerability.id) ||
+    vulnerability.schema_version !== "1.7.3" ||
+    Object.hasOwn(vulnerability, "severity") ||
+    !object(vulnerability.database_specific) ||
+    Object.keys(vulnerability.database_specific).join(",") !== "license" ||
+    vulnerability.database_specific.license !== "CC0-1.0"
+  )
+    throw vulnerabilityPolicyRejected("informational-advisory-shape");
+  for (const affected of vulnerability.affected) {
+    const classification = affected.database_specific;
     if (
-      classification?.informational !== "unmaintained" ||
-      classification?.cvss !== null ||
-      !Array.isArray(classification?.categories) ||
+      !object(classification) ||
+      Object.keys(classification).toSorted().join(",") !==
+        "categories,cvss,informational,source" ||
+      classification.informational !== "unmaintained" ||
+      classification.cvss !== null ||
+      !Array.isArray(classification.categories) ||
       classification.categories.length !== 0 ||
       classification.source !==
-        `https://github.com/rustsec/advisory-db/blob/osv/crates/${vulnerability.id}.json`
+        `https://github.com/rustsec/advisory-db/blob/osv/crates/${vulnerability.id}.json` ||
+      Object.keys(affected.package).toSorted().join(",") !==
+        "ecosystem,name,purl"
     )
-      informational = false;
-    if (
-      affectedPackage?.ecosystem !== packageIdentity.ecosystem ||
-      affectedPackage?.name !== packageIdentity.name ||
-      !Array.isArray(affected.ranges) ||
-      affected.ranges.length === 0
-    )
-      throw vulnerabilityPolicyRejected("affected-shape");
+      throw vulnerabilityPolicyRejected("informational-database-shape");
     for (const range of affected.ranges) {
-      if (range?.type !== "SEMVER" || !Array.isArray(range.events))
-        throw vulnerabilityPolicyRejected("range-shape");
       if (
+        !object(range) ||
+        Object.keys(range).toSorted().join(",") !== "events,type" ||
+        range.type !== "SEMVER" ||
+        !Array.isArray(range.events) ||
+        range.events.length === 0 ||
         range.events.some(
           (event) =>
             !object(event) ||
-            Object.keys(event).some((key) => key !== "introduced"),
+            Object.keys(event).join(",") !== "introduced" ||
+            typeof event.introduced !== "string" ||
+            event.introduced.length === 0,
         )
       )
-        throw vulnerabilityPolicyRejected("informational-patch");
+        throw vulnerabilityPolicyRejected("informational-range-shape");
     }
   }
-  return informational;
+  if (!validPurl(vulnerability.affected[0].package.purl, packageIdentity))
+    throw vulnerabilityPolicyRejected("informational-purl");
+}
+
+function validateScoredAdvisory(vulnerability) {
+  if (
+    typeof vulnerability.schema_version !== "string" ||
+    !/^1\.\d+\.\d+$/u.test(vulnerability.schema_version)
+  )
+    throw vulnerabilityPolicyRejected("scored-advisory-shape");
+  for (const affected of vulnerability.affected) {
+    for (const range of affected.ranges) {
+      if (
+        !object(range) ||
+        range.type !== "SEMVER" ||
+        !Array.isArray(range.events) ||
+        range.events.length === 0 ||
+        range.events.some((event) => {
+          if (!object(event)) return true;
+          const keys = Object.keys(event);
+          return (
+            keys.length !== 1 ||
+            !["fixed", "introduced", "last_affected", "limit"].includes(
+              keys[0],
+            ) ||
+            typeof event[keys[0]] !== "string" ||
+            event[keys[0]].length === 0
+          );
+        })
+      )
+        throw vulnerabilityPolicyRejected("scored-range-shape");
+    }
+  }
 }
 
 export async function captureDependencySnapshot({

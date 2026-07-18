@@ -128,6 +128,130 @@ test("vulnerability policy fails closed on malformed, unknown, mixed, or patched
     );
 });
 
+test("informational-unmaintained requires exact RustSec identity and introduced-only ranges", () => {
+  const mutations = [
+    (report) =>
+      (finding(report).vulnerabilities[0].affected[0].ranges[0].events = []),
+    (report) =>
+      (finding(
+        report,
+      ).vulnerabilities[0].affected[0].ranges[0].events[0].introduced = 0),
+    (report) =>
+      (finding(
+        report,
+      ).vulnerabilities[0].affected[0].ranges[0].events[0].introduced = ""),
+    (report) =>
+      (finding(
+        report,
+      ).vulnerabilities[0].affected[0].ranges[0].events[0].fixed = "1.0.1"),
+    (report) =>
+      (finding(
+        report,
+      ).vulnerabilities[0].affected[0].ranges[0].events[0].last_affected =
+        "1.0.0"),
+    (report) =>
+      (finding(
+        report,
+      ).vulnerabilities[0].affected[0].ranges[0].events[0].limit = "2.0.0"),
+    (report) => (finding(report).groups[0].ids = ["RUSTSEC-2025-9999"]),
+    (report) => (finding(report).groups[0].aliases = ["RUSTSEC-2025-9999"]),
+    (report) => (finding(report).groups[0].ids = [17]),
+    (report) => (finding(report).groups[0].aliases = [17]),
+    (report) => (finding(report).groups[0].aliases = ["GHSA-1111-2222-3333"]),
+    (report) =>
+      (finding(
+        report,
+      ).vulnerabilities[0].affected[0].database_specific.severity = "low"),
+    (report) =>
+      (finding(report).vulnerabilities[0].affected[0].database_specific.cvss =
+        "0.0"),
+    (report) =>
+      finding(
+        report,
+      ).vulnerabilities[0].affected[0].database_specific.categories.push(
+        "notice",
+      ),
+    (report) => (finding(report).vulnerabilities[0].severity = []),
+  ];
+  for (const mutate of mutations) {
+    const report = vulnerabilityResults({
+      informational: "unmaintained",
+      severity: "",
+    });
+    mutate(report);
+    assert.throws(
+      () => evaluateVulnerabilityResults(report),
+      /Vulnerability policy rejected/u,
+    );
+  }
+});
+
+test("vulnerability findings reject malformed packages and incoherent group bindings", () => {
+  const mutations = [
+    (report) => (finding(report).package.name = ""),
+    (report) => (finding(report).vulnerabilities[0].affected[0].package = null),
+    (report) =>
+      (finding(report).vulnerabilities[0].affected[0].package.purl =
+        "pkg:cargo/other"),
+    (report) =>
+      (finding(report).vulnerabilities[0].affected[0].package.purl = 1),
+    (report) =>
+      finding(report).groups.push(structuredClone(finding(report).groups[0])),
+    (report) =>
+      finding(report).vulnerabilities.push(
+        structuredClone(finding(report).vulnerabilities[0]),
+      ),
+    (report) => finding(report).groups[0].ids.push("RUSTSEC-2025-9999"),
+    (report) =>
+      finding(report).groups[0].aliases.push(
+        finding(report).groups[0].aliases[0],
+      ),
+    (report) =>
+      finding(report).vulnerabilities.push({
+        ...structuredClone(finding(report).vulnerabilities[0]),
+        id: "RUSTSEC-2025-9999",
+      }),
+  ];
+  for (const [index, mutate] of mutations.entries()) {
+    const report = vulnerabilityResults({ severity: "3.9" });
+    mutate(report);
+    assert.throws(
+      () => evaluateVulnerabilityResults(report),
+      /Vulnerability policy rejected/u,
+      `binding mutation ${String(index)}`,
+    );
+  }
+});
+
+test("ordinary scored vulnerability identity and severity never degrade malformed data to low", () => {
+  const mutations = [
+    (report) => (finding(report).vulnerabilities[0].id = "unknown"),
+    (report) => (finding(report).groups[0].ids = ["unknown"]),
+    (report) => (finding(report).groups[0].aliases = [3]),
+    (report) => (finding(report).groups[0].max_severity = 3.9),
+    (report) => (finding(report).groups[0].max_severity = "-1"),
+    (report) => (finding(report).groups[0].max_severity = "NaN"),
+    (report) => (finding(report).vulnerabilities[0].affected = []),
+    (report) =>
+      (finding(
+        report,
+      ).vulnerabilities[0].affected[0].database_specific.informational =
+        "unmaintained"),
+  ];
+  for (const mutate of mutations) {
+    const report = vulnerabilityResults({ severity: "3.9" });
+    mutate(report);
+    assert.throws(
+      () => evaluateVulnerabilityResults(report),
+      /Vulnerability policy rejected/u,
+    );
+  }
+});
+
+function finding(report) {
+  return report.results[0].packages[0];
+}
+
 function vulnerabilityResults({
   fixed,
   informational,

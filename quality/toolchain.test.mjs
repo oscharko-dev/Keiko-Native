@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import test from "node:test";
 
 import {
@@ -23,6 +24,50 @@ const exactPackage = {
     quality: "node quality/check-toolchain.mjs && npm test",
   },
 };
+
+function runExactInstalledNpm(args, options = {}) {
+  const { cli, node } = exactInstalledNpmInvocation();
+  return spawnSync(node, [cli, ...args], {
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024,
+    ...options,
+  });
+}
+
+function exactInstalledNpmInvocation() {
+  const node = realpathSync(process.execPath);
+  if (!isAbsolute(node) || !statSync(node).isFile())
+    throw new Error("Exact test Node executable is unavailable.");
+  const prefix = dirname(node);
+  const candidates =
+    process.platform === "win32"
+      ? [join(prefix, "node_modules/npm")]
+      : [join(prefix, "../lib/node_modules/npm")];
+  for (const candidate of candidates) {
+    try {
+      const root = realpathSync(candidate);
+      const cli = realpathSync(join(root, "bin/npm-cli.js"));
+      const packageContract = JSON.parse(
+        readFileSync(join(root, "package.json"), "utf8"),
+      );
+      const inside = relative(root, cli);
+      if (
+        !statSync(cli).isFile() ||
+        inside === "" ||
+        inside.startsWith("..") ||
+        isAbsolute(inside) ||
+        packageContract.name !== "npm" ||
+        packageContract.version !== exactPackage.engines.npm ||
+        packageContract.bin?.npm !== "bin/npm-cli.js"
+      )
+        continue;
+      return { cli, node };
+    } catch {
+      // A missing or malformed bundled npm installation fails closed below.
+    }
+  }
+  throw new Error("Exact bundled npm 11.16.0 CLI is unavailable.");
+}
 
 test("exact toolchain contract accepts only Node 24.18.0 and npm 11.16.0", () => {
   assert.deepEqual(
@@ -98,27 +143,61 @@ test("npm ci and guarded entry points fail on wrong Node or npm versions", async
         ["run", "native:dependencies"],
         ["run", "quality"],
       ]) {
-        const npmCli = process.env.npm_execpath;
-        const result = npmCli
-          ? spawnSync(
-              process.env.npm_node_execpath ?? process.execPath,
-              [npmCli, ...args],
-              {
-                cwd: root,
-                encoding: "utf8",
-                maxBuffer: 1024 * 1024,
-              },
-            )
-          : spawnSync("npm", args, {
-              cwd: root,
-              encoding: "utf8",
-              maxBuffer: 1024 * 1024,
-            });
+        const result = runExactInstalledNpm(args, { cwd: root });
         assert.notEqual(result.status, 0);
         assert.match(`${result.stdout}${result.stderr}`, /EBADDEVENGINES/u);
         assert.doesNotMatch(String(result.stdout), /should-not-run/u);
       }
     }
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("npm_execpath-unset validation never invokes a PATH npm shim", async () => {
+  const root = await mkdtemp(join(tmpdir(), "keiko-toolchain-path-shim-"));
+  const fixture = join(root, "fixture");
+  const shim = join(root, "npm");
+  const invoked = join(root, "path-npm-invoked");
+  try {
+    await writeFile(
+      join(root, "package.json"),
+      JSON.stringify({
+        devEngines: {
+          packageManager: {
+            name: "npm",
+            onFail: "error",
+            version: "0.0.0",
+          },
+          runtime: exactPackage.devEngines.runtime,
+        },
+        name: "fixture",
+        version: "1.0.0",
+      }),
+    );
+    await writeFile(
+      join(root, "package-lock.json"),
+      JSON.stringify({
+        lockfileVersion: 3,
+        name: "fixture",
+        packages: { "": { name: "fixture", version: "1.0.0" } },
+        requires: true,
+        version: "1.0.0",
+      }),
+    );
+    await writeFile(shim, `#!/bin/sh\nprintf invoked > ${invoked}\nexit 99\n`);
+    await chmod(shim, 0o700);
+    const env = { ...process.env, PATH: root };
+    delete env.npm_execpath;
+    delete env.npm_node_execpath;
+    const result = runExactInstalledNpm(["ci", "--ignore-scripts"], {
+      cwd: root,
+      env,
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(`${result.stdout}${result.stderr}`, /EBADDEVENGINES/u);
+    await assert.rejects(readFile(invoked), { code: "ENOENT" });
+    await assert.rejects(readFile(fixture), { code: "ENOENT" });
   } finally {
     await rm(root, { force: true, recursive: true });
   }

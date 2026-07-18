@@ -268,6 +268,51 @@ test("clean repository exact-binds fail-closed and security jobs", async () => {
   assert.deepEqual(misses, []);
 });
 
+test("vulnerability evidence upload retains failure results without running after bootstrap failure", async () => {
+  const exactCondition =
+    "        if: ${{ !cancelled() && steps.target-vulnerability-policy.outputs.results-produced == 'true' }}";
+  const mutations = [
+    (workflow) =>
+      workflow.replace(exactCondition, "        if: ${{ always() }}"),
+    (workflow) =>
+      workflow.replace(exactCondition, "        if: ${{ !cancelled() }}"),
+    (workflow) =>
+      workflow.replace("        id: target-vulnerability-policy\n", ""),
+    (workflow) =>
+      workflow.replace(
+        '          echo "results-produced=true" >> "$GITHUB_OUTPUT"\n',
+        "",
+      ),
+    (workflow) =>
+      workflow.replace(
+        "          if-no-files-found: error",
+        "          if-no-files-found: warn",
+      ),
+  ];
+  const misses = [];
+  for (const workflowName of ["dependency-review.yml", "osv-scanner.yml"]) {
+    for (const [index, mutate] of mutations.entries()) {
+      const root = await cleanArchive();
+      try {
+        const path = join(root, ".github/workflows", workflowName);
+        const source = await readFile(path, "utf8");
+        const mutation = mutate(source);
+        if (mutation === source) {
+          misses.push(`${workflowName}:${String(index)}:mutation`);
+          continue;
+        }
+        await writeFile(path, mutation);
+        const failures = (await validateRepository(root)).failures.join("\n");
+        if (!/workflow-job-contract-/u.test(failures))
+          misses.push(`${workflowName}:${String(index)}:validation`);
+      } finally {
+        await rm(root, { force: true, recursive: true });
+      }
+    }
+  }
+  assert.deepEqual(misses, []);
+});
+
 async function rejectCleanArchiveMutations(mutations, expected) {
   const misses = [];
   for (const [index, mutate] of mutations.entries()) {

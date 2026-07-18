@@ -32,6 +32,7 @@ const downloadOsvScanner = step(
 );
 const enforceTargetVulnerabilityPolicy = step(
   "      - name: Enforce target-aware moderate vulnerability policy",
+  "        id: target-vulnerability-policy",
   "        run: |",
   "          scan_status=0",
   "          native/target/osv/osv-scanner --format=json --output-file=native/target/osv/native-macos-arm64-results.json --lockfile=package-lock.json --lockfile=native/frontend/package-lock.json --lockfile=osv-scanner:native/target/osv/native-macos-arm64.osv-scanner.json || scan_status=$?",
@@ -39,10 +40,16 @@ const enforceTargetVulnerabilityPolicy = step(
   '            echo "OSV Scanner failed before producing governed results."',
   "            exit 1",
   "          fi",
+  "          if [ ! -f native/target/osv/native-macos-arm64-results.json ]; then",
+  '            echo "OSV Scanner did not produce governed results."',
+  "            exit 1",
+  "          fi",
+  '          echo "results-produced=true" >> "$GITHUB_OUTPUT"',
   "          node quality/check-native-vulnerability-results.mjs",
 );
 const uploadVulnerabilityResults = step(
   "      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+  "        if: ${{ !cancelled() && steps.target-vulnerability-policy.outputs.results-produced == 'true' }}",
   "        with:",
   "          name: native-macos-arm64-osv-results",
   "          path: native/target/osv/native-macos-arm64-results.json",
