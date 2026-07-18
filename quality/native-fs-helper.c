@@ -3,7 +3,10 @@
 #else
 #define _GNU_SOURCE
 #endif
-#include "native-fs-internal.h"
+#ifndef KEIKO_NATIVE_FS_INTERNAL_HEADER
+#define KEIKO_NATIVE_FS_INTERNAL_HEADER "native-fs-internal.h"
+#endif
+#include KEIKO_NATIVE_FS_INTERNAL_HEADER
 
 #include <errno.h>
 #include <fcntl.h>

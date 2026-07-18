@@ -1,6 +1,11 @@
 #ifndef KEIKO_NATIVE_FS_INTERNAL_H
 #define KEIKO_NATIVE_FS_INTERNAL_H
 
+#ifndef KEIKO_NATIVE_FS_HELPER_HEADER
+#define KEIKO_NATIVE_FS_HELPER_HEADER "native-fs-helper.h"
+#endif
+#include KEIKO_NATIVE_FS_HELPER_HEADER
+
 #include <stddef.h>
 #include <limits.h>
 #include <sys/stat.h>

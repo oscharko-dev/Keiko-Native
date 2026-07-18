@@ -314,7 +314,7 @@ test(
       const mutatingCompiler = join(root, "mutating-compiler");
       await writeFile(
         mutatingCompiler,
-        '#!/bin/sh\nprintf "\\n/* compiler-time drift */\\n" >> "$6"\nexec /usr/bin/cc "$@"\n',
+        `#!/bin/sh\nprintf "\\n/* compiler-time drift */\\n" >> '${join(root, NATIVE_FS_SOURCES[0])}'\nexec /usr/bin/cc "$@"\n`,
         { mode: 0o700 },
       );
       assert.throws(

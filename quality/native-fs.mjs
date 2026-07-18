@@ -1,13 +1,18 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
-  chmodSync,
+  closeSync,
+  constants,
+  fchmodSync,
+  fstatSync,
   lstatSync,
-  readFileSync,
+  mkdtempSync,
+  openSync,
+  readSync,
   renameSync,
   rmSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 export const NATIVE_FS_SOURCES = [
   "quality/native-fs-main.c",
@@ -39,13 +44,13 @@ export function compileNativeFsHelper({
   ) {
     throw new Error("Native filesystem helper rejected source-set");
   }
-  assertSourceIntegrity(snapshotRoot, expected);
-  const temporary = join(
-    dirname(outputPath),
-    `.${basename(outputPath)}-${process.pid}.building`,
-  );
-  rmSync(temporary, { force: true });
+  const buildRoot = mkdtempSync(join(dirname(outputPath), ".native-fs-build-"));
+  const temporary = join(buildRoot, "helper");
+  let compiled;
+  let sources = [];
   try {
+    sources = bindSources(snapshotRoot, expected);
+    const byPath = new Map(sources.map((entry) => [entry.path, entry]));
     const result = spawnSync(
       compiler,
       [
@@ -54,63 +59,127 @@ export function compileNativeFsHelper({
         "-Wextra",
         "-Werror",
         "-O2",
-        ...NATIVE_FS_SOURCES.filter((path) => path.endsWith(".c")).map((path) =>
-          join(snapshotRoot, path),
-        ),
+        `-DKEIKO_NATIVE_FS_HELPER_HEADER="${descriptorPath(byPath.get("quality/native-fs-helper.h").childFd)}"`,
+        `-DKEIKO_NATIVE_FS_INTERNAL_HEADER="${descriptorPath(byPath.get("quality/native-fs-internal.h").childFd)}"`,
+        "-x",
+        "c",
+        ...sources
+          .filter(({ path }) => path.endsWith(".c"))
+          .map(({ childFd }) => descriptorPath(childFd)),
         "-o",
         temporary,
       ],
-      { encoding: "utf8", maxBuffer: 1024 * 1024, stdio: "pipe" },
+      {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        stdio: ["ignore", "pipe", "pipe", ...sources.map(({ fd }) => fd)],
+      },
     );
+    verifyBoundSources(sources);
     if (result.status !== 0 || result.error)
       throw new Error("Native filesystem helper rejected compiler");
-    assertSourceIntegrity(snapshotRoot, expected);
-    const metadata = lstatSync(temporary);
-    if (!metadata.isFile() || metadata.isSymbolicLink())
+    const named = lstatSync(temporary, { bigint: true });
+    if (!named.isFile() || named.isSymbolicLink())
       throw new Error("Native filesystem helper rejected compiler-output");
-    chmodSync(temporary, 0o700);
+    compiled = openSync(
+      temporary,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+    );
+    if (!sameIdentity(named, fstatSync(compiled, { bigint: true })))
+      throw new Error("Native filesystem helper rejected compiler-output");
+    fchmodSync(compiled, 0o700);
+    if (
+      !sameIdentity(
+        fstatSync(compiled, { bigint: true }),
+        lstatSync(temporary, { bigint: true }),
+      )
+    )
+      throw new Error("Native filesystem helper rejected compiler-output");
     renameSync(temporary, outputPath);
-    return createNativeFs(outputPath);
+    const metadata = fstatSync(compiled, { bigint: true });
+    if (!sameIdentity(metadata, lstatSync(outputPath, { bigint: true })))
+      throw new Error("Native filesystem helper rejected compiler-output");
+    return createNativeFs(outputPath, {
+      metadata,
+      sha256: sha256(readDescriptor(compiled, metadata.size)),
+    });
   } finally {
-    rmSync(temporary, { force: true });
+    if (compiled !== undefined) closeSync(compiled);
+    for (const { fd } of sources) closeSync(fd);
+    rmSync(buildRoot, { force: true, recursive: true });
   }
 }
 
-export function createNativeFs(helperPath) {
-  assertBoundRoot(dirname(helperPath));
+export function createNativeFs(helperPath, expected) {
+  assertPrivateExecutableRoot(dirname(helperPath));
   const helperMetadata = lstatSync(helperPath, { bigint: true });
   if (!helperMetadata.isFile() || helperMetadata.isSymbolicLink())
     throw new Error("Native filesystem helper rejected executable");
+  const initial = openSync(
+    helperPath,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+  );
+  let helperDigest;
+  try {
+    if (!sameIdentity(helperMetadata, fstatSync(initial, { bigint: true })))
+      throw new Error("Native filesystem helper rejected executable-changed");
+    helperDigest = sha256(readDescriptor(initial, helperMetadata.size));
+  } finally {
+    closeSync(initial);
+  }
+  if (
+    expected &&
+    (!sameIdentity(expected.metadata, helperMetadata) ||
+      expected.sha256 !== helperDigest)
+  )
+    throw new Error("Native filesystem helper rejected executable-changed");
   function invoke(
     operation,
     root,
     relativePath,
     { encoding, input, rest = [] } = {},
   ) {
-    const before = lstatSync(helperPath, { bigint: true });
-    if (!sameIdentity(helperMetadata, before))
-      throw new Error("Native filesystem helper rejected executable-changed");
-    const result = spawnSync(
+    assertPrivateExecutableRoot(dirname(helperPath));
+    const executable = openSync(
       helperPath,
-      [operation, assertBoundRoot(root), relativePath, ...rest],
-      {
-        encoding,
-        input,
-        maxBuffer: 64 * 1024 * 1024,
-        stdio: "pipe",
-      },
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
     );
-    if (result.status !== 0 || result.error) {
-      const category = /native-fs-helper:([a-z-]+)/u.exec(
-        String(result.stderr ?? ""),
-      )?.[1];
-      throw new Error(
-        `Native filesystem helper rejected ${category ?? "execution"}`,
+    try {
+      const before = fstatSync(executable, { bigint: true });
+      if (
+        !sameIdentity(helperMetadata, before) ||
+        !sameIdentity(before, lstatSync(helperPath, { bigint: true })) ||
+        sha256(readDescriptor(executable, before.size)) !== helperDigest
+      )
+        throw new Error("Native filesystem helper rejected executable-changed");
+      const result = spawnSync(
+        helperPath,
+        [operation, assertBoundRoot(root), relativePath, ...rest],
+        {
+          encoding,
+          input,
+          maxBuffer: 64 * 1024 * 1024,
+          stdio: "pipe",
+        },
       );
+      if (result.status !== 0 || result.error) {
+        const category = /native-fs-helper:([a-z-]+)/u.exec(
+          String(result.stderr ?? ""),
+        )?.[1];
+        throw new Error(
+          `Native filesystem helper rejected ${category ?? "execution"}`,
+        );
+      }
+      if (
+        !sameIdentity(before, fstatSync(executable, { bigint: true })) ||
+        !sameIdentity(before, lstatSync(helperPath, { bigint: true })) ||
+        sha256(readDescriptor(executable, before.size)) !== helperDigest
+      )
+        throw new Error("Native filesystem helper rejected executable-changed");
+      return result.stdout;
+    } finally {
+      closeSync(executable);
     }
-    if (!sameIdentity(helperMetadata, lstatSync(helperPath, { bigint: true })))
-      throw new Error("Native filesystem helper rejected executable-changed");
-    return result.stdout;
   }
   return {
     copyTree(
@@ -181,18 +250,61 @@ function gitBlob(bytes) {
     .digest("hex");
 }
 
-function assertSourceIntegrity(snapshotRoot, expected) {
-  for (const path of NATIVE_FS_SOURCES) {
-    const bytes = readFileSync(join(snapshotRoot, path));
-    const record = expected.get(path);
-    if (
-      sha256(bytes) !== record.sha256 ||
-      gitBlob(bytes) !== record.blob ||
-      !lstatSync(join(snapshotRoot, path)).isFile()
-    ) {
-      throw new Error("Native filesystem helper rejected source-integrity");
+function bindSources(snapshotRoot, expected) {
+  const sources = [];
+  try {
+    for (const [index, path] of NATIVE_FS_SOURCES.entries()) {
+      const absolute = join(snapshotRoot, path);
+      const named = lstatSync(absolute, { bigint: true });
+      const fd = openSync(
+        absolute,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+      );
+      const opened = fstatSync(fd, { bigint: true });
+      sources.push({ absolute, before: opened, childFd: index + 3, fd, path });
+      const bytes = readDescriptor(fd, opened.size);
+      const record = expected.get(path);
+      if (
+        !named.isFile() ||
+        named.isSymbolicLink() ||
+        !sameIdentity(named, opened) ||
+        sha256(bytes) !== record.sha256 ||
+        gitBlob(bytes) !== record.blob
+      )
+        throw new Error("Native filesystem helper rejected source-integrity");
     }
+    return sources;
+  } catch (error) {
+    for (const { fd } of sources) closeSync(fd);
+    throw error;
   }
+}
+
+function verifyBoundSources(sources) {
+  for (const { absolute, before, fd } of sources)
+    if (
+      !sameIdentity(before, fstatSync(fd, { bigint: true })) ||
+      !sameIdentity(before, lstatSync(absolute, { bigint: true }))
+    )
+      throw new Error("Native filesystem helper rejected source-integrity");
+}
+
+function readDescriptor(fd, size) {
+  if (size < 0n || size > 1024n * 1024n)
+    throw new Error("Native filesystem helper rejected source-integrity");
+  const bytes = Buffer.alloc(Number(size));
+  let offset = 0;
+  while (offset < bytes.length) {
+    const count = readSync(fd, bytes, offset, bytes.length - offset, offset);
+    if (count === 0)
+      throw new Error("Native filesystem helper rejected source-integrity");
+    offset += count;
+  }
+  return bytes;
+}
+
+function descriptorPath(fd) {
+  return `${process.platform === "linux" ? "/proc/self/fd" : "/dev/fd"}/${fd}`;
 }
 
 function assertBoundRoot(root) {
@@ -208,6 +320,16 @@ function assertBoundRoot(root) {
       throw new Error("Native filesystem helper rejected root-symlink");
   }
   return root;
+}
+
+function assertPrivateExecutableRoot(root) {
+  assertBoundRoot(root);
+  const metadata = lstatSync(root, { bigint: true });
+  if (
+    (metadata.mode & 0o777n) !== 0o700n ||
+    (process.getuid && metadata.uid !== BigInt(process.getuid()))
+  )
+    throw new Error("Native filesystem helper rejected executable-root");
 }
 
 function sameIdentity(left, right) {
