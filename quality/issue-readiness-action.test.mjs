@@ -537,6 +537,87 @@ test("invalidates linked PR contracts when pausing PR-tracked work", async (t) =
   assert.equal(calls.filter((call) => call.method === "DELETE").length, 0);
 });
 
+test("invalidates linked PR contracts when PR lifecycle labels are removed", async (t) => {
+  const body = validTaskBody();
+  const title = "Implement governed workspace opening";
+  const accepted = readinessComment({
+    actor: "planner",
+    decision: { outcome: "accept", reasons: [] },
+    now: "2026-07-16T12:00:00.000Z",
+    validation: {
+      failures: [],
+      fingerprint: semanticIssueFingerprint(body, title),
+      version: "v1",
+    },
+  });
+  const calls = installGitHubFetchMock(t, {
+    comments: [
+      {
+        body: accepted,
+        id: 1,
+        user: {
+          id: 41898282,
+          login: "github-actions[bot]",
+          type: "Bot",
+        },
+      },
+    ],
+    pullRequests: [
+      {
+        body: "## Scope\n\n- Accepted issue: #42",
+        head: { sha: "e".repeat(40) },
+      },
+    ],
+  });
+  const result = await runIssueReadinessAction({
+    event: issueEvent({
+      action: "unlabeled",
+      issue: {
+        body,
+        labels: [{ name: "type: task" }],
+        number: 42,
+        title,
+      },
+      label: { name: "status: pr open" },
+    }),
+  });
+
+  assert.equal(result.outcome, "reject");
+  assert.deepEqual(result.reasons, [
+    "The pull-request lifecycle label was removed.",
+  ]);
+  assert.ok(
+    calls.some(
+      (call) =>
+        call.method === "POST" && call.url.endsWith("/issues/42/labels"),
+    ),
+  );
+  assert.ok(
+    calls.some(
+      (call) =>
+        call.method === "POST" &&
+        call.url.endsWith(`/statuses/${"e".repeat(40)}`),
+    ),
+  );
+
+  assert.deepEqual(
+    await runIssueReadinessAction({
+      event: issueEvent({
+        action: "unlabeled",
+        issue: {
+          body,
+          labels: [{ name: "type: task" }],
+          number: 42,
+          title,
+        },
+        label: { name: "status: ready for human review" },
+        sender: { login: "github-actions[bot]" },
+      }),
+    }),
+    { outcome: "ignore" },
+  );
+});
+
 test("fails closed when actor permission cannot be established", async (t) => {
   installGitHubFetchMock(t, { deleteStatus: 404, permission: "error" });
   const result = await runIssueReadinessAction({ event: issueEvent() });
