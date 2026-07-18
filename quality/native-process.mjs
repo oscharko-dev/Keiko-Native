@@ -3,13 +3,22 @@ import { join } from "node:path";
 
 export function sanitizeOutput(value) {
   return value
+    .replaceAll(
+      /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----/gu,
+      "<redacted-private-key>",
+    )
     .replaceAll(/\/Users\/[^/\s]+/gu, "<redacted-path>")
     .replaceAll(/\/home\/[^/\s]+/gu, "<redacted-path>")
     .replaceAll(/[A-Z]:\\Users\\[^\\\s]+/gu, "<redacted-path>")
     .replaceAll(
-      /(["']?(?:token|password|secret)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)/giu,
+      /(["']?(?:token|password|secret|api[_-]?key|authorization)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\r\n,}]+)/giu,
       "$1<redacted>",
-    );
+    )
+    .replaceAll(
+      /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu,
+      "<redacted-email>",
+    )
+    .replaceAll(/\b(?:https?|wss?):\/\/[^\s,)}\]]+/giu, "<redacted-endpoint>");
 }
 
 export function commandFailure(command, args, result) {

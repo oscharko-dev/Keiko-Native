@@ -240,20 +240,28 @@ export function createNativePackageGate({
     await packageNative();
     await testNative();
     const lifecycle = await launchPackagedShell();
-    const evidence = packagedShellEvidence({
-      architecture: process.arch,
+    const bindings = {
       cargoLockSha256: await digest(join(nativeRoot, "Cargo.lock")),
-      lifecycle,
       npmLockSha256: await digest(join(frontendRoot, "package-lock.json")),
       packageManifestSha256: await digest(
         join(packageRoot, "package-manifest.json"),
       ),
-      revision: sourceRevision(),
+      readinessFingerprint:
+        "c68478df272e1add068e7b1bba9e8c973920b4e3eae29a293d1cba3bc54ab61a",
+      sourceRevision: sourceRevision(),
+    };
+    const evidence = packagedShellEvidence({
+      architecture: process.arch,
+      cargoLockSha256: bindings.cargoLockSha256,
+      lifecycle,
+      npmLockSha256: bindings.npmLockSha256,
+      packageManifestSha256: bindings.packageManifestSha256,
+      revision: bindings.sourceRevision,
       runner: process.env.ImageOS
         ? `${process.env.ImageOS}-${process.env.ImageVersion ?? "current"}`
         : "local-macos",
     });
-    const failures = evidenceFailures(evidence);
+    const failures = evidenceFailures(evidence, bindings);
     const encoded = `${JSON.stringify(evidence, null, 2)}\n`;
     if (redactionMatches(encoded).length > 0)
       failures.push("evidence-redaction-match");

@@ -2,13 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  architectureFailures,
   evidenceFailures,
   manifestFailures,
-  packagePolicyFailures,
-  redactionMatches,
   sourceDeclarationFailures,
 } from "./native-contract.mjs";
+import { architectureFailures } from "./native-architecture-contract.mjs";
 import { main, nativeGateTestSupport } from "./native-gate.mjs";
 
 const project = {
@@ -39,6 +37,24 @@ test("source declarations reject every unknown native file", () => {
   assert.deepEqual(
     sourceDeclarationFailures(["native/undeclared.ts"], project),
     ["undeclared-native-file:native/undeclared.ts"],
+  );
+});
+
+test("tracked files remain inspected when generated directories are ignored", () => {
+  const generated = "/repo/native/apps/keiko-desktop/gen/runtime.json";
+  assert.deepEqual(
+    nativeGateTestSupport.mergeNativeInspectionPaths(
+      ["/repo/native/crates/keiko-application/src/lib.rs"],
+      [generated, generated],
+    ),
+    [generated, "/repo/native/crates/keiko-application/src/lib.rs"].toSorted(),
+  );
+  assert.deepEqual(
+    sourceDeclarationFailures(
+      ["native/apps/keiko-desktop/gen/runtime.json"],
+      project,
+    ),
+    ["undeclared-native-file:native/apps/keiko-desktop/gen/runtime.json"],
   );
 });
 
@@ -87,6 +103,34 @@ test("architecture scans every source and rejects generic capabilities", () => {
         ),
       );
     }
+  }
+});
+
+test("desktop main remains thin declarative wiring", () => {
+  const mainPath = "native/apps/keiko-desktop/src/main.rs";
+  const declarative = [
+    "fn main() {",
+    "  tauri::Builder::default()",
+    "    .plugin(navigation_policy())",
+    "    .run(handle_run_event);",
+    "}",
+  ].join("\n");
+  assert.ok(
+    !architectureFailures(
+      [...roots, { path: mainPath, text: declarative }],
+      project,
+    ).some((failure) => failure.startsWith("non-declarative-main:")),
+  );
+  for (const text of [
+    `${declarative}\nif authority { decide(); }`,
+    `${declarative}\nlet document_nonce = generate();`,
+    Array.from({ length: 41 }, () => "wire();").join("\n"),
+  ]) {
+    assert.ok(
+      architectureFailures([...roots, { path: mainPath, text }], project).some(
+        (failure) => failure === `non-declarative-main:${mainPath}`,
+      ),
+    );
   }
 });
 
@@ -167,186 +211,6 @@ test("manifest policy closes dependency, CSP and build-path surfaces", () => {
     "frontend-production-dependencies",
     "frontend-build-path",
   ]);
-});
-
-test("package policy requires exact paths, dependencies, notices and SPDX", () => {
-  const dependency = {
-    license: "MIT",
-    name: "owned",
-    source: "workspace",
-    version: "0.1.0",
-  };
-  const policy = {
-    schema: "keiko-native-package-policy/v1",
-    target: "keiko-native-desktop",
-    bundleIdentifier: "dev.oscharko.keiko-native",
-    expectedLocks: {
-      cargoSha256: "a".repeat(64),
-      npmSha256: "b".repeat(64),
-    },
-    allowedBundlePaths: [
-      "Contents/Info.plist",
-      "Contents/MacOS/keiko-native-desktop",
-      "Contents/Resources/THIRD-PARTY-NOTICES.json",
-    ],
-    requiredNoticePaths: ["Contents/Resources/THIRD-PARTY-NOTICES.json"],
-    allowedFileClasses: {
-      "Contents/Info.plist": "plist",
-      "Contents/MacOS/keiko-native-desktop": "mach-o-executable",
-      "Contents/Resources/THIRD-PARTY-NOTICES.json": "dependency-notice",
-    },
-    cargoInventory: [dependency],
-    npmInventory: [],
-    acceptedSpdxExpressions: ["MIT"],
-    security: {
-      allowedBundledOrigins: ["tauri://localhost", "http://tauri.localhost"],
-      csp: "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost; script-src 'self'; style-src 'self'",
-      prohibitedMarkers: ["test-listener"],
-      prohibitedPathFragments: ["fixture"],
-    },
-  };
-  const files = [
-    { path: "Contents/Info.plist", bytes: Buffer.from("plist") },
-    {
-      path: "Contents/MacOS/keiko-native-desktop",
-      bytes: Buffer.from("product"),
-    },
-    {
-      path: "Contents/Resources/THIRD-PARTY-NOTICES.json",
-      bytes: Buffer.from("notice"),
-    },
-  ];
-  const fileClasses = { ...policy.allowedFileClasses };
-  assert.deepEqual(
-    packagePolicyFailures({
-      cargo: [dependency],
-      fileClasses,
-      files,
-      npm: [],
-      policy,
-    }),
-    [],
-  );
-  assert.ok(
-    packagePolicyFailures({
-      cargo: [dependency],
-      fileClasses: { ...fileClasses, extra: "raw" },
-      files: [
-        ...files,
-        { path: "fixture", bytes: Buffer.from("test-listener") },
-      ],
-      npm: [],
-      policy,
-    }).length >= 2,
-  );
-  for (const key of Object.keys(policy)) {
-    const mutated = structuredClone(policy);
-    delete mutated[key];
-    assert.ok(
-      packagePolicyFailures({
-        cargo: [dependency],
-        fileClasses,
-        files,
-        npm: [],
-        policy: mutated,
-      }).length > 0,
-      `missing ${key}`,
-    );
-  }
-  for (const mutated of [
-    { ...policy, extra: true },
-    { ...policy, schema: "other" },
-    { ...policy, target: "other" },
-    { ...policy, bundleIdentifier: "other" },
-    { ...policy, expectedLocks: { ...policy.expectedLocks, extra: "x" } },
-    { ...policy, security: { ...policy.security, csp: "default-src *" } },
-    { ...policy, allowedBundlePaths: [...policy.allowedBundlePaths, "extra"] },
-    { ...policy, requiredNoticePaths: [] },
-    { ...policy, allowedFileClasses: { ...fileClasses, extra: "raw" } },
-    { ...policy, cargoInventory: [] },
-    { ...policy, npmInventory: [dependency] },
-    { ...policy, acceptedSpdxExpressions: [] },
-  ]) {
-    assert.ok(
-      packagePolicyFailures({
-        cargo: [dependency],
-        fileClasses,
-        files,
-        npm: [],
-        policy: mutated,
-      }).length > 0,
-    );
-  }
-  const redactedFiles = structuredClone(files);
-  redactedFiles[1].bytes = Buffer.from("/Users/operator/work");
-  assert.ok(
-    packagePolicyFailures({
-      cargo: [dependency],
-      fileClasses,
-      files: redactedFiles,
-      npm: [],
-      policy,
-    }).includes("package-redaction:Contents/MacOS/keiko-native-desktop"),
-  );
-});
-
-test("evidence schema and redaction fail closed", () => {
-  const evidence = {
-    schema: "keiko-native-packaged-shell-evidence/v1",
-    sourceRevision: "0".repeat(40),
-    readinessFingerprint:
-      "c68478df272e1add068e7b1bba9e8c973920b4e3eae29a293d1cba3bc54ab61a",
-    packageManifestSha256: "b".repeat(64),
-    cargoLockSha256: "c".repeat(64),
-    npmLockSha256: "d".repeat(64),
-    runner: "local-macos",
-    architecture: "arm64",
-    outcomes: [
-      "packaged-health-acknowledged",
-      "normal-shutdown",
-      "zero-owned-descendants",
-      "package-policy",
-    ],
-    boundedReasonCodes: [
-      "invalid-request",
-      "unauthorized",
-      "cancelled",
-      "timed-out",
-      "host-unavailable",
-      "shutting-down",
-    ],
-    acknowledgementMs: 1,
-    shutdownMs: 2,
-    cleanupOwnedDescendants: 0,
-    redaction: "closed",
-  };
-  assert.deepEqual(evidenceFailures(evidence), []);
-  for (const mutation of [
-    { ...evidence, extra: true },
-    { ...evidence, schema: "other" },
-    { ...evidence, sourceRevision: "bad" },
-    { ...evidence, readinessFingerprint: "0".repeat(64) },
-    { ...evidence, packageManifestSha256: "bad" },
-    { ...evidence, cargoLockSha256: "bad" },
-    { ...evidence, npmLockSha256: "bad" },
-    { ...evidence, runner: "unknown" },
-    { ...evidence, architecture: "x64" },
-    { ...evidence, outcomes: [...evidence.outcomes, "extra"] },
-    {
-      ...evidence,
-      boundedReasonCodes: [...evidence.boundedReasonCodes, "extra"],
-    },
-    { ...evidence, acknowledgementMs: 5001 },
-    { ...evidence, shutdownMs: 1.5 },
-    { ...evidence, cleanupOwnedDescendants: 1 },
-    { ...evidence, redaction: "open" },
-  ]) {
-    assert.ok(evidenceFailures(mutation).length > 0);
-  }
-  assert.equal(redactionMatches("bounded reason code").length, 0);
-  assert.equal(redactionMatches("password:!0").length, 0);
-  assert.ok(redactionMatches('password="actual-value"').length > 0);
-  assert.ok(redactionMatches("/Users/operator/project").length > 0);
 });
 
 test("gate rejects unknown modes", async () => {
@@ -432,7 +296,16 @@ lto = true
     revision: "a".repeat(40),
     runner: "macos26-current",
   });
-  assert.deepEqual(evidenceFailures(evidence), []);
+  assert.deepEqual(
+    evidenceFailures(evidence, {
+      cargoLockSha256: evidence.cargoLockSha256,
+      npmLockSha256: evidence.npmLockSha256,
+      packageManifestSha256: evidence.packageManifestSha256,
+      readinessFingerprint: evidence.readinessFingerprint,
+      sourceRevision: evidence.sourceRevision,
+    }),
+    [],
+  );
   assert.equal(evidence.outcomes.length, 4);
   assert.equal(evidence.boundedReasonCodes.length, 6);
 
@@ -450,6 +323,10 @@ test("command failures expose bounded sanitized status and spawn causes", () => 
     "x".repeat(4000),
     "/Users/operator/private/project",
     'token="sensitive-value"',
+    "api_key=private-api-key",
+    "authorization: Bearer private-credential",
+    "https://internal.example/path?q=secret",
+    "-----BEGIN PRIVATE KEY-----\nprivate-key-material\n-----END PRIVATE KEY-----",
     JSON.stringify({ response: "raw-body", email: "operator@example.invalid" }),
   ].join("\n");
   const failure = nativeGateTestSupport.commandFailure("cargo", ["build"], {
@@ -460,6 +337,11 @@ test("command failures expose bounded sanitized status and spawn causes", () => 
   assert.match(failure.message, /status:7/u);
   assert.ok(failure.message.length < 1200);
   assert.ok(!failure.message.includes("sensitive-value"));
+  assert.ok(!failure.message.includes("private-api-key"));
+  assert.ok(!failure.message.includes("private-credential"));
+  assert.ok(!failure.message.includes("internal.example"));
+  assert.ok(!failure.message.includes("private-key-material"));
+  assert.ok(!failure.message.includes("raw-body"));
   assert.ok(!failure.message.includes("operator@example.invalid"));
   assert.ok(!failure.message.includes("/Users/operator"));
   const spawnFailure = nativeGateTestSupport.commandFailure(

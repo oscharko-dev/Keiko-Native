@@ -7,15 +7,23 @@ fn request(sequence: u64, request_id: &str) -> Vec<u8> {
     .into_bytes()
 }
 
+fn nonce(value: char) -> String {
+    value.to_string().repeat(64)
+}
+
 fn started() -> (HostLifecycle, SenderContext) {
     let mut lifecycle = HostLifecycle::default();
-    let generation = lifecycle.begin_renderer_session();
+    let document_nonce = nonce('a');
+    let generation = lifecycle
+        .begin_renderer_session(document_nonce.clone())
+        .expect("valid nonce");
     (
         lifecycle,
         SenderContext {
             window_label: "main".to_owned(),
             origin: "tauri://localhost".to_owned(),
             generation,
+            document_nonce,
         },
     )
 }
@@ -89,7 +97,9 @@ fn cancellation_is_owned_by_the_current_generation() {
         .begin_application_request(&sender, &request(2, "request-00000002"))
         .expect("accepted");
     let old_sender = sender;
-    let new_generation = lifecycle.begin_renderer_session();
+    let new_generation = lifecycle
+        .begin_renderer_session(nonce('b'))
+        .expect("valid nonce");
     assert!(
         lifecycle
             .complete_application_request(accepted)
@@ -156,11 +166,15 @@ fn malformed_missing_cross_generation_and_late_cancellation_are_closed() {
     let accepted = lifecycle
         .begin_application_request(&sender, &request(1, "request-00000002"))
         .expect("accepted");
-    lifecycle.begin_renderer_session();
-    let current = lifecycle.sender_for_generation(
+    lifecycle.begin_renderer_session(nonce('b'));
+    let (current_generation, current_nonce) = lifecycle
+        .current_document_authority()
+        .expect("document authority");
+    let current = lifecycle.sender_for_document(
         "main",
         "tauri://localhost",
-        lifecycle.current_generation().expect("generation"),
+        current_generation,
+        &current_nonce,
     );
     assert!(
         lifecycle
@@ -239,6 +253,46 @@ fn injected_unavailable_timeout_and_renderer_loss_are_terminal() {
     assert_eq!(
         lifecycle.begin_application_request(&sender, &request(4, "request-00000004")),
         Err(("unknown-request".to_owned(), ReasonCode::Unauthorized))
+    );
+}
+
+#[test]
+fn document_nonce_is_unpredictable_outer_authority_and_fails_closed() {
+    let mut lifecycle = HostLifecycle::default();
+    assert!(!activate_renderer_document(&mut lifecycle, None));
+    assert!(lifecycle.current_document_authority().is_none());
+    assert!(!activate_renderer_document(
+        &mut lifecycle,
+        Some("too-short".to_owned())
+    ));
+    let honest_nonce = nonce('a');
+    assert!(activate_renderer_document(
+        &mut lifecycle,
+        Some(honest_nonce.clone())
+    ));
+    let (generation, _) = lifecycle
+        .current_document_authority()
+        .expect("current authority");
+    for guessed in [String::new(), nonce('b')] {
+        let sender =
+            lifecycle.sender_for_document("main", "tauri://localhost", generation, &guessed);
+        assert_eq!(
+            lifecycle.begin_application_request(&sender, &request(1, "request-00000001")),
+            Err(("unknown-request".to_owned(), ReasonCode::Unauthorized))
+        );
+    }
+    let next_generation =
+        lifecycle.sender_for_document("main", "tauri://localhost", generation + 1, &honest_nonce);
+    assert_eq!(
+        lifecycle.begin_application_request(&next_generation, &request(1, "request-00000002")),
+        Err(("unknown-request".to_owned(), ReasonCode::Unauthorized))
+    );
+    let honest =
+        lifecycle.sender_for_document("main", "tauri://localhost", generation, &honest_nonce);
+    assert!(
+        lifecycle
+            .begin_application_request(&honest, &request(1, "request-00000003"))
+            .is_ok()
     );
 }
 

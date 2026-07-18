@@ -27,42 +27,48 @@ export interface HealthResponse {
 
 export type Invoke = (
   command: string,
-  arguments_: { generation: number; request: string },
+  arguments_: { documentNonce: string; generation: number; request: string },
 ) => Promise<string>;
 export type RequestIdFactory = () => string;
-export type GenerationProvider = () => Promise<number>;
+export interface RendererAuthority {
+  documentNonce: string;
+  generation: number;
+}
+export type AuthorityProvider = () => Promise<RendererAuthority>;
 
-const GENERATION_EVENT = "keiko-renderer-generation";
+declare const __KEIKO_EXPECTED_SOURCE_REVISION__: string;
+const AUTHORITY_EVENT = "keiko-renderer-authority";
+export const expectedSourceRevision = __KEIKO_EXPECTED_SOURCE_REVISION__;
 
-export async function rendererGeneration(): Promise<number> {
-  const existing = Reflect.get(window, "__KEIKO_RENDERER_GENERATION");
-  if (validGeneration(existing)) return existing;
+export async function rendererAuthority(): Promise<RendererAuthority> {
+  const existing = Reflect.get(window, "__KEIKO_RENDERER_AUTHORITY");
+  if (isRendererAuthority(existing)) return existing;
   return new Promise((resolve, reject) => {
     const timer = window.setTimeout(() => {
-      window.removeEventListener(GENERATION_EVENT, receive);
-      reject(new Error("renderer-generation-unavailable"));
+      window.removeEventListener(AUTHORITY_EVENT, receive);
+      reject(new Error("renderer-authority-unavailable"));
     }, 1000);
     const receive = (event: Event) => {
-      const generation = event instanceof CustomEvent ? event.detail : null;
-      if (!validGeneration(generation)) return;
+      const authority = event instanceof CustomEvent ? event.detail : null;
+      if (!isRendererAuthority(authority)) return;
       window.clearTimeout(timer);
-      window.removeEventListener(GENERATION_EVENT, receive);
-      resolve(generation);
+      window.removeEventListener(AUTHORITY_EVENT, receive);
+      resolve(authority);
     };
-    window.addEventListener(GENERATION_EVENT, receive);
+    window.addEventListener(AUTHORITY_EVENT, receive);
   });
 }
 
 export function createRendererPort(
   invoke: Invoke,
   requestId: RequestIdFactory = () => `request-${crypto.randomUUID()}`,
-  generationProvider: GenerationProvider = rendererGeneration,
+  authorityProvider: AuthorityProvider = rendererAuthority,
 ) {
   let sequence = 0;
 
   async function health(signal?: AbortSignal): Promise<HealthResponse> {
     if (signal?.aborted) throw new Error("application-health-cancelled");
-    const generation = await generationProvider();
+    const authority = await authorityProvider();
     if (signal?.aborted) throw new Error("application-health-cancelled");
     const request: HealthRequest = {
       schemaVersion: 1,
@@ -87,14 +93,16 @@ export function createRendererPort(
           requestId: request.requestId,
         };
         void invoke("application_cancel", {
-          generation,
+          generation: authority.generation,
+          documentNonce: authority.documentNonce,
           request: JSON.stringify(cancellation),
         }).catch(() => undefined);
         fail("application-health-cancelled");
       };
       signal?.addEventListener("abort", cancel, { once: true });
       void invoke("application_request", {
-        generation,
+        documentNonce: authority.documentNonce,
+        generation: authority.generation,
         request: JSON.stringify(request),
       }).then(
         (encoded) => {
@@ -107,7 +115,7 @@ export function createRendererPort(
             return;
           }
           if (
-            !isHealthResponse(response) ||
+            !isHealthResponse(response, expectedSourceRevision) ||
             response.requestId !== request.requestId
           ) {
             fail("application-health-failed");
@@ -126,11 +134,20 @@ export function createRendererPort(
   return { health };
 }
 
-function validGeneration(value: unknown): value is number {
-  return Number.isSafeInteger(value) && Number(value) > 0;
+function isRendererAuthority(value: unknown): value is RendererAuthority {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ["documentNonce", "generation"]) &&
+    Number.isSafeInteger(value.generation) &&
+    Number(value.generation) > 0 &&
+    /^[0-9a-f]{64}$/u.test(String(value.documentNonce))
+  );
 }
 
-export function isHealthResponse(value: unknown): value is HealthResponse {
+export function isHealthResponse(
+  value: unknown,
+  expectedRevision: string = expectedSourceRevision,
+): value is HealthResponse {
   if (
     !isRecord(value) ||
     !hasExactKeys(value, ["schemaVersion", "requestId", "result"])
@@ -149,7 +166,7 @@ export function isHealthResponse(value: unknown): value is HealthResponse {
     result.kind === "application-health" &&
     result.status === "healthy" &&
     typeof build.version === "string" &&
-    /^[0-9a-f]{40}$/u.test(String(build.sourceRevision)) &&
+    build.sourceRevision === expectedRevision &&
     build.targetTriple === "aarch64-apple-darwin"
   );
 }

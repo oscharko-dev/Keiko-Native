@@ -5,9 +5,11 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  aggregateCiBindingFailures,
   dependencyReviewWorkflowFailures,
   isProductiveSource,
   isSafeRepositoryPath,
+  mutationWorkflowFailures,
   nativeCiWorkflowFailures,
   normalizeRepositoryPath,
   sonarRequiredForEvent,
@@ -633,7 +635,15 @@ async function fixtureRepository() {
       "      - cross-platform-smoke",
       "      - native",
       "    steps:",
-      "      - run: verify-results",
+      "      - env:",
+      "          CORE_QUALITY_RESULT: ${{ needs.core-quality.result }}",
+      "          COVERAGE_SONAR_RESULT: ${{ needs.coverage-sonar.result }}",
+      "          CROSS_PLATFORM_RESULT: ${{ needs.cross-platform-smoke.result }}",
+      "          NATIVE_RESULT: ${{ needs.native.result }}",
+      "        run: |",
+      '          for result in "$CORE_QUALITY_RESULT" "$COVERAGE_SONAR_RESULT" "$CROSS_PLATFORM_RESULT" "$NATIVE_RESULT"; do',
+      '            [ "$result" = "success" ] || exit 1',
+      "          done",
       "  actionlint:",
       "    name: actionlint",
       "    steps:",
@@ -665,6 +675,18 @@ async function fixtureRepository() {
       "    steps:",
       "      - env:",
       "          RESULT: ${{ needs.native-matrix.result }}",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, ".github/workflows/mutation-security.yml"),
+    [
+      "jobs:",
+      "  mutation:",
+      "    steps:",
+      "      - run: |",
+      "          cargo +1.92.0 install cargo-mutants --version 27.1.0 --locked",
+      "      - run: |",
+      "          cargo +1.92.0 mutants --manifest-path native/Cargo.toml",
     ].join("\n"),
   );
   for (const name of [
@@ -1188,6 +1210,50 @@ test("native CI exposes one exact aggregate check over separate matrix legs", ()
     valid.replace("needs.native-matrix.result", "needs.native-other.result"),
   ]) {
     assert.ok(nativeCiWorkflowFailures(mutation).length > 0);
+  }
+});
+
+test("productive CI aggregate binds and checks every exact dependency result", () => {
+  const valid = [
+    "jobs:",
+    "  ci:",
+    "    env:",
+    "      CORE_QUALITY_RESULT: ${{ needs.core-quality.result }}",
+    "      COVERAGE_SONAR_RESULT: ${{ needs.coverage-sonar.result }}",
+    "      CROSS_PLATFORM_RESULT: ${{ needs.cross-platform-smoke.result }}",
+    "      NATIVE_RESULT: ${{ needs.native.result }}",
+    "    run: |",
+    '      for result in "$CORE_QUALITY_RESULT" "$COVERAGE_SONAR_RESULT" "$CROSS_PLATFORM_RESULT" "$NATIVE_RESULT"; do',
+    "        true",
+    "      done",
+  ].join("\n");
+  assert.deepEqual(aggregateCiBindingFailures(valid), []);
+  for (const mutation of [
+    valid.replace("needs.core-quality.result", "needs.native.result"),
+    valid.replace("needs.coverage-sonar.result", "needs.core-quality.result"),
+    valid.replace("needs.cross-platform-smoke.result", "needs.native.result"),
+    valid.replace("needs.native.result", "needs.core-quality.result"),
+    valid.replace(' "$CORE_QUALITY_RESULT"', ""),
+    valid.replace(' "$COVERAGE_SONAR_RESULT"', ""),
+    valid.replace(' "$CROSS_PLATFORM_RESULT"', ""),
+    valid.replace(' "$NATIVE_RESULT"', ""),
+  ]) {
+    assert.ok(aggregateCiBindingFailures(mutation).length > 0);
+  }
+});
+
+test("mutation workflow pins cargo-mutants execution to Rust 1.92", () => {
+  const valid = [
+    "cargo +1.92.0 install cargo-mutants --version 27.1.0 --locked",
+    "cargo +1.92.0 mutants --manifest-path native/Cargo.toml",
+  ].join("\n");
+  assert.deepEqual(mutationWorkflowFailures(valid), []);
+  for (const mutation of [
+    valid.replace("+1.92.0 install", "install"),
+    valid.replace("+1.92.0 mutants", "mutants"),
+    `${valid}\ncargo mutants --manifest-path native/Cargo.toml`,
+  ]) {
+    assert.ok(mutationWorkflowFailures(mutation).length > 0);
   }
 });
 

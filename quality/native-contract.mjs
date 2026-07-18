@@ -1,7 +1,4 @@
-const PRODUCT_CAPABILITY_PATTERN =
-  /\b(?:std::fs|std::process|std::net|reqwest|keyring|security_framework|tauri_plugin_(?:fs|shell|http|process|updater))\b/iu;
-const FRONTEND_CAPABILITY_PATTERN =
-  /(?:\bnode:fs\b|\bnode:child_process\b|\bfetch\s*\(|\bWebSocket\b|\bEventSource\b|\bwindow\.open\b|\blocation\s*=)/iu;
+import * as closed from "./native-package-policy.mjs";
 
 export function redactionMatches(value) {
   const denied = [
@@ -29,51 +26,6 @@ export function sourceDeclarationFailures(paths, project) {
         !support.has(path) && !roots.some((root) => path.startsWith(root)),
     )
     .map((path) => `undeclared-native-file:${path}`);
-}
-
-export function architectureFailures(entries, project) {
-  const failures = [];
-  for (const root of project.productiveSourceRoots) {
-    if (!entries.some((entry) => entry.path.startsWith(root)))
-      failures.push(`missing-root:${root}`);
-  }
-  for (const { path, text } of entries) {
-    if (
-      (path.startsWith("native/crates/keiko-application/src/") ||
-        path.startsWith("native/crates/keiko-ui-port/src/")) &&
-      /\b(?:tauri|wry|webkit|appkit|react)\b/iu.test(text)
-    ) {
-      failures.push(`forbidden-adapter-dependency:${path}`);
-    }
-    if (
-      (path.startsWith("native/crates/keiko-application/src/") ||
-        path.startsWith("native/crates/keiko-ui-port/src/")) &&
-      PRODUCT_CAPABILITY_PATTERN.test(text)
-    ) {
-      failures.push(`forbidden-domain-capability:${path}`);
-    }
-    if (
-      path.startsWith("native/frontend/src/") &&
-      FRONTEND_CAPABILITY_PATTERN.test(text)
-    ) {
-      failures.push(`forbidden-frontend-capability:${path}`);
-    }
-  }
-  const frontend = entries
-    .filter(
-      ({ path }) =>
-        path.startsWith("native/frontend/src/") && !path.endsWith(".test.ts"),
-    )
-    .map(({ text }) => text)
-    .join("\n");
-  for (const command of frontend.matchAll(/["'](application_[a-z_-]+)["']/gu)) {
-    if (
-      !new Set(["application_request", "application_cancel"]).has(command[1])
-    ) {
-      failures.push(`forbidden-renderer-command:${command[1]}`);
-    }
-  }
-  return failures;
 }
 
 export function manifestFailures({ cargo, crates, desktopConfig, frontend }) {
@@ -156,17 +108,6 @@ export function productionMarkerFailures(entries, markers) {
   );
 }
 
-const CLOSED_PACKAGE_PATHS = [
-  "Contents/Info.plist",
-  "Contents/MacOS/keiko-native-desktop",
-  "Contents/Resources/THIRD-PARTY-NOTICES.json",
-];
-const CLOSED_FILE_CLASSES = {
-  "Contents/Info.plist": "plist",
-  "Contents/MacOS/keiko-native-desktop": "mach-o-executable",
-  "Contents/Resources/THIRD-PARTY-NOTICES.json": "dependency-notice",
-};
-
 export function packagePolicyFailures({
   cargo,
   fileClasses,
@@ -243,23 +184,26 @@ export function packagePolicyFailures({
       JSON.stringify(["tauri://localhost", "http://tauri.localhost"]) ||
     policy.security?.csp !==
       "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost; script-src 'self'; style-src 'self'" ||
-    !Array.isArray(policy.security?.prohibitedMarkers) ||
-    !Array.isArray(policy.security?.prohibitedPathFragments)
+    JSON.stringify(prohibitedMarkers) !==
+      JSON.stringify(closed.CLOSED_PROHIBITED_MARKERS) ||
+    JSON.stringify(prohibitedPathFragments) !==
+      JSON.stringify(closed.CLOSED_PROHIBITED_PATH_FRAGMENTS)
   ) {
     failures.push("package-policy-security");
   }
   if (
-    JSON.stringify(allowedPaths) !== JSON.stringify(CLOSED_PACKAGE_PATHS) ||
+    JSON.stringify(allowedPaths) !==
+      JSON.stringify(closed.CLOSED_PACKAGE_PATHS) ||
     JSON.stringify(requiredNotices) !==
-      JSON.stringify([CLOSED_PACKAGE_PATHS[2]]) ||
+      JSON.stringify([closed.CLOSED_PACKAGE_PATHS[2]]) ||
     JSON.stringify(policy.allowedFileClasses) !==
-      JSON.stringify(CLOSED_FILE_CLASSES)
+      JSON.stringify(closed.CLOSED_FILE_CLASSES)
   ) {
     failures.push("package-policy-path-classes");
   }
   if (
     fileClasses !== undefined &&
-    JSON.stringify(fileClasses) !== JSON.stringify(CLOSED_FILE_CLASSES)
+    JSON.stringify(fileClasses) !== JSON.stringify(closed.CLOSED_FILE_CLASSES)
   ) {
     failures.push("package-observed-file-classes");
   }
@@ -285,6 +229,12 @@ export function packagePolicyFailures({
   if (JSON.stringify(licenses) !== JSON.stringify(acceptedSpdx)) {
     failures.push("spdx-inventory");
   }
+  if (
+    JSON.stringify(acceptedSpdx) !==
+    JSON.stringify(closed.CLOSED_SPDX_EXPRESSIONS)
+  ) {
+    failures.push("spdx-reviewed-expressions");
+  }
   const markerFailures = productionMarkerFailures(files, prohibitedMarkers);
   failures.push(
     ...markerFailures.map((failure) => `production-marker:${failure}`),
@@ -301,7 +251,7 @@ export function packagePolicyFailures({
   return failures;
 }
 
-export function evidenceFailures(evidence) {
+export function evidenceFailures(evidence, expected) {
   const expectedKeys = [
     "architecture",
     "boundedReasonCodes",
@@ -329,17 +279,27 @@ export function evidenceFailures(evidence) {
     failures.push("evidence-schema");
   if (!/^[0-9a-f]{40}$/u.test(evidence.sourceRevision ?? ""))
     failures.push("evidence-revision");
+  if (evidence.sourceRevision !== expected?.sourceRevision)
+    failures.push("evidence-revision-binding");
   if (!/^[0-9a-f]{64}$/u.test(evidence.packageManifestSha256 ?? ""))
     failures.push("evidence-package-digest");
+  if (evidence.packageManifestSha256 !== expected?.packageManifestSha256)
+    failures.push("evidence-package-digest-binding");
   if (!/^[0-9a-f]{64}$/u.test(evidence.cargoLockSha256 ?? ""))
     failures.push("evidence-cargo-lock-digest");
+  if (evidence.cargoLockSha256 !== expected?.cargoLockSha256)
+    failures.push("evidence-cargo-lock-binding");
   if (!/^[0-9a-f]{64}$/u.test(evidence.npmLockSha256 ?? ""))
     failures.push("evidence-npm-lock-digest");
+  if (evidence.npmLockSha256 !== expected?.npmLockSha256)
+    failures.push("evidence-npm-lock-binding");
   if (
     evidence.readinessFingerprint !==
     "c68478df272e1add068e7b1bba9e8c973920b4e3eae29a293d1cba3bc54ab61a"
   )
     failures.push("evidence-readiness-fingerprint");
+  if (evidence.readinessFingerprint !== expected?.readinessFingerprint)
+    failures.push("evidence-readiness-binding");
   if (
     JSON.stringify(evidence.outcomes) !==
     JSON.stringify([

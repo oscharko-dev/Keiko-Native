@@ -1,15 +1,16 @@
 import { spawnSync } from "node:child_process";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  architectureFailures,
   manifestFailures,
   redactDiagnostic,
   redactionMatches,
   sourceDeclarationFailures,
 } from "./native-contract.mjs";
+import { architectureFailures } from "./native-architecture-contract.mjs";
+import { filesBelow, mergeNativeInspectionPaths } from "./native-files.mjs";
 import {
   createNativePackageGate,
   nativePackageTestSupport,
@@ -77,17 +78,6 @@ async function ensureFrontendDependencies() {
   }
 }
 
-async function filesBelow(root, ignored = new Set()) {
-  const files = [];
-  for (const entry of await readdir(root, { withFileTypes: true })) {
-    if (entry.isDirectory() && ignored.has(entry.name)) continue;
-    const path = join(root, entry.name);
-    if (entry.isDirectory()) files.push(...(await filesBelow(path, ignored)));
-    else if (entry.isFile()) files.push(path);
-  }
-  return files;
-}
-
 function coverageFailures(report) {
   const totals = report.data?.[0]?.totals;
   return ["branches", "functions", "lines", "regions"]
@@ -115,7 +105,14 @@ function cargoMetadata() {
 }
 
 async function nativeFiles() {
-  return filesBelow(nativeRoot, ignoredNativeDirectories);
+  const ephemeral = await filesBelow(nativeRoot, ignoredNativeDirectories);
+  const tracked = run("git", ["ls-files", "-z", "--", "native/"], {
+    capture: true,
+  })
+    .split("\0")
+    .filter(Boolean)
+    .map((path) => join(repositoryRoot, path));
+  return mergeNativeInspectionPaths(ephemeral, tracked);
 }
 
 async function sourceEntries(project) {
@@ -227,7 +224,9 @@ async function lint() {
 
 async function build() {
   await ensureFrontendDependencies();
-  run("npm", ["--prefix", "native/frontend", "run", "build"]);
+  run("npm", ["--prefix", "native/frontend", "run", "build"], {
+    env: { KEIKO_NATIVE_SOURCE_REVISION: sourceRevision() },
+  });
   if (onMacOs()) {
     run(
       "cargo",
@@ -247,13 +246,17 @@ async function build() {
 
 async function testNative() {
   await ensureFrontendDependencies();
-  run("npm", ["--prefix", "native/frontend", "run", "test"]);
+  run("npm", ["--prefix", "native/frontend", "run", "test"], {
+    env: { KEIKO_NATIVE_SOURCE_REVISION: sourceRevision() },
+  });
   const contractTests = (await filesBelow(join(nativeRoot, "tests")))
     .filter((path) => path.endsWith(".test.mjs"))
     .map((path) => relative(repositoryRoot, path));
   run("node", ["--test", ...contractTests]);
   if (onMacOs()) {
-    run("npm", ["--prefix", "native/frontend", "run", "build"]);
+    run("npm", ["--prefix", "native/frontend", "run", "build"], {
+      env: { KEIKO_NATIVE_SOURCE_REVISION: sourceRevision() },
+    });
     run("cargo", [
       ...stableCargo,
       "test",
@@ -267,7 +270,9 @@ async function testNative() {
 
 async function coverageNative() {
   await ensureFrontendDependencies();
-  run("npm", ["--prefix", "native/frontend", "run", "coverage"]);
+  run("npm", ["--prefix", "native/frontend", "run", "coverage"], {
+    env: { KEIKO_NATIVE_SOURCE_REVISION: sourceRevision() },
+  });
   if (!onMacOs()) return;
   const exclusion = (await projectContract()).coverageExclusions?.[0];
   if (
@@ -342,6 +347,7 @@ async function signing() {
 export const nativeGateTestSupport = {
   coverageFailures,
   commandFailure,
+  mergeNativeInspectionPaths,
   ...nativePackageTestSupport,
   productiveRustEnv,
   sanitizeOutput,

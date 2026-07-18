@@ -1,15 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createRendererPort,
+  expectedSourceRevision,
   isHealthResponse,
-  rendererGeneration,
+  rendererAuthority,
   type HealthRequest,
+  type RendererAuthority,
 } from "./port";
 
 const build = {
   version: "0.1.0",
-  sourceRevision: "0123456789012345678901234567890123456789",
+  sourceRevision: expectedSourceRevision,
   targetTriple: "aarch64-apple-darwin",
+} as const;
+const authority = {
+  documentNonce: "a".repeat(64),
+  generation: 7,
 } as const;
 
 function healthy(request: HealthRequest): string {
@@ -29,17 +35,21 @@ describe("renderer health port", () => {
     });
     Reflect.set(globalThis, "window", fakeWindow);
     try {
-      Reflect.set(fakeWindow, "__KEIKO_RENDERER_GENERATION", 5);
-      await expect(rendererGeneration()).resolves.toBe(5);
-      Reflect.deleteProperty(fakeWindow, "__KEIKO_RENDERER_GENERATION");
-      const pending = rendererGeneration();
+      Reflect.set(fakeWindow, "__KEIKO_RENDERER_AUTHORITY", authority);
+      await expect(rendererAuthority()).resolves.toEqual(authority);
+      Reflect.deleteProperty(fakeWindow, "__KEIKO_RENDERER_AUTHORITY");
+      const pending = rendererAuthority();
       fakeWindow.dispatchEvent(
-        new CustomEvent("keiko-renderer-generation", { detail: 0 }),
+        new CustomEvent("keiko-renderer-authority", {
+          detail: { ...authority, documentNonce: "bad" },
+        }),
       );
       fakeWindow.dispatchEvent(
-        new CustomEvent("keiko-renderer-generation", { detail: 6 }),
+        new CustomEvent("keiko-renderer-authority", {
+          detail: { ...authority, generation: 6 },
+        }),
       );
-      await expect(pending).resolves.toBe(6);
+      await expect(pending).resolves.toEqual({ ...authority, generation: 6 });
     } finally {
       if (originalWindow === undefined)
         Reflect.deleteProperty(globalThis, "window");
@@ -56,9 +66,9 @@ describe("renderer health port", () => {
     });
     Reflect.set(globalThis, "window", fakeWindow);
     try {
-      const pending = rendererGeneration();
+      const pending = rendererAuthority();
       const rejection = expect(pending).rejects.toThrow(
-        "renderer-generation-unavailable",
+        "renderer-authority-unavailable",
       );
       await vi.advanceTimersByTimeAsync(1000);
       await rejection;
@@ -75,7 +85,11 @@ describe("renderer health port", () => {
     const invoke = vi.fn(
       async (
         _command: string,
-        arguments_: { generation: number; request: string },
+        arguments_: {
+          documentNonce: string;
+          generation: number;
+          request: string;
+        },
       ) => {
         const request = JSON.parse(arguments_.request) as HealthRequest;
         requests.push(request);
@@ -86,7 +100,7 @@ describe("renderer health port", () => {
     const port = createRendererPort(
       invoke,
       () => ids.shift() ?? "request-00000003",
-      async () => 7,
+      async () => authority,
     );
 
     await port.health();
@@ -105,7 +119,11 @@ describe("renderer health port", () => {
     const invoke = vi.fn(
       (
         command: string,
-        arguments_: { generation: number; request: string },
+        arguments_: {
+          documentNonce: string;
+          generation: number;
+          request: string;
+        },
       ) => {
         if (command === "application_cancel")
           return Promise.resolve("cancelled");
@@ -119,7 +137,7 @@ describe("renderer health port", () => {
     const pending = createRendererPort(
       invoke,
       () => "request-00000001",
-      async () => 7,
+      async () => authority,
     ).health(controller.signal);
     await Promise.resolve();
     controller.abort();
@@ -127,6 +145,7 @@ describe("renderer health port", () => {
     await expect(pending).rejects.toThrow("application-health-cancelled");
 
     expect(invoke).toHaveBeenCalledWith("application_cancel", {
+      documentNonce: authority.documentNonce,
       generation: 7,
       request: JSON.stringify({
         schemaVersion: 1,
@@ -165,7 +184,7 @@ describe("renderer health port", () => {
         createRendererPort(
           invoke,
           () => "request-00000001",
-          async () => 7,
+          async () => authority,
         ).health(),
       ).rejects.toThrow("application-health-failed");
     }
@@ -180,23 +199,23 @@ describe("renderer health port", () => {
       createRendererPort(
         invoke,
         () => "request-00000001",
-        async () => 7,
+        async () => authority,
       ).health(preAborted.signal),
     ).rejects.toThrow("application-health-cancelled");
     expect(invoke).not.toHaveBeenCalled();
 
-    let provideGeneration: ((generation: number) => void) | undefined;
+    let provideAuthority: ((authority: RendererAuthority) => void) | undefined;
     const duringGeneration = new AbortController();
     const generationPending = createRendererPort(
       invoke,
       () => "request-00000001",
       () =>
-        new Promise<number>((resolve) => {
-          provideGeneration = resolve;
+        new Promise<RendererAuthority>((resolve) => {
+          provideAuthority = resolve;
         }),
     ).health(duringGeneration.signal);
     duringGeneration.abort();
-    provideGeneration?.(7);
+    provideAuthority?.(authority);
     await expect(generationPending).rejects.toThrow(
       "application-health-cancelled",
     );
@@ -205,7 +224,11 @@ describe("renderer health port", () => {
     const racedInvoke = vi.fn(
       (
         command: string,
-        arguments_: { generation: number; request: string },
+        arguments_: {
+          documentNonce: string;
+          generation: number;
+          request: string;
+        },
       ) => {
         if (command === "application_cancel") {
           return Promise.reject(
@@ -222,7 +245,7 @@ describe("renderer health port", () => {
     const pending = createRendererPort(
       racedInvoke,
       () => "request-00000002",
-      async () => 7,
+      async () => authority,
     ).health(controller.signal);
     controller.abort();
     resolveRequest?.("");
@@ -239,7 +262,7 @@ describe("renderer health port", () => {
         createRendererPort(
           vi.fn(failure),
           () => "request-00000001",
-          async () => 7,
+          async () => authority,
         ).health(),
       ).rejects.toThrow("application-health-failed");
     }
@@ -252,6 +275,18 @@ describe("health response guard", () => {
       healthy({ requestId: "request-00000001" } as HealthRequest),
     );
     expect(isHealthResponse(response)).toBe(true);
+    expect(
+      isHealthResponse(
+        {
+          ...response,
+          result: {
+            ...response.result,
+            build: { ...response.result.build, sourceRevision: "f".repeat(40) },
+          },
+        },
+        expectedSourceRevision,
+      ),
+    ).toBe(false);
     expect(isHealthResponse([])).toBe(false);
     expect(isHealthResponse({ ...response, extra: true })).toBe(false);
     expect(isHealthResponse({ ...response, result: null })).toBe(false);

@@ -8,16 +8,17 @@ class Stream extends EventEmitter {
   setEncoding() {}
 }
 
-function fixture({ descendantCount = 0, terminate } = {}) {
+function fixture({ descendantCount = 0, descendantCounts, terminate } = {}) {
   const child = new EventEmitter();
   child.pid = 42;
   child.exitCode = null;
+  child.signalCode = null;
   child.stderr = new Stream();
   const calls = [];
   const control = {
     descendantCount: (pid) => {
       calls.push(["descendants", pid]);
-      return descendantCount;
+      return descendantCounts?.shift() ?? descendantCount;
     },
     killGroup: (pid) => calls.push(["kill", pid]),
     spawn: (...args) => {
@@ -29,7 +30,7 @@ function fixture({ descendantCount = 0, terminate } = {}) {
       (async (pid, timeout) => {
         calls.push(["terminate", pid, timeout]);
         child.exitCode = 0;
-        child.emit("exit", 0);
+        child.emit("exit", 0, null);
       }),
   };
   return { calls, child, control };
@@ -65,16 +66,16 @@ test("fast exit before acknowledgement fails and still cleans its group", async 
     processControl: control,
   });
   child.exitCode = 1;
-  child.emit("exit", 1);
-  await assert.rejects(pending, /before acknowledgement/u);
-  assert.deepEqual(calls.at(-1), ["kill", 42]);
+  child.emit("exit", 1, null);
+  await assert.rejects(pending, /before acknowledgement \(status:1\)/u);
+  assert.ok(calls.some((call) => call[0] === "kill"));
 });
 
 test("shutdown listener is armed before an immediate helper exit", async () => {
   const { child, control } = fixture();
   control.terminate = async () => {
     child.exitCode = 0;
-    child.emit("exit", 0);
+    child.emit("exit", 0, null);
   };
   const pending = runPackagedLifecycle({
     executable: "/package/app",
@@ -94,7 +95,7 @@ test("an acknowledged leader that already exited does not invoke the quit helper
   });
   acknowledge(child);
   child.exitCode = 0;
-  child.emit("exit", 0);
+  child.emit("exit", 0, null);
   await pending;
   assert.ok(!calls.some((call) => call[0] === "terminate"));
   assert.ok(calls.some((call) => call[0] === "kill"));
@@ -119,7 +120,7 @@ test("hung helper obeys the absolute shutdown deadline without wall sleeps", asy
   });
   acknowledge(child);
   await assert.rejects(pending, /did not shut down/u);
-  assert.deepEqual(calls.at(-1), ["kill", 42]);
+  assert.ok(calls.some((call) => call[0] === "kill"));
 });
 
 test("leader exit never skips descendant cleanup or verification", async () => {
@@ -135,13 +136,73 @@ test("leader exit never skips descendant cleanup or verification", async () => {
   assert.ok(calls.some((call) => call[0] === "descendants" && call[1] === 42));
 });
 
-test("remaining owned descendants fail closed after cleanup", async () => {
-  const { child, control } = fixture({ descendantCount: 1 });
+test("remaining owned descendants fail closed when cleanup cannot converge", async () => {
+  const { child, control } = fixture({
+    descendantCount: 1,
+    descendantCounts: [0],
+  });
   const pending = runPackagedLifecycle({
     executable: "/package/app",
     packageRoot: "/package",
     processControl: control,
   });
   acknowledge(child);
-  await assert.rejects(pending, /left owned descendants/u);
+  await assert.rejects(pending, /cleanup did not converge/u);
+});
+
+test("cleanup failure never replaces the primary lifecycle failure", async () => {
+  const { child, control } = fixture({ descendantCount: 1 });
+  const pending = runPackagedLifecycle({
+    executable: "/package/app",
+    packageRoot: "/package",
+    processControl: control,
+  });
+  child.exitCode = 2;
+  child.emit("exit", 2, null);
+  await assert.rejects(pending, /before acknowledgement \(status:2\)/u);
+});
+
+test("nonzero and signalled leader exits never become normal shutdown", async () => {
+  for (const exit of [
+    { code: 9, signal: null, expected: /status:9/u },
+    { code: null, signal: "SIGTERM", expected: /signal:SIGTERM/u },
+  ]) {
+    const { child, control } = fixture({
+      terminate: async () => {
+        child.exitCode = exit.code;
+        child.signalCode = exit.signal;
+        child.emit("exit", exit.code, exit.signal);
+      },
+    });
+    const pending = runPackagedLifecycle({
+      executable: "/package/app",
+      packageRoot: "/package",
+      processControl: control,
+    });
+    acknowledge(child);
+    await assert.rejects(pending, exit.expected);
+  }
+});
+
+test("leader-exit leaks fail evidence before finally cleanup", async () => {
+  const { child, control } = fixture({ descendantCounts: [1, 0] });
+  const pending = runPackagedLifecycle({
+    executable: "/package/app",
+    packageRoot: "/package",
+    processControl: control,
+  });
+  acknowledge(child);
+  await assert.rejects(pending, /after normal leader exit/u);
+});
+
+test("finally cleanup polls boundedly without sleeps until descendants are reaped", async () => {
+  const { calls, child, control } = fixture({ descendantCounts: [0, 2, 1, 0] });
+  const pending = runPackagedLifecycle({
+    executable: "/package/app",
+    packageRoot: "/package",
+    processControl: control,
+  });
+  acknowledge(child);
+  await pending;
+  assert.equal(calls.filter((call) => call[0] === "kill").length, 3);
 });

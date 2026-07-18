@@ -6,6 +6,14 @@ use keiko_ui_port::{
     encode_success, parse_cancel, parse_request, request_metadata,
 };
 
+pub mod document_nonce;
+#[cfg(feature = "tauri-host")]
+mod request_adapter;
+#[cfg(feature = "tauri-host")]
+pub mod tauri_adapter;
+#[cfg(feature = "tauri-host")]
+pub use request_adapter::{ApplicationRequestOutput, application_cancel, application_request};
+
 const REPLAY_WINDOW: usize = 64;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -13,11 +21,13 @@ pub struct SenderContext {
     pub window_label: String,
     pub origin: String,
     pub generation: u64,
+    pub document_nonce: String,
 }
 
 #[derive(Debug)]
 struct RendererSession {
     generation: u64,
+    document_nonce: String,
     last_sequence: u64,
     replayed_ids: VecDeque<String>,
 }
@@ -75,15 +85,20 @@ impl Default for HostLifecycle {
 }
 
 impl HostLifecycle {
-    pub fn begin_renderer_session(&mut self) -> u64 {
+    pub fn begin_renderer_session(&mut self, document_nonce: String) -> Option<u64> {
         self.cancel_generation();
+        if !valid_document_nonce(&document_nonce) {
+            self.session = None;
+            return None;
+        }
         self.generation = self.generation.saturating_add(1);
         self.session = Some(RendererSession {
             generation: self.generation,
+            document_nonce,
             last_sequence: 0,
             replayed_ids: VecDeque::with_capacity(REPLAY_WINDOW),
         });
-        self.generation
+        Some(self.generation)
     }
 
     pub fn renderer_lost(&mut self) {
@@ -99,21 +114,25 @@ impl HostLifecycle {
         self.session = None;
     }
 
-    pub fn sender_for_generation(
+    pub fn sender_for_document(
         &self,
         window_label: &str,
         origin: &str,
         generation: u64,
+        document_nonce: &str,
     ) -> SenderContext {
         SenderContext {
             window_label: window_label.to_owned(),
             origin: origin.to_owned(),
             generation,
+            document_nonce: document_nonce.to_owned(),
         }
     }
 
-    pub fn current_generation(&self) -> Option<u64> {
-        self.session.as_ref().map(|session| session.generation)
+    pub fn current_document_authority(&self) -> Option<(u64, String)> {
+        self.session
+            .as_ref()
+            .map(|session| (session.generation, session.document_nonce.clone()))
     }
 
     pub fn begin_application_request(
@@ -228,7 +247,10 @@ impl HostLifecycle {
                 ReasonCode::UnauthenticatedOrigin,
             ));
         }
-        if self.session.as_ref().map(|session| session.generation) != Some(context.generation) {
+        if self.session.as_ref().is_none_or(|session| {
+            session.generation != context.generation
+                || session.document_nonce != context.document_nonce
+        }) {
             return Err(("unknown-request".to_owned(), ReasonCode::Unauthorized));
         }
         Ok(())
@@ -242,6 +264,22 @@ impl HostLifecycle {
             }
         }
     }
+}
+
+pub fn activate_renderer_document(
+    lifecycle: &mut HostLifecycle,
+    document_nonce: Option<String>,
+) -> bool {
+    document_nonce
+        .and_then(|nonce| lifecycle.begin_renderer_session(nonce))
+        .is_some()
+}
+
+fn valid_document_nonce(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn terminal_reason(
@@ -290,89 +328,6 @@ pub fn is_bundled_navigation(url: &tauri::Url) -> bool {
         && matches!(url.path(), "" | "/" | "/index.html")
         && url.query().is_none()
         && url.fragment().is_none()
-}
-
-#[cfg(feature = "tauri-host")]
-pub struct ApplicationRequestOutput {
-    pub acknowledged: bool,
-    pub encoded: String,
-}
-
-#[cfg(feature = "tauri-host")]
-pub fn application_request(
-    lifecycle: &std::sync::Mutex<HostLifecycle>,
-    window_label: &str,
-    origin: &str,
-    generation: u64,
-    request: &str,
-) -> ApplicationRequestOutput {
-    let accepted = {
-        let mut lifecycle = match lifecycle.lock() {
-            Ok(lifecycle) => lifecycle,
-            Err(_) => return failed_output(ReasonCode::InternalFailure),
-        };
-        let sender = lifecycle.sender_for_generation(window_label, origin, generation);
-        match lifecycle.begin_application_request(&sender, request.as_bytes()) {
-            Ok(accepted) => accepted,
-            Err((request_id, reason)) => {
-                return ApplicationRequestOutput {
-                    acknowledged: false,
-                    encoded: encode_error(&request_id, reason),
-                };
-            }
-        }
-    };
-    let acknowledged = accepted.sequence() == 2;
-    let started = std::time::Instant::now();
-    let encoded = encode_success(&dispatch_health(
-        accepted.request.clone(),
-        current_build_identity(),
-    ));
-    let completed_at_ms = u16::try_from(started.elapsed().as_millis()).unwrap_or(u16::MAX);
-    std::thread::yield_now();
-    let encoded = lifecycle.lock().map_or_else(
-        |_| encode_error("unknown-request", ReasonCode::InternalFailure),
-        |mut lifecycle| {
-            lifecycle.complete_with_encoded(
-                accepted,
-                ExecutionObservation {
-                    cancelled_at_ms: None,
-                    completed_at_ms: Some(completed_at_ms),
-                    host_available: true,
-                },
-                encoded,
-            )
-        },
-    );
-    ApplicationRequestOutput {
-        acknowledged: acknowledged && encoded.contains("\"status\":\"healthy\""),
-        encoded,
-    }
-}
-
-#[cfg(feature = "tauri-host")]
-pub fn application_cancel(
-    lifecycle: &std::sync::Mutex<HostLifecycle>,
-    window_label: &str,
-    origin: &str,
-    generation: u64,
-    request: &str,
-) -> String {
-    lifecycle.lock().map_or_else(
-        |_| encode_error("unknown-request", ReasonCode::InternalFailure),
-        |mut lifecycle| {
-            let sender = lifecycle.sender_for_generation(window_label, origin, generation);
-            lifecycle.cancel_application_request(&sender, request.as_bytes())
-        },
-    )
-}
-
-#[cfg(feature = "tauri-host")]
-fn failed_output(reason: ReasonCode) -> ApplicationRequestOutput {
-    ApplicationRequestOutput {
-        acknowledged: false,
-        encoded: encode_error("unknown-request", reason),
-    }
 }
 
 #[cfg(test)]

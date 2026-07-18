@@ -25,9 +25,18 @@ function waitForAcknowledgement(child, timeoutMs, timers) {
       cleanup();
       resolve();
     };
-    const onExit = () =>
-      fail(new Error("Packaged shell exited before acknowledgement"));
-    const onError = () => fail(new Error("Packaged shell failed to start"));
+    const onExit = (code, signal) =>
+      fail(
+        new Error(
+          `Packaged shell exited before acknowledgement (${exitCause(code, signal)})`,
+        ),
+      );
+    const onError = (error) =>
+      fail(
+        new Error(
+          `Packaged shell failed to start (spawn:${error?.code ?? "unknown"})`,
+        ),
+      );
     const timer = timers.setTimeout(
       () => fail(new Error("Packaged health acknowledgement timed out")),
       timeoutMs,
@@ -40,15 +49,16 @@ function waitForAcknowledgement(child, timeoutMs, timers) {
 }
 
 function waitForExit(child, timeoutMs, timers) {
-  if (child.exitCode !== null) return Promise.resolve();
+  if (child.exitCode !== null || child.signalCode !== null)
+    return Promise.resolve({ code: child.exitCode, signal: child.signalCode });
   return new Promise((resolve, reject) => {
     const cleanup = () => {
       timers.clearTimeout(timer);
       child.off("exit", onExit);
     };
-    const onExit = () => {
+    const onExit = (code, signal) => {
       cleanup();
-      resolve();
+      resolve({ code, signal });
     };
     const timer = timers.setTimeout(() => {
       cleanup();
@@ -56,6 +66,22 @@ function waitForExit(child, timeoutMs, timers) {
     }, timeoutMs);
     child.once("exit", onExit);
   });
+}
+
+function exitCause(code, signal) {
+  return signal === null || signal === undefined
+    ? `status:${code ?? "unknown"}`
+    : `signal:${signal}`;
+}
+
+function forceCleanup(processControl, pid) {
+  let remaining = Number.POSITIVE_INFINITY;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    processControl.killGroup(pid);
+    remaining = processControl.descendantCount(pid);
+    if (remaining === 0) return 0;
+  }
+  return remaining;
 }
 
 export async function runPackagedLifecycle({
@@ -73,28 +99,48 @@ export async function runPackagedLifecycle({
   const startedAt = clock.now();
   let acknowledgementMs;
   let shutdownMs;
+  let failure;
+  let cleanupFailure;
   try {
     await waitForAcknowledgement(child, 5000, timers);
     const acknowledgedAt = clock.now();
     acknowledgementMs = Math.round(acknowledgedAt - startedAt);
+    const deadline = acknowledgedAt + 5000;
     const exited = waitForExit(child, 5000, timers);
-    if (child.exitCode === null) {
+    if (child.exitCode === null && child.signalCode === null) {
+      const remainingMs = Math.max(0, Math.round(deadline - clock.now()));
       await Promise.race([
-        Promise.resolve().then(() => processControl.terminate(child.pid, 5000)),
+        Promise.resolve().then(() =>
+          processControl.terminate(child.pid, remainingMs),
+        ),
         exited,
       ]);
     }
-    if (clock.now() - acknowledgedAt > 5000)
+    if (clock.now() > deadline)
       throw new Error("Packaged shell quit helper exceeded shutdown deadline");
-    await exited;
+    const exit = await exited;
+    if (exit.code !== 0 || exit.signal !== null)
+      throw new Error(
+        `Packaged shell shutdown was not normal (${exitCause(exit.code, exit.signal)})`,
+      );
     shutdownMs = Math.round(clock.now() - acknowledgedAt);
+    if (processControl.descendantCount(child.pid) !== 0)
+      throw new Error(
+        "Packaged shell left owned descendants after normal leader exit",
+      );
+  } catch (error) {
+    failure = error;
   } finally {
-    processControl.killGroup(child.pid);
+    try {
+      if (forceCleanup(processControl, child.pid) !== 0)
+        cleanupFailure = new Error("Packaged shell cleanup did not converge");
+    } catch (error) {
+      cleanupFailure = error;
+    }
   }
-  const cleanupOwnedDescendants = processControl.descendantCount(child.pid);
-  if (cleanupOwnedDescendants !== 0)
-    throw new Error("Packaged shell left owned descendants after cleanup");
-  return { acknowledgementMs, cleanupOwnedDescendants, shutdownMs };
+  if (failure) throw failure;
+  if (cleanupFailure) throw cleanupFailure;
+  return { acknowledgementMs, cleanupOwnedDescendants: 0, shutdownMs };
 }
 
 function terminateByPid(pid, timeoutMs) {

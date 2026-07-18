@@ -946,6 +946,51 @@ export function dependencyReviewWorkflowFailures(workflow) {
   return failures;
 }
 
+export function aggregateCiBindingFailures(ci) {
+  const aggregate = workflowSection(ci.split(/\r?\n/u), "  ci:");
+  const bindings = [
+    ["CORE_QUALITY_RESULT", "core-quality"],
+    ["COVERAGE_SONAR_RESULT", "coverage-sonar"],
+    ["CROSS_PLATFORM_RESULT", "cross-platform-smoke"],
+    ["NATIVE_RESULT", "native"],
+  ];
+  const failures = [];
+  for (const [variable, dependency] of bindings) {
+    const exact = `${variable}: \${{ needs.${dependency}.result }}`;
+    if (aggregate.filter((line) => line.trim() === exact).length !== 1)
+      failures.push(`CI aggregate binding must be exact: ${variable}.`);
+  }
+  const loop = `for result in ${bindings
+    .map(([variable]) => `"$${variable}"`)
+    .join(" ")}; do`;
+  if (aggregate.filter((line) => line.trim() === loop).length !== 1)
+    failures.push(
+      "CI aggregate loop must inspect every exact dependency result.",
+    );
+  return failures;
+}
+
+export function mutationWorkflowFailures(workflow) {
+  const lines = workflow
+    .split(/\r?\n/u)
+    .map((line) => line.trim().replace(/^-\s+run:\s*/u, ""));
+  const failures = [
+    "cargo +1.92.0 install cargo-mutants --version 27.1.0 --locked",
+    "cargo +1.92.0 mutants --manifest-path native/Cargo.toml",
+  ]
+    .filter((command) => lines.filter((line) => line === command).length !== 1)
+    .map((command) => `Mutation workflow command must be exact: ${command}.`);
+  if (
+    lines.some((line) =>
+      /^cargo (?:install cargo-mutants|mutants)\b/u.test(line),
+    )
+  )
+    failures.push(
+      "Mutation workflow must not invoke cargo-mutants outside Rust 1.92.",
+    );
+  return failures;
+}
+
 function ciWorkflowFailures(ci, productive) {
   const failures = expectedWorkflowChecks
     .filter((check) => !ci.includes(check))
@@ -988,7 +1033,11 @@ function ciWorkflowFailures(ci, productive) {
   }
   if (productive && !needs.some((line) => line.trim() === "- native"))
     failures.push("The aggregate ci job must depend on required job: native.");
-  if (productive) failures.push(...nativeCiWorkflowFailures(ci));
+  if (productive)
+    failures.push(
+      ...nativeCiWorkflowFailures(ci),
+      ...aggregateCiBindingFailures(ci),
+    );
   return failures;
 }
 
@@ -1083,6 +1132,9 @@ async function workflowFailures(root, manifest) {
       ? dependencyReviewWorkflowFailures(
           workflows.get("dependency-review.yml") ?? "",
         )
+      : []),
+    ...(manifest?.phase === "productive"
+      ? mutationWorkflowFailures(workflows.get("mutation-security.yml") ?? "")
       : []),
     ...issueReadinessWorkflowFailures(
       workflows.get("issue-readiness.yml") ?? "",

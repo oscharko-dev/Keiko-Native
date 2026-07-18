@@ -1,0 +1,287 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  evidenceFailures,
+  packagePolicyFailures,
+  redactionMatches,
+} from "./native-contract.mjs";
+
+test("package policy requires exact paths, dependencies, notices and SPDX", () => {
+  const reviewedSpdx = [
+    "(MIT OR Apache-2.0) AND Unicode-3.0",
+    "0BSD OR MIT OR Apache-2.0",
+    "Apache-2.0",
+    "Apache-2.0 AND MIT",
+    "Apache-2.0 OR BSL-1.0",
+    "Apache-2.0 OR MIT",
+    "Apache-2.0 WITH LLVM-exception",
+    "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+    "BSD-3-Clause",
+    "BSD-3-Clause OR MIT OR Apache-2.0",
+    "CC0-1.0 OR MIT-0 OR Apache-2.0",
+    "ISC",
+    "MIT",
+    "MIT OR Apache-2.0",
+    "MIT OR Apache-2.0 OR LGPL-2.1-or-later",
+    "MIT OR Apache-2.0 OR Zlib",
+    "MIT OR Zlib OR Apache-2.0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense OR MIT",
+    "Zlib",
+    "Zlib OR Apache-2.0 OR MIT",
+  ];
+  const dependencies = reviewedSpdx.map((license, index) => ({
+    license,
+    name: `owned-${index}`,
+    source: "workspace",
+    version: "0.1.0",
+  }));
+  const dependency = dependencies.find(({ license }) => license === "MIT");
+  const policy = {
+    schema: "keiko-native-package-policy/v1",
+    target: "keiko-native-desktop",
+    bundleIdentifier: "dev.oscharko.keiko-native",
+    expectedLocks: {
+      cargoSha256: "a".repeat(64),
+      npmSha256: "b".repeat(64),
+    },
+    allowedBundlePaths: [
+      "Contents/Info.plist",
+      "Contents/MacOS/keiko-native-desktop",
+      "Contents/Resources/THIRD-PARTY-NOTICES.json",
+    ],
+    requiredNoticePaths: ["Contents/Resources/THIRD-PARTY-NOTICES.json"],
+    allowedFileClasses: {
+      "Contents/Info.plist": "plist",
+      "Contents/MacOS/keiko-native-desktop": "mach-o-executable",
+      "Contents/Resources/THIRD-PARTY-NOTICES.json": "dependency-notice",
+    },
+    cargoInventory: dependencies,
+    npmInventory: [],
+    acceptedSpdxExpressions: reviewedSpdx,
+    security: {
+      allowedBundledOrigins: ["tauri://localhost", "http://tauri.localhost"],
+      csp: "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost; script-src 'self'; style-src 'self'",
+      prohibitedMarkers: [
+        "--health-json",
+        "codex/9-desktop-host-evaluation",
+        "example.invalid",
+        "experiment-command",
+        "generic-ping",
+        "secret-value",
+        "test-listener",
+        "remote-debugging",
+      ],
+      prohibitedPathFragments: [
+        "node_modules",
+        "/target/",
+        "/tests/",
+        "fixture",
+        "experiment",
+        "listener",
+        "driver",
+      ],
+    },
+  };
+  const files = [
+    { path: "Contents/Info.plist", bytes: Buffer.from("plist") },
+    {
+      path: "Contents/MacOS/keiko-native-desktop",
+      bytes: Buffer.from("product"),
+    },
+    {
+      path: "Contents/Resources/THIRD-PARTY-NOTICES.json",
+      bytes: Buffer.from("notice"),
+    },
+  ];
+  const fileClasses = { ...policy.allowedFileClasses };
+  assert.deepEqual(
+    packagePolicyFailures({
+      cargo: dependencies,
+      fileClasses,
+      files,
+      npm: [],
+      policy,
+    }),
+    [],
+  );
+  assert.ok(
+    packagePolicyFailures({
+      cargo: dependencies,
+      fileClasses: { ...fileClasses, extra: "raw" },
+      files: [
+        ...files,
+        { path: "fixture", bytes: Buffer.from("test-listener") },
+      ],
+      npm: [],
+      policy,
+    }).length >= 2,
+  );
+  for (const key of Object.keys(policy)) {
+    const mutated = structuredClone(policy);
+    delete mutated[key];
+    assert.ok(
+      packagePolicyFailures({
+        cargo: dependencies,
+        fileClasses,
+        files,
+        npm: [],
+        policy: mutated,
+      }).length > 0,
+      `missing ${key}`,
+    );
+  }
+  for (const mutated of [
+    { ...policy, extra: true },
+    { ...policy, schema: "other" },
+    { ...policy, target: "other" },
+    { ...policy, bundleIdentifier: "other" },
+    { ...policy, expectedLocks: { ...policy.expectedLocks, extra: "x" } },
+    { ...policy, security: { ...policy.security, csp: "default-src *" } },
+    { ...policy, allowedBundlePaths: [...policy.allowedBundlePaths, "extra"] },
+    { ...policy, requiredNoticePaths: [] },
+    { ...policy, allowedFileClasses: { ...fileClasses, extra: "raw" } },
+    { ...policy, cargoInventory: [] },
+    { ...policy, npmInventory: [dependency] },
+    { ...policy, acceptedSpdxExpressions: [] },
+  ]) {
+    assert.ok(
+      packagePolicyFailures({
+        cargo: dependencies,
+        fileClasses,
+        files,
+        npm: [],
+        policy: mutated,
+      }).length > 0,
+    );
+  }
+  const redactedFiles = structuredClone(files);
+  redactedFiles[1].bytes = Buffer.from("/Users/operator/work");
+  assert.ok(
+    packagePolicyFailures({
+      cargo: dependencies,
+      fileClasses,
+      files: redactedFiles,
+      npm: [],
+      policy,
+    }).includes("package-redaction:Contents/MacOS/keiko-native-desktop"),
+  );
+  for (const key of ["prohibitedMarkers", "prohibitedPathFragments"]) {
+    const values = policy.security[key];
+    for (const changed of [
+      [],
+      values.slice(1),
+      [...values.slice(0, -1), "replacement"],
+      [...values, "extra"],
+      [...values].reverse(),
+    ]) {
+      assert.ok(
+        packagePolicyFailures({
+          cargo: dependencies,
+          fileClasses,
+          files,
+          npm: [],
+          policy: {
+            ...policy,
+            security: { ...policy.security, [key]: changed },
+          },
+        }).includes("package-policy-security"),
+      );
+    }
+  }
+  const coordinatedInvalid = dependencies.map((entry, index) =>
+    index === 0 ? { ...entry, license: "not-spdx" } : entry,
+  );
+  assert.ok(
+    packagePolicyFailures({
+      cargo: coordinatedInvalid,
+      fileClasses,
+      files,
+      npm: [],
+      policy: {
+        ...policy,
+        cargoInventory: coordinatedInvalid,
+        acceptedSpdxExpressions: [
+          ...reviewedSpdx.filter((license) => license !== reviewedSpdx[0]),
+          "not-spdx",
+        ].sort(),
+      },
+    }).includes("spdx-reviewed-expressions"),
+  );
+});
+
+test("evidence schema and redaction fail closed", () => {
+  const evidence = {
+    schema: "keiko-native-packaged-shell-evidence/v1",
+    sourceRevision: "0".repeat(40),
+    readinessFingerprint:
+      "c68478df272e1add068e7b1bba9e8c973920b4e3eae29a293d1cba3bc54ab61a",
+    packageManifestSha256: "b".repeat(64),
+    cargoLockSha256: "c".repeat(64),
+    npmLockSha256: "d".repeat(64),
+    runner: "local-macos",
+    architecture: "arm64",
+    outcomes: [
+      "packaged-health-acknowledged",
+      "normal-shutdown",
+      "zero-owned-descendants",
+      "package-policy",
+    ],
+    boundedReasonCodes: [
+      "invalid-request",
+      "unauthorized",
+      "cancelled",
+      "timed-out",
+      "host-unavailable",
+      "shutting-down",
+    ],
+    acknowledgementMs: 1,
+    shutdownMs: 2,
+    cleanupOwnedDescendants: 0,
+    redaction: "closed",
+  };
+  const bindings = {
+    sourceRevision: evidence.sourceRevision,
+    readinessFingerprint: evidence.readinessFingerprint,
+    packageManifestSha256: evidence.packageManifestSha256,
+    cargoLockSha256: evidence.cargoLockSha256,
+    npmLockSha256: evidence.npmLockSha256,
+  };
+  assert.deepEqual(evidenceFailures(evidence, bindings), []);
+  for (const mutation of [
+    { ...evidence, extra: true },
+    { ...evidence, schema: "other" },
+    { ...evidence, sourceRevision: "bad" },
+    { ...evidence, readinessFingerprint: "0".repeat(64) },
+    { ...evidence, packageManifestSha256: "bad" },
+    { ...evidence, cargoLockSha256: "bad" },
+    { ...evidence, npmLockSha256: "bad" },
+    { ...evidence, runner: "unknown" },
+    { ...evidence, architecture: "x64" },
+    { ...evidence, outcomes: [...evidence.outcomes, "extra"] },
+    {
+      ...evidence,
+      boundedReasonCodes: [...evidence.boundedReasonCodes, "extra"],
+    },
+    { ...evidence, acknowledgementMs: 5001 },
+    { ...evidence, shutdownMs: 1.5 },
+    { ...evidence, cleanupOwnedDescendants: 1 },
+    { ...evidence, redaction: "open" },
+  ]) {
+    assert.ok(evidenceFailures(mutation, bindings).length > 0);
+  }
+  for (const key of Object.keys(bindings)) {
+    const wrong = key === "sourceRevision" ? "f".repeat(40) : "f".repeat(64);
+    assert.ok(
+      evidenceFailures({ ...evidence, [key]: wrong }, bindings).some(
+        (failure) => failure.endsWith("binding"),
+      ),
+    );
+  }
+  assert.equal(redactionMatches("bounded reason code").length, 0);
+  assert.equal(redactionMatches("password:!0").length, 0);
+  assert.ok(redactionMatches('password="actual-value"').length > 0);
+  assert.ok(redactionMatches("/Users/operator/project").length > 0);
+});

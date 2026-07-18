@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { expectedSourceRevision } from "./port";
+
+const authority = { documentNonce: "a".repeat(64), generation: 7 };
 
 const invoke = vi.fn(
   async (
     _command: string,
-    arguments_: { generation: number; request: string },
+    arguments_: { documentNonce: string; generation: number; request: string },
   ) => {
     const request = JSON.parse(arguments_.request) as { requestId: string };
     return JSON.stringify({
@@ -14,7 +17,7 @@ const invoke = vi.fn(
         status: "healthy",
         build: {
           version: "0.1.0",
-          sourceRevision: "0123456789012345678901234567890123456789",
+          sourceRevision: expectedSourceRevision,
           targetTriple: "aarch64-apple-darwin",
         },
       },
@@ -32,7 +35,7 @@ describe("production renderer composition", () => {
     render.mockClear();
     Object.defineProperty(globalThis, "window", {
       configurable: true,
-      value: { __KEIKO_RENDERER_GENERATION: 7 },
+      value: { __KEIKO_RENDERER_AUTHORITY: authority },
     });
   });
 
@@ -44,7 +47,7 @@ describe("production renderer composition", () => {
     const { startRenderer } = await import("./main");
     invoke.mockClear();
 
-    await startRenderer(invoke, async () => 7);
+    await startRenderer(invoke, async () => authority);
 
     expect(invoke).toHaveBeenCalledTimes(2);
     expect(render).toHaveBeenCalled();
@@ -58,7 +61,7 @@ describe("production renderer composition", () => {
     const { startRenderer } = await import("./main");
     invoke.mockClear();
 
-    await startRenderer(invoke, async () => 7);
+    await startRenderer(invoke, async () => authority);
 
     expect(invoke).toHaveBeenCalledTimes(2);
   });

@@ -1,9 +1,17 @@
 import { defineConfig } from "vitest/config";
 
+const expectedRevision = process.env.KEIKO_NATIVE_SOURCE_REVISION;
+if (!/^[0-9a-f]{40}$/u.test(expectedRevision ?? "")) {
+  throw new Error("KEIKO_NATIVE_SOURCE_REVISION must be an exact Git revision");
+}
+
 export default defineConfig({
   build: {
     emptyOutDir: true,
     outDir: "dist",
+  },
+  define: {
+    __KEIKO_EXPECTED_SOURCE_REVISION__: JSON.stringify(expectedRevision),
   },
   test: {
     coverage: {

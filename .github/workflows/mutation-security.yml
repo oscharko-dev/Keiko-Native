@@ -25,12 +25,12 @@ jobs:
       - name: Install exact Rust and mutation toolchains
         run: |
           rustup toolchain install 1.92.0 --profile minimal
-          cargo install cargo-mutants --version 27.1.0 --locked
+          cargo +1.92.0 install cargo-mutants --version 27.1.0 --locked
       - run: npm ci --ignore-scripts
       - run: npm run coverage
       - name: Run productive Rust mutation suite
         run: >-
-          cargo mutants --manifest-path native/Cargo.toml
+          cargo +1.92.0 mutants --manifest-path native/Cargo.toml
           --package keiko-application
           --package keiko-ui-port
           --package keiko-host-macos

@@ -3,19 +3,19 @@ import { Fragment, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import {
   createRendererPort,
-  rendererGeneration,
-  type GenerationProvider,
+  rendererAuthority,
+  type AuthorityProvider,
   type Invoke,
 } from "./port";
 
 export async function startRenderer(
   invokeCommand: Invoke = invoke,
-  generationProvider: GenerationProvider = rendererGeneration,
+  authorityProvider: AuthorityProvider = rendererAuthority,
 ): Promise<void> {
   const root = document.getElementById("root");
   if (root !== null) createRoot(root).render(createElement(Fragment));
 
-  const port = createRendererPort(invokeCommand, undefined, generationProvider);
+  const port = createRendererPort(invokeCommand, undefined, authorityProvider);
   await port.health();
   await port.health();
 }

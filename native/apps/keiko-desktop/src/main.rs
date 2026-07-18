@@ -1,110 +1,23 @@
 use std::sync::Mutex;
 
-use keiko_host_macos::{
-    HostLifecycle, application_cancel as dispatch_application_cancel,
-    application_request as dispatch_application_request, canonical_origin, is_bundled_navigation,
+use keiko_host_macos::HostLifecycle;
+use keiko_host_macos::tauri_adapter::{
+    handle_page_load, handle_run_event, handle_web_content_process_terminate, handle_window_event,
+    navigation_policy,
 };
-use tauri::webview::PageLoadEvent;
-use tauri::{Manager, RunEvent, State, WebviewWindow, WindowEvent};
-
-#[tauri::command]
-fn application_request(
-    window: WebviewWindow,
-    lifecycle: State<'_, Mutex<HostLifecycle>>,
-    generation: u64,
-    request: String,
-) -> String {
-    let url = window.url().ok();
-    let origin = canonical_origin(url.as_ref());
-    let output = dispatch_application_request(
-        lifecycle.inner(),
-        window.label(),
-        &origin,
-        generation,
-        &request,
-    );
-    if output.acknowledged {
-        eprintln!("keiko-native-health-ack/v1 sequence=2");
-    }
-    output.encoded
-}
-
-#[tauri::command]
-fn application_cancel(
-    window: WebviewWindow,
-    lifecycle: State<'_, Mutex<HostLifecycle>>,
-    generation: u64,
-    request: String,
-) -> String {
-    let url = window.url().ok();
-    let origin = canonical_origin(url.as_ref());
-    dispatch_application_cancel(
-        lifecycle.inner(),
-        window.label(),
-        &origin,
-        generation,
-        &request,
-    )
-}
-
-fn navigation_policy<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
-    tauri::plugin::Builder::new("keiko-navigation")
-        .on_navigation(|webview, url| webview.label() == "main" && is_bundled_navigation(url))
-        .build()
-}
 
 fn main() {
-    let app = tauri::Builder::default()
+    tauri::Builder::default()
         .manage(Mutex::new(HostLifecycle::default()))
         .plugin(navigation_policy())
         .invoke_handler(tauri::generate_handler![
-            application_request,
-            application_cancel
+            keiko_host_macos::tauri_adapter::application_request,
+            keiko_host_macos::tauri_adapter::application_cancel
         ])
-        .on_page_load(|webview, payload| {
-            if webview.label() != "main" || !is_bundled_navigation(payload.url()) {
-                return;
-            }
-            if payload.event() == PageLoadEvent::Started {
-                if let Ok(mut lifecycle) = webview.state::<Mutex<HostLifecycle>>().lock() {
-                    lifecycle.begin_renderer_session();
-                }
-            } else if payload.event() == PageLoadEvent::Finished {
-                let generation = webview
-                    .state::<Mutex<HostLifecycle>>()
-                    .lock()
-                    .ok()
-                    .and_then(|lifecycle| lifecycle.current_generation());
-                if let Some(generation) = generation {
-                    let script = format!(
-                        "Object.defineProperty(window,'__KEIKO_RENDERER_GENERATION',{{value:{generation},configurable:false,writable:false}});window.dispatchEvent(new CustomEvent('keiko-renderer-generation',{{detail:{generation}}}));"
-                    );
-                    if webview.eval(&script).is_err() {
-                        eprintln!("keiko-renderer-generation-install-failed");
-                    }
-                }
-            }
-        })
-        .on_web_content_process_terminate(|webview| {
-            if let Ok(mut lifecycle) = webview.state::<Mutex<HostLifecycle>>().lock() {
-                lifecycle.renderer_lost();
-            }
-        })
-        .on_window_event(|window, event| {
-            if matches!(event, WindowEvent::Destroyed)
-                && let Ok(mut lifecycle) = window.state::<Mutex<HostLifecycle>>().lock()
-            {
-                lifecycle.renderer_lost();
-            }
-        })
+        .on_page_load(handle_page_load)
+        .on_web_content_process_terminate(handle_web_content_process_terminate)
+        .on_window_event(handle_window_event)
         .build(tauri::generate_context!())
-        .expect("Keiko Native host lifecycle failed");
-
-    app.run(|handle, event| {
-        if matches!(event, RunEvent::Exit | RunEvent::ExitRequested { .. })
-            && let Ok(mut lifecycle) = handle.state::<Mutex<HostLifecycle>>().lock()
-        {
-            lifecycle.shutdown();
-        }
-    });
+        .expect("Keiko Native host lifecycle failed")
+        .run(handle_run_event);
 }
