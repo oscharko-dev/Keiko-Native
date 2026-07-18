@@ -266,12 +266,12 @@ impl HostLifecycle {
     }
 }
 
-pub fn activate_renderer_document(
-    lifecycle: &mut HostLifecycle,
-    document_nonce: Option<String>,
-) -> bool {
+pub fn activate_renderer_document<F>(lifecycle: &mut HostLifecycle, nonce_producer: F) -> bool
+where
+    F: FnOnce(&HostLifecycle) -> Option<String>,
+{
     lifecycle.renderer_lost();
-    document_nonce
+    nonce_producer(lifecycle)
         .and_then(|nonce| lifecycle.begin_renderer_session(nonce))
         .is_some()
 }

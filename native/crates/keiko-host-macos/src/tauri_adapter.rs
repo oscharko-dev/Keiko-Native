@@ -43,10 +43,13 @@ pub fn document_authority_script(generation: u64, document_nonce: &str) -> Optio
     ))
 }
 
-pub fn begin_document(lifecycle: &Mutex<HostLifecycle>, nonce: Option<String>) -> bool {
+pub fn begin_document<F>(lifecycle: &Mutex<HostLifecycle>, nonce_producer: F) -> bool
+where
+    F: FnOnce() -> Option<String>,
+{
     lifecycle
         .lock()
-        .is_ok_and(|mut lifecycle| activate_renderer_document(&mut lifecycle, nonce))
+        .is_ok_and(|mut lifecycle| activate_renderer_document(&mut lifecycle, |_| nonce_producer()))
 }
 
 pub fn authority_install_script(lifecycle: &Mutex<HostLifecycle>) -> Option<String> {
@@ -55,6 +58,22 @@ pub fn authority_install_script(lifecycle: &Mutex<HostLifecycle>) -> Option<Stri
         .ok()
         .and_then(|lifecycle| lifecycle.current_document_authority())
         .and_then(|(generation, nonce)| document_authority_script(generation, &nonce))
+}
+
+pub fn page_load_transition<F>(
+    lifecycle: &Mutex<HostLifecycle>,
+    window_label: &str,
+    url: &tauri::Url,
+    event: PageLoadEvent,
+    nonce_producer: F,
+) -> (PageLoadDecision, Option<bool>)
+where
+    F: FnOnce() -> Option<String>,
+{
+    let decision = page_load_decision(window_label, url, event);
+    let started = (decision == PageLoadDecision::BeginDocument)
+        .then(|| begin_document(lifecycle, nonce_producer));
+    (decision, started)
 }
 
 pub fn install_result(lifecycle: &Mutex<HostLifecycle>, succeeded: bool) {
@@ -127,17 +146,21 @@ pub fn navigation_policy<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
 }
 
 pub fn handle_page_load<R: Runtime>(webview: &Webview<R>, payload: &PageLoadPayload<'_>) {
-    match page_load_decision(webview.label(), payload.url(), payload.event()) {
+    let lifecycle = webview.state::<Mutex<HostLifecycle>>();
+    let (decision, started) = page_load_transition(
+        lifecycle.inner(),
+        webview.label(),
+        payload.url(),
+        payload.event(),
+        secure_document_nonce,
+    );
+    match decision {
         PageLoadDecision::BeginDocument => {
-            if !begin_document(
-                webview.state::<Mutex<HostLifecycle>>().inner(),
-                secure_document_nonce(),
-            ) {
+            if started != Some(true) {
                 eprintln!("keiko-renderer-authority-generation-failed");
             }
         }
         PageLoadDecision::InstallAuthority => {
-            let lifecycle = webview.state::<Mutex<HostLifecycle>>();
             let installed = authority_install_script(lifecycle.inner())
                 .is_some_and(|script| webview.eval(&script).is_ok());
             install_result(lifecycle.inner(), installed);
@@ -199,13 +222,25 @@ mod tests {
         assert!(script.contains(&nonce('a')));
         assert!(script.contains("Object.freeze"));
         assert!(document_authority_script(7, "bad").is_none());
+
+        let lifecycle = Mutex::new(HostLifecycle::default());
+        assert!(begin_document(&lifecycle, || Some(nonce('a'))));
+        for (label, url) in [("other", &root), ("main", &hostile)] {
+            assert_eq!(
+                page_load_transition(&lifecycle, label, url, PageLoadEvent::Started, || panic!(
+                    "ignored load must not acquire entropy"
+                ),),
+                (PageLoadDecision::Ignore, None)
+            );
+            assert!(authority_install_script(&lifecycle).is_some());
+        }
     }
 
     #[test]
     fn document_start_install_loss_and_shutdown_fail_closed() {
         let lifecycle = Mutex::new(HostLifecycle::default());
-        assert!(!begin_document(&lifecycle, None));
-        assert!(begin_document(&lifecycle, Some(nonce('a'))));
+        assert!(!begin_document(&lifecycle, || None));
+        assert!(begin_document(&lifecycle, || Some(nonce('a'))));
         assert!(
             lifecycle
                 .lock()
@@ -221,7 +256,7 @@ mod tests {
                 .current_document_authority()
                 .is_none()
         );
-        assert!(begin_document(&lifecycle, Some(nonce('b'))));
+        assert!(begin_document(&lifecycle, || Some(nonce('b'))));
         install_result(&lifecycle, true);
         lose_renderer(&lifecycle);
         assert!(
@@ -231,7 +266,7 @@ mod tests {
                 .current_document_authority()
                 .is_none()
         );
-        assert!(begin_document(&lifecycle, Some(nonce('c'))));
+        assert!(begin_document(&lifecycle, || Some(nonce('c'))));
         shut_down(&lifecycle);
         let authority = lifecycle.lock().expect("lifecycle").sender_for_document(
             "main",
@@ -254,8 +289,9 @@ mod tests {
     #[test]
     fn failed_document_start_clears_finished_install_and_old_work() {
         let lifecycle = Mutex::new(HostLifecycle::default());
+        let root = tauri::Url::parse("tauri://localhost/index.html").expect("URL");
         for (index, replacement) in [None, Some("malformed".to_owned())].into_iter().enumerate() {
-            assert!(begin_document(&lifecycle, Some(nonce('a'))));
+            assert!(begin_document(&lifecycle, || Some(nonce('a'))));
             let accepted = {
                 let mut current = lifecycle.lock().expect("lifecycle");
                 let (generation, document_nonce) =
@@ -278,7 +314,17 @@ mod tests {
                     .expect("accepted old work")
             };
 
-            assert!(!begin_document(&lifecycle, replacement));
+            assert!(!begin_document(&lifecycle, || replacement));
+            assert_eq!(
+                page_load_transition(
+                    &lifecycle,
+                    "main",
+                    &root,
+                    PageLoadEvent::Finished,
+                    || panic!("Finished must not acquire entropy"),
+                ),
+                (PageLoadDecision::InstallAuthority, None)
+            );
             assert!(authority_install_script(&lifecycle).is_none());
             assert!(
                 lifecycle
@@ -289,7 +335,7 @@ mod tests {
             );
         }
 
-        assert!(begin_document(&lifecycle, Some(nonce('c'))));
+        assert!(begin_document(&lifecycle, || Some(nonce('c'))));
         let script = authority_install_script(&lifecycle).expect("fresh install script");
         assert!(script.contains("generation:3"));
         assert!(script.contains(&nonce('c')));

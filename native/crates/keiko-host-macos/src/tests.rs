@@ -259,17 +259,15 @@ fn injected_unavailable_timeout_and_renderer_loss_are_terminal() {
 #[test]
 fn document_nonce_is_unpredictable_outer_authority_and_fails_closed() {
     let mut lifecycle = HostLifecycle::default();
-    assert!(!activate_renderer_document(&mut lifecycle, None));
+    assert!(!activate_renderer_document(&mut lifecycle, |_| None));
     assert!(lifecycle.current_document_authority().is_none());
-    assert!(!activate_renderer_document(
-        &mut lifecycle,
-        Some("too-short".to_owned())
-    ));
+    assert!(!activate_renderer_document(&mut lifecycle, |_| Some(
+        "too-short".to_owned()
+    )));
     let honest_nonce = nonce('a');
-    assert!(activate_renderer_document(
-        &mut lifecycle,
-        Some(honest_nonce.clone())
-    ));
+    assert!(activate_renderer_document(&mut lifecycle, |_| Some(
+        honest_nonce.clone()
+    )));
     let (generation, _) = lifecycle
         .current_document_authority()
         .expect("current authority");
@@ -305,7 +303,10 @@ fn accepted_document_start_always_retires_previous_authority_and_work() {
             .begin_application_request(&sender, &request(1, "request-00000001"))
             .expect("accepted old work");
 
-        assert!(!activate_renderer_document(&mut lifecycle, replacement));
+        assert!(!activate_renderer_document(&mut lifecycle, |retired| {
+            assert!(retired.current_document_authority().is_none());
+            replacement
+        }));
         assert!(lifecycle.current_document_authority().is_none());
         assert!(
             lifecycle
@@ -313,7 +314,10 @@ fn accepted_document_start_always_retires_previous_authority_and_work() {
                 .contains("cancelled")
         );
 
-        assert!(activate_renderer_document(&mut lifecycle, Some(nonce('b'))));
+        assert!(activate_renderer_document(&mut lifecycle, |retired| {
+            assert!(retired.current_document_authority().is_none());
+            Some(nonce('b'))
+        }));
         let (new_generation, new_nonce) = lifecycle
             .current_document_authority()
             .expect("fresh authority");
