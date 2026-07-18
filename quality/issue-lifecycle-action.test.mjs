@@ -199,6 +199,43 @@ test("applies and verifies reconciliation only when activation is enabled", asyn
   assert.ok(calls.some((call) => call.method === "POST"));
 });
 
+test("treats an already-removed lifecycle label as an idempotent delete", async (t) => {
+  let reloaded = false;
+  const { calls, request } = requestMock(t, {
+    failures: { DELETE: 404 },
+    issueLabels: ["status: ready"],
+  });
+  process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = "enabled";
+  t.after(() => delete process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION);
+
+  const result = await runIssueLifecycleAction({
+    event: reopenedEvent,
+    request: async (path, options) => {
+      if (path.includes("/issues/27") && reloaded)
+        return issue(["status: new"]);
+      const response = await request(path, options);
+      if (options?.method === "POST") reloaded = true;
+      return response;
+    },
+  });
+
+  assert.equal(result.outcome, "applied");
+  assert.ok(calls.some((call) => call.method === "DELETE"));
+  assert.ok(calls.some((call) => call.method === "POST"));
+
+  const forbidden = requestMock(t, {
+    failures: { DELETE: 403 },
+    issueLabels: ["status: ready"],
+  });
+  await assert.rejects(
+    runIssueLifecycleAction({
+      event: reopenedEvent,
+      request: forbidden.request,
+    }),
+    /403/u,
+  );
+});
+
 test("fails closed on provider errors and malformed provider state", async (t) => {
   for (const status of [403, 404, 409, 422, 429]) {
     const { request } = requestMock(t, {

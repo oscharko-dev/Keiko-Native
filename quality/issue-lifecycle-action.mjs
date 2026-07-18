@@ -587,10 +587,14 @@ async function reloadIssue(repository, issueNumber, request) {
 }
 
 async function removeLabel(repository, issueNumber, label, request) {
-  await request(
-    `/repos/${repository}/issues/${issueNumber}/labels/${encodeURIComponent(label)}`,
-    { method: "DELETE" },
-  );
+  try {
+    await request(
+      `/repos/${repository}/issues/${issueNumber}/labels/${encodeURIComponent(label)}`,
+      { method: "DELETE" },
+    );
+  } catch (error) {
+    if (!error.message.includes("failed with 404")) throw error;
+  }
 }
 
 async function addLabels(repository, issueNumber, labels, request) {
