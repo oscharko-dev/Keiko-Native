@@ -50,7 +50,7 @@ Start with:
 
 ## Local verification
 
-Use Node.js 24.18.x and npm 11.16.x for the repository quality control plane.
+Use exactly Node.js 24.18.0 and npm 11.16.0 for the repository quality control plane.
 
 ```bash
 npm ci --ignore-scripts

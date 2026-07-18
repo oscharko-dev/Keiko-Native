@@ -33,6 +33,11 @@ jobs:
         with:
           node-version: "24.18.0"
           package-manager-cache: false
+      - name: Activate exact npm 11.16.0
+        run: |
+          corepack enable npm
+          corepack install --global npm@11.16.0
+          node quality/check-toolchain.mjs
       - name: Install exact productive Rust toolchain
         run: rustup toolchain install 1.92.0 --profile minimal --component rustfmt
       - run: npm ci --ignore-scripts
@@ -62,6 +67,11 @@ jobs:
         with:
           node-version: "24.18.0"
           package-manager-cache: false
+      - name: Activate exact npm 11.16.0
+        run: |
+          corepack enable npm
+          corepack install --global npm@11.16.0
+          node quality/check-toolchain.mjs
       - run: npm ci --ignore-scripts
       - run: npm run coverage
       - name: Download and verify Sonar Scanner CLI
@@ -111,6 +121,11 @@ jobs:
         with:
           node-version: "24.18.0"
           package-manager-cache: false
+      - name: Activate exact npm 11.16.0
+        run: |
+          corepack enable npm
+          corepack install --global npm@11.16.0
+          node quality/check-toolchain.mjs
       - run: npm ci --ignore-scripts
       - run: npm run check:contract
       - run: npm test
@@ -174,6 +189,11 @@ jobs:
         with:
           node-version: "24.18.0"
           package-manager-cache: false
+      - name: Activate exact npm 11.16.0
+        run: |
+          corepack enable npm
+          corepack install --global npm@11.16.0
+          node quality/check-toolchain.mjs
       - run: npm ci --ignore-scripts
       - run: npm run check:contract
 
@@ -210,6 +230,11 @@ jobs:
         with:
           node-version: "24.18.0"
           package-manager-cache: false
+      - name: Activate exact npm 11.16.0
+        run: |
+          corepack enable npm
+          corepack install --global npm@11.16.0
+          node quality/check-toolchain.mjs
       - run: npm ci --ignore-scripts
       - run: npm run build
       - run: npm audit --audit-level=high
@@ -244,6 +269,11 @@ jobs:
         with:
           node-version: "24.18.0"
           package-manager-cache: false
+      - name: Activate exact npm 11.16.0
+        run: |
+          corepack enable npm
+          corepack install --global npm@11.16.0
+          node quality/check-toolchain.mjs
       - name: Verify authoritative runner
         run: |
           test "$(uname -s)" = Darwin

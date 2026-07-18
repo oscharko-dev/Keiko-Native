@@ -22,6 +22,11 @@ jobs:
         with:
           node-version: "24.18.0"
           package-manager-cache: false
+      - name: Activate exact npm 11.16.0
+        run: |
+          corepack enable npm
+          corepack install --global npm@11.16.0
+          node quality/check-toolchain.mjs
       - name: Install exact Rust and mutation toolchains
         run: |
           rustup toolchain install 1.92.0 --profile minimal

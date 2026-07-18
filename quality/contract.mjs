@@ -1,6 +1,8 @@
 import { access, readFile, readdir } from "node:fs/promises";
 import { extname, join, relative, sep } from "node:path";
 
+import { workflowToolchainFailures } from "./toolchain.mjs";
+
 const sourceSpecificationIdentity = {
   date: "2026-07-15",
   document: "Keiko-Native-Fachkonzept.md",
@@ -10,6 +12,7 @@ const sourceSpecificationIdentity = {
 };
 
 const requiredFiles = [
+  ".npmrc",
   ".gitar/review/00-governance-and-delivery.md",
   ".gitar/review/10-security-and-trust-boundaries.md",
   ".gitar/review/20-native-architecture-quality-and-evidence.md",
@@ -769,6 +772,14 @@ async function sourceRootFailures(root, manifest) {
     .map((result) => `Declared source root is missing: ${result.sourceRoot}.`);
 }
 
+async function npmConfigurationFailures(root, files) {
+  if (!files.includes(".npmrc")) return [];
+  return (await readFile(join(root, ".npmrc"), "utf8")) ===
+    "engine-strict=true\n"
+    ? []
+    : ["Root npm configuration must contain only engine-strict=true."];
+}
+
 function nativeDeclarationFailures(files, manifest) {
   if (manifest?.phase !== "productive") return [];
   const roots = [
@@ -808,6 +819,7 @@ async function contractFailures(root, files, manifest) {
     ...(await sourceBaselineFailures(root, files)),
     ...(await agentPlanningBaselineFailures(root, files)),
     ...(await codeQualityStandardFailures(root, files)),
+    ...(await npmConfigurationFailures(root, files)),
     ...bootstrapFailures,
     ...nativeDeclarationFailures(files, manifest),
     ...(await sourceRootFailures(root, manifest)),
@@ -1125,6 +1137,11 @@ async function workflowFailures(root, manifest) {
   const ci = workflows.get("ci.yml") ?? "";
   return [
     ...unpinnedWorkflowFailures(workflows),
+    ...[...workflows].flatMap(([name, workflow]) =>
+      workflowToolchainFailures(workflow).map(
+        (failure) => `Workflow ${name} rejected exact toolchain: ${failure}.`,
+      ),
+    ),
     ...ciWorkflowFailures(ci, manifest?.phase === "productive"),
     ...sonarWorkflowFailures(ci),
     ...epicWorkflowFailures(workflows),

@@ -481,6 +481,7 @@ test("public governance records exact-target authenticated epic merge and sacred
 async function fixtureRepository() {
   const root = await mkdtemp(join(tmpdir(), "keiko-native-quality-"));
   const files = [
+    ".npmrc",
     ".gitar/review/00-governance-and-delivery.md",
     ".gitar/review/10-security-and-trust-boundaries.md",
     ".gitar/review/20-native-architecture-quality-and-evidence.md",
@@ -524,6 +525,7 @@ async function fixtureRepository() {
     join(root, "package.json"),
     JSON.stringify({ scripts: { quality: "fixture" } }),
   );
+  await writeFile(join(root, ".npmrc"), "engine-strict=true\n");
   await mkdir(join(root, "quality"), { recursive: true });
   await writeFile(
     join(root, "quality/project.json"),
@@ -590,10 +592,26 @@ async function fixtureRepository() {
       "  core-quality:",
       "    name: Core quality",
       "    steps:",
+      "      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
+      "        with:",
+      '          node-version: "24.18.0"',
+      "      - name: Activate exact npm 11.16.0",
+      "        run: |",
+      "          corepack enable npm",
+      "          corepack install --global npm@11.16.0",
+      "          node quality/check-toolchain.mjs",
       "      - run: npm run quality",
       "  coverage-sonar:",
       "    name: Coverage and SonarCloud",
       "    steps:",
+      "      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
+      "        with:",
+      '          node-version: "24.18.0"',
+      "      - name: Activate exact npm 11.16.0",
+      "        run: |",
+      "          corepack enable npm",
+      "          corepack install --global npm@11.16.0",
+      "          node quality/check-toolchain.mjs",
       "      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
       "        with:",
       "          ref: ${{ github.event_name == 'workflow_dispatch' && 'dev' || github.ref }}",
@@ -625,6 +643,14 @@ async function fixtureRepository() {
       "  cross-platform-smoke:",
       "    name: Cross-platform smoke",
       "    steps:",
+      "      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
+      "        with:",
+      '          node-version: "24.18.0"',
+      "      - name: Activate exact npm 11.16.0",
+      "        run: |",
+      "          corepack enable npm",
+      "          corepack install --global npm@11.16.0",
+      "          node quality/check-toolchain.mjs",
       "      - run: npm test",
       "  ci:",
       "    name: ci",

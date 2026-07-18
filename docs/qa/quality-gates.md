@@ -147,6 +147,14 @@ Run `npm run quality` and `npm audit --audit-level=high` before the first push. 
 findings locally, add a prevention test or contract check, rerun the affected gate, and then rerun
 the complete local suite before another push. GitHub is remote-only validation, not the test loop.
 
+The quality control plane uses exactly Node.js 24.18.0 and npm 11.16.0. Root `engines`, npm
+`devEngines`, `packageManager`, and the sole `.npmrc` setting (`engine-strict=true`) fail closed on
+toolchain drift before installation or scripts. The direct `quality` and `native:dependencies`
+entry points also run the dependency-free exact-toolchain checker. Every workflow job that consumes
+npm first installs exact Node through the pinned setup action, activates npm 11.16.0 through the
+Corepack bundled with that Node release, and runs the same checker before any npm command. Contract
+tests reject missing, conditional, reordered, or version-ranged activation.
+
 Productive native quality begins with the exact standalone frontend `npm ci` command owned by
 `native:dependencies`; install scripts and npm workspace inference are disabled. Each native gate
 captures the exact Git tree into a private mode-0700 snapshot and compiles the repository-owned

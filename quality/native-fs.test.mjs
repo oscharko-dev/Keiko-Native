@@ -36,9 +36,17 @@ test(
   async () => {
     await fixture(async ({ fs, helper, root }) => {
       await mkdir(join(root, "source/nested"), { recursive: true });
+      await mkdir(join(root, "source/.bin"));
       await writeFile(join(root, "source/nested/value"), "alpha");
+      await writeFile(join(root, "source/.bin/ignored"), "ignored");
       await mkdir(join(root, "destination"));
-      fs.copyTree(join(root, "source"), ".", join(root, "destination"), "copy");
+      fs.copyTree(
+        join(root, "source"),
+        ".",
+        join(root, "destination"),
+        "copy",
+        ".bin",
+      );
       assert.equal(
         fs.read(join(root, "destination"), "copy/nested/value", "utf8"),
         "alpha",
@@ -53,11 +61,20 @@ test(
         Buffer.from("beta"),
         0o600,
       );
+      fs.write(join(root, "destination"), "default-mode", Buffer.from("gamma"));
+      fs.mkdir(join(root, "destination"), "directory/nested");
+      fs.symlink(join(root, "destination"), "directory/link", "../created");
+      assert.ok(Buffer.isBuffer(fs.read(join(root, "destination"), "created")));
       assert.equal(
         (await lstat(join(root, "destination/created"))).mode & 0o777,
         0o600,
       );
       assert.equal((await lstat(helper)).mode & 0o777, 0o700);
+      assert.ok(
+        (
+          await lstat(join(root, "destination/directory/link"))
+        ).isSymbolicLink(),
+      );
     });
   },
 );
@@ -226,6 +243,26 @@ test(
     try {
       const records = await copySources(root);
       const outputPath = join(root, "helper");
+      assert.throws(
+        () =>
+          compileNativeFsHelper({
+            expectedSources: [],
+            outputPath,
+            snapshotRoot: root,
+            tree: "a".repeat(40),
+          }),
+        /source-set/u,
+      );
+      assert.throws(
+        () =>
+          compileNativeFsHelper({
+            expectedSources: records,
+            outputPath,
+            snapshotRoot: root,
+            tree: "invalid",
+          }),
+        /snapshot-tree/u,
+      );
       assert.throws(
         () =>
           compileNativeFsHelper({
