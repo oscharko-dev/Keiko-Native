@@ -125,7 +125,7 @@ test("every npm workflow consumer activates and verifies the exact toolchain fir
       "utf8",
     );
     assert.deepEqual(workflowToolchainFailures(workflow), []);
-    for (const mutated of [
+    const mutations = [
       workflow.replace("corepack enable npm", "corepack enable pnpm"),
       workflow.replace(
         "corepack install --global npm@11.16.0",
@@ -193,11 +193,23 @@ test("every npm workflow consumer activates and verifies the exact toolchain fir
         "        run: |\n          corepack enable npm",
         "        shell: bash\n        run: |\n          corepack enable npm",
       ),
+      ...addInheritedWorkflowControls(workflow),
+      ...addInheritedJobControls(workflow),
+      ...addNpmStepControls(workflow),
       addJobContinueOnError(workflow),
       moveFirstActivationAfterNpm(workflow),
-    ]) {
-      assert.ok(workflowToolchainFailures(mutated).length > 0, name);
+    ];
+    for (const [index, mutated] of mutations.entries()) {
+      assert.ok(
+        workflowToolchainFailures(mutated).length > 0,
+        `${name} mutation ${String(index)}`,
+      );
     }
+    assert.deepEqual(
+      workflowToolchainFailures(addLegitimateStepEnvironment(workflow)),
+      [],
+      name,
+    );
   }
 });
 
@@ -300,6 +312,73 @@ function addJobContinueOnError(workflow) {
   return workflow.replace(
     /^(  (?:core-quality|native-mutation-security):\n)/mu,
     "$1    continue-on-error: true\n",
+  );
+}
+
+function addInheritedWorkflowControls(workflow) {
+  return [
+    workflow.replace(
+      "permissions: {}",
+      "defaults:\n  run:\n    shell: /usr/bin/true {0}\n\npermissions: {}",
+    ),
+    ...["BASH_ENV", "ENV", "NODE_OPTIONS", "PATH"].map((name) =>
+      workflow.replace(
+        "permissions: {}",
+        `env:\n  ${name}: owned\n\npermissions: {}`,
+      ),
+    ),
+  ];
+}
+
+function addInheritedJobControls(workflow) {
+  const insert = (value) =>
+    workflow.replace(
+      /^(  (?:core-quality|native-mutation-security):\n)/mu,
+      `$1${value}`,
+    );
+  return [
+    insert("    defaults:\n      run:\n        shell: /usr/bin/true {0}\n"),
+    ...["BASH_ENV", "ENV", "NODE_OPTIONS", "PATH"].map((name) =>
+      insert(`    env:\n      ${name}: owned\n`),
+    ),
+  ];
+}
+
+function addNpmStepControls(workflow) {
+  return [
+    ...[
+      "if: false",
+      "continue-on-error: true",
+      "shell: /usr/bin/true {0}",
+      "working-directory: /tmp",
+    ].map((control) =>
+      workflow.replace(
+        "      - run: npm ci --ignore-scripts",
+        `      - ${control}\n        run: npm ci --ignore-scripts`,
+      ),
+    ),
+    ...["BASH_ENV", "ENV", "NODE_OPTIONS", "PATH"].flatMap((name) =>
+      [
+        `      - env:\n          ${name}: owned`,
+        `      - env: { ${name}: owned }`,
+      ].map((environment) =>
+        workflow.replace(
+          "      - run: npm ci --ignore-scripts",
+          `${environment}\n        run: npm ci --ignore-scripts`,
+        ),
+      ),
+    ),
+  ];
+}
+
+function addLegitimateStepEnvironment(workflow) {
+  return workflow.replace(
+    "      - run: npm ci --ignore-scripts",
+    [
+      "      - run: npm ci --ignore-scripts",
+      "        env:",
+      '          KEIKO_NATIVE_REQUIRE_MACOS: "1"',
+    ].join("\n"),
   );
 }
 
