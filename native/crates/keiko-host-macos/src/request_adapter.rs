@@ -35,17 +35,21 @@ pub fn application_request(
             }
         }
     };
-    let acknowledged = accepted.sequence() == 2;
     let encoded = encode_success(&dispatch_health(
         accepted.request.clone(),
         current_build_identity(),
     ));
-    let encoded = lifecycle.lock().map_or_else(
-        |_| encode_error("unknown-request", ReasonCode::InternalFailure),
-        |mut lifecycle| lifecycle.complete_with_encoded(accepted, encoded),
+    let (encoded, acknowledged) = lifecycle.lock().map_or_else(
+        |_| {
+            (
+                encode_error("unknown-request", ReasonCode::InternalFailure),
+                false,
+            )
+        },
+        |mut lifecycle| lifecycle.complete_with_acknowledgement(accepted, encoded),
     );
     ApplicationRequestOutput {
-        acknowledged: acknowledged && encoded.contains("\"status\":\"healthy\""),
+        acknowledged,
         encoded,
     }
 }

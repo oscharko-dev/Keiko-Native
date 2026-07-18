@@ -9,12 +9,14 @@ use keiko_ui_port::{
     request_metadata,
 };
 
+mod acknowledgement;
 pub mod document_nonce;
 #[cfg(feature = "tauri-host")]
 mod request_adapter;
 mod request_timing;
 #[cfg(feature = "tauri-host")]
 pub mod tauri_adapter;
+use acknowledgement::AcknowledgementState;
 #[cfg(feature = "tauri-host")]
 pub use request_adapter::{ApplicationRequestOutput, application_cancel, application_request};
 use request_timing::{InFlight, MonotonicClock, terminal_reason};
@@ -31,6 +33,7 @@ pub struct SenderContext {
 
 #[derive(Debug)]
 struct RendererSession {
+    acknowledgement: AcknowledgementState,
     generation: u64,
     document_nonce: String,
     last_sequence: u64,
@@ -41,12 +44,6 @@ struct RendererSession {
 pub struct AcceptedRequest {
     generation: u64,
     request: UiRequest,
-}
-
-impl AcceptedRequest {
-    pub fn sequence(&self) -> u64 {
-        request_metadata(&self.request).1
-    }
 }
 
 #[derive(Debug)]
@@ -123,6 +120,7 @@ impl HostLifecycle {
         };
         self.generation = generation;
         self.session = Some(RendererSession {
+            acknowledgement: AcknowledgementState::default(),
             generation: self.generation,
             document_nonce,
             last_sequence: 0,
@@ -258,6 +256,14 @@ impl HostLifecycle {
     }
 
     fn complete_with_encoded(&mut self, accepted: AcceptedRequest, encoded: String) -> String {
+        self.complete_with_acknowledgement(accepted, encoded).0
+    }
+
+    fn complete_with_acknowledgement(
+        &mut self,
+        accepted: AcceptedRequest,
+        encoded: String,
+    ) -> (String, bool) {
         self.complete_with_availability(accepted, encoded, true)
     }
 
@@ -266,17 +272,27 @@ impl HostLifecycle {
         accepted: AcceptedRequest,
         encoded: String,
         host_available: bool,
-    ) -> String {
+    ) -> (String, bool) {
         let completed_at_ms = self.clock.now_ms();
         let (request_id, _, _) = request_metadata(&accepted.request);
         let request_id = request_id.to_owned();
         let Some(in_flight) = self.in_flight.remove(&request_id) else {
-            return encode_error(&request_id, ReasonCode::InternalFailure);
+            return (
+                encode_error(&request_id, ReasonCode::InternalFailure),
+                false,
+            );
         };
         if let Some(reason) = terminal_reason(&in_flight, completed_at_ms, host_available) {
-            return encode_error(&request_id, reason);
+            return (encode_error(&request_id, reason), false);
         }
-        encoded
+        let (_, sequence, _) = request_metadata(&accepted.request);
+        let acknowledged = self.session.as_mut().is_some_and(|session| {
+            if session.generation != accepted.generation {
+                return false;
+            }
+            session.acknowledgement.record_success(sequence)
+        });
+        (encoded, acknowledged)
     }
 
     fn validate_sender(&self, context: &SenderContext) -> Result<(), (String, ReasonCode)> {
@@ -325,7 +341,7 @@ impl HostLifecycle {
             accepted.request.clone(),
             current_build_identity(),
         ));
-        self.complete_with_availability(accepted, encoded, false)
+        self.complete_with_availability(accepted, encoded, false).0
     }
 }
 

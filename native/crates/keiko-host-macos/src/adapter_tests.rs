@@ -2,11 +2,105 @@ use super::*;
 use std::sync::Mutex;
 
 fn request(sequence: u64, _legacy_request_id: &str) -> Vec<u8> {
-    let request_id = canonical_request_id(1, sequence).expect("canonical request ID");
+    request_for(1, sequence)
+}
+
+fn request_for(generation: u64, sequence: u64) -> Vec<u8> {
+    let request_id = canonical_request_id(generation, sequence).expect("canonical request ID");
     format!(
         r#"{{"schemaVersion":1,"requestId":"{request_id}","sequence":{sequence},"timeoutMs":1000,"operation":{{"kind":"application-health"}}}}"#,
     )
     .into_bytes()
+}
+
+#[test]
+fn acknowledgement_requires_two_successes_in_one_generation() {
+    let start = || {
+        let mut lifecycle = HostLifecycle::default();
+        let generation = lifecycle
+            .begin_renderer_session(nonce('a'))
+            .expect("renderer generation");
+        (Mutex::new(lifecycle), generation)
+    };
+
+    let (lifecycle, generation) = start();
+    let second_first = application_request(
+        &lifecycle,
+        "main",
+        "tauri://localhost",
+        generation,
+        &nonce('a'),
+        &String::from_utf8(request_for(generation, 2)).expect("request"),
+    );
+    assert!(!second_first.acknowledged);
+
+    let (lifecycle, generation) = start();
+    let sender = lifecycle.lock().expect("lifecycle").sender_for_document(
+        "main",
+        "tauri://localhost",
+        generation,
+        &nonce('a'),
+    );
+    let first = lifecycle
+        .lock()
+        .expect("lifecycle")
+        .begin_application_request(&sender, &request_for(generation, 1))
+        .expect("first in flight");
+    assert!(
+        application_cancel(
+            &lifecycle,
+            "main",
+            "tauri://localhost",
+            generation,
+            &nonce('a'),
+            &cancel(generation, 1),
+        )
+        .contains("cancelled")
+    );
+    assert!(
+        lifecycle
+            .lock()
+            .expect("lifecycle")
+            .complete_application_request(first)
+            .contains("cancelled")
+    );
+    let after_cancel = application_request(
+        &lifecycle,
+        "main",
+        "tauri://localhost",
+        generation,
+        &nonce('a'),
+        &String::from_utf8(request_for(generation, 2)).expect("request"),
+    );
+    assert!(!after_cancel.acknowledged);
+
+    let (lifecycle, first_generation) = start();
+    assert!(
+        application_request(
+            &lifecycle,
+            "main",
+            "tauri://localhost",
+            first_generation,
+            &nonce('a'),
+            &String::from_utf8(request_for(first_generation, 1)).expect("request"),
+        )
+        .encoded
+        .contains("healthy")
+    );
+    let second_generation = lifecycle
+        .lock()
+        .expect("lifecycle")
+        .begin_renderer_session(nonce('b'))
+        .expect("second generation");
+    let after_replacement = application_request(
+        &lifecycle,
+        "main",
+        "tauri://localhost",
+        second_generation,
+        &nonce('b'),
+        &String::from_utf8(request_for(second_generation, 2)).expect("request"),
+    );
+    assert!(!after_replacement.acknowledged);
 }
 
 fn cancel(generation: u64, sequence: u64) -> String {

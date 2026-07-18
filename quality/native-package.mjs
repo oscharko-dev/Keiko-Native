@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
 
 import {
   evidenceFailures,
@@ -29,9 +29,9 @@ function normalizeLicense(license) {
   );
 }
 
-async function digest(path) {
+async function digest(path, reader = readFile) {
   return createHash("sha256")
-    .update(await readFile(path))
+    .update(await reader(path))
     .digest("hex");
 }
 
@@ -105,6 +105,8 @@ export function createNativePackageGate({
   onMacOs,
   packageRoot,
   processControl = defaultProcessControl,
+  readInputFile = readFile,
+  readOutputFile = readFile,
   repositoryRoot,
   run,
   rustBuildEnv,
@@ -123,7 +125,7 @@ export function createNativePackageGate({
       })),
     );
     const npmLock = JSON.parse(
-      await readFile(join(frontendRoot, "package-lock.json"), "utf8"),
+      await readInputFile(join(frontendRoot, "package-lock.json"), "utf8"),
     );
     const npm = sortedInventory(
       Object.entries(npmLock.packages)
@@ -138,11 +140,12 @@ export function createNativePackageGate({
     return { cargo, npm };
   }
 
-  async function packageNative(repositoryState = captureRepositoryState()) {
+  async function packageNative(repositoryState) {
+    repositoryState ??= await captureRepositoryState();
     const revision = repositoryState.expectedHead;
-    repositoryState.assertUnchanged("before-build");
+    await repositoryState.assertUnchanged("before-build");
     await build(revision);
-    repositoryState.assertUnchanged("after-build");
+    await repositoryState.assertUnchanged("after-build");
     if (!onMacOs()) return revision;
     await rm(packageRoot, { force: true, recursive: true });
     await mkdir(packageRoot, { recursive: true });
@@ -151,37 +154,58 @@ export function createNativePackageGate({
       ["build", "--config", "tauri.conf.json", "--bundles", "app"],
       {
         cwd: join(nativeRoot, "apps/keiko-desktop"),
-        env: rustBuildEnv(),
+        env: rustBuildEnv(revision),
       },
     );
-    await cp(
-      join(targetRoot, "release/bundle/macos/Keiko Native.app"),
-      appRoot,
-      { recursive: true },
+    const builtAppRoot = join(
+      targetRoot,
+      "release/bundle/macos/Keiko Native.app",
     );
     const files = await Promise.all(
-      (await filesBelow(appRoot)).map(async (path) => ({
-        bytes: await readFile(path),
-        path: relative(appRoot, path).split("\\").join("/"),
-        sha256: await digest(path),
+      (await filesBelow(builtAppRoot)).map(async (path) => ({
+        bytes: await readOutputFile(path, builtAppRoot),
+        path: relative(builtAppRoot, path).split("\\").join("/"),
+        sha256: "",
       })),
     );
+    for (const file of files)
+      file.sha256 = createHash("sha256").update(file.bytes).digest("hex");
+    await mkdir(appRoot, { recursive: true });
+    for (const file of files) {
+      const destination = join(appRoot, file.path);
+      await mkdir(dirname(destination), { recursive: true });
+      await writeFile(destination, file.bytes, {
+        mode:
+          file.path === "Contents/MacOS/keiko-native-desktop" ? 0o755 : 0o644,
+      });
+    }
     const policy = JSON.parse(
-      await readFile(join(nativeRoot, "package-policy.json"), "utf8"),
+      await readInputFile(join(nativeRoot, "package-policy.json"), "utf8"),
     );
     const dependencies = await dependencyInventory();
     const noticePath = join(
       appRoot,
       "Contents/Resources/THIRD-PARTY-NOTICES.json",
     );
-    const notice = JSON.parse(await readFile(noticePath, "utf8"));
-    run("plutil", ["-lint", join(appRoot, "Contents/Info.plist")]);
-    const executableType = run(
-      "file",
-      [join(appRoot, "Contents/MacOS/keiko-native-desktop")],
-      { capture: true },
+    const notice = JSON.parse(
+      files
+        .find(
+          ({ path }) => path === "Contents/Resources/THIRD-PARTY-NOTICES.json",
+        )
+        ?.bytes.toString("utf8") ?? "null",
     );
-    if (!executableType.includes("Mach-O 64-bit executable arm64"))
+    const plist = files.find(
+      ({ path }) => path === "Contents/Info.plist",
+    )?.bytes;
+    if (!plist) throw new Error("Package plist is absent");
+    run("plutil", ["-lint", "-"], { input: plist });
+    const executable = files.find(
+      ({ path }) => path === "Contents/MacOS/keiko-native-desktop",
+    )?.bytes;
+    if (
+      !executable ||
+      executable.subarray(0, 8).toString("hex") !== "cffaedfe0c000001"
+    )
       throw new Error("Package executable class rejected");
     const fileClasses = {
       "Contents/Info.plist": "plist",
@@ -206,12 +230,12 @@ export function createNativePackageGate({
       failures.push("third-party-notice-content");
     }
     if (
-      (await digest(join(nativeRoot, "Cargo.lock"))) !==
+      (await digest(join(nativeRoot, "Cargo.lock"), readInputFile)) !==
       policy.expectedLocks.cargoSha256
     )
       failures.push("cargo-lock-digest");
     if (
-      (await digest(join(frontendRoot, "package-lock.json"))) !==
+      (await digest(join(frontendRoot, "package-lock.json"), readInputFile)) !==
       policy.expectedLocks.npmSha256
     )
       failures.push("npm-lock-digest");
@@ -219,14 +243,17 @@ export function createNativePackageGate({
       throw new Error(`Native package rejected: ${failures.join(",")}`);
     const manifest = packageManifest({
       files,
-      policySha256: await digest(join(nativeRoot, "package-policy.json")),
+      policySha256: await digest(
+        join(nativeRoot, "package-policy.json"),
+        readInputFile,
+      ),
       revision,
     });
     const encoded = `${JSON.stringify(manifest, null, 2)}\n`;
     if (redactionMatches(encoded).length > 0)
       throw new Error("Package evidence failed redaction");
     await writeFile(join(packageRoot, "package-manifest.json"), encoded);
-    repositoryState.assertUnchanged("after-package-evidence");
+    await repositoryState.assertUnchanged("after-package-evidence");
     return revision;
   }
 
@@ -242,17 +269,24 @@ export function createNativePackageGate({
   async function acceptance() {
     if (!onMacOs() || process.arch !== "arm64")
       throw new Error("acceptance:macos requires Apple Silicon macOS");
-    const repositoryState = captureRepositoryState();
+    const repositoryState = await captureRepositoryState();
     const revision = await packageNative(repositoryState);
     await testNative(revision);
-    repositoryState.assertUnchanged("after-test");
+    await repositoryState.assertUnchanged("after-test");
     const lifecycle = await launchPackagedShell();
-    repositoryState.assertUnchanged("after-lifecycle");
+    await repositoryState.assertUnchanged("after-lifecycle");
     const bindings = {
-      cargoLockSha256: await digest(join(nativeRoot, "Cargo.lock")),
-      npmLockSha256: await digest(join(frontendRoot, "package-lock.json")),
+      cargoLockSha256: await digest(
+        join(nativeRoot, "Cargo.lock"),
+        readInputFile,
+      ),
+      npmLockSha256: await digest(
+        join(frontendRoot, "package-lock.json"),
+        readInputFile,
+      ),
       packageManifestSha256: await digest(
         join(packageRoot, "package-manifest.json"),
+        (path) => readOutputFile(path, packageRoot),
       ),
       readinessFingerprint:
         "da2459bd3becc6cbf651a24ef1b64d1b11a8ed642bfddc92923f0d6ed6dc8e5e",
@@ -276,7 +310,7 @@ export function createNativePackageGate({
     if (failures.length > 0)
       throw new Error(`Acceptance evidence rejected: ${failures.join(",")}`);
     await writeFile(join(packageRoot, "acceptance-evidence.json"), encoded);
-    repositoryState.assertUnchanged("after-acceptance-evidence");
+    await repositoryState.assertUnchanged("after-acceptance-evidence");
   }
 
   return { acceptance, packageNative };

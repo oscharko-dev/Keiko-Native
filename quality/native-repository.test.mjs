@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -62,4 +65,38 @@ test("package build receives one captured revision and checks both boundaries", 
     `build:${head}`,
     "assert:after-build",
   ]);
+});
+
+test("macOS release build receives the captured revision without a second lookup", async () => {
+  const packageRoot = await mkdtemp(join(tmpdir(), "keiko-package-revision-"));
+  const captured = "d".repeat(40);
+  const later = "e".repeat(40);
+  const rustRevisions = [];
+  try {
+    const { packageNative } = createNativePackageGate({
+      build: async (revision) => assert.equal(revision, captured),
+      captureRepositoryState: () => ({
+        assertUnchanged() {},
+        expectedHead: captured,
+      }),
+      frontendRoot: "/snapshot/native/frontend",
+      nativeRoot: "/snapshot/native",
+      onMacOs: () => true,
+      packageRoot,
+      run(_command, _args, options) {
+        assert.equal(later, "e".repeat(40));
+        assert.equal(options.env.KEIKO_NATIVE_SOURCE_REVISION, captured);
+        throw new Error("release-build-observed");
+      },
+      rustBuildEnv(revision) {
+        rustRevisions.push(revision);
+        return { KEIKO_NATIVE_SOURCE_REVISION: revision };
+      },
+      targetRoot: "/snapshot/native/target",
+    });
+    await assert.rejects(packageNative(), /release-build-observed/u);
+    assert.deepEqual(rustRevisions, [captured]);
+  } finally {
+    await rm(packageRoot, { force: true, recursive: true });
+  }
 });

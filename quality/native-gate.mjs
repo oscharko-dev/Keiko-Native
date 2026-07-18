@@ -27,12 +27,26 @@ import {
   sanitizeOutput,
 } from "./native-process.mjs";
 import { createExactHeadGuard } from "./native-repository.mjs";
+import { createNativeCoverageGate } from "./native-coverage.mjs";
+import {
+  createSnapshotGuard,
+  inExactSnapshot,
+  readOpenedRegular,
+  readSnapshotInput,
+  snapshotPaths,
+} from "./native-snapshot-runtime.mjs";
+import { runNativeSnapshot } from "./native-snapshot.mjs";
 
 const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const nativeRoot = join(repositoryRoot, "native");
 const frontendRoot = join(nativeRoot, "frontend");
-const targetRoot = join(nativeRoot, "target");
-const packageRoot = join(targetRoot, "keiko-native-package");
+const outputRoot = process.env.KEIKO_NATIVE_OUTPUT_ROOT;
+const targetRoot = outputRoot
+  ? join(outputRoot, "cargo-target")
+  : join(nativeRoot, "target");
+const packageRoot = outputRoot
+  ? join(outputRoot, "keiko-native-package")
+  : join(targetRoot, "keiko-native-package");
 const stableCargo = ["+1.92.0"];
 const ignoredNativeDirectories = new Set([
   "coverage",
@@ -51,6 +65,7 @@ function run(command, args, options = {}) {
     cwd: options.cwd ?? repositoryRoot,
     encoding: "utf8",
     env: { ...process.env, ...options.env },
+    input: options.input,
     maxBuffer: 30 * 1024 * 1024,
   });
   if (result.status !== 0 || result.error)
@@ -67,7 +82,13 @@ function run(command, args, options = {}) {
 }
 
 function sourceRevision() {
+  if (process.env.KEIKO_NATIVE_SOURCE_REVISION)
+    return process.env.KEIKO_NATIVE_SOURCE_REVISION;
   return run("git", ["rev-parse", "HEAD"], { capture: true });
+}
+
+function readInput(path, encoding) {
+  return readSnapshotInput(path, repositoryRoot, encoding);
 }
 
 function readGit(args) {
@@ -113,6 +134,8 @@ function cargoMetadata() {
 }
 
 async function nativeFiles() {
+  const immutable = await snapshotPaths(repositoryRoot, "native");
+  if (immutable) return immutable;
   const ephemeral = await filesBelow(nativeRoot, ignoredNativeDirectories);
   const tracked = await trackedFiles(
     run("git", ["ls-files", "--stage", "-z", "--", "native/"], {
@@ -136,14 +159,14 @@ async function sourceEntries(project) {
   return Promise.all(
     paths.map(async (path) => ({
       path: relative(repositoryRoot, path).split("\\").join("/"),
-      text: await readFile(path, "utf8"),
+      text: await readInput(path, "utf8"),
     })),
   );
 }
 
 async function projectContract() {
   return JSON.parse(
-    await readFile(join(repositoryRoot, "quality/project.json"), "utf8"),
+    await readInput(join(repositoryRoot, "quality/project.json"), "utf8"),
   );
 }
 
@@ -156,7 +179,7 @@ async function architecture() {
   const workspacePackages = metadata.packages.filter(({ id }) =>
     metadata.workspace_members.includes(id),
   );
-  const cargoText = await readFile(join(nativeRoot, "Cargo.toml"), "utf8");
+  const cargoText = await readInput(join(nativeRoot, "Cargo.toml"), "utf8");
   const failures = [
     ...sourceDeclarationFailures(paths, project),
     ...architectureFailures(await sourceEntries(project), project),
@@ -180,13 +203,13 @@ async function architecture() {
         name: pkg.name,
       })),
       desktopConfig: JSON.parse(
-        await readFile(
+        await readInput(
           join(nativeRoot, "apps/keiko-desktop/tauri.conf.json"),
           "utf8",
         ),
       ),
       frontend: JSON.parse(
-        await readFile(join(frontendRoot, "package.json"), "utf8"),
+        await readInput(join(frontendRoot, "package.json"), "utf8"),
       ),
     }),
   ];
@@ -270,47 +293,14 @@ async function testNative(revision = sourceRevision()) {
   }
 }
 
-async function coverageNative() {
-  await ensureFrontendDependencies();
-  run("npm", ["--prefix", "native/frontend", "run", "coverage"], {
-    env: { KEIKO_NATIVE_SOURCE_REVISION: sourceRevision() },
-  });
-  if (!onMacOs()) return;
-  const exclusion = (await projectContract()).coverageExclusions?.[0];
-  if (
-    exclusion?.path !== "native/apps/keiko-desktop/src/main.rs" ||
-    exclusion.evidence !== "acceptance:macos"
-  ) {
-    throw new Error("Rust coverage exclusion contract rejected");
-  }
-  const version = run("cargo-llvm-cov", ["llvm-cov", "--version"], {
-    capture: true,
-  });
-  if (version !== "cargo-llvm-cov 0.8.7")
-    throw new Error("cargo-llvm-cov version rejected");
-  const report = JSON.parse(
-    run(
-      "cargo",
-      [
-        "+nightly-2026-07-17",
-        "llvm-cov",
-        "--locked",
-        "--workspace",
-        "--all-features",
-        "--branch",
-        "--json",
-        "--summary-only",
-        "--ignore-filename-regex",
-        exclusion.path,
-        "--manifest-path",
-        "native/Cargo.toml",
-      ],
-      { capture: true },
-    ),
-  );
-  const failures = coverageFailures(report);
-  if (failures.length > 0) throw new Error(failures.join(","));
-}
+const coverageNative = createNativeCoverageGate({
+  coverageFailures,
+  ensureFrontendDependencies,
+  onMacOs,
+  projectContract,
+  run,
+  sourceRevision,
+});
 
 async function platform() {
   const metadata = cargoMetadata();
@@ -330,7 +320,7 @@ async function security() {
 
 async function signing() {
   const config = JSON.parse(
-    await readFile(
+    await readInput(
       join(nativeRoot, "apps/keiko-desktop/tauri.conf.json"),
       "utf8",
     ),
@@ -343,7 +333,6 @@ async function signing() {
   if (process.env.APPLE_CERTIFICATE || process.env.APPLE_SIGNING_IDENTITY)
     throw new Error("Signing credentials are outside CH-3 authority");
 }
-
 export const nativeGateTestSupport = {
   coverageFailures,
   commandFailure,
@@ -353,10 +342,12 @@ export const nativeGateTestSupport = {
   sanitizeOutput,
   workspaceDependencyNames,
 };
-
 const { acceptance, packageNative } = createNativePackageGate({
   build,
-  captureRepositoryState: () => createExactHeadGuard(readGit),
+  captureRepositoryState: () =>
+    inExactSnapshot()
+      ? createSnapshotGuard(repositoryRoot)
+      : createExactHeadGuard(readGit),
   cargoMetadata,
   filesBelow,
   frontendRoot,
@@ -365,6 +356,8 @@ const { acceptance, packageNative } = createNativePackageGate({
   packageRoot,
   repositoryRoot,
   run,
+  readInputFile: readInput,
+  readOutputFile: readOpenedRegular,
   rustBuildEnv: productiveRustEnv,
   targetRoot,
   testNative,
@@ -388,12 +381,20 @@ export async function main(mode) {
   const command = modes[mode];
   if (command === undefined)
     throw new Error(`Unknown native gate: ${mode ?? "missing"}`);
+  const snapshotGuard = inExactSnapshot()
+    ? await createSnapshotGuard(repositoryRoot)
+    : undefined;
+  await snapshotGuard?.assertUnchanged("before-mode");
   await nativeFiles();
   await command();
+  await snapshotGuard?.assertUnchanged("after-mode");
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  runNativeGateCli(main, process.argv[2]).then((exitCode) => {
+  const execute = inExactSnapshot()
+    ? main
+    : (mode) => runNativeSnapshot({ mode, repositoryRoot });
+  runNativeGateCli(execute, process.argv[2]).then((exitCode) => {
     process.exitCode = exitCode;
   });
 }
