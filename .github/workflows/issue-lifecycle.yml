@@ -1,0 +1,46 @@
+name: Issue lifecycle
+
+on:
+  issues:
+    types: [assigned, closed, edited, labeled, reopened, unassigned, unlabeled]
+  workflow_call:
+    inputs:
+      issue_number:
+        required: true
+        type: string
+      pr_contract_result:
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: issue-lifecycle-${{ inputs.issue_number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  classify:
+    name: Classify inert lifecycle transition
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - name: Check out the protected governance contract
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: dev
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24.18.0"
+          package-manager-cache: false
+      - name: Compute the inert lifecycle decision
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled
+          KEIKO_PR_CONTRACT_RESULT: ${{ inputs.pr_contract_result }}
+        run: node quality/issue-lifecycle-action.mjs

@@ -70,6 +70,7 @@ const attestations = new Map([
     ],
   ],
 ]);
+const fixtureHead = "c".repeat(40);
 
 function validTaskBody(target = "dev") {
   return taskHeadings
@@ -127,7 +128,7 @@ export function validPullRequestBody(target = "dev") {
     "",
     "| Acceptance criterion | Evidence | Exact head or artifact | Result |",
     "| --- | --- | --- | --- |",
-    "| AC1 | quality/pr-contract.test.mjs | abc123 | Pass |",
+    `| AC1 | quality/pr-contract.test.mjs | ${fixtureHead} | Pass |`,
     "",
     "## Acceptance journey evidence",
     "",
@@ -212,7 +213,7 @@ export function validPullRequestFixture(target = "dev") {
     pullRequest: {
       base: { ref: target },
       body: validPullRequestBody(target),
-      head: { ref: "codex/42-governed-workspace", sha: "c".repeat(40) },
+      head: { ref: "codex/42-governed-workspace", sha: fixtureHead },
       number: 7,
       title: "Enforce the pull request contract",
     },
