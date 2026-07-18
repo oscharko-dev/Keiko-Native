@@ -384,6 +384,80 @@ test("records paused sources and derives resume destinations without restoring r
     }).target,
     "status: ready",
   );
+  assert.deepEqual(
+    evaluatePullRequestTopology({
+      event: "closed_merged",
+      pullRequest: { id: 36, validated: true },
+      readiness: current,
+      sourceState: "status: ready for human review",
+    }),
+    {
+      ok: true,
+      pullRequestId: 36,
+      target: "status: ready for human review",
+    },
+  );
+  assert.equal(
+    evaluatePullRequestTopology({
+      event: "closed_merged",
+      pullRequest: { id: 36, validated: true },
+      readiness: current,
+      sourceState: "status: pr open",
+    }).target,
+    "status: in progress",
+  );
+  assert.equal(
+    evaluatePullRequestTopology({
+      event: "closed_merged",
+      pullRequest: { completedIssue: true, id: 36, validated: true },
+      readiness: { current: false, ok: false },
+      sourceState: "status: done",
+    }).target,
+    "status: done",
+  );
+  assert.equal(
+    evaluatePullRequestTopology({
+      event: "closed_merged",
+      pullRequest: { completedIssue: true, id: 36, validated: true },
+      readiness: { current: false, ok: false },
+      sourceState: "status: ready for human review",
+    }).target,
+    "status: done",
+  );
+  assertReason(
+    evaluatePullRequestTopology({
+      event: "closed_merged",
+      pullRequest: { id: 36, validated: false },
+      readiness: current,
+      sourceState: "status: ready for human review",
+    }),
+    "validated_pr_required",
+  );
+  for (const sourceState of ["status: blocked", "status: waiting for user"])
+    assertReason(
+      evaluatePullRequestTopology({
+        event: "closed_merged",
+        pullRequest: { id: 36, validated: true },
+        readiness: current,
+        sourceState,
+      }),
+      "resume_evidence_required",
+    );
+  for (const sourceState of [
+    "status: new",
+    "status: triaged",
+    "status: ready",
+    "status: in progress",
+  ])
+    assertReason(
+      evaluatePullRequestTopology({
+        event: "closed_merged",
+        pullRequest: { id: 36, validated: true },
+        readiness: current,
+        sourceState,
+      }),
+      "merged_pr_source_required",
+    );
 });
 
 test("requires reason-aware closure evidence and reopens to new", () => {

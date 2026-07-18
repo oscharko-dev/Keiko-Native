@@ -9,6 +9,7 @@ import {
 const READY = LIFECYCLE_STATES[2];
 const IN_PROGRESS = LIFECYCLE_STATES[3];
 const PR_OPEN = LIFECYCLE_STATES[4];
+const REVIEW = LIFECYCLE_STATES[5];
 const BLOCKED = LIFECYCLE_STATES[6];
 const WAITING = LIFECYCLE_STATES[7];
 const DONE = LIFECYCLE_STATES[8];
@@ -136,11 +137,36 @@ export function evaluatePullRequestTopology({
   readiness,
   sourceState,
 }) {
+  if (
+    event === "closed_merged" &&
+    [REVIEW, DONE].includes(sourceState) &&
+    pullRequest?.completedIssue === true
+  ) {
+    if (pullRequest?.validated !== true) return fail("validated_pr_required");
+    return topologyResult(sourceState, DONE, {
+      pullRequestId: pullRequest.id,
+    });
+  }
+  if (event === "closed_merged" && sourceState === DONE) {
+    if (pullRequest?.validated !== true) return fail("validated_pr_required");
+    return fail("completed_issue_required");
+  }
   const failures = requireCurrent(readiness);
   if (failures.length > 0) return fail(failures[0]);
   if (["opened", "reopened"].includes(event)) {
     if (pullRequest?.validated !== true) return fail("validated_pr_required");
     return topologyResult(sourceState, PR_OPEN, {
+      pullRequestId: pullRequest.id,
+    });
+  }
+  if (event === "closed_merged") {
+    if (pullRequest?.validated !== true) return fail("validated_pr_required");
+    if ([BLOCKED, WAITING].includes(sourceState))
+      return fail("resume_evidence_required");
+    if (![PR_OPEN, REVIEW].includes(sourceState))
+      return fail("merged_pr_source_required");
+    const target = sourceState === REVIEW ? REVIEW : IN_PROGRESS;
+    return topologyResult(sourceState, target, {
       pullRequestId: pullRequest.id,
     });
   }
