@@ -230,31 +230,14 @@ test("evaluates PR open and unmerged-close recovery topology", () => {
     }),
     { ok: true, pullRequestId: 36, target: "status: pr open" },
   );
-  assert.deepEqual(
+  assertReason(
     evaluatePullRequestTopology({
       event: "ready_for_review",
       pullRequest: { id: 36, validated: true },
       readiness: current,
       sourceState: "status: pr open",
     }),
-    {
-      ok: true,
-      pullRequestId: 36,
-      target: "status: ready for human review",
-    },
-  );
-  assert.deepEqual(
-    evaluatePullRequestTopology({
-      event: "ready_for_review",
-      pullRequest: { id: 37, validated: true },
-      readiness: current,
-      sourceState: "status: in progress",
-    }),
-    {
-      ok: true,
-      pullRequestId: 37,
-      target: "status: ready for human review",
-    },
+    "handoff_coordinator_required",
   );
   assertReason(
     evaluatePullRequestTopology({

@@ -42,7 +42,7 @@ const expectedEdgeAliases = Object.freeze([
   ["new", ["triaged", "blocked", "waiting"]],
   ["triaged", ["ready", "blocked", "waiting", "new"]],
   ["ready", ["inProgress", "blocked", "waiting", "new"]],
-  ["inProgress", ["ready", "prOpen", "review", "blocked", "waiting", "new"]],
+  ["inProgress", ["ready", "prOpen", "blocked", "waiting", "new"]],
   ["prOpen", ["ready", "inProgress", "review", "blocked", "waiting", "new"]],
   ["review", ["prOpen", "inProgress", "blocked", "waiting", "new", "done"]],
   ["blocked", ["waiting", "new", "triaged", "ready", "inProgress", "prOpen"]],
@@ -251,6 +251,7 @@ test("publishes the complete allowed-edge graph and rejects other edges", () => 
   for (const [source, target] of [
     ["status: new", "status: ready"],
     ["status: ready", "status: pr open"],
+    ["status: in progress", "status: ready for human review"],
     ["status: blocked", "status: ready for human review"],
     ["status: done", "status: ready"],
     ["status: invented", "status: new"],

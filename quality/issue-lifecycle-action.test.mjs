@@ -331,6 +331,7 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
     event: {
       action: "opened",
       expectedReadinessCommentId: 101,
+      prContract: { validated: true },
       pull_request: {
         body: "## Scope\n\n- Accepted issue: #27",
         draft: true,
@@ -367,12 +368,9 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
     request: nonDraftOpened.request,
   });
   assert.equal(nonDraftOpenedResult.outcome, "planned");
-  assert.equal(
-    nonDraftOpenedResult.desiredState,
-    "status: ready for human review",
-  );
+  assert.equal(nonDraftOpenedResult.desiredState, "status: pr open");
   assert.deepEqual(nonDraftOpenedResult.plan, {
-    apply: ["status: ready for human review"],
+    apply: ["status: pr open"],
     failures: [],
     ok: true,
     remove: ["status: in progress"],
@@ -428,19 +426,16 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
     request: readyForReview.request,
   });
   assert.equal(readyForReviewResult.outcome, "planned");
-  assert.equal(
-    readyForReviewResult.desiredState,
-    "status: ready for human review",
-  );
+  assert.equal(readyForReviewResult.desiredState, "status: pr open");
   assert.deepEqual(readyForReviewResult.plan, {
-    apply: ["status: ready for human review"],
+    apply: [],
     failures: [],
     ok: true,
-    remove: ["status: pr open"],
+    remove: [],
   });
 
   const synchronizedReady = requestMock(t, {
-    issueLabels: ["status: pr open"],
+    issueLabels: ["status: ready for human review"],
   });
   const synchronizedReadyResult = await runIssueLifecycleAction({
     event: {
@@ -456,43 +451,66 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
     request: synchronizedReady.request,
   });
   assert.equal(synchronizedReadyResult.outcome, "planned");
-  assert.equal(
-    synchronizedReadyResult.desiredState,
-    "status: ready for human review",
-  );
+  assert.equal(synchronizedReadyResult.desiredState, "status: pr open");
   assert.deepEqual(synchronizedReadyResult.plan, {
-    apply: ["status: ready for human review"],
-    failures: [],
-    ok: true,
-    remove: ["status: pr open"],
-  });
-
-  const synchronizedContractFailure = requestMock(t, {
-    issueLabels: ["status: ready for human review"],
-  });
-  const synchronizedContractFailureResult = await runIssueLifecycleAction({
-    event: {
-      action: "synchronize",
-      pull_request: {
-        body: "## Scope\n\n- Accepted issue: #27",
-        draft: false,
-        head: { sha: "c".repeat(40) },
-        node_id: "pr-node-40",
-      },
-    },
-    request: synchronizedContractFailure.request,
-  });
-  assert.equal(synchronizedContractFailureResult.outcome, "planned");
-  assert.equal(
-    synchronizedContractFailureResult.desiredState,
-    "status: pr open",
-  );
-  assert.deepEqual(synchronizedContractFailureResult.plan, {
     apply: ["status: pr open"],
     failures: [],
     ok: true,
     remove: ["status: ready for human review"],
   });
+
+  const synchronizedContractFailure = requestMock(t, {
+    issueLabels: ["status: ready for human review"],
+  });
+  process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = "enabled";
+  delete process.env.KEIKO_PR_CONTRACT_RESULT;
+  try {
+    const synchronizedContractFailureResult = await runIssueLifecycleAction({
+      event: {
+        action: "synchronize",
+        pull_request: {
+          body: "## Scope\n\n- Accepted issue: #27",
+          draft: false,
+          head: { sha: "c".repeat(40) },
+          node_id: "pr-node-40",
+        },
+      },
+      request: synchronizedContractFailure.request,
+    });
+    assert.equal(synchronizedContractFailureResult.outcome, "failed");
+    assert.deepEqual(synchronizedContractFailureResult.failures, [
+      "pr_contract_success_required",
+    ]);
+  } finally {
+    if (previousActivation === undefined)
+      delete process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
+    else process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = previousActivation;
+    if (previousContractResult === undefined)
+      delete process.env.KEIKO_PR_CONTRACT_RESULT;
+    else process.env.KEIKO_PR_CONTRACT_RESULT = previousContractResult;
+  }
+
+  const preActivationMissingContract = requestMock(t, {
+    issueLabels: ["status: in progress"],
+  });
+  const preActivationMissingContractResult = await runIssueLifecycleAction({
+    event: {
+      action: "opened",
+      expectedReadinessCommentId: 101,
+      pull_request: {
+        body: "## Scope\n\n- Accepted issue: #27",
+        draft: true,
+        head: { sha: "d".repeat(40) },
+        node_id: "pr-node-43",
+      },
+    },
+    request: preActivationMissingContract.request,
+  });
+  assert.equal(preActivationMissingContractResult.outcome, "ignored");
+  assert.equal(
+    preActivationMissingContractResult.reason,
+    "pre_activation_pr_contract_required",
+  );
 
   const closedWithAnotherOpen = requestMock(t, {
     issueLabels: ["status: pr open"],
@@ -512,6 +530,7 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
   const closedWithAnotherOpenResult = await runIssueLifecycleAction({
     event: {
       action: "closed",
+      prContract: { validated: true },
       pull_request: {
         body: "## Scope\n\n- Accepted issue: #27",
         head: { sha: "f".repeat(40) },

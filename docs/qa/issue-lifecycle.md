@@ -45,8 +45,7 @@ an authorized pause. A linked delivery pull request cannot pass while the issue 
 ### `status: in progress`
 
 An authorized implementer has claimed current-ready work and no delivery pull request is active.
-Opening or reopening a draft contract-authorized pull request can enter PR open; opening or
-reopening a non-draft contract-authorized pull request can enter ready for human review.
+Opening or reopening a contract-authorized pull request can enter PR open.
 
 ### `status: pr open`
 
@@ -87,8 +86,7 @@ Every unlisted edge is invalid and fails closed.
 - `status: ready` may enter `status: in progress`, `status: blocked`,
   `status: waiting for user`, or `status: new`.
 - `status: in progress` may enter `status: ready`, `status: pr open`,
-  `status: ready for human review`, `status: blocked`, `status: waiting for user`,
-  or `status: new`.
+  `status: blocked`, `status: waiting for user`, or `status: new`.
 - `status: pr open` may enter `status: ready`, `status: in progress`,
   `status: ready for human review`, `status: blocked`, `status: waiting for user`,
   or `status: new`.

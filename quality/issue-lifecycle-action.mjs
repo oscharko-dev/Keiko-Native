@@ -24,6 +24,7 @@ const lifecycleActivationEnabled = "enabled";
 const pullRequestContractSuccess = "success";
 const githubRequest = githubRequestFor("keiko-native-issue-lifecycle");
 const READY = LIFECYCLE_STATES[2];
+const PR_OPEN = LIFECYCLE_STATES[4];
 const REVIEW = LIFECYCLE_STATES[5];
 
 function labelNames(issue) {
@@ -158,16 +159,9 @@ function pullRequestEvidence(event, issueNumber) {
 
 function pullRequestLifecycleEvent(event) {
   if (event?.pull_request === undefined) return undefined;
-  if (["opened", "reopened"].includes(event.action))
-    return event.pull_request?.draft === true
-      ? event.action
-      : "ready_for_review";
-  if (event.action === "ready_for_review") return "ready_for_review";
-  if (event.action === "synchronize")
-    return event.pull_request?.draft === false &&
-      hasTrustedPullRequestContractSuccess(event)
-      ? "ready_for_review"
-      : "opened";
+  if (["opened", "reopened"].includes(event.action)) return event.action;
+  if (event.action === "ready_for_review") return "opened";
+  if (event.action === "synchronize") return "opened";
   if (event.action === "converted_to_draft") return "opened";
   if (event.action === "closed" && event.pull_request?.merged !== true)
     return "closed_unmerged";
@@ -280,7 +274,7 @@ function desiredStateForPullRequestEvent({
   });
   if (result.ok) {
     if (
-      result.target === REVIEW &&
+      [PR_OPEN, REVIEW].includes(result.target) &&
       !hasTrustedPullRequestContractSuccess(event)
     ) {
       return enabled

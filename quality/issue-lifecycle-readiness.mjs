@@ -9,7 +9,6 @@ import {
 const READY = LIFECYCLE_STATES[2];
 const IN_PROGRESS = LIFECYCLE_STATES[3];
 const PR_OPEN = LIFECYCLE_STATES[4];
-const REVIEW = LIFECYCLE_STATES[5];
 const BLOCKED = LIFECYCLE_STATES[6];
 const WAITING = LIFECYCLE_STATES[7];
 const DONE = LIFECYCLE_STATES[8];
@@ -145,10 +144,7 @@ export function evaluatePullRequestTopology({
     });
   }
   if (event === "ready_for_review") {
-    if (pullRequest?.validated !== true) return fail("validated_pr_required");
-    return topologyResult(sourceState, REVIEW, {
-      pullRequestId: pullRequest.id,
-    });
+    return fail("handoff_coordinator_required");
   }
   if (event !== "closed_unmerged") return fail("unsupported_pr_event");
   if (otherOpenPullRequest?.validated === true)
