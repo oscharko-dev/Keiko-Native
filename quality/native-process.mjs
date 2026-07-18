@@ -92,7 +92,7 @@ export function productiveRustEnv(repositoryRoot, revision) {
   };
 }
 
-export function rustTestPlan(revision, env) {
+export function rustTestPlan(revision, env, targetDir) {
   return {
     args: [
       "+1.92.0",
@@ -102,6 +102,12 @@ export function rustTestPlan(revision, env) {
       "--manifest-path",
       "native/Cargo.toml",
     ],
-    options: { env: { ...env, KEIKO_NATIVE_SOURCE_REVISION: revision } },
+    options: {
+      env: {
+        ...env,
+        CARGO_TARGET_DIR: targetDir,
+        KEIKO_NATIVE_SOURCE_REVISION: revision,
+      },
+    },
   };
 }

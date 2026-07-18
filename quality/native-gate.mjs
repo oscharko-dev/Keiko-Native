@@ -25,7 +25,7 @@ import {
   isDirectInvocation,
   productiveRustEnv as createProductiveRustEnv,
   runNativeGateCli,
-  rustTestPlan,
+  rustTestPlan as createRustTestPlan,
   sanitizeOutput,
 } from "./native-process.mjs";
 import { createExactHeadGuard } from "./native-repository.mjs";
@@ -47,6 +47,9 @@ const outputRoot = process.env.KEIKO_NATIVE_OUTPUT_ROOT;
 const targetRoot = outputRoot
   ? join(outputRoot, "cargo-target")
   : join(nativeRoot, "target");
+const testTargetRoot = outputRoot
+  ? join(outputRoot, "cargo-test-target")
+  : join(targetRoot, "tests");
 const packageRoot = outputRoot
   ? join(outputRoot, "keiko-native-package")
   : join(targetRoot, "keiko-native-package");
@@ -57,6 +60,8 @@ const ignoredNativeDirectories = new Set(
 function productiveRustEnv(revision = sourceRevision()) {
   return createProductiveRustEnv(repositoryRoot, revision);
 }
+const rustTestPlan = (revision) =>
+  createRustTestPlan(revision, productiveRustEnv(revision), testTargetRoot);
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -93,9 +98,7 @@ function readGit(args) {
   return run("git", args, { capture: true, raw: true });
 }
 
-function onMacOs() {
-  return process.platform === "darwin";
-}
+const onMacOs = () => process.platform === "darwin";
 
 async function ensureFrontendDependencies() {
   for (const path of [
@@ -280,7 +283,7 @@ async function testNative(revision = sourceRevision()) {
     run("npm", ["--prefix", "native/frontend", "run", "build"], {
       env: { KEIKO_NATIVE_SOURCE_REVISION: revision },
     });
-    const plan = rustTestPlan(revision, productiveRustEnv(revision));
+    const plan = rustTestPlan(revision);
     run("cargo", plan.args, plan.options);
   }
 }
@@ -331,8 +334,7 @@ export const nativeGateTestSupport = {
   mergeNativeInspectionPaths,
   ...nativePackageTestSupport,
   productiveRustEnv,
-  rustTestPlan: (revision) =>
-    rustTestPlan(revision, productiveRustEnv(revision)),
+  rustTestPlan,
   sanitizeOutput,
   workspaceDependencyNames,
 };
