@@ -772,6 +772,7 @@ async function fixtureRepository() {
       "      contents: read",
       "      issues: read",
       "      pull-requests: read",
+      "      statuses: read",
       "    steps:",
       "      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
       "        with:",
@@ -798,6 +799,7 @@ async function fixtureRepository() {
       "name: Evaluate trusted PR metadata",
       "issue-number: ${{ steps.contract.outputs.issue-number }}",
       "ref: dev",
+      "statuses: read",
       "statuses: write",
       "KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
       "node quality/pr-contract-action.mjs",
@@ -1543,6 +1545,22 @@ test("fails closed when lifecycle workflow permissions drift", async () => {
     assert.match(
       failures,
       /Issue lifecycle must not request write permissions: issues/u,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("fails closed when the PR lifecycle caller loses status read access", async () => {
+  const root = await fixtureRepository();
+  try {
+    const workflowPath = join(root, ".github/workflows/pr-contract.yml");
+    const workflow = await readFile(workflowPath, "utf8");
+    await writeFile(workflowPath, workflow.replace("statuses: read\n", ""));
+    const result = await validateRepository(root);
+    assert.match(
+      result.failures.join("\n"),
+      /Pull-request contract workflow is missing marker: statuses: read/u,
     );
   } finally {
     await rm(root, { force: true, recursive: true });

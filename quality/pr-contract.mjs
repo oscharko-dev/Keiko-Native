@@ -287,13 +287,18 @@ function acceptedIssueFailures(
   acceptedIssueNumber,
   acceptedVersion,
   lifecycleActivation,
+  terminalDelivery,
 ) {
   const failures = [];
   if (acceptedIssueNumber !== issue.number)
     failures.push(
       "The loaded issue does not match the accepted issue reference.",
     );
-  if (issue.state !== "open")
+  const completedDelivery =
+    terminalDelivery === true &&
+    issue.state === "closed" &&
+    issue.state_reason === "completed";
+  if (issue.state !== "open" && !completedDelivery)
     failures.push("The accepted issue must remain open.");
   const issueLabels = labelsToNames(issue.labels);
   const lifecycleLabels = issueLabels.filter((label) =>
@@ -307,11 +312,21 @@ function acceptedIssueFailures(
     lifecycleActivation === "enabled"
       ? activeDeliveryEligibleLifecycleStates
       : legacyDeliveryEligibleLifecycleStates;
+  const terminalDeliveryEligibleLifecycleStates = new Set([
+    ...(lifecycleActivation === "enabled"
+      ? ["status: ready for human review"]
+      : ["status: ready"]),
+    "status: done",
+  ]);
   if (!lifecycleActivationModes.has(lifecycleActivation))
     failures.push("Pull-request lifecycle activation mode is invalid.");
   else if (
     lifecycleLabels.length === 1 &&
-    !deliveryEligibleLifecycleStates.has(lifecycleLabels[0])
+    !(
+      completedDelivery
+        ? terminalDeliveryEligibleLifecycleStates
+        : deliveryEligibleLifecycleStates
+    ).has(lifecycleLabels[0])
   )
     failures.push("The accepted issue lifecycle is not pull-request eligible.");
   const validation = validateIssueContract({
@@ -337,15 +352,38 @@ function readinessFailures({
   issueValidation,
   recordReference,
   repository,
+  terminalDelivery,
 }) {
   const failures = [];
-  const latestRecord = readinessRecordFromComments(
-    Array.isArray(comments) ? comments : [],
+  const availableComments = Array.isArray(comments) ? comments : [];
+  const latestRecord = readinessRecordFromComments(availableComments);
+  const referencedRecord = readinessRecordFromComments(
+    terminalDelivery === true && recordReference !== undefined
+      ? availableComments.filter(
+          (comment) => comment?.id === recordReference.commentId,
+        )
+      : availableComments,
   );
+  const latestComment = availableComments.find(
+    (comment) => comment?.id === latestRecord?.commentId,
+  );
+  const terminalClosureInvalidationIsCurrent =
+    terminalDelivery !== true ||
+    latestRecord?.commentId === referencedRecord?.commentId ||
+    (latestRecord?.status === "rejected" &&
+      latestRecord.version === referencedRecord?.version &&
+      latestRecord.fingerprint === referencedRecord?.fingerprint &&
+      latestComment?.body?.includes(
+        "- A closed issue cannot remain implementation ready.",
+      ) &&
+      latestComment.body.includes(
+        "Readiness is invalidated; the lifecycle workflow owns closed-state reconciliation.",
+      ));
   if (
-    latestRecord?.status !== "accepted" ||
-    latestRecord.version !== issueValidation.version ||
-    latestRecord.fingerprint !== issueValidation.fingerprint
+    referencedRecord?.status !== "accepted" ||
+    referencedRecord.version !== issueValidation.version ||
+    referencedRecord.fingerprint !== issueValidation.fingerprint ||
+    !terminalClosureInvalidationIsCurrent
   )
     failures.push(
       "The issue does not have a current matching accepted readiness record.",
@@ -354,7 +392,7 @@ function readinessFailures({
     recordReference !== undefined &&
     (recordReference.repository.toLowerCase() !== repository?.toLowerCase() ||
       recordReference.issueNumber !== issue.number ||
-      recordReference.commentId !== latestRecord?.commentId)
+      recordReference.commentId !== referencedRecord?.commentId)
   )
     failures.push(
       "The cited readiness URL is not the latest matching readiness record.",
@@ -399,6 +437,7 @@ export function validatePullRequestContract({
   lifecycleActivation = "disabled",
   pullRequest,
   repository,
+  terminalDelivery = false,
 }) {
   const failures = [];
   const body = pullRequest?.body;
@@ -430,6 +469,7 @@ export function validatePullRequestContract({
     scope.acceptedIssueNumber,
     scope.acceptedVersion,
     lifecycleActivation,
+    terminalDelivery,
   );
   failures.push(
     ...issueContract.failures,
@@ -439,6 +479,7 @@ export function validatePullRequestContract({
       issueValidation: issueContract.validation,
       recordReference: scope.recordReference,
       repository,
+      terminalDelivery,
     }),
   );
 
