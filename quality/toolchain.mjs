@@ -2,9 +2,11 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 import {
+  governedNpmJobFailures,
   inheritedWorkflowControlFailures,
   protectedStepControlFailures,
   workflowJobs,
+  workflowStepShapeFailures,
 } from "./workflow-structure.mjs";
 
 export const exactToolchain = Object.freeze({
@@ -66,7 +68,11 @@ function exactDevEngine(value, name, version) {
 }
 
 export function workflowToolchainFailures(workflow) {
-  const failures = inheritedWorkflowControlFailures(workflow);
+  const failures = [
+    ...inheritedWorkflowControlFailures(workflow),
+    ...workflowStepShapeFailures(workflow),
+    ...governedNpmJobFailures(workflow),
+  ];
   for (const { source: job, steps } of workflowJobs(workflow)) {
     if (npmStepHasDirectControl(steps))
       failures.push("workflow-npm-step-control");

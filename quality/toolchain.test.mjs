@@ -205,11 +205,6 @@ test("every npm workflow consumer activates and verifies the exact toolchain fir
         `${name} mutation ${String(index)}`,
       );
     }
-    assert.deepEqual(
-      workflowToolchainFailures(addLegitimateStepEnvironment(workflow)),
-      [],
-      name,
-    );
   }
 });
 
@@ -369,17 +364,6 @@ function addNpmStepControls(workflow) {
       ),
     ),
   ];
-}
-
-function addLegitimateStepEnvironment(workflow) {
-  return workflow.replace(
-    "      - run: npm ci --ignore-scripts",
-    [
-      "      - run: npm ci --ignore-scripts",
-      "        env:",
-      '          KEIKO_NATIVE_REQUIRE_MACOS: "1"',
-    ].join("\n"),
-  );
 }
 
 function workflowFixture(run) {

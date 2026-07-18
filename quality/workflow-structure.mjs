@@ -1,6 +1,76 @@
 const jobBoundary = /(?=^  [A-Za-z0-9_-]+:\s*$)/mu;
 const stepBoundary = /(?=^      - )/mu;
 const safeEnvironment = Object.freeze({ KEIKO_NATIVE_REQUIRE_MACOS: "1" });
+const activationStep = [
+  "      - name: Activate exact npm 11.16.0",
+  "        run: |",
+  "          corepack enable npm",
+  "          corepack install --global npm@11.16.0",
+  "          node quality/check-toolchain.mjs",
+].join("\n");
+const nativeCommands = [
+  "native:dependencies",
+  "native:format",
+  "native:lint",
+  "native:architecture",
+  "native:build",
+  "native:coverage",
+  "native:package",
+  "native:platform",
+  "native:security",
+  "native:signing",
+  "native:test",
+];
+const governedNpmJobs = Object.freeze({
+  "build-scan-sbom-smoke": [
+    activationStep,
+    runStep("npm ci --ignore-scripts"),
+    runStep("npm run build"),
+    runStep("npm audit --audit-level=high"),
+    [
+      "      - name: Generate CycloneDX SBOM",
+      "        run: npm sbom --sbom-format cyclonedx > sbom.cdx.json",
+    ].join("\n"),
+  ],
+  "core-quality": [
+    activationStep,
+    runStep("npm ci --ignore-scripts"),
+    runStep("npm run quality"),
+    runStep("npm audit --audit-level=high"),
+  ],
+  "coverage-sonar": [
+    activationStep,
+    runStep("npm ci --ignore-scripts"),
+    runStep("npm run coverage"),
+  ],
+  "cross-platform-smoke": [
+    activationStep,
+    runStep("npm ci --ignore-scripts"),
+    runStep("npm run check:contract"),
+    runStep("npm test"),
+    runStep("npm run build"),
+  ],
+  "native-matrix": [
+    activationStep,
+    runStep("npm ci --ignore-scripts"),
+    ...nativeCommands.map((command) => runStep(`npm run ${command}`)),
+    [
+      "      - run: npm run acceptance:macos",
+      "        env:",
+      '          KEIKO_NATIVE_REQUIRE_MACOS: "1"',
+    ].join("\n"),
+  ],
+  "native-mutation-security": [
+    activationStep,
+    runStep("npm ci --ignore-scripts"),
+    runStep("npm run coverage"),
+  ],
+  "verify-pinned-shas": [
+    activationStep,
+    runStep("npm ci --ignore-scripts"),
+    runStep("npm run check:contract"),
+  ],
+});
 
 export function workflowJobs(workflow) {
   const normalized = workflow.replaceAll("\r", "");
@@ -16,7 +86,10 @@ export function workflowJobs(workflow) {
 }
 
 export function workflowSteps(job) {
+  const marker = /^    steps:\s*$/mu.exec(job);
+  if (!marker) return [];
   return job
+    .slice(marker.index + marker[0].length)
     .split(stepBoundary)
     .filter((source) => /^      - /u.test(source))
     .map((source) => source.trimEnd());
@@ -25,22 +98,33 @@ export function workflowSteps(job) {
 export function inheritedWorkflowControlFailures(workflow) {
   const normalized = workflow.replaceAll("\r", "");
   const failures = [];
-  if (/^defaults:/mu.test(normalized)) failures.push("workflow-defaults");
-  if (/^env:/mu.test(normalized)) failures.push("workflow-environment");
+  if (hasNonBareMappingKey(normalized, 0)) failures.push("workflow-key-shape");
+  if (hasMappingKey(normalized, 0, "continue-on-error"))
+    failures.push("workflow-continue-on-error");
+  if (hasMappingKey(normalized, 0, "defaults"))
+    failures.push("workflow-defaults");
+  if (hasMappingKey(normalized, 0, "env"))
+    failures.push("workflow-environment");
   for (const { source } of workflowJobs(normalized)) {
-    if (/^    continue-on-error:/mu.test(source))
+    if (hasNonBareMappingKey(source, 4))
+      failures.push("workflow-job-key-shape");
+    if (hasMappingKey(source, 4, "continue-on-error"))
       failures.push("workflow-job-continue-on-error");
-    if (/^    defaults:/mu.test(source)) failures.push("workflow-job-defaults");
-    if (/^    env:/mu.test(source)) failures.push("workflow-job-environment");
+    if (hasMappingKey(source, 4, "defaults"))
+      failures.push("workflow-job-defaults");
+    if (hasMappingKey(source, 4, "env"))
+      failures.push("workflow-job-environment");
   }
   return failures;
 }
 
 export function protectedStepControlFailures(step) {
   const failures = [];
+  if (!canonicalStepShape(step)) failures.push("shape");
+  const normalized = step.replace(/^      - /u, "        ");
   if (
-    /^(?:      - |        )(?:continue-on-error|if|shell|working-directory):/mu.test(
-      step,
+    ["continue-on-error", "if", "shell", "working-directory"].some((key) =>
+      hasMappingKey(normalized, 8, key),
     )
   )
     failures.push("control");
@@ -52,6 +136,29 @@ export function protectedStepControlFailures(step) {
     )
   )
     failures.push("environment");
+  return failures;
+}
+
+export function workflowStepShapeFailures(workflow) {
+  return workflowJobs(workflow).some(({ steps }) =>
+    steps.some((step) => !canonicalStepShape(step)),
+  )
+    ? ["workflow-step-shape"]
+    : [];
+}
+
+export function governedNpmJobFailures(workflow) {
+  const failures = [];
+  for (const { id, steps } of workflowJobs(workflow)) {
+    const expected = governedNpmJobs[id];
+    if (!expected) continue;
+    const actual = steps.filter(hasNpmLexeme).map((step) => step.trimEnd());
+    if (
+      actual.length !== expected.length ||
+      actual.some((step, index) => step !== expected[index])
+    )
+      failures.push(`workflow-npm-contract-${id}`);
+  }
   return failures;
 }
 
@@ -94,6 +201,60 @@ function canonicalCommandStep(command) {
     "        env:",
     '          KEIKO_NATIVE_REQUIRE_MACOS: "1"',
   ].join("\n");
+}
+
+function runStep(command) {
+  return `      - run: ${command}`;
+}
+
+function hasNpmLexeme(step) {
+  return /(?:^|[^A-Za-z0-9_.-])(?:npm|npx)(?:\.cmd)?(?:$|[^A-Za-z0-9_.-])/iu.test(
+    step,
+  );
+}
+
+function canonicalStepShape(step) {
+  const lines = step.replaceAll("\r", "").trimEnd().split("\n");
+  if (!/^      - [A-Za-z][A-Za-z0-9-]*:(?:\s.*)?$/u.test(lines[0]))
+    return false;
+  return lines.slice(1).every((line) => {
+    if (!line.trim()) return true;
+    const indentation = /^\s*/u.exec(line)[0].length;
+    if (indentation < 8) return false;
+    return (
+      indentation !== 8 ||
+      /^        [A-Za-z][A-Za-z0-9-]*:(?:\s.*)?$/u.test(line)
+    );
+  });
+}
+
+function hasMappingKey(source, indentation, expected) {
+  const prefix = " ".repeat(indentation);
+  return source.split("\n").some((line) => {
+    if (!line.startsWith(prefix) || line[indentation] === " ") return false;
+    const rest = line.slice(indentation);
+    const colon = rest.indexOf(":");
+    if (colon < 0) return false;
+    return semanticMappingKey(rest.slice(0, colon)) === expected;
+  });
+}
+
+function hasNonBareMappingKey(source, indentation) {
+  const prefix = " ".repeat(indentation);
+  return source.split("\n").some((line) => {
+    if (!line.startsWith(prefix) || line[indentation] === " ") return false;
+    const rest = line.slice(indentation);
+    const colon = rest.indexOf(":");
+    if (colon < 0) return false;
+    return !/^[A-Za-z][A-Za-z0-9-]*$/u.test(rest.slice(0, colon).trim());
+  });
+}
+
+function semanticMappingKey(source) {
+  let key = source.trim().replace(/^\?\s*/u, "");
+  key = key.replace(/^!(?:<[^>]+>|\S+)\s+/u, "");
+  const quoted = /^(?:"([^"\\]*)"|'([^']*)')$/u.exec(key);
+  return quoted ? (quoted[1] ?? quoted[2]) : key;
 }
 
 function occurrences(source, value) {

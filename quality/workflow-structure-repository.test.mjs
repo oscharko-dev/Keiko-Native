@@ -101,18 +101,72 @@ test("clean repository rejects inherited and protected env aliases", async () =>
   );
 });
 
+test("clean repository rejects noncanonical npm steps and inherited keys", async () => {
+  const npmStep = "      - run: npm run quality";
+  const auditStep = "      - run: npm audit --audit-level=high";
+  const mutations = [
+    (workflow) => workflow.replace(`${npmStep}\n`, ""),
+    (workflow) =>
+      workflow.replace(`${npmStep}\n${auditStep}`, `${auditStep}\n${npmStep}`),
+    (workflow) => workflow.replace(npmStep, `${npmStep}\n${npmStep}`),
+    (workflow) =>
+      workflow.replace(
+        npmStep,
+        "      - { run: npm run quality, shell: /usr/bin/true {0} }",
+      ),
+    (workflow) =>
+      workflow.replace(
+        npmStep,
+        `${npmStep}\n        "shell": /usr/bin/true {0}`,
+      ),
+    (workflow) =>
+      workflow.replace(
+        "permissions: {}",
+        '"env":\n  BASH_ENV: owned\n\npermissions: {}',
+      ),
+    (workflow) =>
+      workflow.replace(
+        "permissions: {}",
+        '"defaults":\n  run:\n    shell: /usr/bin/true {0}\n\npermissions: {}',
+      ),
+    (workflow) =>
+      workflow.replace(
+        "permissions: {}",
+        "!!str env:\n  BASH_ENV: owned\n\npermissions: {}",
+      ),
+    (workflow) =>
+      workflow.replace(
+        "  core-quality:\n",
+        '  core-quality:\n    "env":\n      BASH_ENV: owned\n',
+      ),
+    (workflow) =>
+      workflow.replace(
+        "  core-quality:\n",
+        '  core-quality:\n    "defaults":\n      run:\n        shell: /usr/bin/true {0}\n',
+      ),
+    (workflow) =>
+      workflow.replace(
+        "  core-quality:\n",
+        '  core-quality:\n    "continue-on-error": true\n',
+      ),
+  ];
+  await rejectCleanArchiveMutations(mutations, /workflow-/u);
+});
+
 async function rejectCleanArchiveMutations(mutations, expected) {
+  const misses = [];
   for (const [index, mutate] of mutations.entries()) {
     const root = await cleanArchive();
     try {
       const path = join(root, ".github/workflows/ci.yml");
       await writeFile(path, mutate(await readFile(path, "utf8")));
       const result = await validateRepository(root);
-      assert.match(result.failures.join("\n"), expected, String(index));
+      if (!expected.test(result.failures.join("\n"))) misses.push(index);
     } finally {
       await rm(root, { force: true, recursive: true });
     }
   }
+  assert.deepEqual(misses, []);
 }
 
 test("clean repository accepts the canonical workflow contract", async () => {

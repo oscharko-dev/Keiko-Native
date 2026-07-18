@@ -175,6 +175,20 @@ function withProductiveCi(workflow) {
   return workflow.replace("      - run: native", steps.join("\n"));
 }
 
+function exactToolchainSteps(commands) {
+  return [
+    "      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
+    "        with:",
+    '          node-version: "24.18.0"',
+    "      - name: Activate exact npm 11.16.0",
+    "        run: |",
+    "          corepack enable npm",
+    "          corepack install --global npm@11.16.0",
+    "          node quality/check-toolchain.mjs",
+    ...commands.map((command) => `      - run: ${command}`),
+  ];
+}
+
 async function createDeclaredNativePaths(root) {
   for (const sourceRoot of [...adr0004SourceRoots, ...adr0004TestRoots]) {
     await mkdir(join(root, sourceRoot), { recursive: true });
@@ -628,26 +642,15 @@ async function fixtureRepository() {
       "  core-quality:",
       "    name: Core quality",
       "    steps:",
-      "      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
-      "        with:",
-      '          node-version: "24.18.0"',
-      "      - name: Activate exact npm 11.16.0",
-      "        run: |",
-      "          corepack enable npm",
-      "          corepack install --global npm@11.16.0",
-      "          node quality/check-toolchain.mjs",
-      "      - run: npm run quality",
+      ...exactToolchainSteps([
+        "npm ci --ignore-scripts",
+        "npm run quality",
+        "npm audit --audit-level=high",
+      ]),
       "  coverage-sonar:",
       "    name: Coverage and SonarCloud",
       "    steps:",
-      "      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
-      "        with:",
-      '          node-version: "24.18.0"',
-      "      - name: Activate exact npm 11.16.0",
-      "        run: |",
-      "          corepack enable npm",
-      "          corepack install --global npm@11.16.0",
-      "          node quality/check-toolchain.mjs",
+      ...exactToolchainSteps(["npm ci --ignore-scripts"]),
       "      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
       "        with:",
       "          ref: ${{ github.event_name == 'workflow_dispatch' && 'dev' || github.ref }}",
@@ -679,15 +682,12 @@ async function fixtureRepository() {
       "  cross-platform-smoke:",
       "    name: Cross-platform smoke",
       "    steps:",
-      "      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
-      "        with:",
-      '          node-version: "24.18.0"',
-      "      - name: Activate exact npm 11.16.0",
-      "        run: |",
-      "          corepack enable npm",
-      "          corepack install --global npm@11.16.0",
-      "          node quality/check-toolchain.mjs",
-      "      - run: npm test",
+      ...exactToolchainSteps([
+        "npm ci --ignore-scripts",
+        "npm run check:contract",
+        "npm test",
+        "npm run build",
+      ]),
       "  ci:",
       "    name: ci",
       "    if: ${{ always() }}",
@@ -713,7 +713,10 @@ async function fixtureRepository() {
       "  verify-pinned-shas:",
       "    name: Verify pinned action SHAs",
       "    steps:",
-      "      - run: verify-pinned-shas",
+      ...exactToolchainSteps([
+        "npm ci --ignore-scripts",
+        "npm run check:contract",
+      ]),
       "  zizmor:",
       "    name: zizmor",
       "    steps:",
@@ -721,14 +724,29 @@ async function fixtureRepository() {
       "  build-scan-sbom-smoke:",
       "    name: Build, scan, SBOM, smoke",
       "    steps:",
-      "      - run: build-scan-sbom-smoke",
+      ...exactToolchainSteps([
+        "npm ci --ignore-scripts",
+        "npm run build",
+        "npm audit --audit-level=high",
+      ]),
+      "      - name: Generate CycloneDX SBOM",
+      "        run: npm sbom --sbom-format cyclonedx > sbom.cdx.json",
       "  native-matrix:",
       "    name: native (${{ matrix.runner }})",
       "    strategy:",
       "      matrix:",
       "        runner: [macos-14, macos-26]",
       "    steps:",
-      "      - run: native",
+      "      - name: Verify authoritative runner",
+      "        run: |",
+      '          test "$(uname -m)" = arm64',
+      ...exactToolchainSteps([
+        "npm ci --ignore-scripts",
+        ...productiveCiCommands.map((command) => `npm run ${command}`),
+      ]),
+      "      - run: npm run acceptance:macos",
+      "        env:",
+      '          KEIKO_NATIVE_REQUIRE_MACOS: "1"',
       "  native:",
       "    name: native",
       "    if: ${{ always() }}",
@@ -1144,6 +1162,14 @@ test("fails closed when productive commands are not wired locally and in CI", as
     await writeFile(
       join(root, "quality/project.json"),
       JSON.stringify(productiveManifest()),
+    );
+    const ciPath = join(root, ".github/workflows/ci.yml");
+    const ci = await readFile(ciPath, "utf8");
+    await writeFile(
+      ciPath,
+      ci
+        .replace("  native-matrix:\n", "  native-matrix-removed:\n")
+        .replace('          test "$(uname -m)" = arm64', "          true"),
     );
     const result = await validateRepository(root);
     const failures = result.failures.join("\n");
