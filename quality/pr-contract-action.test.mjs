@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   runPullRequestContractAction,
+  runPullRequestContractActionWithOutput,
   writePullRequestIssueOutput,
 } from "./pr-contract-action.mjs";
 import { validPullRequestFixture } from "./pr-contract-test-fixture.mjs";
@@ -64,6 +65,29 @@ test("writes the linked issue number for the serialized lifecycle job", async (t
     event: { pull_request: fixture.pullRequest },
     outputPath,
   });
+
+  assert.equal(await readFile(outputPath, "utf8"), "issue-number=42\n");
+});
+
+test("writes the lifecycle issue output before contract validation fails", async (t) => {
+  const fixture = validPullRequestFixture();
+  installGitHubFetchMock(t, fixture);
+  const directory = await mkdtemp(join(tmpdir(), "keiko-pr-output-"));
+  const outputPath = join(directory, "github-output");
+  t.after(() => rm(directory, { force: true, recursive: true }));
+
+  await assert.rejects(
+    runPullRequestContractActionWithOutput({
+      event: {
+        pull_request: {
+          ...fixture.pullRequest,
+          body: "## Scope\n\n- Accepted issue: #42",
+        },
+      },
+      outputPath,
+    }),
+    /PR contract failed/u,
+  );
 
   assert.equal(await readFile(outputPath, "utf8"), "issue-number=42\n");
 });

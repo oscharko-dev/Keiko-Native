@@ -135,6 +135,7 @@ const pullRequestContractMarkers = [
   "KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
   "node quality/pr-contract-action.mjs",
   "uses: ./.github/workflows/issue-lifecycle.yml",
+  "always() && needs.contract.outputs.issue-number != ''",
   "issue_number: ${{ needs.contract.outputs.issue-number }}",
   "pr_contract_result: ${{ needs.contract.result }}",
 ];

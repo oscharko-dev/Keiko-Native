@@ -55,7 +55,7 @@ jobs:
   lifecycle:
     name: Serialize inert PR lifecycle transition
     needs: contract
-    if: ${{ needs.contract.result == 'success' && needs.contract.outputs.issue-number != '' }}
+    if: ${{ always() && needs.contract.outputs.issue-number != '' }}
     permissions:
       contents: read
       issues: read

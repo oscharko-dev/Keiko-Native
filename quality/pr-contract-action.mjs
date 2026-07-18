@@ -115,12 +115,19 @@ export async function writePullRequestIssueOutput({ event, outputPath }) {
   await appendFile(outputPath, `issue-number=${issueNumber}\n`, "utf8");
 }
 
+export async function runPullRequestContractActionWithOutput({
+  event,
+  outputPath,
+}) {
+  await writePullRequestIssueOutput({ event, outputPath });
+  return runPullRequestContractAction({ event });
+}
+
 async function main() {
   const eventPath = process.env.GITHUB_EVENT_PATH;
   if (eventPath === undefined) throw new Error("GITHUB_EVENT_PATH is missing.");
   const event = JSON.parse(await readFile(eventPath, "utf8"));
-  await runPullRequestContractAction({ event });
-  await writePullRequestIssueOutput({
+  await runPullRequestContractActionWithOutput({
     event,
     outputPath: process.env.GITHUB_OUTPUT,
   });

@@ -154,6 +154,10 @@ test("workflow loads protected dev code with read-only credentials", async () =>
     pullRequestWorkflow,
     /pr_contract_result: \$\{\{ needs\.contract\.result \}\}/u,
   );
+  assert.match(
+    pullRequestWorkflow,
+    /if: \$\{\{ always\(\) && needs\.contract\.outputs\.issue-number != '' \}\}/u,
+  );
   assert.match(pullRequestWorkflow, /closed/u);
 });
 
