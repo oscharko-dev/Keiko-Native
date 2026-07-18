@@ -128,6 +128,7 @@ const pullRequestContractMarkers = [
   "ref: dev",
   "statuses: write",
   "node quality/pr-contract-action.mjs",
+  "if: always()",
   "node quality/issue-lifecycle-action.mjs",
 ];
 

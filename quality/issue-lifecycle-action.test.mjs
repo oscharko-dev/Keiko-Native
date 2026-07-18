@@ -123,6 +123,7 @@ test("workflow loads protected dev code with read-only credentials", async () =>
     pullRequestWorkflow,
     /KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled/u,
   );
+  assert.match(pullRequestWorkflow, /if: always\(\)/u);
   assert.match(pullRequestWorkflow, /closed/u);
 });
 
@@ -400,6 +401,42 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
     ok: true,
     remove: ["status: pr open"],
   });
+
+  const closedWithAnotherOpen = requestMock(t, {
+    issueLabels: ["status: pr open"],
+    pullRequests: [
+      {
+        body: "## Scope\n\n- Accepted issue: #27",
+        head: { sha: "e".repeat(40) },
+        node_id: "pr-node-42",
+      },
+    ],
+  });
+  const closedWithAnotherOpenResult = await runIssueLifecycleAction({
+    event: {
+      action: "closed",
+      pull_request: {
+        body: "## Scope\n\n- Accepted issue: #27",
+        head: { sha: "f".repeat(40) },
+        merged: false,
+        node_id: "pr-node-41",
+      },
+    },
+    request: closedWithAnotherOpen.request,
+  });
+  assert.equal(closedWithAnotherOpenResult.outcome, "planned");
+  assert.equal(closedWithAnotherOpenResult.desiredState, "status: pr open");
+  assert.deepEqual(closedWithAnotherOpenResult.plan, {
+    apply: [],
+    failures: [],
+    ok: true,
+    remove: [],
+  });
+  assert.ok(
+    closedWithAnotherOpen.calls.some((call) =>
+      call.path.includes("/pulls?state=open&per_page=100&page=1"),
+    ),
+  );
 
   const preActivationReady = requestMock(t, { issueLabels: ["status: ready"] });
   const preActivationReadyResult = await runIssueLifecycleAction({

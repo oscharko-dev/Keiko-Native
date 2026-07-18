@@ -319,22 +319,49 @@ async function allProviderLabels(repository, request) {
   }
 }
 
-async function hasLinkedOpenPullRequest(repository, issueNumber, request) {
+function linkedOpenPullRequestEvidence(pullRequest, issueNumber) {
+  const id = pullRequestIdentity(pullRequest);
+  const headSha = pullRequest?.head?.sha;
+  if (
+    id === undefined ||
+    pullRequestIssueNumber(pullRequest?.body) !== issueNumber ||
+    !/^[0-9a-f]{40}$/u.test(headSha ?? "")
+  )
+    return undefined;
+  return { id, validated: true };
+}
+
+async function firstLinkedOpenPullRequest(repository, issueNumber, request) {
   for (let page = 1; ; page += 1) {
     const batch = await request(
       `/repos/${repository}/pulls?state=open&per_page=100&page=${page}`,
     );
     if (!Array.isArray(batch))
       throw new Error("Open pull requests response is malformed.");
-    if (
-      batch.some(
-        (pullRequest) =>
-          pullRequestIssueNumber(pullRequest?.body) === issueNumber,
+    const linked = batch
+      .map((pullRequest) =>
+        linkedOpenPullRequestEvidence(pullRequest, issueNumber),
       )
-    )
-      return true;
-    if (batch.length < 100) return false;
+      .find((pullRequest) => pullRequest !== undefined);
+    if (linked !== undefined) return linked;
+    if (batch.length < 100) return undefined;
   }
+}
+
+async function hasLinkedOpenPullRequest(repository, issueNumber, request) {
+  return (
+    (await firstLinkedOpenPullRequest(repository, issueNumber, request)) !==
+    undefined
+  );
+}
+
+function needsOtherOpenPullRequestEvidence(event) {
+  return (
+    event?.pull_request !== undefined &&
+    event.action === "closed" &&
+    event.pull_request?.merged !== true &&
+    event.otherOpenPullRequest === undefined
+  );
 }
 
 async function eventWithDerivedEvidence({
@@ -343,16 +370,26 @@ async function eventWithDerivedEvidence({
   repository,
   request,
 }) {
-  if (event?.action !== "unassigned" || event.hasOpenPullRequest !== undefined)
-    return event;
-  return {
-    ...event,
-    hasOpenPullRequest: await hasLinkedOpenPullRequest(
+  let evidencedEvent = event;
+  if (event?.action === "unassigned" && event.hasOpenPullRequest === undefined)
+    evidencedEvent = {
+      ...evidencedEvent,
+      hasOpenPullRequest: await hasLinkedOpenPullRequest(
+        repository,
+        issueNumber,
+        request,
+      ),
+    };
+  if (needsOtherOpenPullRequestEvidence(event)) {
+    const otherOpenPullRequest = await firstLinkedOpenPullRequest(
       repository,
       issueNumber,
       request,
-    ),
-  };
+    );
+    if (otherOpenPullRequest !== undefined)
+      evidencedEvent = { ...evidencedEvent, otherOpenPullRequest };
+  }
+  return evidencedEvent;
 }
 
 async function reloadIssue(repository, issueNumber, request) {
