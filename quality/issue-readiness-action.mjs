@@ -15,6 +15,14 @@ const currentReadinessLifecycleLabels = new Set([
   "status: pr open",
   "status: ready for human review",
 ]);
+const prTrackedLifecycleLabels = new Set([
+  "status: pr open",
+  "status: ready for human review",
+]);
+const pausedLifecycleLabels = new Set([
+  "status: blocked",
+  "status: waiting for user",
+]);
 const githubRequest = githubRequestFor("keiko-native-issue-readiness");
 
 function labelNames(labels) {
@@ -228,10 +236,15 @@ function readinessEventFacts(event, labels) {
     ["edited", "reopened", "labeled", "unlabeled", "closed"].includes(
       event.action,
     ) && hasCurrentReadinessLifecycle;
+  const pausesPrTrackedWork =
+    event.action === "labeled" &&
+    pausedLifecycleLabels.has(event.label?.name) &&
+    statuses.some((status) => prTrackedLifecycleLabels.has(status));
   return {
     hasCurrentReadinessLifecycle,
     hasReadyLabel,
     isInitialRequest,
+    pausesPrTrackedWork,
     relevant: isInitialRequest || isLifecycleRevalidation || isReadinessRemoval,
     statuses,
   };
@@ -316,8 +329,15 @@ export async function runIssueReadinessAction({ event, now = new Date() }) {
     previousRecord: readinessRecordFromComments(comments),
     validation,
   });
-  if (decision.outcome === "ignore" || decision.outcome === "keep")
+  if (decision.outcome === "ignore") return decision;
+  if (decision.outcome === "keep") {
+    if (facts.pausesPrTrackedWork) {
+      const invalidatedLinkedPullRequests =
+        await invalidateLinkedPullRequestContracts(repository, issue.number);
+      return { ...decision, invalidatedLinkedPullRequests };
+    }
     return decision;
+  }
 
   const comment = readinessComment({
     actor: event.sender?.login ?? "unknown",
