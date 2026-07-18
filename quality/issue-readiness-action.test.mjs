@@ -8,6 +8,7 @@ import {
   readinessRecordFromComments,
   runIssueReadinessAction,
 } from "./issue-readiness-action.mjs";
+import { semanticIssueFingerprint } from "./issue-contract.mjs";
 
 const validation = {
   failures: [],
@@ -473,6 +474,67 @@ test("invalidates linked PR contracts from current-ready PR lifecycle states", a
         call.url.endsWith(`/statuses/${"c".repeat(40)}`),
     ),
   );
+});
+
+test("invalidates linked PR contracts when pausing PR-tracked work", async (t) => {
+  const body = validTaskBody();
+  const title = "Implement governed workspace opening";
+  const accepted = readinessComment({
+    actor: "planner",
+    decision: { outcome: "accept", reasons: [] },
+    now: "2026-07-16T12:00:00.000Z",
+    validation: {
+      failures: [],
+      fingerprint: semanticIssueFingerprint(body, title),
+      version: "v1",
+    },
+  });
+  const calls = installGitHubFetchMock(t, {
+    comments: [
+      {
+        body: accepted,
+        id: 1,
+        user: {
+          id: 41898282,
+          login: "github-actions[bot]",
+          type: "Bot",
+        },
+      },
+    ],
+    pullRequests: [
+      {
+        body: "## Scope\n\n- Accepted issue: #42",
+        head: { sha: "d".repeat(40) },
+      },
+    ],
+  });
+  const result = await runIssueReadinessAction({
+    event: issueEvent({
+      action: "labeled",
+      issue: {
+        body,
+        labels: [
+          { name: "type: task" },
+          { name: "status: pr open" },
+          { name: "status: blocked" },
+        ],
+        number: 42,
+        title,
+      },
+      label: { name: "status: blocked" },
+    }),
+  });
+
+  assert.equal(result.outcome, "keep");
+  assert.equal(result.invalidatedLinkedPullRequests, 1);
+  assert.ok(
+    calls.some(
+      (call) =>
+        call.method === "POST" &&
+        call.url.endsWith(`/statuses/${"d".repeat(40)}`),
+    ),
+  );
+  assert.equal(calls.filter((call) => call.method === "DELETE").length, 0);
 });
 
 test("fails closed when actor permission cannot be established", async (t) => {
