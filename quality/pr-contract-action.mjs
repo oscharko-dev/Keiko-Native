@@ -77,7 +77,7 @@ export async function runPullRequestContractAction({ event }) {
     event.action === "closed" && pullRequest.merged === true;
   let issue;
   let comments = [];
-  let currentPullRequest = pullRequest;
+  let currentPullRequest;
   try {
     [issue, comments, currentPullRequest] =
       issueNumber === undefined

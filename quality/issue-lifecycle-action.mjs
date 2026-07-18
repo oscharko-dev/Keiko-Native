@@ -535,6 +535,77 @@ function acceptedDeliveryBoundary(pullRequest) {
   return devHumanMergers.has(pullRequest?.merged_by?.login?.toLowerCase());
 }
 
+function terminalLifecycleActivation(issue) {
+  return [REVIEW, LIFECYCLE_STATES[8]].some((state) =>
+    hasSoleLifecycleState(issue, state),
+  )
+    ? "enabled"
+    : "disabled";
+}
+
+function finalDeliveryDetailMatches({
+  comments,
+  detail,
+  issue,
+  issueNumber,
+  linked,
+  pullRequest,
+  repository,
+}) {
+  if (detail?.number !== pullRequest.number) return false;
+  if (detail?.merged !== true || detail?.state !== "closed") return false;
+  if (!Number.isFinite(Date.parse(detail?.updated_at ?? ""))) return false;
+  if (detail?.head?.sha !== linked.headSha) return false;
+  if (linkedPullRequestEvidence(detail, issueNumber)?.id !== linked.id)
+    return false;
+  if (!acceptedDeliveryBoundary(detail)) return false;
+  return (
+    validatePullRequestContract({
+      comments,
+      issue,
+      lifecycleActivation: terminalLifecycleActivation(issue),
+      pullRequest: detail,
+      repository,
+      terminalDelivery: true,
+    }).failures.length === 0
+  );
+}
+
+async function finalDeliveryCandidateEvidence({
+  comments,
+  issue,
+  issueNumber,
+  pullRequest,
+  repository,
+  request,
+}) {
+  const linked = linkedPullRequestEvidence(pullRequest, issueNumber);
+  if (linked === undefined || !Number.isInteger(pullRequest?.number))
+    return undefined;
+  const detail = await request(
+    `/repos/${repository}/pulls/${pullRequest.number}`,
+  );
+  if (
+    !finalDeliveryDetailMatches({
+      comments,
+      detail,
+      issue,
+      issueNumber,
+      linked,
+      pullRequest,
+      repository,
+    })
+  )
+    return undefined;
+  return (await retainedPullRequestStatusesSucceeded(
+    repository,
+    linked.headSha,
+    request,
+  ))
+    ? { headSha: linked.headSha, id: linked.id, validated: true }
+    : undefined;
+}
+
 async function finalDeliveryEvidence({
   comments,
   issue,
@@ -549,42 +620,15 @@ async function finalDeliveryEvidence({
     if (!Array.isArray(batch))
       throw new Error("Closed pull requests response is malformed.");
     for (const pullRequest of batch) {
-      const linked = linkedPullRequestEvidence(pullRequest, issueNumber);
-      if (linked === undefined || !Number.isInteger(pullRequest?.number))
-        continue;
-      const detail = await request(
-        `/repos/${repository}/pulls/${pullRequest.number}`,
-      );
-      if (
-        detail?.number !== pullRequest.number ||
-        detail?.merged !== true ||
-        detail?.state !== "closed" ||
-        !Number.isFinite(Date.parse(detail?.updated_at ?? "")) ||
-        detail?.head?.sha !== linked.headSha ||
-        linkedPullRequestEvidence(detail, issueNumber)?.id !== linked.id ||
-        !acceptedDeliveryBoundary(detail) ||
-        validatePullRequestContract({
-          comments,
-          issue,
-          lifecycleActivation: [REVIEW, LIFECYCLE_STATES[8]].some((state) =>
-            hasSoleLifecycleState(issue, state),
-          )
-            ? "enabled"
-            : "disabled",
-          pullRequest: detail,
-          repository,
-          terminalDelivery: true,
-        }).failures.length > 0
-      )
-        continue;
-      if (
-        await retainedPullRequestStatusesSucceeded(
-          repository,
-          linked.headSha,
-          request,
-        )
-      )
-        return { headSha: linked.headSha, id: linked.id, validated: true };
+      const evidence = await finalDeliveryCandidateEvidence({
+        comments,
+        issue,
+        issueNumber,
+        pullRequest,
+        repository,
+        request,
+      });
+      if (evidence !== undefined) return evidence;
     }
     if (batch.length < 100) return undefined;
   }
