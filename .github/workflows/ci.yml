@@ -38,10 +38,8 @@ jobs:
           corepack enable npm
           corepack install --global npm@11.16.0
           node quality/check-toolchain.mjs
-      - name: Install exact productive Rust toolchain
-        run: rustup toolchain install 1.92.0 --profile minimal --component rustfmt
       - run: npm ci --ignore-scripts
-      - run: npm run quality
+      - run: npm run quality:control
       - run: npm audit --audit-level=high
 
   coverage-sonar:

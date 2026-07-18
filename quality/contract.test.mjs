@@ -57,6 +57,8 @@ const validTarget = {
   platforms: ["macos"],
   sourceRoot: "Sources",
 };
+const qualityControlScript =
+  "npm run native:dependencies && npm run check:contract && npm run lint && npm run format:check && npm run coverage && npm run build";
 
 const adr0004SourceRoots = [
   "native/crates/keiko-application/src/",
@@ -593,56 +595,18 @@ async function fixtureRepository() {
       governedWorkflowJobs["core-quality"],
       governedWorkflowJobs["coverage-sonar"],
       governedWorkflowJobs["cross-platform-smoke"],
-      "  ci:",
-      "    name: ci",
-      "    if: ${{ always() }}",
-      "    needs:",
-      "      - core-quality",
-      "      - coverage-sonar",
-      "      - cross-platform-smoke",
-      "      - native",
-      "    steps:",
-      "      - env:",
-      "          CORE_QUALITY_RESULT: ${{ needs.core-quality.result }}",
-      "          COVERAGE_SONAR_RESULT: ${{ needs.coverage-sonar.result }}",
-      "          CROSS_PLATFORM_RESULT: ${{ needs.cross-platform-smoke.result }}",
-      "          NATIVE_RESULT: ${{ needs.native.result }}",
-      "        run: |",
-      '          for result in "$CORE_QUALITY_RESULT" "$COVERAGE_SONAR_RESULT" "$CROSS_PLATFORM_RESULT" "$NATIVE_RESULT"; do',
-      '            [ "$result" = "success" ] || exit 1',
-      "          done",
-      "  actionlint:",
-      "    name: actionlint",
-      "    steps:",
-      "      - run: actionlint",
+      governedWorkflowJobs.ci,
+      governedWorkflowJobs.actionlint,
       governedWorkflowJobs["verify-pinned-shas"],
-      "  zizmor:",
-      "    name: zizmor",
-      "    steps:",
-      "      - run: zizmor",
+      governedWorkflowJobs.zizmor,
       governedWorkflowJobs["build-scan-sbom-smoke"],
       governedWorkflowJobs["native-matrix"],
-      "  native:",
-      "    name: native",
-      "    if: ${{ always() }}",
-      "    needs:",
-      "      - native-matrix",
-      "    steps:",
-      "      - env:",
-      "          RESULT: ${{ needs.native-matrix.result }}",
+      governedWorkflowJobs.native,
     ].join("\n"),
   );
   await writeFile(
     join(root, ".github/workflows/mutation-security.yml"),
-    [
-      "jobs:",
-      "  mutation:",
-      "    steps:",
-      "      - run: |",
-      "          cargo +1.92.0 install cargo-mutants --version 27.1.0 --locked",
-      "      - run: |",
-      "          cargo +1.92.0 mutants --manifest-path native/Cargo.toml",
-    ].join("\n"),
+    ["jobs:", governedWorkflowJobs["native-mutation-security"]].join("\n"),
   );
   for (const name of [
     "codeql.yml",
@@ -658,14 +622,13 @@ async function fixtureRepository() {
     ];
     if (name !== "dependency-review.yml")
       lines.push("  push:", "    branches:", '      - "epic/**"');
-    else
+    else {
       lines.push(
-        "fail-on-severity: moderate",
-        "fail-on-scopes: development, runtime, unknown",
-        "allow-licenses: >-",
-        "            0BSD, Apache-2.0, BSD-2-Clause, BSD-3-Clause, BlueOak-1.0.0, CC-BY-4.0,",
-        "            CC0-1.0, ISC, MIT, MPL-2.0, Python-2.0, Unicode-3.0, Unlicense, WTFPL, Zlib",
+        "permissions: {}",
+        "jobs:",
+        governedWorkflowJobs["dependency-review"],
       );
+    }
     await writeFile(join(root, ".github/workflows", name), lines.join("\n"));
   }
   await writeFile(
@@ -962,9 +925,14 @@ test("fails closed for missing declared productive roots", async () => {
       JSON.stringify({
         scripts: Object.fromEntries([
           ...commandNames.map((command) => [command, "node --version"]),
+          ["quality:control", qualityControlScript],
           [
             "quality",
-            commandNames.map((command) => `npm run ${command}`).join(" && "),
+            [
+              "node quality/check-toolchain.mjs",
+              "npm run quality:control",
+              ...commandNames.map((command) => `npm run ${command}`),
+            ].join(" && "),
           ],
         ]),
       }),
@@ -997,9 +965,14 @@ test("accepts declared productive source roots and targets", async () => {
       JSON.stringify({
         scripts: Object.fromEntries([
           ...commandNames.map((command) => [command, "node --version"]),
+          ["quality:control", qualityControlScript],
           [
             "quality",
-            commandNames.map((command) => `npm run ${command}`).join(" && "),
+            [
+              "node quality/check-toolchain.mjs",
+              "npm run quality:control",
+              ...commandNames.map((command) => `npm run ${command}`),
+            ].join(" && "),
           ],
         ]),
       }),
@@ -1007,6 +980,15 @@ test("accepts declared productive source roots and targets", async () => {
     const result = await validateRepository(root);
     assert.deepEqual(result.failures, []);
     assert.equal(result.productiveSourceCount, 3);
+    const packagePath = join(root, "package.json");
+    const packageContract = JSON.parse(await readFile(packagePath, "utf8"));
+    packageContract.scripts["quality:control"] = "npm run build";
+    await writeFile(packagePath, JSON.stringify(packageContract));
+    assert.ok(
+      (await validateRepository(root)).failures.includes(
+        "Portable quality control composition must remain exact.",
+      ),
+    );
   } finally {
     await rm(root, { force: true, recursive: true });
   }

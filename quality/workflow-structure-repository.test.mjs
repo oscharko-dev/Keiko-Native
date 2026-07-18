@@ -15,6 +15,7 @@ const acceptanceStep = [
   "        env:",
   '          KEIKO_NATIVE_REQUIRE_MACOS: "1"',
 ].join("\n");
+const portableQualityStep = "      - run: npm run quality:control";
 
 test("clean repository requires exact native command step identity and order", async () => {
   const mutations = [
@@ -102,7 +103,7 @@ test("clean repository rejects inherited and protected env aliases", async () =>
 });
 
 test("clean repository rejects noncanonical npm steps and inherited keys", async () => {
-  const npmStep = "      - run: npm run quality";
+  const npmStep = portableQualityStep;
   const auditStep = "      - run: npm audit --audit-level=high";
   const mutations = [
     (workflow) => workflow.replace(`${npmStep}\n`, ""),
@@ -186,6 +187,85 @@ test("clean repository rejects noncanonical npm steps and inherited keys", async
       ),
   ];
   await rejectCleanArchiveMutations(mutations, /workflow-/u);
+});
+
+test("Linux core quality cannot invoke macOS-authoritative native gates", async () => {
+  await rejectCleanArchiveMutations(
+    [
+      (workflow) =>
+        workflow.replace(portableQualityStep, "      - run: npm run quality"),
+      (workflow) =>
+        workflow.replace(
+          portableQualityStep,
+          [
+            "      - name: Install partial Rust toolchain",
+            "        run: rustup toolchain install 1.92.0 --profile minimal --component rustfmt",
+            portableQualityStep,
+          ].join("\n"),
+        ),
+      (workflow) =>
+        workflow.replace(
+          portableQualityStep,
+          `${portableQualityStep}\n      - run: npm run native:package`,
+        ),
+    ],
+    /workflow-job-contract-core-quality/u,
+  );
+});
+
+test("clean repository exact-binds fail-closed and security jobs", async () => {
+  const cases = [
+    ["ci.yml", "      - name: Aggregate required CI results fail closed"],
+    ["ci.yml", "      - name: Aggregate native matrix results fail closed"],
+    ["ci.yml", "      - name: Download and verify actionlint"],
+    [
+      "ci.yml",
+      "      - uses: zizmorcore/zizmor-action@192e21d79ab29983730a13d1382995c2307fbcaa # v0.5.7",
+    ],
+    [
+      "dependency-review.yml",
+      "      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0",
+    ],
+    [
+      "mutation-security.yml",
+      "      - name: Run productive Rust mutation suite",
+    ],
+  ];
+  const misses = [];
+  for (const [workflowName, marker] of cases) {
+    for (const [kind, mutate] of [
+      [
+        "control",
+        (workflow) =>
+          workflow.replace(
+            marker,
+            `${marker}\n        continue-on-error: true`,
+          ),
+      ],
+      [
+        "extra-step",
+        (workflow) => workflow.replace(marker, `      - run: true\n${marker}`),
+      ],
+    ]) {
+      const root = await cleanArchive();
+      try {
+        const path = join(root, ".github/workflows", workflowName);
+        const source = await readFile(path, "utf8");
+        const mutation = mutate(source);
+        if (mutation === source) {
+          misses.push(`${workflowName}:${marker}:${kind}:mutation`);
+          continue;
+        }
+        await writeFile(path, mutation);
+        const failures = (await validateRepository(root)).failures.join("\n");
+        if (!/workflow-job-contract-/u.test(failures))
+          misses.push(`${workflowName}:${marker}:${kind}:validation`);
+      } finally {
+        await rm(root, { force: true, recursive: true });
+      }
+    }
+  }
+  assert.deepEqual(misses, []);
 });
 
 async function rejectCleanArchiveMutations(mutations, expected) {

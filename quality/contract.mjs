@@ -3,6 +3,7 @@ import { extname, join, relative, sep } from "node:path";
 
 import { workflowToolchainFailures } from "./toolchain.mjs";
 import { nativeMatrixCommandFailures } from "./workflow-structure.mjs";
+import { requiredGovernedWorkflowJobs } from "./workflow-job-contracts.mjs";
 
 const sourceSpecificationIdentity = {
   date: "2026-07-15",
@@ -183,6 +184,8 @@ const nativeCiCommands = [
   "native:test",
   "acceptance:macos",
 ];
+const qualityControlScript =
+  "npm run native:dependencies && npm run check:contract && npm run lint && npm run format:check && npm run coverage && npm run build";
 
 const adr0004SourceRoots = [
   "native/crates/keiko-application/src/",
@@ -854,25 +857,34 @@ async function productiveCommandFailures(root, ci, manifest) {
     typeof packageJson.scripts?.quality === "string"
       ? packageJson.scripts.quality
       : "";
-  const failures = manifest.nativeTargets.flatMap((target) =>
-    Object.values(
-      target?.commands !== null &&
-        typeof target?.commands === "object" &&
-        !Array.isArray(target.commands)
-        ? target.commands
-        : {},
-    )
-      .filter((command) => typeof command === "string")
-      .flatMap((command) => {
-        const failures = [];
-        if (typeof packageJson.scripts?.[command] !== "string")
-          failures.push(`Native target package script is missing: ${command}.`);
-        if (!localQuality.includes(`npm run ${command}`))
-          failures.push(
-            `Local quality does not execute native target command: ${command}.`,
-          );
-        return failures;
-      }),
+  const failures = [];
+  if (packageJson.scripts?.["quality:control"] !== qualityControlScript)
+    failures.push("Portable quality control composition must remain exact.");
+  if (!localQuality.includes("npm run quality:control"))
+    failures.push("Local quality must execute portable quality control.");
+  failures.push(
+    ...manifest.nativeTargets.flatMap((target) =>
+      Object.values(
+        target?.commands !== null &&
+          typeof target?.commands === "object" &&
+          !Array.isArray(target.commands)
+          ? target.commands
+          : {},
+      )
+        .filter((command) => typeof command === "string")
+        .flatMap((command) => {
+          const failures = [];
+          if (typeof packageJson.scripts?.[command] !== "string")
+            failures.push(
+              `Native target package script is missing: ${command}.`,
+            );
+          if (!localQuality.includes(`npm run ${command}`))
+            failures.push(
+              `Local quality does not execute native target command: ${command}.`,
+            );
+          return failures;
+        }),
+    ),
   );
   for (const command of ["acceptance:macos"]) {
     if (typeof packageJson.scripts?.[command] !== "string")
@@ -1147,7 +1159,10 @@ async function workflowFailures(root, manifest) {
   return [
     ...unpinnedWorkflowFailures(workflows),
     ...[...workflows].flatMap(([name, workflow]) =>
-      workflowToolchainFailures(workflow).map(
+      workflowToolchainFailures(
+        workflow,
+        requiredGovernedWorkflowJobs[name] ?? [],
+      ).map(
         (failure) => `Workflow ${name} rejected exact toolchain: ${failure}.`,
       ),
     ),

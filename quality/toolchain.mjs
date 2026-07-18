@@ -67,11 +67,11 @@ function exactDevEngine(value, name, version) {
   );
 }
 
-export function workflowToolchainFailures(workflow) {
+export function workflowToolchainFailures(workflow, requiredJobs = []) {
   const failures = [
     ...inheritedWorkflowControlFailures(workflow),
     ...workflowStepShapeFailures(workflow),
-    ...governedWorkflowJobFailures(workflow),
+    ...governedWorkflowJobFailures(workflow, requiredJobs),
   ];
   for (const { source: job, steps } of workflowJobs(workflow)) {
     if (npmStepHasDirectControl(steps))

@@ -79,9 +79,14 @@ export function workflowStepShapeFailures(workflow) {
     : [];
 }
 
-export function governedWorkflowJobFailures(workflow) {
+export function governedWorkflowJobFailures(workflow, requiredJobs = []) {
   const failures = [];
-  for (const { id, source } of workflowJobs(workflow)) {
+  const jobs = workflowJobs(workflow);
+  for (const id of requiredJobs) {
+    if (!jobs.some((job) => job.id === id))
+      failures.push(`workflow-job-contract-missing-${id}`);
+  }
+  for (const { id, source } of jobs) {
     const expected = governedWorkflowJobs[id];
     if (!expected) continue;
     if (source.trimEnd() !== expected)

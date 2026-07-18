@@ -155,6 +155,13 @@ npm first installs exact Node through the pinned setup action, activates npm 11.
 Corepack bundled with that Node release, and runs the same checker before any npm command. Contract
 tests reject missing, conditional, reordered, or version-ranged activation.
 
+The Linux `core-quality` job runs `quality:control`, the portable Node and repository-contract suite
+shared with root `quality`. The full root `quality` command then runs every native gate and is
+authoritative only on Apple Silicon macOS; `native:package` fails closed on other hosts instead of
+emitting or publishing package evidence. Both declared macOS runners execute the complete native
+command set, including packaging, with stable Rust, rustfmt, clippy, and the pinned coverage-only
+nightly installed by the native matrix.
+
 Productive native quality begins with the exact standalone frontend `npm ci` command owned by
 `native:dependencies`; install scripts and npm workspace inference are disabled. Each native gate
 captures the exact Git tree into a private mode-0700 snapshot and compiles the repository-owned

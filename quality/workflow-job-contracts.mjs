@@ -1,6 +1,5 @@
 const step = (...lines) => lines.join("\n");
 const sequence = (...steps) => Object.freeze(steps);
-
 const checkout = step(
   "      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0",
   "        with:",
@@ -20,8 +19,19 @@ const activation = step(
   "          node quality/check-toolchain.mjs",
 );
 const run = (command) => `      - run: ${command}`;
-
 export const governedWorkflowJobSteps = Object.freeze({
+  actionlint: sequence(
+    checkout,
+    step(
+      "      - name: Download and verify actionlint",
+      "        run: |",
+      "          curl --proto '=https' -sSfL \"https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz\" -o actionlint.tar.gz",
+      '          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz" | sha256sum --check',
+      "          tar -xzf actionlint.tar.gz actionlint",
+      "          chmod +x actionlint",
+    ),
+    run("./actionlint -color .github/workflows/*.yml"),
+  ),
   "build-scan-sbom-smoke": sequence(
     checkout,
     setupNode,
@@ -52,13 +62,26 @@ export const governedWorkflowJobSteps = Object.freeze({
     checkout,
     setupNode,
     activation,
-    step(
-      "      - name: Install exact productive Rust toolchain",
-      "        run: rustup toolchain install 1.92.0 --profile minimal --component rustfmt",
-    ),
     run("npm ci --ignore-scripts"),
-    run("npm run quality"),
+    run("npm run quality:control"),
     run("npm audit --audit-level=high"),
+  ),
+  ci: sequence(
+    step(
+      "      - name: Aggregate required CI results fail closed",
+      "        env:",
+      "          CORE_QUALITY_RESULT: ${{ needs.core-quality.result }}",
+      "          COVERAGE_SONAR_RESULT: ${{ needs.coverage-sonar.result }}",
+      "          CROSS_PLATFORM_RESULT: ${{ needs.cross-platform-smoke.result }}",
+      "          NATIVE_RESULT: ${{ needs.native.result }}",
+      "        run: |",
+      '          for result in "$CORE_QUALITY_RESULT" "$COVERAGE_SONAR_RESULT" "$CROSS_PLATFORM_RESULT" "$NATIVE_RESULT"; do',
+      '            if [ "$result" != "success" ]; then',
+      '              echo "Required CI dependency did not succeed: $result"',
+      "              exit 1",
+      "            fi",
+      "          done",
+    ),
   ),
   "coverage-sonar": sequence(
     step(
@@ -122,6 +145,36 @@ export const governedWorkflowJobSteps = Object.freeze({
     run("npm run check:contract"),
     run("npm test"),
     run("npm run build"),
+  ),
+  "dependency-review": sequence(
+    checkout,
+    step(
+      "      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0",
+      "        with:",
+      "          fail-on-severity: moderate",
+      "          fail-on-scopes: development, runtime, unknown",
+      "          allow-licenses: >-",
+      "            0BSD, Apache-2.0, BSD-2-Clause, BSD-3-Clause, BlueOak-1.0.0, CC-BY-4.0,",
+      "            CC0-1.0, ISC, MIT, MPL-2.0, Python-2.0, Unicode-3.0, Unlicense, WTFPL,",
+      "            Zlib",
+      "          retry-on-snapshot-warnings: true",
+      "          retry-on-snapshot-warnings-timeout: 120",
+      "          show-openssf-scorecard: true",
+      "          warn-on-openssf-scorecard-level: 5",
+      "          show-patched-versions: true",
+    ),
+  ),
+  native: sequence(
+    step(
+      "      - name: Aggregate native matrix results fail closed",
+      "        env:",
+      "          NATIVE_MATRIX_RESULT: ${{ needs.native-matrix.result }}",
+      "        run: |",
+      '          if [ "$NATIVE_MATRIX_RESULT" != "success" ]; then',
+      '            echo "Native matrix did not succeed: $NATIVE_MATRIX_RESULT"',
+      "            exit 1",
+      "          fi",
+    ),
   ),
   "native-matrix": sequence(
     checkout,
@@ -198,9 +251,27 @@ export const governedWorkflowJobSteps = Object.freeze({
     run("npm ci --ignore-scripts"),
     run("npm run check:contract"),
   ),
+  zizmor: sequence(
+    checkout,
+    step(
+      "      - uses: zizmorcore/zizmor-action@192e21d79ab29983730a13d1382995c2307fbcaa # v0.5.7",
+      "        with:",
+      '          version: "1.26.1"',
+      "          config: .github/zizmor.yml",
+      "          advanced-security: false",
+      "          annotations: true",
+    ),
+  ),
 });
 
 const governedJobPreambles = Object.freeze({
+  actionlint: [
+    "    name: actionlint",
+    "    runs-on: ubuntu-latest",
+    "    timeout-minutes: 10",
+    "    permissions:",
+    "      contents: read",
+  ],
   "build-scan-sbom-smoke": [
     "    name: Build, scan, SBOM, smoke",
     "    runs-on: ubuntu-latest",
@@ -216,6 +287,18 @@ const governedJobPreambles = Object.freeze({
     "    timeout-minutes: 15",
     "    permissions:",
     "      contents: read",
+  ],
+  ci: [
+    "    name: ci",
+    "    if: ${{ always() }}",
+    "    needs:",
+    "      - core-quality",
+    "      - coverage-sonar",
+    "      - cross-platform-smoke",
+    "      - native",
+    "    runs-on: ubuntu-latest",
+    "    timeout-minutes: 5",
+    "    permissions: {}",
   ],
   "coverage-sonar": [
     "    name: Coverage and SonarCloud",
@@ -234,6 +317,22 @@ const governedJobPreambles = Object.freeze({
     "    timeout-minutes: 15",
     "    permissions:",
     "      contents: read",
+  ],
+  "dependency-review": [
+    "    name: Review dependency diff (dev/main)",
+    "    runs-on: ubuntu-latest",
+    "    timeout-minutes: 10",
+    "    permissions:",
+    "      contents: read",
+  ],
+  native: [
+    "    name: native",
+    "    if: ${{ always() }}",
+    "    needs:",
+    "      - native-matrix",
+    "    runs-on: ubuntu-latest",
+    "    timeout-minutes: 5",
+    "    permissions: {}",
   ],
   "native-matrix": [
     "    name: native (${{ matrix.runner }})",
@@ -260,6 +359,13 @@ const governedJobPreambles = Object.freeze({
     "    permissions:",
     "      contents: read",
   ],
+  zizmor: [
+    "    name: zizmor",
+    "    runs-on: ubuntu-latest",
+    "    timeout-minutes: 10",
+    "    permissions:",
+    "      contents: read",
+  ],
 });
 
 export const governedWorkflowJobs = Object.freeze(
@@ -275,3 +381,20 @@ export const governedWorkflowJobs = Object.freeze(
     ]),
   ),
 );
+
+export const requiredGovernedWorkflowJobs = Object.freeze({
+  "ci.yml": Object.freeze([
+    "actionlint",
+    "build-scan-sbom-smoke",
+    "ci",
+    "core-quality",
+    "coverage-sonar",
+    "cross-platform-smoke",
+    "native",
+    "native-matrix",
+    "verify-pinned-shas",
+    "zizmor",
+  ]),
+  "dependency-review.yml": Object.freeze(["dependency-review"]),
+  "mutation-security.yml": Object.freeze(["native-mutation-security"]),
+});

@@ -162,12 +162,13 @@ export function createNativePackageGate({
   }
 
   async function packageNative(repositoryState) {
+    if (!onMacOs() || process.arch !== "arm64")
+      throw new Error("native:package requires Apple Silicon macOS");
     repositoryState ??= await captureRepositoryState();
     const revision = repositoryState.expectedHead;
     await repositoryState.assertUnchanged("before-build");
     await build(revision);
     await repositoryState.assertUnchanged("after-build");
-    if (!onMacOs()) return revision;
     await preparePackageRoot();
     run(
       join(frontendRoot, "node_modules/.bin/tauri"),

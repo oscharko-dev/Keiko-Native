@@ -50,7 +50,7 @@ test("exact-head guard detects a mid-run revision change without mutating git", 
   );
 });
 
-test("package build receives one captured revision and checks both boundaries", async () => {
+test("package fails closed before building on a non-authoritative host", async () => {
   const head = "c".repeat(40);
   const events = [];
   const { packageNative } = createNativePackageGate({
@@ -62,12 +62,11 @@ test("package build receives one captured revision and checks both boundaries", 
     onMacOs: () => false,
     packageRoot: "/tmp/package",
   });
-  assert.equal(await packageNative(), head);
-  assert.deepEqual(events, [
-    "assert:before-build",
-    `build:${head}`,
-    "assert:after-build",
-  ]);
+  await assert.rejects(
+    packageNative(),
+    /native:package requires Apple Silicon macOS/u,
+  );
+  assert.deepEqual(events, []);
 });
 
 test("macOS release build receives the captured revision without a second lookup", async () => {
