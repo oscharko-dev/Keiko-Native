@@ -148,6 +148,8 @@ export function evaluatePullRequestTopology({
     return fail("handoff_coordinator_required");
   }
   if (event !== "closed_unmerged") return fail("unsupported_pr_event");
+  if ([BLOCKED, WAITING].includes(sourceState))
+    return fail("resume_evidence_required");
   if (otherOpenPullRequest?.validated === true)
     return topologyResult(sourceState, PR_OPEN, {
       pullRequestId: otherOpenPullRequest.id,
