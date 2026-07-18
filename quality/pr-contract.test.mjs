@@ -5,6 +5,7 @@ import {
   pullRequestIssueNumber,
   validatePullRequestContract,
 } from "./pr-contract.mjs";
+import { readinessComment } from "./issue-readiness-action.mjs";
 import {
   validPullRequestBody,
   validPullRequestFixture,
@@ -62,6 +63,96 @@ test("accepts legacy ready work while lifecycle activation is disabled", () => {
       lifecycleActivation: "disabled",
     }),
     { failures: [] },
+  );
+});
+
+test("revalidates completed delivery against the exact cited readiness record", () => {
+  const fixture = validPullRequestFixture();
+  fixture.issue.state = "closed";
+  fixture.issue.state_reason = "completed";
+  const acceptedBody = fixture.comments[0].body;
+  fixture.comments.push({
+    ...fixture.comments[0],
+    body: readinessComment({
+      actor: "github-actions[bot]",
+      decision: {
+        lifecycleOwned: true,
+        outcome: "reject",
+        reasons: ["A closed issue cannot remain implementation ready."],
+      },
+      now: "2026-07-17T12:00:00.000Z",
+      validation: {
+        failures: [],
+        fingerprint: /- Fingerprint: `([0-9a-f]{64})`/u.exec(acceptedBody)?.[1],
+        version: "v1",
+      },
+    }),
+    id: 100,
+  });
+
+  assert.match(
+    validatePullRequestContract(fixture).failures.join("\n"),
+    /must remain open/u,
+  );
+  assert.deepEqual(
+    validatePullRequestContract({ ...fixture, terminalDelivery: true }),
+    { failures: [] },
+  );
+
+  fixture.comments[1].body = fixture.comments[1].body.replace(
+    "A closed issue cannot remain implementation ready.",
+    "The issue contract changed.",
+  );
+  assert.match(
+    validatePullRequestContract({
+      ...fixture,
+      terminalDelivery: true,
+    }).failures.join("\n"),
+    /current matching accepted readiness/u,
+  );
+
+  const activeFixture = validPullRequestFixture();
+  activeFixture.issue.state = "closed";
+  activeFixture.issue.state_reason = "completed";
+  activeFixture.issue.labels = [
+    { name: "type: task" },
+    { name: "status: ready for human review" },
+  ];
+  assert.deepEqual(
+    validatePullRequestContract({
+      ...activeFixture,
+      lifecycleActivation: "enabled",
+      terminalDelivery: true,
+    }),
+    { failures: [] },
+  );
+});
+
+test("rejects malformed terminal delivery state", () => {
+  const wrongReason = validPullRequestFixture();
+  wrongReason.issue.state = "closed";
+  wrongReason.issue.state_reason = "not_planned";
+  assert.match(
+    validatePullRequestContract({
+      ...wrongReason,
+      terminalDelivery: true,
+    }).failures.join("\n"),
+    /must remain open/u,
+  );
+
+  const wrongLifecycle = validPullRequestFixture();
+  wrongLifecycle.issue.state = "closed";
+  wrongLifecycle.issue.state_reason = "completed";
+  wrongLifecycle.issue.labels = [
+    { name: "type: task" },
+    { name: "status: blocked" },
+  ];
+  assert.match(
+    validatePullRequestContract({
+      ...wrongLifecycle,
+      terminalDelivery: true,
+    }).failures.join("\n"),
+    /not pull-request eligible/u,
   );
 });
 

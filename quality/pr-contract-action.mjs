@@ -33,6 +33,34 @@ async function publishContractStatus(
   });
 }
 
+function terminalPullRequestSnapshotFailures(
+  eventPullRequest,
+  currentPullRequest,
+) {
+  const exactFieldsMatch =
+    currentPullRequest?.number === eventPullRequest?.number &&
+    currentPullRequest?.node_id === eventPullRequest?.node_id &&
+    currentPullRequest?.title === eventPullRequest?.title &&
+    currentPullRequest?.body === eventPullRequest?.body &&
+    currentPullRequest?.base?.ref === eventPullRequest?.base?.ref &&
+    currentPullRequest?.head?.ref === eventPullRequest?.head?.ref &&
+    currentPullRequest?.head?.sha === eventPullRequest?.head?.sha &&
+    currentPullRequest?.updated_at === eventPullRequest?.updated_at;
+  const closedMergedState =
+    currentPullRequest?.state === "closed" &&
+    currentPullRequest?.merged === true &&
+    eventPullRequest?.state === "closed" &&
+    eventPullRequest?.merged === true;
+  return Number.isInteger(eventPullRequest?.number) &&
+    typeof eventPullRequest?.node_id === "string" &&
+    eventPullRequest.node_id !== "" &&
+    Number.isFinite(Date.parse(eventPullRequest?.updated_at ?? "")) &&
+    exactFieldsMatch &&
+    closedMergedState
+    ? []
+    : ["The merged pull-request event does not match current provider state."];
+}
+
 export async function runPullRequestContractAction({ event }) {
   const repository = process.env.GITHUB_REPOSITORY;
   if (typeof repository !== "string" || !repository.includes("/"))
@@ -45,15 +73,23 @@ export async function runPullRequestContractAction({ event }) {
     throw new Error("The pull request has no valid head SHA.");
 
   const issueNumber = pullRequestIssueNumber(pullRequest.body);
+  const terminalDelivery =
+    event.action === "closed" && pullRequest.merged === true;
   let issue;
   let comments = [];
+  let currentPullRequest = pullRequest;
   try {
-    [issue, comments] =
+    [issue, comments, currentPullRequest] =
       issueNumber === undefined
-        ? [undefined, []]
+        ? [undefined, [], pullRequest]
         : await Promise.all([
             githubRequest(`/repos/${repository}/issues/${issueNumber}`),
             allIssueComments(repository, issueNumber),
+            terminalDelivery
+              ? githubRequest(
+                  `/repos/${repository}/pulls/${pullRequest.number}`,
+                )
+              : pullRequest,
           ]);
   } catch (error) {
     try {
@@ -74,9 +110,15 @@ export async function runPullRequestContractAction({ event }) {
     issue,
     lifecycleActivation:
       process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION ?? "disabled",
-    pullRequest,
+    pullRequest: currentPullRequest,
     repository,
+    terminalDelivery,
   });
+  if (terminalDelivery)
+    result.failures.push(
+      ...terminalPullRequestSnapshotFailures(pullRequest, currentPullRequest),
+    );
+  result.failures = [...new Set(result.failures)];
   for (const failure of result.failures)
     process.stdout.write(`::error title=PR contract::${failure}\n`);
   if (result.failures.length > 0) {

@@ -60,6 +60,7 @@ jobs:
       contents: read
       issues: read
       pull-requests: read
+      statuses: read
     uses: ./.github/workflows/issue-lifecycle.yml
     with:
       issue_number: ${{ needs.contract.outputs.issue-number }}

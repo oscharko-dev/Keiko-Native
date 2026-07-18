@@ -6,6 +6,7 @@ import {
   pullRequestAcceptedTarget,
   pullRequestDeliveryIdentityMatches,
   pullRequestIssueNumber,
+  validatePullRequestContract,
 } from "./pr-contract.mjs";
 import {
   LIFECYCLE_STATES,
@@ -224,7 +225,10 @@ function requiresRetainedPullRequestContract(event, result) {
 
 function pullRequestContractSucceeded({ event, prEvent, result }) {
   if (prEvent === "closed_merged")
-    return event.currentMergedPullRequest?.validated === true;
+    return (
+      event.currentMergedPullRequest?.validated === true &&
+      hasTrustedPullRequestContractSuccess(event)
+    );
   if (requiresRetainedPullRequestContract(event, result))
     return hasRetainedPullRequestContractSuccess(event, result);
   return hasTrustedPullRequestContractSuccess(event);
@@ -348,7 +352,8 @@ function desiredStateForPullRequestEvent({
             reason: "pre_activation_current_pull_request_required",
           };
     const targetRequiresContract =
-      [PR_OPEN, REVIEW].includes(result.target) && !reviewDemotion;
+      prEvent === "closed_merged" ||
+      ([PR_OPEN, REVIEW].includes(result.target) && !reviewDemotion);
     const contractSucceeded = pullRequestContractSucceeded({
       event,
       prEvent,
@@ -359,7 +364,10 @@ function desiredStateForPullRequestEvent({
         ? { failures: ["pr_contract_success_required"], outcome: "failed" }
         : { outcome: "ignored", reason: "pre_activation_pr_contract_required" };
     }
-    return { desiredState: result.target };
+    return {
+      closeIssue: result.closeIssue === true,
+      desiredState: result.target,
+    };
   }
   if (!enabled)
     return { outcome: "ignored", reason: "pre_activation_pr_topology" };
@@ -527,7 +535,13 @@ function acceptedDeliveryBoundary(pullRequest) {
   return devHumanMergers.has(pullRequest?.merged_by?.login?.toLowerCase());
 }
 
-async function finalDeliveryEvidence(repository, issueNumber, request) {
+async function finalDeliveryEvidence({
+  comments,
+  issue,
+  issueNumber,
+  repository,
+  request,
+}) {
   for (let page = 1; ; page += 1) {
     const batch = await request(
       `/repos/${repository}/pulls?state=closed&per_page=100&page=${page}`,
@@ -544,9 +558,23 @@ async function finalDeliveryEvidence(repository, issueNumber, request) {
       if (
         detail?.number !== pullRequest.number ||
         detail?.merged !== true ||
+        detail?.state !== "closed" ||
+        !Number.isFinite(Date.parse(detail?.updated_at ?? "")) ||
         detail?.head?.sha !== linked.headSha ||
         linkedPullRequestEvidence(detail, issueNumber)?.id !== linked.id ||
-        !acceptedDeliveryBoundary(detail)
+        !acceptedDeliveryBoundary(detail) ||
+        validatePullRequestContract({
+          comments,
+          issue,
+          lifecycleActivation: [REVIEW, LIFECYCLE_STATES[8]].some((state) =>
+            hasSoleLifecycleState(issue, state),
+          )
+            ? "enabled"
+            : "disabled",
+          pullRequest: detail,
+          repository,
+          terminalDelivery: true,
+        }).failures.length > 0
       )
         continue;
       if (
@@ -681,6 +709,7 @@ async function currentPullRequestEvidence(event, issue, repository, request) {
 }
 
 async function eventWithDerivedEvidence({
+  comments,
   event,
   issue,
   issueNumber,
@@ -707,11 +736,23 @@ async function eventWithDerivedEvidence({
           request,
         )) !== undefined,
     };
-  if (event?.action === "closed" && issue?.state_reason === "completed")
+  if (
+    event?.pull_request === undefined &&
+    event?.action === "closed" &&
+    issue?.state_reason === "completed"
+  )
     evidencedEvent = {
       ...evidencedEvent,
-      completionEvidence: hasSoleLifecycleState(issue, REVIEW)
-        ? await finalDeliveryEvidence(repository, issueNumber, request)
+      completionEvidence: [REVIEW, LIFECYCLE_STATES[8]].some((state) =>
+        hasSoleLifecycleState(issue, state),
+      )
+        ? await finalDeliveryEvidence({
+            comments,
+            issue,
+            issueNumber,
+            repository,
+            request,
+          })
         : undefined,
     };
   if (needsOtherOpenPullRequestEvidence(event)) {
@@ -785,6 +826,48 @@ async function addLabels(repository, issueNumber, labels, request) {
     method: "POST",
     payload: { labels },
   });
+}
+
+async function closeIssueAsCompleted({
+  desiredState,
+  issue,
+  issueNumber,
+  repository,
+  request,
+}) {
+  const labels = labelNames(issue);
+  if (!Array.isArray(labels))
+    return {
+      failures: ["Issue labels are unavailable for completed closure."],
+      ok: false,
+    };
+  const desiredLabels = [
+    ...labels.filter((label) => !label?.startsWith("status: ")),
+    desiredState,
+  ];
+  await request(`/repos/${repository}/issues/${issueNumber}`, {
+    method: "PATCH",
+    payload: {
+      labels: desiredLabels,
+      state: "closed",
+      state_reason: "completed",
+    },
+  });
+  const readback = await reloadIssue(repository, issueNumber, request);
+  const statusReadback = verifyStatusLabelReadback({
+    actualIssueIdentity: issueIdentity(readback),
+    desiredState,
+    expectedIssueIdentity: issueIdentity(issue),
+    labels: labelNames(readback),
+  });
+  return statusReadback.ok &&
+    readback.state === "closed" &&
+    readback.state_reason === "completed"
+    ? { issue: readback, ok: true }
+    : {
+        failures: ["Completed issue closure read-back did not match."],
+        ok: false,
+      };
 }
 
 function planLifecycleLabelRemoval(issue) {
@@ -911,6 +994,7 @@ async function reconcileLifecycleRemoval({
 }
 
 async function reconcileDesiredStatus({
+  closeIssue,
   desiredState,
   enabled,
   issue,
@@ -934,12 +1018,26 @@ async function reconcileDesiredStatus({
   if (!enabled)
     return {
       activation: "disabled",
+      closeIssue,
       desiredState,
       now: now.toISOString(),
       outcome: "planned",
       plan: reconciliation,
       readiness,
     };
+
+  if (closeIssue === true) {
+    const closure = await closeIssueAsCompleted({
+      desiredState,
+      issue,
+      issueNumber,
+      repository,
+      request,
+    });
+    return closure.ok
+      ? { closeIssue, desiredState, outcome: "applied", plan: reconciliation }
+      : failed(closure.failures);
+  }
 
   for (const label of reconciliation.remove)
     await removeLabel(repository, issueNumber, label, request);
@@ -952,7 +1050,7 @@ async function reconcileDesiredStatus({
     labels: labelNames(readback),
   });
   return verified.ok
-    ? { desiredState, outcome: "applied", plan: reconciliation }
+    ? { closeIssue, desiredState, outcome: "applied", plan: reconciliation }
     : failed(verified.failures);
 }
 
@@ -977,6 +1075,10 @@ export async function runIssueLifecycleAction({
   ]);
   const providerValidation = validateProviderStatusLabels(providerLabels);
   if (!providerValidation.ok) return failed(providerValidation.failures);
+  if (event?.pull_request !== undefined) {
+    const labelFailure = exactLifecycleLabelFailure(issue);
+    if (labelFailure !== undefined) return labelFailure;
+  }
   const currentState = currentLifecycleState(issue, event);
 
   const readiness = evaluateReadinessForIssue({
@@ -986,6 +1088,7 @@ export async function runIssueLifecycleAction({
   });
   const enabled = enabledLifecycleActivation();
   const evidencedEvent = await eventWithDerivedEvidence({
+    comments,
     event,
     issue,
     issueNumber,
@@ -1014,6 +1117,7 @@ export async function runIssueLifecycleAction({
       request,
     });
   return reconcileDesiredStatus({
+    closeIssue: desired.closeIssue === true,
     desiredState: desired.desiredState,
     enabled,
     issue,

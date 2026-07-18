@@ -392,9 +392,10 @@ test("records paused sources and derives resume destinations without restoring r
       sourceState: "status: ready for human review",
     }),
     {
+      closeIssue: true,
       ok: true,
       pullRequestId: 36,
-      target: "status: ready for human review",
+      target: "status: done",
     },
   );
   assert.equal(

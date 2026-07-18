@@ -116,6 +116,7 @@ const issueLifecyclePermissionMarkers = [
   "      contents: read",
   "      issues: read",
   "      pull-requests: read",
+  "      statuses: read",
 ];
 
 const pullRequestContractMarkers = [
@@ -131,6 +132,7 @@ const pullRequestContractMarkers = [
   "name: Evaluate trusted PR metadata",
   "issue-number: ${{ steps.contract.outputs.issue-number }}",
   "ref: dev",
+  "statuses: read",
   "statuses: write",
   "KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
   "node quality/pr-contract-action.mjs",

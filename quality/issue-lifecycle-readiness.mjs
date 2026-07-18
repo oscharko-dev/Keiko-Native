@@ -154,11 +154,14 @@ function evaluateMergedPullRequestTopology({
     return fail("resume_evidence_required");
   if (![PR_OPEN, REVIEW].includes(sourceState))
     return fail("merged_pr_source_required");
-  return topologyResult(
-    sourceState,
-    sourceState === REVIEW ? REVIEW : IN_PROGRESS,
-    { pullRequestId: pullRequest.id },
-  );
+  if (sourceState === REVIEW)
+    return topologyResult(sourceState, DONE, {
+      closeIssue: true,
+      pullRequestId: pullRequest.id,
+    });
+  return topologyResult(sourceState, IN_PROGRESS, {
+    pullRequestId: pullRequest.id,
+  });
 }
 
 export function evaluatePullRequestTopology({

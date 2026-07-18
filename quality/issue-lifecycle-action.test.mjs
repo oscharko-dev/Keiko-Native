@@ -7,6 +7,7 @@ import test from "node:test";
 import { readinessComment } from "./issue-readiness-action.mjs";
 import { semanticIssueFingerprint } from "./issue-contract.mjs";
 import { LIFECYCLE_STATES } from "./issue-lifecycle.mjs";
+import { validPullRequestFixture } from "./pr-contract-test-fixture.mjs";
 import {
   runIssueLifecycleAction,
   runIssueLifecycleCli,
@@ -122,6 +123,64 @@ function requestMock(
   return { calls, request };
 }
 
+function terminalDeliveryContract({ headRef, headSha, number, nodeId }) {
+  const fixture = validPullRequestFixture();
+  const issueTitle = fixture.issue.title;
+  const terminalValidation = {
+    failures: [],
+    fingerprint: semanticIssueFingerprint(fixture.issue.body, issueTitle),
+    version: "v1",
+  };
+  const comments = [
+    {
+      body: readinessComment({
+        actor: "planner",
+        decision: { outcome: "accept", reasons: [] },
+        now: "2026-07-17T12:00:00.000Z",
+        validation: terminalValidation,
+      }),
+      id: 101,
+      user: { id: 41898282, login: "github-actions[bot]", type: "Bot" },
+    },
+    {
+      body: readinessComment({
+        actor: "github-actions[bot]",
+        decision: {
+          lifecycleOwned: true,
+          outcome: "reject",
+          reasons: ["A closed issue cannot remain implementation ready."],
+        },
+        now: "2026-07-17T12:00:02.000Z",
+        validation: terminalValidation,
+      }),
+      id: 102,
+      user: { id: 41898282, login: "github-actions[bot]", type: "Bot" },
+    },
+  ];
+  const body = fixture.pullRequest.body
+    .replaceAll("#42", "#27")
+    .replaceAll("/issues/42", "/issues/27")
+    .replace("issuecomment-99", "issuecomment-101")
+    .replace("codex/42-governed-workspace", headRef)
+    .replaceAll("c".repeat(40), headSha);
+  return {
+    comments,
+    issueOverrides: { body: fixture.issue.body, title: issueTitle },
+    pullRequest: {
+      base: { ref: "dev" },
+      body,
+      head: { ref: headRef, sha: headSha },
+      merged: true,
+      merged_by: { login: "Niko4417" },
+      node_id: nodeId,
+      number,
+      state: "closed",
+      title: fixture.pullRequest.title,
+      updated_at: "2026-07-17T12:00:01Z",
+    },
+  };
+}
+
 async function actionOutcome(event, request) {
   return (await runIssueLifecycleAction({ event, request })).outcome;
 }
@@ -144,6 +203,7 @@ test("workflow loads protected dev code with read-only credentials", async () =>
   assert.match(workflow, /ref: dev/u);
   assert.match(workflow, /persist-credentials: false/u);
   assert.match(workflow, /contents: read/u);
+  assert.match(workflow, /statuses: read/u);
   assert.doesNotMatch(workflow, /contents: write/u);
   assert.doesNotMatch(workflow, /pull_request_target/u);
 
@@ -174,6 +234,7 @@ test("workflow loads protected dev code with read-only credentials", async () =>
     /if: \$\{\{ always\(\) && needs\.contract\.outputs\.issue-number != '' \}\}/u,
   );
   assert.match(pullRequestWorkflow, /closed/u);
+  assert.match(pullRequestWorkflow, /statuses: read/u);
 });
 
 test("reloads trusted issue state and plans reconciliation with activation disabled", async (t) => {
@@ -1141,26 +1202,144 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
     state: "closed",
     updated_at: "2026-07-17T12:00:01Z",
   };
+  const mergedCloseEvent = {
+    action: "closed",
+    prContract: { validated: true },
+    pull_request: mergedPullRequest,
+  };
   const mergedClose = requestMock(t, {
     issueLabels: ["status: ready for human review"],
     pullRequestDetails: { 44: mergedPullRequest },
   });
   const mergedCloseResult = await runIssueLifecycleAction({
-    event: { action: "closed", pull_request: mergedPullRequest },
+    event: mergedCloseEvent,
     request: mergedClose.request,
   });
   assert.equal(mergedCloseResult.outcome, "planned");
-  assert.equal(
-    mergedCloseResult.desiredState,
-    "status: ready for human review",
+  assert.equal(mergedCloseResult.closeIssue, true);
+  assert.equal(mergedCloseResult.desiredState, "status: done");
+
+  const conflictingMergedClose = requestMock(t, {
+    issueLabels: ["status: ready for human review", "status: blocked"],
+    pullRequestDetails: { 44: mergedPullRequest },
+  });
+  const conflictingMergedCloseResult = await runIssueLifecycleAction({
+    event: mergedCloseEvent,
+    request: conflictingMergedClose.request,
+  });
+  assert.equal(conflictingMergedCloseResult.outcome, "failed");
+  assert.deepEqual(conflictingMergedCloseResult.failures, [
+    "Issue lifecycle reload must contain exactly one status label.",
+  ]);
+  assert.ok(
+    conflictingMergedClose.calls.every((call) => call.method !== "PATCH"),
   );
+
+  const activatedMergedClose = requestMock(t, {
+    issueLabels: ["priority: high", "status: ready for human review"],
+    pullRequestDetails: { 44: mergedPullRequest },
+  });
+  let activatedClosed = false;
+  let activatedLabels = ["priority: high", "status: ready for human review"];
+  const activatedMergedRequest = async (path, options = {}) => {
+    if (path.endsWith("/issues/27") && options.method === "PATCH") {
+      activatedClosed = true;
+      activatedLabels = [...options.payload.labels];
+      return {};
+    }
+    if (path.endsWith("/issues/27") && options.method === undefined)
+      return issue(activatedLabels, {
+        state: activatedClosed ? "closed" : "open",
+        state_reason: activatedClosed ? "completed" : undefined,
+        updated_at: activatedClosed
+          ? "2026-07-17T12:00:02Z"
+          : "2026-07-17T12:00:00Z",
+      });
+    if (path.includes("/issues/27/labels/") && options.method === "DELETE") {
+      activatedLabels = activatedLabels.filter(
+        (label) => !path.endsWith(encodeURIComponent(label)),
+      );
+      return {};
+    }
+    if (path.endsWith("/issues/27/labels") && options.method === "POST") {
+      activatedLabels = [...options.payload.labels];
+      return {};
+    }
+    return activatedMergedClose.request(path, options);
+  };
+  const activationBeforeMergedClose =
+    process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
+  const contractBeforeMergedClose = process.env.KEIKO_PR_CONTRACT_RESULT;
+  process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = "enabled";
+  delete process.env.KEIKO_PR_CONTRACT_RESULT;
+  try {
+    const failedFreshContract = requestMock(t, {
+      issueLabels: ["status: ready for human review"],
+      pullRequestDetails: { 44: mergedPullRequest },
+    });
+    const failedFreshContractResult = await runIssueLifecycleAction({
+      event: { ...mergedCloseEvent, prContract: { validated: false } },
+      request: failedFreshContract.request,
+    });
+    assert.equal(failedFreshContractResult.outcome, "failed");
+    assert.deepEqual(failedFreshContractResult.failures, [
+      "pr_contract_success_required",
+    ]);
+    assert.ok(
+      failedFreshContract.calls.every((call) => call.method !== "PATCH"),
+    );
+
+    const activatedMergedCloseResult = await runIssueLifecycleAction({
+      event: mergedCloseEvent,
+      request: activatedMergedRequest,
+    });
+    assert.equal(activatedMergedCloseResult.outcome, "applied");
+    assert.equal(activatedMergedCloseResult.closeIssue, true);
+    assert.equal(activatedClosed, true);
+    assert.deepEqual(activatedLabels, ["priority: high", "status: done"]);
+    assert.ok(
+      activatedMergedClose.calls.some(
+        (call) =>
+          call.method === "PATCH" ||
+          call.path.endsWith(`/commits/${mergedHead}/status`),
+      ),
+    );
+
+    const failedClosureReadback = requestMock(t, {
+      issueLabels: ["status: ready for human review"],
+      pullRequestDetails: { 44: mergedPullRequest },
+    });
+    const failedClosureReadbackResult = await runIssueLifecycleAction({
+      event: mergedCloseEvent,
+      request: failedClosureReadback.request,
+    });
+    assert.equal(failedClosureReadbackResult.outcome, "failed");
+    assert.deepEqual(failedClosureReadbackResult.failures, [
+      "Completed issue closure read-back did not match.",
+    ]);
+    assert.ok(
+      failedClosureReadback.calls.some((call) => call.method === "PATCH"),
+    );
+    assert.ok(
+      failedClosureReadback.calls.every((call) => call.method !== "DELETE"),
+    );
+  } finally {
+    if (activationBeforeMergedClose === undefined)
+      delete process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
+    else
+      process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION =
+        activationBeforeMergedClose;
+    if (contractBeforeMergedClose === undefined)
+      delete process.env.KEIKO_PR_CONTRACT_RESULT;
+    else process.env.KEIKO_PR_CONTRACT_RESULT = contractBeforeMergedClose;
+  }
 
   const intermediateMergedClose = requestMock(t, {
     issueLabels: ["status: pr open"],
     pullRequestDetails: { 44: mergedPullRequest },
   });
   const intermediateMergedCloseResult = await runIssueLifecycleAction({
-    event: { action: "closed", pull_request: mergedPullRequest },
+    event: mergedCloseEvent,
     request: intermediateMergedClose.request,
   });
   assert.equal(intermediateMergedCloseResult.outcome, "planned");
@@ -1188,7 +1367,7 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
   ];
   const mergedAfterCompletedClosure = requestMock(t, {
     comments: closedReadinessComments,
-    issueLabels: ["status: done"],
+    issueLabels: ["type: task", "status: done"],
     issueOverrides: {
       state: "closed",
       state_reason: "completed",
@@ -1197,15 +1376,46 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
     pullRequestDetails: { 44: mergedPullRequest },
   });
   const mergedAfterCompletedClosureResult = await runIssueLifecycleAction({
-    event: { action: "closed", pull_request: mergedPullRequest },
+    event: mergedCloseEvent,
     request: mergedAfterCompletedClosure.request,
   });
   assert.equal(mergedAfterCompletedClosureResult.outcome, "planned");
   assert.equal(mergedAfterCompletedClosureResult.desiredState, "status: done");
 
+  const terminalMergedDelivery = terminalDeliveryContract({
+    headRef: "codex/27-lifecycle",
+    headSha: mergedHead,
+    nodeId: "pr-node-merged",
+    number: 44,
+  });
+  const completedClosureAfterMergedEvent = requestMock(t, {
+    comments: terminalMergedDelivery.comments,
+    issueLabels: ["type: task", "status: done"],
+    issueOverrides: {
+      ...terminalMergedDelivery.issueOverrides,
+      state: "closed",
+      state_reason: "completed",
+      updated_at: "2026-07-17T12:00:02Z",
+    },
+    pullRequestDetails: { 44: terminalMergedDelivery.pullRequest },
+    pullRequests: [terminalMergedDelivery.pullRequest],
+  });
+  const completedClosureAfterMergedEventResult = await runIssueLifecycleAction({
+    event: {
+      action: "closed",
+      issue: { number: 27, state_reason: "completed" },
+    },
+    request: completedClosureAfterMergedEvent.request,
+  });
+  assert.equal(completedClosureAfterMergedEventResult.outcome, "planned");
+  assert.equal(
+    completedClosureAfterMergedEventResult.desiredState,
+    "status: done",
+  );
+
   const mergedDuringCompletedClosure = requestMock(t, {
     comments: closedReadinessComments,
-    issueLabels: ["status: ready for human review"],
+    issueLabels: ["type: task", "status: ready for human review"],
     issueOverrides: {
       state: "closed",
       state_reason: "completed",
@@ -1214,7 +1424,7 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
     pullRequestDetails: { 44: mergedPullRequest },
   });
   const mergedDuringCompletedClosureResult = await runIssueLifecycleAction({
-    event: { action: "closed", pull_request: mergedPullRequest },
+    event: mergedCloseEvent,
     request: mergedDuringCompletedClosure.request,
   });
   assert.equal(mergedDuringCompletedClosureResult.outcome, "planned");
@@ -1273,7 +1483,7 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
         pullRequestDetails: { 44: { ...mergedPullRequest, ...overrides } },
       });
       const rejectedMergedCloseResult = await runIssueLifecycleAction({
-        event: { action: "closed", pull_request: mergedPullRequest },
+        event: mergedCloseEvent,
         request: rejectedMergedClose.request,
       });
       assert.equal(rejectedMergedCloseResult.outcome, "failed", name);
@@ -1290,7 +1500,7 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
       pullRequestDetails: { 44: mergedPullRequest },
     });
     const staleIssueMergedCloseResult = await runIssueLifecycleAction({
-      event: { action: "closed", pull_request: mergedPullRequest },
+      event: mergedCloseEvent,
       request: staleIssueMergedClose.request,
     });
     assert.equal(staleIssueMergedCloseResult.outcome, "failed");
@@ -1309,6 +1519,7 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
     const missingIdentityMergedCloseResult = await runIssueLifecycleAction({
       event: {
         action: "closed",
+        prContract: { validated: true },
         pull_request: missingIdentityMergedPullRequest,
       },
       request: missingIdentityMergedClose.request,
@@ -1372,7 +1583,7 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
         pullRequestDetails: { 44: mergedPullRequest },
       });
       const rejectedMergedStatusResult = await runIssueLifecycleAction({
-        event: { action: "closed", pull_request: mergedPullRequest },
+        event: mergedCloseEvent,
         request: rejectedMergedStatus.request,
       });
       assert.equal(rejectedMergedStatusResult.outcome, "failed", name);
@@ -1394,7 +1605,7 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
         pullRequestDetails: { 44: mergedPullRequest },
       });
       const rejectedStatusBindingResult = await runIssueLifecycleAction({
-        event: { action: "closed", pull_request: mergedPullRequest },
+        event: mergedCloseEvent,
         request: rejectedStatusBinding.request,
       });
       assert.equal(rejectedStatusBindingResult.outcome, "failed", name);
@@ -1441,11 +1652,10 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
     },
     request: preActivationUnlabeled.request,
   });
-  assert.equal(preActivationUnlabeledResult.outcome, "ignored");
-  assert.equal(
-    preActivationUnlabeledResult.reason,
-    "pre_activation_pr_topology",
-  );
+  assert.equal(preActivationUnlabeledResult.outcome, "failed");
+  assert.deepEqual(preActivationUnlabeledResult.failures, [
+    "Issue lifecycle reload must contain exactly one status label.",
+  ]);
 });
 
 test("removes lifecycle labels for non-completed closures", async (t) => {
@@ -1883,21 +2093,84 @@ test("covers alternate fail-closed and no-op lifecycle branches", async (t) => {
     "completion_evidence_required",
   ]);
 
-  const closedWithFinalDelivery = requestMock(t, {
-    issueLabels: ["status: ready for human review"],
-    issueOverrides: { state: "closed", state_reason: "completed" },
-    pullRequestDetails: {
-      40: {
-        base: { ref: "dev" },
-        body: finalDeliveryBody,
-        head: { sha: mergedHead },
-        merged: true,
-        merged_by: { login: "Niko4417" },
-        node_id: "pr-node-40",
-        number: 40,
-      },
+  const terminalFinalDelivery = terminalDeliveryContract({
+    headRef: "codex/27-delivery",
+    headSha: mergedHead,
+    nodeId: "pr-node-40",
+    number: 40,
+  });
+  const driftedTerminalPullRequest = {
+    ...terminalFinalDelivery.pullRequest,
+    body: [
+      "## Scope",
+      "",
+      "- Accepted issue: #27",
+      "- Accepted target branch: dev",
+      "- Actual source branch: codex/27-delivery",
+    ].join("\n"),
+  };
+  const openTerminalPullRequest = {
+    ...terminalFinalDelivery.pullRequest,
+    state: "open",
+  };
+  const closedWithOpenTerminalPullRequest = requestMock(t, {
+    comments: terminalFinalDelivery.comments,
+    issueLabels: ["type: task", "status: ready for human review"],
+    issueOverrides: {
+      ...terminalFinalDelivery.issueOverrides,
+      state: "closed",
+      state_reason: "completed",
     },
-    pullRequests: [finalDeliveryCandidate],
+    pullRequestDetails: { 40: openTerminalPullRequest },
+    pullRequests: [openTerminalPullRequest],
+  });
+  const openTerminalPullRequestResult = await runIssueLifecycleAction({
+    event: {
+      action: "closed",
+      expectedReadinessCommentId: 101,
+      issue: { number: 27, state_reason: "completed" },
+    },
+    request: closedWithOpenTerminalPullRequest.request,
+  });
+  assert.equal(openTerminalPullRequestResult.outcome, "failed");
+  assert.deepEqual(openTerminalPullRequestResult.failures, [
+    "completion_evidence_required",
+  ]);
+
+  const closedWithDriftedTerminalContract = requestMock(t, {
+    comments: terminalFinalDelivery.comments,
+    issueLabels: ["type: task", "status: ready for human review"],
+    issueOverrides: {
+      ...terminalFinalDelivery.issueOverrides,
+      state: "closed",
+      state_reason: "completed",
+    },
+    pullRequestDetails: { 40: driftedTerminalPullRequest },
+    pullRequests: [driftedTerminalPullRequest],
+  });
+  const driftedTerminalContractResult = await runIssueLifecycleAction({
+    event: {
+      action: "closed",
+      expectedReadinessCommentId: 101,
+      issue: { number: 27, state_reason: "completed" },
+    },
+    request: closedWithDriftedTerminalContract.request,
+  });
+  assert.equal(driftedTerminalContractResult.outcome, "failed");
+  assert.deepEqual(driftedTerminalContractResult.failures, [
+    "completion_evidence_required",
+  ]);
+
+  const closedWithFinalDelivery = requestMock(t, {
+    comments: terminalFinalDelivery.comments,
+    issueLabels: ["type: task", "status: ready for human review"],
+    issueOverrides: {
+      ...terminalFinalDelivery.issueOverrides,
+      state: "closed",
+      state_reason: "completed",
+    },
+    pullRequestDetails: { 40: terminalFinalDelivery.pullRequest },
+    pullRequests: [terminalFinalDelivery.pullRequest],
   });
   const finalDeliveryResult = await runIssueLifecycleAction({
     event: {
