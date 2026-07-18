@@ -57,7 +57,7 @@ fn health_replay_stale_sender_origin_and_shutdown_fail_closed() {
         ),
         (
             SenderContext {
-                origin: "https://example.invalid".to_owned(),
+                origin: "hostile-origin".to_owned(),
                 ..sender.clone()
             },
             ReasonCode::UnauthenticatedOrigin,
@@ -348,5 +348,5 @@ fn bundled_origins_are_closed() {
     assert!(is_bundled_origin("tauri://localhost"));
     assert!(is_bundled_origin("http://tauri.localhost"));
     assert!(!is_bundled_origin("tauri://localhost/index.html"));
-    assert!(!is_bundled_origin("https://example.invalid"));
+    assert!(!is_bundled_origin("hostile-origin"));
 }

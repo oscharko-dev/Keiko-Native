@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   evidenceFailures,
   manifestFailures,
+  sourceSecurityFailures,
   sourceDeclarationFailures,
 } from "./native-contract.mjs";
 import { architectureFailures } from "./native-architecture-contract.mjs";
@@ -359,4 +360,27 @@ test("command failures expose bounded sanitized status and spawn causes", () => 
 test("closed repository-only security and signing gates pass", async () => {
   await main("security");
   await main("signing");
+});
+
+test("source security rejects hostile content without ordinary false positives", () => {
+  for (const text of [
+    "operator@example.invalid",
+    "https://172.16.0.9/private",
+    "wss://service.internal/socket",
+    "http://[::1]/private",
+    "api_key=private-value",
+    "authorization: Bearer private-value",
+  ]) {
+    assert.deepEqual(sourceSecurityFailures([{ text }]), [
+      "source-sensitive-content",
+    ]);
+  }
+  assert.deepEqual(
+    sourceSecurityFailures([
+      { text: 'name = "serde"\nchecksum = "abc"' },
+      { text: "Copyright 2026 Example Authors; MIT" },
+      { text: "https://react.dev/errors/123 http://ipc.localhost" },
+    ]),
+    [],
+  );
 });

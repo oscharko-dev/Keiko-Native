@@ -97,6 +97,7 @@ export const nativePackageTestSupport = {
 
 export function createNativePackageGate({
   build,
+  captureRepositoryState,
   cargoMetadata,
   filesBelow,
   frontendRoot,
@@ -107,7 +108,6 @@ export function createNativePackageGate({
   repositoryRoot,
   run,
   rustBuildEnv,
-  sourceRevision,
   targetRoot,
   testNative,
 }) {
@@ -138,9 +138,12 @@ export function createNativePackageGate({
     return { cargo, npm };
   }
 
-  async function packageNative() {
-    await build();
-    if (!onMacOs()) return;
+  async function packageNative(repositoryState = captureRepositoryState()) {
+    const revision = repositoryState.expectedHead;
+    repositoryState.assertUnchanged("before-build");
+    await build(revision);
+    repositoryState.assertUnchanged("after-build");
+    if (!onMacOs()) return revision;
     await rm(packageRoot, { force: true, recursive: true });
     await mkdir(packageRoot, { recursive: true });
     run(
@@ -217,12 +220,14 @@ export function createNativePackageGate({
     const manifest = packageManifest({
       files,
       policySha256: await digest(join(nativeRoot, "package-policy.json")),
-      revision: sourceRevision(),
+      revision,
     });
     const encoded = `${JSON.stringify(manifest, null, 2)}\n`;
     if (redactionMatches(encoded).length > 0)
       throw new Error("Package evidence failed redaction");
     await writeFile(join(packageRoot, "package-manifest.json"), encoded);
+    repositoryState.assertUnchanged("after-package-evidence");
+    return revision;
   }
 
   async function launchPackagedShell() {
@@ -237,9 +242,12 @@ export function createNativePackageGate({
   async function acceptance() {
     if (!onMacOs() || process.arch !== "arm64")
       throw new Error("acceptance:macos requires Apple Silicon macOS");
-    await packageNative();
-    await testNative();
+    const repositoryState = captureRepositoryState();
+    const revision = await packageNative(repositoryState);
+    await testNative(revision);
+    repositoryState.assertUnchanged("after-test");
     const lifecycle = await launchPackagedShell();
+    repositoryState.assertUnchanged("after-lifecycle");
     const bindings = {
       cargoLockSha256: await digest(join(nativeRoot, "Cargo.lock")),
       npmLockSha256: await digest(join(frontendRoot, "package-lock.json")),
@@ -248,7 +256,7 @@ export function createNativePackageGate({
       ),
       readinessFingerprint:
         "c68478df272e1add068e7b1bba9e8c973920b4e3eae29a293d1cba3bc54ab61a",
-      sourceRevision: sourceRevision(),
+      sourceRevision: revision,
     };
     const evidence = packagedShellEvidence({
       architecture: process.arch,
@@ -268,6 +276,7 @@ export function createNativePackageGate({
     if (failures.length > 0)
       throw new Error(`Acceptance evidence rejected: ${failures.join(",")}`);
     await writeFile(join(packageRoot, "acceptance-evidence.json"), encoded);
+    repositoryState.assertUnchanged("after-acceptance-evidence");
   }
 
   return { acceptance, packageNative };

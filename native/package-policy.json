@@ -3279,6 +3279,7 @@
     "prohibitedMarkers": [
       "--health-json",
       "codex/9-desktop-host-evaluation",
+      "dummy.test",
       "example.invalid",
       "experiment-command",
       "generic-ping",

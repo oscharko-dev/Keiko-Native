@@ -13,6 +13,7 @@ export const CLOSED_FILE_CLASSES = {
 export const CLOSED_PROHIBITED_MARKERS = [
   "--health-json",
   "codex/9-desktop-host-evaluation",
+  "dummy.test",
   "example.invalid",
   "experiment-command",
   "generic-ping",

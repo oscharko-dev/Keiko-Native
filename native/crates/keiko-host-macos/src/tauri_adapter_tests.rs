@@ -21,7 +21,7 @@ fn has_authority(lifecycle: &Mutex<HostLifecycle>) -> bool {
 fn page_load_and_script_policy_are_exact() {
     let _navigation = navigation_policy::<tauri::Wry>();
     let root = tauri::Url::parse("tauri://localhost/index.html").expect("URL");
-    let hostile = tauri::Url::parse("https://example.invalid/").expect("URL");
+    let hostile = tauri::Url::parse("data:text/plain,hostile").expect("URL");
     assert_eq!(
         page_load_decision("main", &root, PageLoadEvent::Started),
         PageLoadDecision::BeginDocument

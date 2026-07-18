@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { filesBelow } from "./native-files.mjs";
+import { filesBelow, trackedFiles } from "./native-files.mjs";
 
 test("native traversal rejects file and directory symlinks without following", async () => {
   const root = await mkdtemp(join(tmpdir(), "keiko-native-files-"));
@@ -71,3 +71,47 @@ test(
     }
   },
 );
+
+test("tracked native entries are validated without following ignored symlinks", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "keiko-native-tracked-"));
+  const outside = await mkdtemp(join(tmpdir(), "keiko-native-outside-"));
+  try {
+    const nativeRoot = join(repositoryRoot, "native");
+    await mkdir(join(nativeRoot, "node_modules"), { recursive: true });
+    await writeFile(join(outside, "secret.rs"), "must-not-be-read");
+    await symlink(
+      join(outside, "secret.rs"),
+      join(nativeRoot, "node_modules", "escape.rs"),
+    );
+    const staged = `120000 ${"a".repeat(40)} 0\tnative/node_modules/escape.rs\0`;
+    await assert.rejects(
+      trackedFiles(staged, repositoryRoot, nativeRoot),
+      /Native traversal rejected tracked-symbolic-link/u,
+    );
+
+    await rm(join(nativeRoot, "node_modules", "escape.rs"));
+    await writeFile(join(nativeRoot, "node_modules", "tracked.rs"), "regular");
+    const regular = `100644 ${"b".repeat(40)} 0\tnative/node_modules/tracked.rs\0`;
+    assert.deepEqual(await trackedFiles(regular, repositoryRoot, nativeRoot), [
+      join(nativeRoot, "node_modules", "tracked.rs"),
+    ]);
+
+    await mkdir(join(nativeRoot, "node_modules", "special"));
+    const special = `100644 ${"d".repeat(40)} 0\tnative/node_modules/special\0`;
+    await assert.rejects(
+      trackedFiles(special, repositoryRoot, nativeRoot),
+      /Native traversal rejected special-entry/u,
+    );
+
+    const directory = join(nativeRoot, "linked-parent");
+    await symlink(outside, directory);
+    const escaped = `100644 ${"c".repeat(40)} 0\tnative/linked-parent/secret.rs\0`;
+    await assert.rejects(
+      trackedFiles(escaped, repositoryRoot, nativeRoot),
+      /Native traversal rejected symbolic-link/u,
+    );
+  } finally {
+    await rm(repositoryRoot, { force: true, recursive: true });
+    await rm(outside, { force: true, recursive: true });
+  }
+});

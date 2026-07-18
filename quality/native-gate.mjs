@@ -4,12 +4,18 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  coverageFailures,
   manifestFailures,
-  redactionMatches,
   sourceDeclarationFailures,
+  sourceSecurityFailures,
+  workspaceDependencyNames,
 } from "./native-contract.mjs";
 import { architectureFailures } from "./native-architecture-contract.mjs";
-import { filesBelow, mergeNativeInspectionPaths } from "./native-files.mjs";
+import {
+  filesBelow,
+  mergeNativeInspectionPaths,
+  trackedFiles,
+} from "./native-files.mjs";
 import {
   createNativePackageGate,
   nativePackageTestSupport,
@@ -20,6 +26,7 @@ import {
   runNativeGateCli,
   sanitizeOutput,
 } from "./native-process.mjs";
+import { createExactHeadGuard } from "./native-repository.mjs";
 
 const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const nativeRoot = join(repositoryRoot, "native");
@@ -35,8 +42,8 @@ const ignoredNativeDirectories = new Set([
   "target",
 ]);
 
-function productiveRustEnv() {
-  return createProductiveRustEnv(repositoryRoot, sourceRevision());
+function productiveRustEnv(revision = sourceRevision()) {
+  return createProductiveRustEnv(repositoryRoot, revision);
 }
 
 function run(command, args, options = {}) {
@@ -52,11 +59,19 @@ function run(command, args, options = {}) {
     if (result.stdout) process.stdout.write(sanitizeOutput(result.stdout));
     if (result.stderr) process.stderr.write(sanitizeOutput(result.stderr));
   }
-  return options.capture ? result.stdout.trim() : "";
+  return options.capture
+    ? options.raw
+      ? result.stdout
+      : result.stdout.trim()
+    : "";
 }
 
 function sourceRevision() {
   return run("git", ["rev-parse", "HEAD"], { capture: true });
+}
+
+function readGit(args) {
+  return run("git", args, { capture: true, raw: true });
 }
 
 function onMacOs() {
@@ -76,13 +91,6 @@ async function ensureFrontendDependencies() {
       return;
     }
   }
-}
-
-function coverageFailures(report) {
-  const totals = report.data?.[0]?.totals;
-  return ["branches", "functions", "lines", "regions"]
-    .filter((metric) => (totals?.[metric]?.percent ?? 0) < 85)
-    .map((metric) => `Native ${metric} coverage is below 85 percent`);
 }
 
 function cargoMetadata() {
@@ -106,12 +114,14 @@ function cargoMetadata() {
 
 async function nativeFiles() {
   const ephemeral = await filesBelow(nativeRoot, ignoredNativeDirectories);
-  const tracked = run("git", ["ls-files", "-z", "--", "native/"], {
-    capture: true,
-  })
-    .split("\0")
-    .filter(Boolean)
-    .map((path) => join(repositoryRoot, path));
+  const tracked = await trackedFiles(
+    run("git", ["ls-files", "--stage", "-z", "--", "native/"], {
+      capture: true,
+      raw: true,
+    }),
+    repositoryRoot,
+    nativeRoot,
+  );
   return mergeNativeInspectionPaths(ephemeral, tracked);
 }
 
@@ -134,14 +144,6 @@ async function sourceEntries(project) {
 async function projectContract() {
   return JSON.parse(
     await readFile(join(repositoryRoot, "quality/project.json"), "utf8"),
-  );
-}
-
-function workspaceDependencyNames(text) {
-  const section =
-    text.split("[workspace.dependencies]")[1]?.split(/^\[/mu)[0] ?? "";
-  return [...section.matchAll(/^([A-Za-z0-9_-]+)\s*=/gmu)].map(
-    (match) => match[1],
   );
 }
 
@@ -222,10 +224,10 @@ async function lint() {
     ]);
 }
 
-async function build() {
+async function build(revision = sourceRevision()) {
   await ensureFrontendDependencies();
   run("npm", ["--prefix", "native/frontend", "run", "build"], {
-    env: { KEIKO_NATIVE_SOURCE_REVISION: sourceRevision() },
+    env: { KEIKO_NATIVE_SOURCE_REVISION: revision },
   });
   if (onMacOs()) {
     run(
@@ -238,16 +240,16 @@ async function build() {
         "native/Cargo.toml",
       ],
       {
-        env: productiveRustEnv(),
+        env: productiveRustEnv(revision),
       },
     );
   }
 }
 
-async function testNative() {
+async function testNative(revision = sourceRevision()) {
   await ensureFrontendDependencies();
   run("npm", ["--prefix", "native/frontend", "run", "test"], {
-    env: { KEIKO_NATIVE_SOURCE_REVISION: sourceRevision() },
+    env: { KEIKO_NATIVE_SOURCE_REVISION: revision },
   });
   const contractTests = (await filesBelow(join(nativeRoot, "tests")))
     .filter((path) => path.endsWith(".test.mjs"))
@@ -255,7 +257,7 @@ async function testNative() {
   run("node", ["--test", ...contractTests]);
   if (onMacOs()) {
     run("npm", ["--prefix", "native/frontend", "run", "build"], {
-      env: { KEIKO_NATIVE_SOURCE_REVISION: sourceRevision() },
+      env: { KEIKO_NATIVE_SOURCE_REVISION: revision },
     });
     run("cargo", [
       ...stableCargo,
@@ -321,11 +323,9 @@ async function platform() {
 async function security() {
   const project = await projectContract();
   const entries = await sourceEntries(project);
-  const encoded = entries.map(({ text }) => text).join("\n");
-  if (redactionMatches(encoded).length > 0)
-    throw new Error("Native source contains sensitive material");
-  if (/tauri-plugin-(?:shell|fs|http|process|updater)/u.test(encoded))
-    throw new Error("Native source exposes a prohibited generic capability");
+  const failures = sourceSecurityFailures(entries);
+  if (failures.length > 0)
+    throw new Error(`Native source security rejected: ${failures.join(",")}`);
 }
 
 async function signing() {
@@ -356,6 +356,7 @@ export const nativeGateTestSupport = {
 
 const { acceptance, packageNative } = createNativePackageGate({
   build,
+  captureRepositoryState: () => createExactHeadGuard(readGit),
   cargoMetadata,
   filesBelow,
   frontendRoot,
@@ -365,7 +366,6 @@ const { acceptance, packageNative } = createNativePackageGate({
   repositoryRoot,
   run,
   rustBuildEnv: productiveRustEnv,
-  sourceRevision,
   targetRoot,
   testNative,
 });
@@ -388,6 +388,7 @@ export async function main(mode) {
   const command = modes[mode];
   if (command === undefined)
     throw new Error(`Unknown native gate: ${mode ?? "missing"}`);
+  await nativeFiles();
   await command();
 }
 

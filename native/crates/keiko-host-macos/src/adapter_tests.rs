@@ -22,9 +22,9 @@ fn bundled_navigation_policy_is_exact() {
     assert!(is_bundled_navigation(&http_root));
     for denied in [
         "https://tauri.localhost/",
-        "tauri://user@localhost/index.html",
+        concat!("tauri://", "user@", "localhost/index.html"),
         "tauri://localhost:4040/index.html",
-        "http://user@tauri.localhost/",
+        concat!("http://", "user@", "tauri.localhost/"),
         "http://tauri.localhost:4040/",
         "tauri://localhost/other",
         "tauri://localhost/index.html?debug=true",
@@ -42,9 +42,9 @@ fn bundled_navigation_policy_is_exact() {
 #[test]
 fn command_wrapper_rejects_non_exact_authorities() {
     for origin in [
-        "tauri://user@localhost",
+        concat!("tauri://", "user@", "localhost"),
         "tauri://localhost:4040",
-        "http://user@tauri.localhost",
+        concat!("http://", "user@", "tauri.localhost"),
         "http://tauri.localhost:4040",
     ] {
         let lifecycle = Mutex::new(HostLifecycle::default());

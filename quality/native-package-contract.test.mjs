@@ -67,6 +67,7 @@ test("package policy requires exact paths, dependencies, notices and SPDX", () =
       prohibitedMarkers: [
         "--health-json",
         "codex/9-desktop-host-evaluation",
+        "dummy.test",
         "example.invalid",
         "experiment-command",
         "generic-ping",
@@ -168,6 +169,31 @@ test("package policy requires exact paths, dependencies, notices and SPDX", () =
       policy,
     }).includes("package-redaction:Contents/MacOS/keiko-native-desktop"),
   );
+  for (const hostile of [
+    "operator@example.invalid",
+    "https://10.0.0.7/private",
+    "wss://service.local/socket",
+    "authorization=Bearer-private-value",
+    "http://dummy.test",
+  ]) {
+    const mutatedFiles = structuredClone(files);
+    mutatedFiles[1].bytes = Buffer.from(hostile);
+    assert.ok(
+      packagePolicyFailures({
+        cargo: dependencies,
+        fileClasses,
+        files: mutatedFiles,
+        npm: [],
+        policy,
+      }).some((failure) =>
+        failure.startsWith(
+          hostile.includes("dummy.test")
+            ? "production-marker:"
+            : "package-redaction:",
+        ),
+      ),
+    );
+  }
   for (const key of ["prohibitedMarkers", "prohibitedPathFragments"]) {
     const values = policy.security[key];
     for (const changed of [
@@ -284,4 +310,20 @@ test("evidence schema and redaction fail closed", () => {
   assert.equal(redactionMatches("password:!0").length, 0);
   assert.ok(redactionMatches('password="actual-value"').length > 0);
   assert.ok(redactionMatches("/Users/operator/project").length > 0);
+  for (const hostile of [
+    "operator@example.invalid",
+    "https://192.168.1.10/private",
+    "credential=private-value",
+    "authorization: Bearer private-value",
+  ]) {
+    assert.ok(redactionMatches(hostile).length > 0, hostile);
+  }
+  for (const ordinary of [
+    'name = "serde"\nchecksum = "abc"',
+    "Copyright 2026 Example Authors; MIT",
+    "tauri://localhost http://ipc.localhost http://asset.localhost",
+    "https://react.dev/errors/123",
+  ]) {
+    assert.deepEqual(redactionMatches(ordinary), [], ordinary);
+  }
 });

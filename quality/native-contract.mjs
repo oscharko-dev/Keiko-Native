@@ -3,12 +3,40 @@ import * as closed from "./native-package-policy.mjs";
 export function redactionMatches(value) {
   const denied = [
     /-----BEGIN [A-Z ]+PRIVATE KEY-----/u,
-    /(?:token|password|secret)\s*[=:]\s*(?:["'][^"']+["']|[A-Za-z0-9_./\\-]{4,})/iu,
+    /(?:token|password|secret|credential|api[_-]?key|authorization)\s*[=:]\s*(?:["'][^"']+["']|[A-Za-z0-9_./\\ -]{4,})/iu,
+    /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/iu,
+    /\b[A-Z][A-Z0-9+.-]*:\/\/[A-Z0-9.-]+\.(?:invalid|test|example)(?=[:/\s]|$)/iu,
+    /\b(?:https?|wss?):\/\/(?:[^/\s]+@|localhost(?=[:/\s]|$)|(?:[A-Z0-9.-]+\.(?:local|internal))(?=[:/\s]|$)|(?:0\.0\.0\.0|127(?:\.\d{1,3}){3}|10(?:\.\d{1,3}){3}|169\.254(?:\.\d{1,3}){2}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})(?=[:/\s]|$)|\[(?:::1|f[cd][A-F0-9:]*|fe[89ab][A-F0-9:]*)\](?=[:/\s]|$))/iu,
     /\/Users\/[^/\s]+/u,
     /[A-Z]:\\Users\\[^\\\s]+/u,
     /\/home\/[^/\s]+/u,
   ];
   return denied.filter((pattern) => pattern.test(value)).map(String);
+}
+
+export function coverageFailures(report) {
+  const totals = report.data?.[0]?.totals;
+  return ["branches", "functions", "lines", "regions"]
+    .filter((metric) => (totals?.[metric]?.percent ?? 0) < 85)
+    .map((metric) => `Native ${metric} coverage is below 85 percent`);
+}
+
+export function workspaceDependencyNames(text) {
+  const section =
+    text.split("[workspace.dependencies]")[1]?.split(/^\[/mu)[0] ?? "";
+  return [...section.matchAll(/^([A-Za-z0-9_-]+)\s*=/gmu)].map(
+    (match) => match[1],
+  );
+}
+
+export function sourceSecurityFailures(entries) {
+  const encoded = entries.map(({ text }) => text).join("\n");
+  const failures = [];
+  if (redactionMatches(encoded).length > 0)
+    failures.push("source-sensitive-content");
+  if (/tauri-plugin-(?:shell|fs|http|process|updater)/u.test(encoded))
+    failures.push("source-generic-capability");
+  return failures;
 }
 
 export function sourceDeclarationFailures(paths, project) {
