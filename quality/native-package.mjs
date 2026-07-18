@@ -89,9 +89,20 @@ function packagedShellEvidence({
   };
 }
 
+async function prepareAcceptancePackage({
+  packageNative,
+  repositoryState,
+  testNative,
+}) {
+  await testNative(repositoryState.expectedHead);
+  await repositoryState.assertUnchanged("after-test");
+  return packageNative(repositoryState);
+}
+
 export const nativePackageTestSupport = {
   packageManifest,
   packagedShellEvidence,
+  prepareAcceptancePackage,
   sortedInventory,
 };
 
@@ -279,9 +290,11 @@ export function createNativePackageGate({
     if (!onMacOs() || process.arch !== "arm64")
       throw new Error("acceptance:macos requires Apple Silicon macOS");
     const repositoryState = await captureRepositoryState();
-    const revision = await packageNative(repositoryState);
-    await testNative(revision);
-    await repositoryState.assertUnchanged("after-test");
+    const revision = await prepareAcceptancePackage({
+      packageNative,
+      repositoryState,
+      testNative,
+    });
     const lifecycle = await launchPackagedShell();
     await repositoryState.assertUnchanged("after-lifecycle");
     const bindings = {

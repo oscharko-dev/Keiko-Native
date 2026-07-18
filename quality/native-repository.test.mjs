@@ -8,7 +8,10 @@ import {
   createExactHeadGuard,
   worktreeStateFailures,
 } from "./native-repository.mjs";
-import { createNativePackageGate } from "./native-package.mjs";
+import {
+  createNativePackageGate,
+  nativePackageTestSupport,
+} from "./native-package.mjs";
 
 test("exact-head state rejects declared drift and permits governed outputs", () => {
   assert.deepEqual(
@@ -99,4 +102,34 @@ test("macOS release build receives the captured revision without a second lookup
   } finally {
     await rm(packageRoot, { force: true, recursive: true });
   }
+});
+
+test("acceptance tests the exact revision before packaging into the shared target", async () => {
+  const revision = "f".repeat(40);
+  const events = [];
+  const repositoryState = {
+    expectedHead: revision,
+    assertUnchanged(stage) {
+      events.push(`assert:${stage}`);
+    },
+  };
+  assert.equal(
+    await nativePackageTestSupport.prepareAcceptancePackage({
+      packageNative(state) {
+        assert.equal(state, repositoryState);
+        events.push("package");
+        return revision;
+      },
+      repositoryState,
+      testNative(value) {
+        events.push(`test:${value}`);
+      },
+    }),
+    revision,
+  );
+  assert.deepEqual(events, [
+    `test:${revision}`,
+    "assert:after-test",
+    "package",
+  ]);
 });
