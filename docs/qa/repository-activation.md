@@ -24,10 +24,11 @@ template labels, which do not exist in the current source taxonomy:
 | `type: defect`   | Reproducible defect or user finding that restores accepted behavior   |
 
 Confirm that these copied labels retain their exact names: `type: epic`, `type: task`,
-`status: new`, `status: ready`, `status: in progress`, `status: pr open`,
-`status: ready for human review`, `status: blocked`, `status: waiting for user`, and `status: done`.
-The legacy `bug`, `User Findings`, area, dependency, and contributor labels may coexist; they do not
-replace the single supported `type:*` label required by the Native issue contract.
+`status: new`, `status: triaged`, `status: ready`, `status: in progress`,
+`status: pr open`, `status: ready for human review`, `status: blocked`,
+`status: waiting for user`, and `status: done`. The legacy `bug`, `User Findings`, area,
+dependency, and contributor labels may coexist; they do not replace the single supported `type:*`
+label required by the Native issue contract.
 
 Create one disposable issue from every template and confirm that its declared labels are applied.
 Delete the disposable issues after the readiness probes below.
