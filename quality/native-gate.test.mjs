@@ -317,6 +317,20 @@ lto = true
   assert.match(env.CARGO_ENCODED_RUSTFLAGS, /\/toolchain\/rustup/u);
   assert.match(env.CARGO_ENCODED_RUSTFLAGS, /\/operator/u);
   assert.match(env.KEIKO_NATIVE_SOURCE_REVISION, /^[0-9a-f]{40}$/u);
+
+  const revision = "e".repeat(40);
+  const testPlan = nativeGateTestSupport.rustTestPlan(revision);
+  assert.equal(testPlan.options.env.KEIKO_NATIVE_SOURCE_REVISION, revision);
+  assert.equal(
+    testPlan.options.env.CARGO_ENCODED_RUSTFLAGS,
+    nativeGateTestSupport.productiveRustEnv(revision).CARGO_ENCODED_RUSTFLAGS,
+  );
+  assert.deepEqual(testPlan.args.slice(0, 4), [
+    "+1.92.0",
+    "test",
+    "--locked",
+    "--workspace",
+  ]);
 });
 
 test("command failures expose bounded sanitized status and spawn causes", () => {

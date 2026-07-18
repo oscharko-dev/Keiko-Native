@@ -91,3 +91,17 @@ export function productiveRustEnv(repositoryRoot, revision) {
     RUSTFLAGS: "",
   };
 }
+
+export function rustTestPlan(revision, env) {
+  return {
+    args: [
+      "+1.92.0",
+      "test",
+      "--locked",
+      "--workspace",
+      "--manifest-path",
+      "native/Cargo.toml",
+    ],
+    options: { env: { ...env, KEIKO_NATIVE_SOURCE_REVISION: revision } },
+  };
+}

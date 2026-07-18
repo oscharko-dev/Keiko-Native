@@ -25,6 +25,7 @@ import {
   isDirectInvocation,
   productiveRustEnv as createProductiveRustEnv,
   runNativeGateCli,
+  rustTestPlan,
   sanitizeOutput,
 } from "./native-process.mjs";
 import { createExactHeadGuard } from "./native-repository.mjs";
@@ -279,14 +280,8 @@ async function testNative(revision = sourceRevision()) {
     run("npm", ["--prefix", "native/frontend", "run", "build"], {
       env: { KEIKO_NATIVE_SOURCE_REVISION: revision },
     });
-    run("cargo", [
-      ...stableCargo,
-      "test",
-      "--locked",
-      "--workspace",
-      "--manifest-path",
-      "native/Cargo.toml",
-    ]);
+    const plan = rustTestPlan(revision, productiveRustEnv(revision));
+    run("cargo", plan.args, plan.options);
   }
 }
 
@@ -336,6 +331,8 @@ export const nativeGateTestSupport = {
   mergeNativeInspectionPaths,
   ...nativePackageTestSupport,
   productiveRustEnv,
+  rustTestPlan: (revision) =>
+    rustTestPlan(revision, productiveRustEnv(revision)),
   sanitizeOutput,
   workspaceDependencyNames,
 };
