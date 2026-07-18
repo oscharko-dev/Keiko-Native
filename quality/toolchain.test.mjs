@@ -114,6 +114,11 @@ test("npm ci and guarded entry points fail on wrong Node or npm versions", async
 });
 
 test("every npm workflow consumer activates and verifies the exact toolchain first", async () => {
+  const activationCommands = [
+    "corepack enable npm",
+    "corepack install --global npm@11.16.0",
+    "node quality/check-toolchain.mjs",
+  ];
   for (const name of ["ci.yml", "mutation-security.yml"]) {
     const workflow = await readFile(
       join(import.meta.dirname, "../.github/workflows", name),
@@ -167,6 +172,28 @@ test("every npm workflow consumer activates and verifies the exact toolchain fir
           "",
         ].join("\n"),
       ),
+      ...activationCommands.flatMap((command) =>
+        ["/usr/bin/true", "echo"].map((prefix) =>
+          workflow.replace(
+            `          ${command}`,
+            `          ${prefix} ${command}`,
+          ),
+        ),
+      ),
+      workflow.replace(
+        "        run: |\n          corepack enable npm",
+        [
+          "        env:",
+          "          OWNED: unsafe",
+          "        run: |",
+          "          corepack enable npm",
+        ].join("\n"),
+      ),
+      workflow.replace(
+        "        run: |\n          corepack enable npm",
+        "        shell: bash\n        run: |\n          corepack enable npm",
+      ),
+      addJobContinueOnError(workflow),
       moveFirstActivationAfterNpm(workflow),
     ]) {
       assert.ok(workflowToolchainFailures(mutated).length > 0, name);
@@ -267,6 +294,13 @@ function moveFirstActivationAfterNpm(workflow) {
       "      - run: npm ci --ignore-scripts",
       `      - run: npm ci --ignore-scripts\n${block.trimEnd()}`,
     );
+}
+
+function addJobContinueOnError(workflow) {
+  return workflow.replace(
+    /^(  (?:core-quality|native-mutation-security):\n)/mu,
+    "$1    continue-on-error: true\n",
+  );
 }
 
 function workflowFixture(run) {

@@ -9,6 +9,7 @@ import {
   readFile,
   realpath,
   readdir,
+  rename,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -164,6 +165,65 @@ test(
   },
 );
 
+test(
+  "first publication syncs newly created absolute and relative ancestors",
+  { skip: !supported },
+  async () => {
+    await fixture(async ({ helper, root }) => {
+      for (const [failure, destination, path] of [
+        ["absolute-parent-sync", join(root, "missing/absolute"), "delivery"],
+        ["relative-parent-sync", join(root, "relative"), "nested/delivery"],
+      ]) {
+        const source = join(root, `source-${failure}`);
+        await mkdir(source);
+        await writeFile(join(source, "new"), "new");
+        if (failure === "relative-parent-sync") await mkdir(destination);
+        const result = await runHelper(
+          helper,
+          ["publish", source, ".", destination, path],
+          { env: { KEIKO_FS_HELPER_TEST_FAIL_SYNC: failure } },
+        );
+        assert.equal(result.status, 1, failure);
+        assert.match(result.stderr, new RegExp(failure, "u"));
+      }
+    });
+  },
+);
+
+test(
+  "stage cleanup never removes a foreign replacement",
+  { skip: !supported },
+  async () => {
+    await fixture(async ({ helper, root }) => {
+      const source = join(root, "source-foreign");
+      const destination = join(root, "destination-foreign");
+      await mkdir(source);
+      await mkdir(destination);
+      await writeFile(join(source, "new"), "new");
+      const race = startBarrier(helper, [
+        "publish",
+        source,
+        ".",
+        destination,
+        "delivery",
+      ]);
+      await race.ready;
+      const stage = (await readdir(destination)).find((entry) =>
+        entry.startsWith(".keiko-stage-"),
+      );
+      assert.ok(stage);
+      await rename(join(destination, stage), join(destination, "saved-stage"));
+      await mkdir(join(destination, stage));
+      await writeFile(join(destination, stage, "foreign"), "foreign");
+      assert.equal((await race.release()).status, 1);
+      assert.equal(
+        await readFile(join(destination, stage, "foreign"), "utf8"),
+        "foreign",
+      );
+    });
+  },
+);
+
 async function fixture(callback) {
   const createdRoot = await mkdtemp(
     join(tmpdir(), "keiko-native-fs-durability-"),
@@ -221,4 +281,28 @@ function runHelper(helper, args, { env = {}, fds = [], input } = {}) {
     child.once("error", reject);
     child.once("close", (status) => resolve({ status, stderr }));
   });
+}
+
+function startBarrier(helper, args) {
+  const child = spawn(helper, args, {
+    env: { ...process.env, KEIKO_FS_HELPER_TEST_BARRIER: "1" },
+    stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"],
+  });
+  const ready = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.stdio[3].once("data", resolve);
+    child.once("close", () =>
+      reject(new Error("helper closed before barrier")),
+    );
+  });
+  return {
+    ready,
+    release() {
+      child.stdio[4].end("C");
+      return new Promise((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", (status) => resolve({ status }));
+      });
+    },
+  };
 }

@@ -139,7 +139,12 @@ test(
         await readFile(join(destination, "delivery/old"), "utf8"),
         "old",
       );
-      await rm(join(destination, staging), { recursive: true });
+      assert.equal(
+        (await readdir(destination)).some((name) =>
+          name.startsWith(".keiko-stage-"),
+        ),
+        false,
+      );
 
       race = startBarrier(helper, [
         "publish",

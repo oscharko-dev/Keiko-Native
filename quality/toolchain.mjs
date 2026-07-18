@@ -63,6 +63,8 @@ export function workflowToolchainFailures(workflow) {
   const failures = [];
   const jobs = workflow.split(/(?=^  [A-Za-z0-9_-]+:\s*$)/mu);
   for (const job of jobs) {
+    if (/^    continue-on-error:/mu.test(job))
+      failures.push("workflow-job-continue-on-error");
     const firstNpm = runCommands(job)
       .filter(({ command }) => containsNpmExecutable(command))
       .map(({ index }) => index)
@@ -75,14 +77,10 @@ export function workflowToolchainFailures(workflow) {
       activationName,
       activationEnd < 0 ? undefined : activationEnd,
     );
-    const activationRuns = runCommands(activation);
     if (
       activationName < 0 ||
       activationName > firstNpm ||
-      !activation.includes("run: |") ||
-      activationRuns.length !== 1 ||
-      !validActivationCommand(activationRuns[0].command) ||
-      /^\s+(?:continue-on-error|if):/mu.test(activation)
+      !validActivationStep(activation)
     )
       failures.push("workflow-npm-activation");
     const setup = job.slice(0, Math.max(activationName, 0));
@@ -95,19 +93,16 @@ export function workflowToolchainFailures(workflow) {
   return failures;
 }
 
-function validActivationCommand(command) {
-  const expected = [
-    "corepack enable npm",
-    "corepack install --global npm@11.16.0",
-    "node quality/check-toolchain.mjs",
-  ];
-  const actual = command
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
+function validActivationStep(activation) {
   return (
-    actual.length === expected.length &&
-    actual.every((line, index) => line === expected[index])
+    activation.replaceAll("\r", "").trimEnd() ===
+    [
+      "- name: Activate exact npm 11.16.0",
+      "        run: |",
+      "          corepack enable npm",
+      "          corepack install --global npm@11.16.0",
+      "          node quality/check-toolchain.mjs",
+    ].join("\n")
   );
 }
 

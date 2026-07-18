@@ -19,6 +19,8 @@ export const NATIVE_FS_SOURCES = [
   "quality/native-fs-helper.c",
   "quality/native-fs-tree.c",
   "quality/native-fs-bound.c",
+  "quality/native-fs-path.c",
+  "quality/native-fs-stage.c",
   "quality/native-fs-helper.h",
   "quality/native-fs-internal.h",
 ];

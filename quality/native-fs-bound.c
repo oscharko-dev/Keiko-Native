@@ -71,8 +71,7 @@ static int canonical_path(const char *path, char type) {
 
 static void parse_entries(int argc, char **argv, bound_entry_t *entries,
                           size_t count) {
-  if (count == 0 || count > MAX_BOUND_ENTRIES ||
-      argc != 5 + (int)(count * 4))
+  if (count == 0 || count > MAX_BOUND_ENTRIES || argc != 5 + (int)(count * 4))
     fail("bound-count");
   for (size_t i = 0; i < count; i++) {
     char *type = argv[5 + i * 4];
@@ -81,8 +80,9 @@ static void parse_entries(int argc, char **argv, bound_entry_t *entries,
     char *metadata = argv[8 + i * 4];
     char *mode_end = NULL;
     long mode = strtol(mode_text, &mode_end, 8);
-    if ((strcmp(type, "D") && strcmp(type, "F")) || !canonical_path(path, *type) ||
-        !mode_text[0] || *mode_end || mode < 0 || mode > 0777)
+    if ((strcmp(type, "D") && strcmp(type, "F")) ||
+        !canonical_path(path, *type) || !mode_text[0] || *mode_end ||
+        mode < 0 || mode > 0777)
       fail("bound-entry");
     if ((*type == 'D' && mode != (!strcmp(path, ".") ? 0700 : 0755)) ||
         (*type == 'F' && mode != 0600 && mode != 0644 && mode != 0755))
@@ -111,7 +111,8 @@ static void parse_entries(int argc, char **argv, bound_entry_t *entries,
     entries[i].before.st_ctim.tv_nsec = (long)(ctime % 1000000000ULL);
 #endif
     struct stat current;
-    if (fstat(entries[i].fd, &current) || !matches_record(&entries[i], &current) ||
+    if (fstat(entries[i].fd, &current) ||
+        !matches_record(&entries[i], &current) ||
         (current.st_mode & 0777) != entries[i].mode ||
         (*type == 'D' ? !S_ISDIR(current.st_mode) : !S_ISREG(current.st_mode)))
       fail("bound-fd");
@@ -136,7 +137,8 @@ static int validate_inventory(bound_entry_t *entries, size_t count) {
   unsigned char seen[MAX_BOUND_ENTRIES] = {1};
   for (size_t i = 0; i < count; i++) {
     struct stat current;
-    if (fstat(entries[i].fd, &current) || !matches_record(&entries[i], &current))
+    if (fstat(entries[i].fd, &current) ||
+        !matches_record(&entries[i], &current))
       return 0;
     if (entries[i].type != 'D') continue;
     DIR *directory = fdopendir(dup(entries[i].fd));
@@ -149,8 +151,8 @@ static int validate_inventory(bound_entry_t *entries, size_t count) {
       if (!valid_component(item->d_name) ||
           snprintf(path, sizeof(path), "%s%s%s",
                    !strcmp(entries[i].path, ".") ? "" : entries[i].path,
-                   !strcmp(entries[i].path, ".") ? "" : "/", item->d_name) >=
-              (int)sizeof(path)) {
+                   !strcmp(entries[i].path, ".") ? "" : "/",
+                   item->d_name) >= (int)sizeof(path)) {
         closedir(directory);
         return 0;
       }
@@ -166,7 +168,8 @@ static int validate_inventory(bound_entry_t *entries, size_t count) {
       }
     }
     closedir(directory);
-    if (fstat(entries[i].fd, &current) || !matches_record(&entries[i], &current))
+    if (fstat(entries[i].fd, &current) ||
+        !matches_record(&entries[i], &current))
       return 0;
   }
   for (size_t i = 0; i < count; i++)
@@ -235,8 +238,7 @@ static void sync_staged_directories(int stage, bound_entry_t *entries,
       chain_t chain = {0};
       char leaf[NAME_MAX + 1];
       int parent = open_parent(stage, entries[i].path, 0, &chain, leaf);
-      int directory =
-          openat(parent, leaf, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+      int directory = openat(parent, leaf, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
       struct stat descriptor, named;
       if (directory < 0 || fstat(directory, &descriptor) ||
           fstatat(parent, leaf, &named, AT_SYMLINK_NOFOLLOW) ||
@@ -263,22 +265,26 @@ int run_publish_bound(int argc, char **argv) {
   int destination_root = open_absolute(argv[2], 1, &destination_chain);
   refresh_chain(&destination_chain);
   char leaf[NAME_MAX + 1];
-  int parent = open_parent(destination_root, argv[3], 1, &publication_chain, leaf);
+  int parent =
+      open_parent(destination_root, argv[3], 1, &publication_chain, leaf);
   refresh_chain(&publication_chain);
   char staging[NAME_MAX + 1];
   if (snprintf(staging, sizeof(staging), ".keiko-stage-%ld", (long)getpid()) >=
-      (int)sizeof(staging) || mkdirat(parent, staging, 0700))
+          (int)sizeof(staging) ||
+      mkdirat(parent, staging, 0700))
     fail("stage-create");
   int stage = openat(parent, staging, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
   if (stage < 0) fail("stage-open");
+  arm_stage_cleanup(parent, staging, stage);
+  if (sync_directory(parent, "stage-parent-sync")) fail("stage-parent-sync");
   for (size_t i = 1; i < count; i++)
     if (entries[i].type == 'D') create_directory(stage, &entries[i]);
   for (size_t i = 0; i < count; i++)
     if (entries[i].type == 'F') copy_file(stage, &entries[i]);
   sync_staged_directories(stage, entries, count);
-  if (!validate_inventory(entries, count)) {
+  if (test_failure_at("bound-inventory-drift") ||
+      !validate_inventory(entries, count)) {
     close(stage);
-    remove_entry(parent, staging);
     fail("bound-inventory-drift");
   }
   publish_staged(parent, &publication_chain, leaf, staging, stage);
