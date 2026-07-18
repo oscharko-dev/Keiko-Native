@@ -41,6 +41,15 @@ have been resolved. A planning agent acting under an explicit planning or grilli
 authorized planning actor and may request readiness without a second GitHub approval or human
 comment.
 
+The canonical target state meanings, transition requests, actors, preconditions, recovery, and
+evidence rules are defined by [`docs/qa/issue-lifecycle.md`](docs/qa/issue-lifecycle.md). The
+canonical lifecycle states are `status: new`, `status: triaged`, `status: ready`,
+`status: in progress`, `status: pr open`, `status: ready for human review`, `status: blocked`,
+`status: waiting for user`, and `status: done`. Until the signed final Contract-as-Code activation
+switch, that expanded lifecycle is inert: readiness is requested directly from `status: new`,
+rejected or invalidated work returns to new, and `status: ready` with its exact matching accepted
+record remains the only executable state.
+
 The planning actor requests readiness by applying `status: ready`. The repository workflow keeps
 that label only after validating the contract and recording its version and fingerprint; otherwise
 it restores `status: new`. Only `status: ready` with a matching readiness record makes an epic or

@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { appendFile, readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 import { githubRequestFor } from "./github-api.mjs";
@@ -107,11 +107,21 @@ export async function runPullRequestContractAction({ event }) {
   return result;
 }
 
+export async function writePullRequestIssueOutput({ event, outputPath }) {
+  const issueNumber = pullRequestIssueNumber(event.pull_request?.body);
+  if (!Number.isInteger(issueNumber) || outputPath === undefined) return;
+  await appendFile(outputPath, `issue-number=${issueNumber}\n`, "utf8");
+}
+
 async function main() {
   const eventPath = process.env.GITHUB_EVENT_PATH;
   if (eventPath === undefined) throw new Error("GITHUB_EVENT_PATH is missing.");
   const event = JSON.parse(await readFile(eventPath, "utf8"));
   await runPullRequestContractAction({ event });
+  await writePullRequestIssueOutput({
+    event,
+    outputPath: process.env.GITHUB_OUTPUT,
+  });
 }
 
 if (

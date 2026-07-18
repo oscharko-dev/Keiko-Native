@@ -8,6 +8,7 @@ import {
   readinessRecordFromComments,
   runIssueReadinessAction,
 } from "./issue-readiness-action.mjs";
+import { semanticIssueFingerprint } from "./issue-contract.mjs";
 
 const validation = {
   failures: [],
@@ -171,6 +172,17 @@ test("keeps only an unchanged accepted contract ready", () => {
     }).outcome,
     "reject",
   );
+  assert.equal(
+    decideReadiness({
+      action: "edited",
+      actorAuthorized: false,
+      hasCurrentReadinessLifecycle: true,
+      hasReadyLabel: false,
+      previousRecord,
+      validation: { ...validation, fingerprint: "b".repeat(64) },
+    }).outcome,
+    "reject",
+  );
 });
 
 test("invalidates readiness when the issue closes or the ready label is removed", () => {
@@ -296,6 +308,33 @@ test("rejects an initial readiness request with a conflicting lifecycle status",
   assert.match(result.reasons.join("\n"), /conflicting lifecycle status/u);
 });
 
+test("accepts an initial readiness request from triaged", async (t) => {
+  const calls = installGitHubFetchMock(t);
+  const event = issueEvent({
+    issue: {
+      body: validTaskBody(),
+      labels: [
+        { name: "type: task" },
+        { name: "status: triaged" },
+        { name: "status: ready" },
+      ],
+      number: 42,
+      title: "Implement governed workspace opening",
+    },
+  });
+
+  const result = await runIssueReadinessAction({ event });
+
+  assert.equal(result.outcome, "accept");
+  assert.ok(
+    calls.some(
+      (call) =>
+        call.method === "DELETE" &&
+        call.url.endsWith("/labels/status%3A%20triaged"),
+    ),
+  );
+});
+
 test("executes a rejected readiness request fail closed", async (t) => {
   const calls = installGitHubFetchMock(t, {
     permission: "read",
@@ -376,6 +415,207 @@ test("rejects a conflicting lifecycle status after readiness", async (t) => {
   const result = await runIssueReadinessAction({ event });
   assert.equal(result.outcome, "reject");
   assert.match(result.reasons.join("\n"), /conflicting lifecycle status/u);
+});
+
+test("invalidates linked PR contracts from current-ready PR lifecycle states", async (t) => {
+  const accepted = readinessComment({
+    actor: "planner",
+    decision: { outcome: "accept", reasons: [] },
+    now: "2026-07-16T12:00:00.000Z",
+    validation: {
+      failures: [],
+      fingerprint: "b".repeat(64),
+      version: "v2",
+    },
+  });
+  const calls = installGitHubFetchMock(t, {
+    comments: [
+      {
+        body: accepted,
+        id: 1,
+        user: {
+          id: 41898282,
+          login: "github-actions[bot]",
+          type: "Bot",
+        },
+      },
+    ],
+    pullRequests: [
+      {
+        body: "## Scope\n\n- Accepted issue: #42",
+        head: { sha: "c".repeat(40) },
+      },
+    ],
+  });
+  const result = await runIssueReadinessAction({
+    event: issueEvent({
+      action: "edited",
+      issue: {
+        body: validTaskBody(),
+        labels: [{ name: "type: task" }, { name: "status: pr open" }],
+        number: 42,
+        title: "Implement governed workspace opening",
+      },
+    }),
+  });
+
+  assert.equal(result.outcome, "reject");
+  assert.ok(
+    calls.some(
+      (call) =>
+        call.method === "DELETE" &&
+        call.url.endsWith("/labels/status%3A%20pr%20open"),
+    ),
+  );
+  assert.ok(
+    calls.some(
+      (call) =>
+        call.method === "POST" &&
+        call.url.endsWith(`/statuses/${"c".repeat(40)}`),
+    ),
+  );
+});
+
+test("invalidates linked PR contracts when pausing PR-tracked work", async (t) => {
+  const body = validTaskBody();
+  const title = "Implement governed workspace opening";
+  const accepted = readinessComment({
+    actor: "planner",
+    decision: { outcome: "accept", reasons: [] },
+    now: "2026-07-16T12:00:00.000Z",
+    validation: {
+      failures: [],
+      fingerprint: semanticIssueFingerprint(body, title),
+      version: "v1",
+    },
+  });
+  const calls = installGitHubFetchMock(t, {
+    comments: [
+      {
+        body: accepted,
+        id: 1,
+        user: {
+          id: 41898282,
+          login: "github-actions[bot]",
+          type: "Bot",
+        },
+      },
+    ],
+    pullRequests: [
+      {
+        body: "## Scope\n\n- Accepted issue: #42",
+        head: { sha: "d".repeat(40) },
+      },
+    ],
+  });
+  const result = await runIssueReadinessAction({
+    event: issueEvent({
+      action: "labeled",
+      issue: {
+        body,
+        labels: [
+          { name: "type: task" },
+          { name: "status: pr open" },
+          { name: "status: blocked" },
+        ],
+        number: 42,
+        title,
+      },
+      label: { name: "status: blocked" },
+    }),
+  });
+
+  assert.equal(result.outcome, "keep");
+  assert.equal(result.invalidatedLinkedPullRequests, 1);
+  assert.ok(
+    calls.some(
+      (call) =>
+        call.method === "POST" &&
+        call.url.endsWith(`/statuses/${"d".repeat(40)}`),
+    ),
+  );
+  assert.equal(calls.filter((call) => call.method === "DELETE").length, 0);
+});
+
+test("invalidates linked PR contracts when PR lifecycle labels are removed", async (t) => {
+  const body = validTaskBody();
+  const title = "Implement governed workspace opening";
+  const accepted = readinessComment({
+    actor: "planner",
+    decision: { outcome: "accept", reasons: [] },
+    now: "2026-07-16T12:00:00.000Z",
+    validation: {
+      failures: [],
+      fingerprint: semanticIssueFingerprint(body, title),
+      version: "v1",
+    },
+  });
+  const calls = installGitHubFetchMock(t, {
+    comments: [
+      {
+        body: accepted,
+        id: 1,
+        user: {
+          id: 41898282,
+          login: "github-actions[bot]",
+          type: "Bot",
+        },
+      },
+    ],
+    pullRequests: [
+      {
+        body: "## Scope\n\n- Accepted issue: #42",
+        head: { sha: "e".repeat(40) },
+      },
+    ],
+  });
+  const result = await runIssueReadinessAction({
+    event: issueEvent({
+      action: "unlabeled",
+      issue: {
+        body,
+        labels: [{ name: "type: task" }],
+        number: 42,
+        title,
+      },
+      label: { name: "status: pr open" },
+    }),
+  });
+
+  assert.equal(result.outcome, "reject");
+  assert.deepEqual(result.reasons, [
+    "The pull-request lifecycle label was removed.",
+  ]);
+  assert.ok(
+    calls.some(
+      (call) =>
+        call.method === "POST" && call.url.endsWith("/issues/42/labels"),
+    ),
+  );
+  assert.ok(
+    calls.some(
+      (call) =>
+        call.method === "POST" &&
+        call.url.endsWith(`/statuses/${"e".repeat(40)}`),
+    ),
+  );
+
+  assert.deepEqual(
+    await runIssueReadinessAction({
+      event: issueEvent({
+        action: "unlabeled",
+        issue: {
+          body,
+          labels: [{ name: "type: task" }],
+          number: 42,
+          title,
+        },
+        label: { name: "status: ready for human review" },
+        sender: { login: "github-actions[bot]" },
+      }),
+    }),
+    { outcome: "ignore" },
+  );
 });
 
 test("fails closed when actor permission cannot be established", async (t) => {

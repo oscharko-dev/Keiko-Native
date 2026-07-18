@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
-import { runPullRequestContractAction } from "./pr-contract-action.mjs";
+import {
+  runPullRequestContractAction,
+  writePullRequestIssueOutput,
+} from "./pr-contract-action.mjs";
 import { validPullRequestFixture } from "./pr-contract-test-fixture.mjs";
 
 test.beforeEach((t) => {
@@ -46,6 +52,20 @@ test("loads the linked issue and passes a complete pull-request contract", async
     ).length,
     2,
   );
+});
+
+test("writes the linked issue number for the serialized lifecycle job", async (t) => {
+  const fixture = validPullRequestFixture();
+  const directory = await mkdtemp(join(tmpdir(), "keiko-pr-output-"));
+  const outputPath = join(directory, "github-output");
+  t.after(() => rm(directory, { force: true, recursive: true }));
+
+  await writePullRequestIssueOutput({
+    event: { pull_request: fixture.pullRequest },
+    outputPath,
+  });
+
+  assert.equal(await readFile(outputPath, "utf8"), "issue-number=42\n");
 });
 
 test("fails a structurally incomplete pull-request contract", async (t) => {

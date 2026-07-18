@@ -8,7 +8,32 @@ import { fieldValue } from "./markdown-contract.mjs";
 
 const readinessMarker = "<!-- keiko-native-readiness -->";
 const allowedPermissions = new Set(["admin", "maintain", "triage", "write"]);
+const initialReadySourceLabels = new Set(["status: new", "status: triaged"]);
+const currentReadinessLifecycleLabels = new Set([
+  "status: ready",
+  "status: in progress",
+  "status: pr open",
+  "status: ready for human review",
+]);
+const prTrackedLifecycleLabels = new Set([
+  "status: pr open",
+  "status: ready for human review",
+]);
+const pausedLifecycleLabels = new Set([
+  "status: blocked",
+  "status: waiting for user",
+]);
 const githubRequest = githubRequestFor("keiko-native-issue-readiness");
+
+function labelNames(labels) {
+  return (Array.isArray(labels) ? labels : []).map((label) =>
+    typeof label === "string" ? label : (label?.name ?? ""),
+  );
+}
+
+function lifecycleLabels(labels) {
+  return labelNames(labels).filter((name) => name.startsWith("status: "));
+}
 
 export function readinessRecordFromComments(comments) {
   const records = comments
@@ -34,17 +59,20 @@ export function readinessRecordFromComments(comments) {
 export function decideReadiness({
   action,
   actorAuthorized,
+  hasCurrentReadinessLifecycle,
   hasReadyLabel,
   label,
   previousRecord,
   validation,
 }) {
+  const currentReadinessLifecycle =
+    hasCurrentReadinessLifecycle ?? hasReadyLabel;
   const isRequest = action === "labeled" && label === "status: ready";
   const isRevalidation =
     (["edited", "reopened", "labeled", "unlabeled"].includes(action) &&
-      hasReadyLabel) ||
+      currentReadinessLifecycle) ||
     (action === "unlabeled" && label === "status: ready");
-  if (action === "closed" && hasReadyLabel)
+  if (action === "closed" && currentReadinessLifecycle)
     return {
       outcome: "reject",
       reasons: ["A closed issue cannot remain implementation ready."],
@@ -54,6 +82,11 @@ export function decideReadiness({
     return {
       outcome: "reject",
       reasons: ["The implementation-ready label was removed."],
+    };
+  if (action === "unlabeled" && prTrackedLifecycleLabels.has(label))
+    return {
+      outcome: "reject",
+      reasons: ["The pull-request lifecycle label was removed."],
     };
   if (isRequest && !actorAuthorized)
     return {
@@ -192,6 +225,94 @@ async function postComment(repository, issueNumber, body) {
   });
 }
 
+function readinessEventFacts(event, labels) {
+  const statuses = lifecycleLabels(labels);
+  const hasReadyLabel = statuses.includes("status: ready");
+  const hasCurrentReadinessLifecycle = statuses.some((label) =>
+    currentReadinessLifecycleLabels.has(label),
+  );
+  const isInitialRequest =
+    event.action === "labeled" && event.label?.name === "status: ready";
+  const isReadinessRemoval =
+    event.action === "unlabeled" &&
+    event.label?.name === "status: ready" &&
+    event.sender?.login !== "github-actions[bot]";
+  const removesPrTrackedWork =
+    event.action === "unlabeled" &&
+    prTrackedLifecycleLabels.has(event.label?.name) &&
+    event.sender?.login !== "github-actions[bot]";
+  const isLifecycleRevalidation =
+    ["edited", "reopened", "labeled", "unlabeled", "closed"].includes(
+      event.action,
+    ) && hasCurrentReadinessLifecycle;
+  const pausesPrTrackedWork =
+    event.action === "labeled" &&
+    pausedLifecycleLabels.has(event.label?.name) &&
+    statuses.some((status) => prTrackedLifecycleLabels.has(status));
+  return {
+    hasCurrentReadinessLifecycle,
+    hasReadyLabel,
+    isInitialRequest,
+    pausesPrTrackedWork,
+    relevant:
+      isInitialRequest ||
+      isLifecycleRevalidation ||
+      isReadinessRemoval ||
+      removesPrTrackedWork,
+    removesPrTrackedWork,
+    statuses,
+  };
+}
+
+function validationWithLifecycleConflicts({
+  hasReadyLabel,
+  isInitialRequest,
+  issue,
+  labels,
+  statuses,
+}) {
+  const validation = validateIssueContract({
+    body: issue.body,
+    labels,
+    title: issue.title,
+  });
+  const hasConflictingInitialReadyStatus =
+    isInitialRequest &&
+    statuses.some(
+      (status) =>
+        status !== "status: ready" && !initialReadySourceLabels.has(status),
+    );
+  const hasConflictingReadyRetentionStatus =
+    !isInitialRequest &&
+    hasReadyLabel &&
+    statuses.some((status) => status !== "status: ready");
+  if (hasConflictingInitialReadyStatus || hasConflictingReadyRetentionStatus)
+    validation.failures.push(
+      "Implementation-ready work cannot retain a conflicting lifecycle status label.",
+    );
+  return validation;
+}
+
+async function applyReadinessDecision({
+  comment,
+  decision,
+  issueNumber,
+  repository,
+  statuses,
+}) {
+  if (decision.outcome === "accept") {
+    await removeLabel(repository, issueNumber, "status: new");
+    await removeLabel(repository, issueNumber, "status: triaged");
+    await postComment(repository, issueNumber, comment);
+    return;
+  }
+  for (const status of statuses)
+    await removeLabel(repository, issueNumber, status);
+  await addLabel(repository, issueNumber, "status: new");
+  await postComment(repository, issueNumber, comment);
+  await invalidateLinkedPullRequestContracts(repository, issueNumber);
+}
+
 export async function runIssueReadinessAction({ event, now = new Date() }) {
   const repository = process.env.GITHUB_REPOSITORY;
   if (typeof repository !== "string" || !repository.includes("/"))
@@ -199,50 +320,39 @@ export async function runIssueReadinessAction({ event, now = new Date() }) {
   const issue = event.issue;
   if (issue?.pull_request !== undefined) return { outcome: "ignore" };
   const labels = Array.isArray(issue?.labels) ? issue.labels : [];
-  const hasReadyLabel = labels.some((label) => label?.name === "status: ready");
-  const relevant =
-    (event.action === "labeled" && event.label?.name === "status: ready") ||
-    (["edited", "reopened", "labeled", "unlabeled", "closed"].includes(
-      event.action,
-    ) &&
-      hasReadyLabel) ||
-    (event.action === "unlabeled" &&
-      event.label?.name === "status: ready" &&
-      event.sender?.login !== "github-actions[bot]");
-  if (!relevant) return { outcome: "ignore" };
+  const facts = readinessEventFacts(event, labels);
+  if (!facts.relevant) return { outcome: "ignore" };
 
   const comments = await allIssueComments(repository, issue.number);
-  const validation = validateIssueContract({
-    body: issue.body,
+  const validation = validationWithLifecycleConflicts({
+    hasReadyLabel: facts.hasReadyLabel,
+    isInitialRequest: facts.isInitialRequest,
+    issue,
     labels,
-    title: issue.title,
+    statuses: facts.statuses,
   });
-  const isInitialRequest =
-    event.action === "labeled" && event.label?.name === "status: ready";
-  if (
-    labels.some(
-      (label) =>
-        label?.name?.startsWith("status: ") &&
-        label.name !== "status: ready" &&
-        !(isInitialRequest && label.name === "status: new"),
-    )
-  )
-    validation.failures.push(
-      "Implementation-ready work cannot retain a conflicting lifecycle status label.",
-    );
   const actorAuthorized =
     event.action !== "labeled" ||
     (await actorCanRequestReadiness(repository, event.sender?.login ?? ""));
   const decision = decideReadiness({
     action: event.action,
     actorAuthorized,
-    hasReadyLabel,
+    hasCurrentReadinessLifecycle:
+      facts.hasCurrentReadinessLifecycle || facts.removesPrTrackedWork,
+    hasReadyLabel: facts.hasReadyLabel,
     label: event.label?.name,
     previousRecord: readinessRecordFromComments(comments),
     validation,
   });
-  if (decision.outcome === "ignore" || decision.outcome === "keep")
+  if (decision.outcome === "ignore") return decision;
+  if (decision.outcome === "keep") {
+    if (facts.pausesPrTrackedWork) {
+      const invalidatedLinkedPullRequests =
+        await invalidateLinkedPullRequestContracts(repository, issue.number);
+      return { ...decision, invalidatedLinkedPullRequests };
+    }
     return decision;
+  }
 
   const comment = readinessComment({
     actor: event.sender?.login ?? "unknown",
@@ -250,15 +360,13 @@ export async function runIssueReadinessAction({ event, now = new Date() }) {
     now: now.toISOString(),
     validation,
   });
-  if (decision.outcome === "accept") {
-    await removeLabel(repository, issue.number, "status: new");
-    await postComment(repository, issue.number, comment);
-  } else {
-    await removeLabel(repository, issue.number, "status: ready");
-    await addLabel(repository, issue.number, "status: new");
-    await postComment(repository, issue.number, comment);
-    await invalidateLinkedPullRequestContracts(repository, issue.number);
-  }
+  await applyReadinessDecision({
+    comment,
+    decision,
+    issueNumber: issue.number,
+    repository,
+    statuses: facts.statuses,
+  });
   return decision;
 }
 
