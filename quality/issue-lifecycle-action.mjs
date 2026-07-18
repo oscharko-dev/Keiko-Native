@@ -144,7 +144,10 @@ function pullRequestEvidence(event, issueNumber) {
 
 function pullRequestLifecycleEvent(event) {
   if (event?.pull_request === undefined) return undefined;
-  if (["opened", "reopened"].includes(event.action)) return event.action;
+  if (["opened", "reopened"].includes(event.action))
+    return event.pull_request?.draft === true
+      ? event.action
+      : "ready_for_review";
   if (event.action === "ready_for_review") return "ready_for_review";
   if (["synchronize", "converted_to_draft"].includes(event.action))
     return "opened";

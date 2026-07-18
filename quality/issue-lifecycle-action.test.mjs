@@ -331,6 +331,7 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
       expectedReadinessCommentId: 101,
       pull_request: {
         body: "## Scope\n\n- Accepted issue: #27",
+        draft: true,
         head: { sha: "a".repeat(40) },
         node_id: "pr-node-40",
       },
@@ -341,6 +342,34 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
   assert.equal(openedResult.desiredState, "status: pr open");
   assert.deepEqual(openedResult.plan, {
     apply: ["status: pr open"],
+    failures: [],
+    ok: true,
+    remove: ["status: in progress"],
+  });
+
+  const nonDraftOpened = requestMock(t, {
+    issueLabels: ["status: in progress"],
+  });
+  const nonDraftOpenedResult = await runIssueLifecycleAction({
+    event: {
+      action: "opened",
+      expectedReadinessCommentId: 101,
+      pull_request: {
+        body: "## Scope\n\n- Accepted issue: #27",
+        draft: false,
+        head: { sha: "d".repeat(40) },
+        node_id: "pr-node-41",
+      },
+    },
+    request: nonDraftOpened.request,
+  });
+  assert.equal(nonDraftOpenedResult.outcome, "planned");
+  assert.equal(
+    nonDraftOpenedResult.desiredState,
+    "status: ready for human review",
+  );
+  assert.deepEqual(nonDraftOpenedResult.plan, {
+    apply: ["status: ready for human review"],
     failures: [],
     ok: true,
     remove: ["status: in progress"],

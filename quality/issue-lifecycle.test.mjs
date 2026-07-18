@@ -42,7 +42,7 @@ const expectedEdgeAliases = Object.freeze([
   ["new", ["triaged", "blocked", "waiting"]],
   ["triaged", ["ready", "blocked", "waiting", "new"]],
   ["ready", ["inProgress", "blocked", "waiting", "new"]],
-  ["inProgress", ["ready", "prOpen", "blocked", "waiting", "new"]],
+  ["inProgress", ["ready", "prOpen", "review", "blocked", "waiting", "new"]],
   ["prOpen", ["ready", "inProgress", "review", "blocked", "waiting", "new"]],
   ["review", ["prOpen", "inProgress", "blocked", "waiting", "new", "done"]],
   ["blocked", ["waiting", "new", "triaged", "ready", "inProgress", "prOpen"]],
