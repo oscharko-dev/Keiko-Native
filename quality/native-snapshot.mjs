@@ -15,7 +15,11 @@ import { dirname, join } from "node:path";
 
 import { captureDependencySnapshot } from "./native-dependencies.mjs";
 
-const GENERATED = ["native/apps/keiko-desktop/gen", "native/frontend/dist"];
+const GENERATED = [
+  "native/apps/keiko-desktop/gen",
+  "native/frontend/coverage",
+  "native/frontend/dist",
+];
 
 export async function runNativeSnapshot({ mode, repositoryRoot }) {
   const temporaryRoot = await mkdtemp(join(tmpdir(), "keiko-native-snapshot-"));
