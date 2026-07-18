@@ -62,7 +62,7 @@ function packagedShellEvidence({
     schema: "keiko-native-packaged-shell-evidence/v1",
     sourceRevision: revision,
     readinessFingerprint:
-      "c68478df272e1add068e7b1bba9e8c973920b4e3eae29a293d1cba3bc54ab61a",
+      "da2459bd3becc6cbf651a24ef1b64d1b11a8ed642bfddc92923f0d6ed6dc8e5e",
     packageManifestSha256,
     cargoLockSha256,
     npmLockSha256,
@@ -255,7 +255,7 @@ export function createNativePackageGate({
         join(packageRoot, "package-manifest.json"),
       ),
       readinessFingerprint:
-        "c68478df272e1add068e7b1bba9e8c973920b4e3eae29a293d1cba3bc54ab61a",
+        "da2459bd3becc6cbf651a24ef1b64d1b11a8ed642bfddc92923f0d6ed6dc8e5e",
       sourceRevision: revision,
     };
     const evidence = packagedShellEvidence({

@@ -7,11 +7,17 @@ fn nonce(value: char) -> String {
     value.to_string().repeat(64)
 }
 
-fn request(sequence: u64, request_id: &str) -> Vec<u8> {
+fn request(sequence: u64, _legacy_request_id: &str) -> Vec<u8> {
+    let request_id = canonical_request_id(1, sequence).expect("canonical request ID");
     format!(
         r#"{{"schemaVersion":1,"requestId":"{request_id}","sequence":{sequence},"timeoutMs":1000,"operation":{{"kind":"application-health"}}}}"#,
     )
     .into_bytes()
+}
+
+fn cancel(sequence: u64) -> Vec<u8> {
+    let request_id = canonical_request_id(1, sequence).expect("canonical request ID");
+    format!(r#"{{"schemaVersion":1,"requestId":"{request_id}"}}"#).into_bytes()
 }
 
 fn started() -> (HostLifecycle, SenderContext) {
@@ -44,19 +50,13 @@ fn earliest_terminal_event_wins_at_every_timeout_boundary() {
     lifecycle.set_test_now_ms(999);
     assert!(
         lifecycle
-            .cancel_application_request(
-                &sender,
-                br#"{"schemaVersion":1,"requestId":"request-00000001"}"#,
-            )
+            .cancel_application_request(&sender, &cancel(1),)
             .contains("cancelled")
     );
     lifecycle.set_test_now_ms(1500);
     assert!(
         lifecycle
-            .cancel_application_request(
-                &sender,
-                br#"{"schemaVersion":1,"requestId":"request-00000001"}"#,
-            )
+            .cancel_application_request(&sender, &cancel(1),)
             .contains("cancelled")
     );
     assert!(
@@ -88,10 +88,7 @@ fn earliest_terminal_event_wins_at_every_timeout_boundary() {
     lifecycle.set_test_now_ms(1001);
     assert!(
         lifecycle
-            .cancel_application_request(
-                &sender,
-                br#"{"schemaVersion":1,"requestId":"request-00000004"}"#,
-            )
+            .cancel_application_request(&sender, &cancel(4),)
             .contains("timed-out")
     );
     assert!(
@@ -150,10 +147,7 @@ fn final_mutex_sample_host_unavailability_and_at_most_once_are_enforced() {
     lifecycle.set_test_now_ms(0);
     let unavailable = accept(&mut lifecycle, &sender, 2, "request-00000002");
     lifecycle.set_test_now_ms(1);
-    let _ = lifecycle.cancel_application_request(
-        &sender,
-        br#"{"schemaVersion":1,"requestId":"request-00000002"}"#,
-    );
+    let _ = lifecycle.cancel_application_request(&sender, &cancel(2));
     lifecycle.set_test_now_ms(1000);
     assert!(
         lifecycle

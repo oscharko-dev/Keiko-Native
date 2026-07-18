@@ -2,7 +2,7 @@ use keiko_application::{ApplicationResponse, BuildIdentity, HealthRequest, healt
 use serde::{Deserialize, Serialize};
 
 pub const MAX_REQUEST_BYTES: usize = 4096;
-const MAX_SEQUENCE: u64 = 9_007_199_254_740_991;
+pub const MAX_SEQUENCE: u64 = 9_007_199_254_740_991;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReasonCode {
@@ -155,6 +155,17 @@ pub fn cancel_request_id(request: &CancelRequest) -> &str {
     &request.request_id
 }
 
+pub fn canonical_request_id(generation: u64, sequence: u64) -> Option<String> {
+    if generation == 0 || generation > MAX_SEQUENCE || sequence == 0 || sequence > MAX_SEQUENCE {
+        return None;
+    }
+    Some(format!("request-{generation:016}-{sequence:016}"))
+}
+
+pub fn request_id_matches(request_id: &str, generation: u64, sequence: u64) -> bool {
+    canonical_request_id(generation, sequence).as_deref() == Some(request_id)
+}
+
 pub fn dispatch_health(request: UiRequest, build: BuildIdentity) -> ApplicationResponse {
     match request.operation {
         Operation::ApplicationHealth => health_response(
@@ -194,10 +205,11 @@ pub fn encode_cancelled(request_id: &str) -> String {
 }
 
 fn valid_request_id(value: &str) -> bool {
-    (16..=64).contains(&value.len())
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    value.len() == 41
+        && value.starts_with("request-")
+        && value.as_bytes()[8..24].iter().all(u8::is_ascii_digit)
+        && value.as_bytes()[24] == b'-'
+        && value.as_bytes()[25..].iter().all(u8::is_ascii_digit)
 }
 
 #[cfg(test)]
@@ -205,13 +217,16 @@ mod tests {
     use super::*;
 
     fn canonical() -> Vec<u8> {
-        br#"{"schemaVersion":1,"requestId":"request-00000001","sequence":1,"timeoutMs":1000,"operation":{"kind":"application-health"}}"#.to_vec()
+        br#"{"schemaVersion":1,"requestId":"request-0000000000000001-0000000000000001","sequence":1,"timeoutMs":1000,"operation":{"kind":"application-health"}}"#.to_vec()
     }
 
     #[test]
     fn accepts_only_the_closed_health_operation() {
         let request = parse_request(&canonical()).expect("canonical request");
-        assert_eq!(request_metadata(&request), ("request-00000001", 1, 1000));
+        assert_eq!(
+            request_metadata(&request),
+            ("request-0000000000000001-0000000000000001", 1, 1000)
+        );
     }
 
     #[test]
@@ -219,7 +234,7 @@ mod tests {
         let mut unknown = canonical();
         unknown.splice(1..1, b"\"extra\":true,".iter().copied());
         assert_eq!(parse_request(&unknown), Err(ReasonCode::InvalidRequest));
-        let duplicate = br#"{"schemaVersion":1,"requestId":"request-00000001","requestId":"request-00000002","sequence":1,"timeoutMs":1000,"operation":{"kind":"application-health"}}"#;
+        let duplicate = br#"{"schemaVersion":1,"requestId":"request-0000000000000001-0000000000000001","requestId":"request-0000000000000001-0000000000000002","sequence":1,"timeoutMs":1000,"operation":{"kind":"application-health"}}"#;
         assert_eq!(parse_request(duplicate), Err(ReasonCode::InvalidRequest));
         assert_eq!(
             parse_request(&vec![b' '; MAX_REQUEST_BYTES + 1]),
@@ -229,9 +244,9 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_schema_and_bounds() {
-        let bad_schema = br#"{"schemaVersion":2,"requestId":"request-00000001","sequence":1,"timeoutMs":1000,"operation":{"kind":"application-health"}}"#;
-        let stale = br#"{"schemaVersion":1,"requestId":"request-00000001","sequence":0,"timeoutMs":1000,"operation":{"kind":"application-health"}}"#;
-        let bad_timeout = br#"{"schemaVersion":1,"requestId":"request-00000001","sequence":1,"timeoutMs":0,"operation":{"kind":"application-health"}}"#;
+        let bad_schema = br#"{"schemaVersion":2,"requestId":"request-0000000000000001-0000000000000001","sequence":1,"timeoutMs":1000,"operation":{"kind":"application-health"}}"#;
+        let stale = br#"{"schemaVersion":1,"requestId":"request-0000000000000001-0000000000000001","sequence":0,"timeoutMs":1000,"operation":{"kind":"application-health"}}"#;
+        let bad_timeout = br#"{"schemaVersion":1,"requestId":"request-0000000000000001-0000000000000001","sequence":1,"timeoutMs":0,"operation":{"kind":"application-health"}}"#;
         assert_eq!(
             parse_request(bad_schema),
             Err(ReasonCode::UnsupportedSchema)
@@ -242,7 +257,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_operation_malformed_and_empty_input() {
-        let unknown = br#"{"schemaVersion":1,"requestId":"request-00000001","sequence":1,"timeoutMs":1000,"operation":{"kind":"generic-ping"}}"#;
+        let unknown = br#"{"schemaVersion":1,"requestId":"request-0000000000000001-0000000000000001","sequence":1,"timeoutMs":1000,"operation":{"kind":"generic-ping"}}"#;
         assert_eq!(parse_request(unknown), Err(ReasonCode::UnknownOperation));
         assert_eq!(parse_request(b""), Err(ReasonCode::InvalidRequest));
         assert_eq!(parse_request(b"not-json"), Err(ReasonCode::InvalidRequest));
@@ -255,33 +270,63 @@ mod tests {
                 r#"{{"schemaVersion":1,"requestId":"{request_id}","sequence":{sequence},"timeoutMs":{timeout_ms},"operation":{{"kind":"application-health"}}}}"#,
             )
         };
-        assert!(parse_request(request("1234567890123456", MAX_SEQUENCE, 1).as_bytes()).is_ok());
+        let maximum = canonical_request_id(MAX_SEQUENCE, MAX_SEQUENCE).expect("maximum");
+        assert!(parse_request(request(&maximum, MAX_SEQUENCE, 1).as_bytes()).is_ok());
         assert_eq!(
-            parse_request(request("123456789012345", 1, 1).as_bytes()),
+            parse_request(request("request-000000000000001-0000000000000001", 1, 1).as_bytes()),
             Err(ReasonCode::InvalidRequest)
         );
         assert_eq!(
-            parse_request(request(&"a".repeat(65), 1, 1).as_bytes()),
+            parse_request(request(&"a".repeat(41), 1, 1).as_bytes()),
             Err(ReasonCode::InvalidRequest)
         );
         assert_eq!(
-            parse_request(request("1234567890123456", MAX_SEQUENCE + 1, 1).as_bytes()),
+            parse_request(request(&maximum, MAX_SEQUENCE + 1, 1).as_bytes()),
             Err(ReasonCode::StaleRequest)
         );
         assert_eq!(
-            parse_request(request("1234567890123456", 1, 1001).as_bytes()),
+            parse_request(request("request-0000000000000001-0000000000000001", 1, 1001).as_bytes()),
             Err(ReasonCode::InvalidRequest)
         );
     }
 
     #[test]
+    fn canonical_identifier_binds_generation_and_sequence_boundaries() {
+        assert_eq!(
+            canonical_request_id(1, 1).as_deref(),
+            Some("request-0000000000000001-0000000000000001")
+        );
+        assert_eq!(
+            canonical_request_id(MAX_SEQUENCE, MAX_SEQUENCE).as_deref(),
+            Some("request-9007199254740991-9007199254740991")
+        );
+        assert_eq!(canonical_request_id(0, 1), None);
+        assert_eq!(canonical_request_id(1, 0), None);
+        assert!(request_id_matches(
+            "request-0000000000000007-0000000000000065",
+            7,
+            65
+        ));
+        assert!(!request_id_matches(
+            "request-0000000000000007-0000000000000001",
+            7,
+            65
+        ));
+    }
+
+    #[test]
     fn accepts_only_the_closed_cancellation_transport() {
-        let request = parse_cancel(br#"{"schemaVersion":1,"requestId":"request-00000001"}"#)
-            .expect("closed cancellation");
-        assert_eq!(cancel_request_id(&request), "request-00000001");
+        let request = parse_cancel(
+            br#"{"schemaVersion":1,"requestId":"request-0000000000000001-0000000000000001"}"#,
+        )
+        .expect("closed cancellation");
+        assert_eq!(
+            cancel_request_id(&request),
+            "request-0000000000000001-0000000000000001"
+        );
         assert!(encode_cancelled(cancel_request_id(&request)).contains("application-cancel"));
         assert_eq!(
-            parse_cancel(br#"{"schemaVersion":1,"requestId":"request-00000001","payload":true}"#,),
+            parse_cancel(br#"{"schemaVersion":1,"requestId":"request-0000000000000001-0000000000000001","payload":true}"#,),
             Err(ReasonCode::InvalidRequest)
         );
         assert_eq!(parse_cancel(b"{}"), Err(ReasonCode::InvalidRequest));
@@ -290,7 +335,9 @@ mod tests {
             Err(ReasonCode::InvalidRequest)
         );
         assert_eq!(
-            parse_cancel(br#"{"schemaVersion":2,"requestId":"request-00000001"}"#,),
+            parse_cancel(
+                br#"{"schemaVersion":2,"requestId":"request-0000000000000001-0000000000000001"}"#,
+            ),
             Err(ReasonCode::UnsupportedSchema)
         );
         assert_eq!(

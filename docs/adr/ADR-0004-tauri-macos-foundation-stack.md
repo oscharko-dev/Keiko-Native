@@ -119,7 +119,7 @@ CH-3 implements one operation, `application-health`, over one Tauri command name
 ```json
 {
   "schemaVersion": 1,
-  "requestId": "request-00000001",
+  "requestId": "request-0000000000000001-0000000000000001",
   "sequence": 1,
   "timeoutMs": 1000,
   "operation": { "kind": "application-health" }
@@ -127,12 +127,17 @@ CH-3 implements one operation, `application-health`, over one Tauri command name
 ```
 
 The encoded request is at most 4,096 bytes. Unknown and duplicate fields are rejected. `requestId`
-is 16 through 64 ASCII alphanumeric or hyphen bytes, is unique for the lifetime of the authenticated
-renderer session, and is retained in a bounded 64-entry replay window. `sequence` is an integer from
-1 through 9,007,199,254,740,991 and must be strictly greater than the last accepted sequence for
-that session. `timeoutMs` is an integer from 1 through 1,000. The operation has no caller-controlled
-payload. A renderer reload creates a new host-owned session and clears neither an in-flight request
-nor its cancellation state until the old session has been failed closed.
+is exactly `request-`, the authenticated renderer generation as 16 zero-padded decimal digits, `-`,
+and the request sequence as 16 zero-padded decimal digits. Both numeric components are integers from
+1 through 9,007,199,254,740,991. The bundled frontend derives this identifier rather than accepting
+an independent caller-selected value. The host recomputes it from the authenticated generation and
+parsed sequence before application dispatch and rejects any mismatch. Generation plus strictly
+increasing sequence makes the identifier unique for the renderer-session lifetime; the host retains
+the most recent 64 identifiers as a bounded replay accelerator. Reuse after eviction is still
+rejected by the sequence and canonical-identifier invariants. `timeoutMs` is an integer from 1
+through 1,000. The operation has no caller-controlled payload. A renderer reload creates a new
+host-owned session and clears neither an in-flight request nor its cancellation state until the old
+session has been failed closed.
 
 The host accepts the request only from the Tauri window labelled `main`, with the bundled
 `tauri://localhost` origin or Tauri's platform-equivalent `http://tauri.localhost` representation,
@@ -146,7 +151,7 @@ The successful canonical response is:
 ```json
 {
   "schemaVersion": 1,
-  "requestId": "request-00000001",
+  "requestId": "request-0000000000000001-0000000000000001",
   "result": {
     "kind": "application-health",
     "status": "healthy",
@@ -202,6 +207,13 @@ package commands. Rust branch instrumentation alone uses `nightly-2026-07-17` an
 repository's 85 percent line, branch, function, and statement floors. The productive declaration
 enumerates the test root and every support file, and package acceptance uses closed path,
 file-class, dependency, SPDX, notice, CSP, navigation, and production-hook policies.
+
+Issue #12 contract v4 closes the remaining request-identity ambiguity. The renderer composes each
+identifier only from its host-authenticated generation and strictly increasing local sequence using
+the exact fixed-width form above. The host independently recomputes that value before dispatch.
+Cancellation carries the same canonical identifier and remains owned by the authenticated current
+generation. The 64-entry recent replay window remains bounded and is not the lifetime-uniqueness
+authority.
 
 Rust unit instrumentation excludes only the thin Tauri `main.rs` framework wiring, whose real
 composition is instead mandatory in both packaged-shell acceptance runs. No application, port,

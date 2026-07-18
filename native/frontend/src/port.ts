@@ -29,7 +29,6 @@ export type Invoke = (
   command: string,
   arguments_: { documentNonce: string; generation: number; request: string },
 ) => Promise<string>;
-export type RequestIdFactory = () => string;
 export interface RendererAuthority {
   documentNonce: string;
   generation: number;
@@ -61,7 +60,6 @@ export async function rendererAuthority(): Promise<RendererAuthority> {
 
 export function createRendererPort(
   invoke: Invoke,
-  requestId: RequestIdFactory = () => `request-${crypto.randomUUID()}`,
   authorityProvider: AuthorityProvider = rendererAuthority,
 ) {
   let sequence = 0;
@@ -70,10 +68,11 @@ export function createRendererPort(
     if (signal?.aborted) throw new Error("application-health-cancelled");
     const authority = await authorityProvider();
     if (signal?.aborted) throw new Error("application-health-cancelled");
+    sequence += 1;
     const request: HealthRequest = {
       schemaVersion: 1,
-      requestId: requestId(),
-      sequence: (sequence += 1),
+      requestId: canonicalRequestId(authority.generation, sequence),
+      sequence,
       timeoutMs: 1000,
       operation: { kind: "application-health" },
     };
@@ -132,6 +131,18 @@ export function createRendererPort(
   }
 
   return { health };
+}
+
+export function canonicalRequestId(generation: number, sequence: number) {
+  if (
+    !Number.isSafeInteger(generation) ||
+    generation <= 0 ||
+    !Number.isSafeInteger(sequence) ||
+    sequence <= 0
+  ) {
+    throw new Error("request-id-boundary");
+  }
+  return `request-${String(generation).padStart(16, "0")}-${String(sequence).padStart(16, "0")}`;
 }
 
 function isRendererAuthority(value: unknown): value is RendererAuthority {

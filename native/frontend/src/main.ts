@@ -15,7 +15,7 @@ export async function startRenderer(
   const root = document.getElementById("root");
   if (root !== null) createRoot(root).render(createElement(Fragment));
 
-  const port = createRendererPort(invokeCommand, undefined, authorityProvider);
+  const port = createRendererPort(invokeCommand, authorityProvider);
   await port.health();
   await port.health();
 }

@@ -1,9 +1,12 @@
 use std::collections::{HashMap, VecDeque};
 
 use keiko_application::current_build_identity;
+#[cfg(test)]
+use keiko_ui_port::canonical_request_id;
 use keiko_ui_port::{
-    ReasonCode, UiRequest, cancel_request_id, dispatch_health, encode_cancelled, encode_error,
-    encode_success, parse_cancel, parse_request, request_metadata,
+    MAX_SEQUENCE, ReasonCode, UiRequest, cancel_request_id, dispatch_health, encode_cancelled,
+    encode_error, encode_success, parse_cancel, parse_request, request_id_matches,
+    request_metadata,
 };
 
 pub mod document_nonce;
@@ -110,7 +113,15 @@ impl HostLifecycle {
             self.session = None;
             return None;
         }
-        self.generation = self.generation.saturating_add(1);
+        let Some(generation) = self
+            .generation
+            .checked_add(1)
+            .filter(|generation| *generation <= MAX_SEQUENCE)
+        else {
+            self.session = None;
+            return None;
+        };
+        self.generation = generation;
         self.session = Some(RendererSession {
             generation: self.generation,
             document_nonce,
@@ -173,6 +184,9 @@ impl HostLifecycle {
             parse_request(bytes).map_err(|reason| ("unknown-request".to_owned(), reason))?;
         let (request_id, sequence, timeout_ms) = request_metadata(&request);
         let request_id = request_id.to_owned();
+        if !request_id_matches(&request_id, context.generation, sequence) {
+            return Err((request_id, ReasonCode::InvalidRequest));
+        }
         let started_at_ms = self.clock.now_ms();
         let session = self
             .session

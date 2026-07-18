@@ -317,7 +317,7 @@ export function evidenceFailures(evidence, expected) {
     failures.push("evidence-npm-lock-binding");
   if (
     evidence.readinessFingerprint !==
-    "c68478df272e1add068e7b1bba9e8c973920b4e3eae29a293d1cba3bc54ab61a"
+    "da2459bd3becc6cbf651a24ef1b64d1b11a8ed642bfddc92923f0d6ed6dc8e5e"
   )
     failures.push("evidence-readiness-fingerprint");
   if (evidence.readinessFingerprint !== expected?.readinessFingerprint)

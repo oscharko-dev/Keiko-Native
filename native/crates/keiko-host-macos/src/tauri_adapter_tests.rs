@@ -1,5 +1,6 @@
 use super::*;
 use crate::activate_renderer_document;
+use keiko_ui_port::canonical_request_id;
 
 fn nonce(value: char) -> String {
     value.to_string().repeat(64)
@@ -110,7 +111,7 @@ fn document_start_install_loss_and_shutdown_fail_closed() {
 fn failed_document_start_clears_finished_install_and_old_work() {
     let lifecycle = Mutex::new(HostLifecycle::default());
     let root = tauri::Url::parse("tauri://localhost/index.html").expect("URL");
-    for (index, replacement) in [None, Some("malformed".to_owned())].into_iter().enumerate() {
+    for replacement in [None, Some("malformed".to_owned())] {
         assert!(activate_document(&lifecycle, Some(nonce('a'))));
         let accepted = {
             let mut current = lifecycle.lock().expect("lifecycle");
@@ -126,8 +127,8 @@ fn failed_document_start_clears_finished_install_and_old_work() {
                     .begin_application_request(
                         &sender,
                         format!(
-                            r#"{{"schemaVersion":1,"requestId":"request-0000000{}","sequence":1,"timeoutMs":1000,"operation":{{"kind":"application-health"}}}}"#,
-                            index + 1
+                            r#"{{"schemaVersion":1,"requestId":"{}","sequence":1,"timeoutMs":1000,"operation":{{"kind":"application-health"}}}}"#,
+                            canonical_request_id(generation, 1).expect("canonical request ID")
                         )
                         .as_bytes(),
                     )

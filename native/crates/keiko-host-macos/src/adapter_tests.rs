@@ -1,11 +1,17 @@
 use super::*;
 use std::sync::Mutex;
 
-fn request(sequence: u64, request_id: &str) -> Vec<u8> {
+fn request(sequence: u64, _legacy_request_id: &str) -> Vec<u8> {
+    let request_id = canonical_request_id(1, sequence).expect("canonical request ID");
     format!(
         r#"{{"schemaVersion":1,"requestId":"{request_id}","sequence":{sequence},"timeoutMs":1000,"operation":{{"kind":"application-health"}}}}"#,
     )
     .into_bytes()
+}
+
+fn cancel(generation: u64, sequence: u64) -> String {
+    let request_id = canonical_request_id(generation, sequence).expect("canonical request ID");
+    format!(r#"{{"schemaVersion":1,"requestId":"{request_id}"}}"#)
 }
 
 fn nonce(value: char) -> String {
@@ -127,7 +133,7 @@ fn tauri_host_commands_cover_success_cancellation_and_poisoning() {
             "tauri://localhost",
             1,
             &nonce('a'),
-            r#"{"schemaVersion":1,"requestId":"request-00000003"}"#,
+            &cancel(1, 1),
         )
         .contains("cancelled")
     );
@@ -191,7 +197,7 @@ fn stale_queued_wrapper_request_and_cancel_keep_document_generation() {
             "tauri://localhost",
             old_generation,
             &old_nonce,
-            r#"{"schemaVersion":1,"requestId":"request-00000001"}"#,
+            &cancel(old_generation, 1),
         )
         .contains("unauthorized")
     );

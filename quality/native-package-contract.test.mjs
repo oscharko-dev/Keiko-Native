@@ -243,7 +243,7 @@ test("evidence schema and redaction fail closed", () => {
     schema: "keiko-native-packaged-shell-evidence/v1",
     sourceRevision: "0".repeat(40),
     readinessFingerprint:
-      "c68478df272e1add068e7b1bba9e8c973920b4e3eae29a293d1cba3bc54ab61a",
+      "da2459bd3becc6cbf651a24ef1b64d1b11a8ed642bfddc92923f0d6ed6dc8e5e",
     packageManifestSha256: "b".repeat(64),
     cargoLockSha256: "c".repeat(64),
     npmLockSha256: "d".repeat(64),

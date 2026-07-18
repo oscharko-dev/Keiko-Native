@@ -1,10 +1,20 @@
 use super::*;
 
-fn request(sequence: u64, request_id: &str) -> Vec<u8> {
+fn request(sequence: u64, _legacy_request_id: &str) -> Vec<u8> {
+    request_for(1, sequence)
+}
+
+fn request_for(generation: u64, sequence: u64) -> Vec<u8> {
+    let request_id = canonical_request_id(generation, sequence).expect("canonical request ID");
     format!(
         r#"{{"schemaVersion":1,"requestId":"{request_id}","sequence":{sequence},"timeoutMs":1000,"operation":{{"kind":"application-health"}}}}"#,
     )
     .into_bytes()
+}
+
+fn cancel_for(generation: u64, sequence: u64) -> Vec<u8> {
+    let request_id = canonical_request_id(generation, sequence).expect("canonical request ID");
+    format!(r#"{{"schemaVersion":1,"requestId":"{request_id}"}}"#).into_bytes()
 }
 
 fn nonce(value: char) -> String {
@@ -40,12 +50,18 @@ fn health_replay_stale_sender_origin_and_shutdown_fail_closed() {
             .contains("healthy")
     );
     assert_eq!(
-        lifecycle.begin_application_request(&sender, &request(2, "request-00000001")),
-        Err(("request-00000001".to_owned(), ReasonCode::ReplayedRequest))
+        lifecycle.begin_application_request(&sender, &request(1, "request-00000001")),
+        Err((
+            "request-0000000000000001-0000000000000001".to_owned(),
+            ReasonCode::ReplayedRequest,
+        ))
     );
     assert_eq!(
         lifecycle.begin_application_request(&sender, &request(1, "request-00000002")),
-        Err(("request-00000002".to_owned(), ReasonCode::StaleRequest))
+        Err((
+            "request-0000000000000001-0000000000000001".to_owned(),
+            ReasonCode::ReplayedRequest,
+        ))
     );
     for (context, reason) in [
         (
@@ -81,10 +97,10 @@ fn cancellation_is_owned_by_the_current_generation() {
     let accepted = lifecycle
         .begin_application_request(&sender, &request(1, "request-00000001"))
         .expect("accepted");
-    let cancel = br#"{"schemaVersion":1,"requestId":"request-00000001"}"#;
+    let cancel = cancel_for(1, 1);
     assert!(
         lifecycle
-            .cancel_application_request(&sender, cancel)
+            .cancel_application_request(&sender, &cancel)
             .contains("cancelled")
     );
     assert!(
@@ -107,10 +123,7 @@ fn cancellation_is_owned_by_the_current_generation() {
     );
     assert!(
         lifecycle
-            .cancel_application_request(
-                &old_sender,
-                br#"{"schemaVersion":1,"requestId":"request-00000002"}"#,
-            )
+            .cancel_application_request(&old_sender, &cancel_for(1, 2),)
             .contains("unauthorized")
     );
     assert!(new_generation > old_sender.generation);
@@ -123,8 +136,11 @@ fn concurrent_replay_shutdown_and_replay_window_fail_closed() {
         .begin_application_request(&sender, &request(1, "request-00000001"))
         .expect("accepted");
     assert_eq!(
-        lifecycle.begin_application_request(&sender, &request(2, "request-00000001")),
-        Err(("request-00000001".to_owned(), ReasonCode::ReplayedRequest))
+        lifecycle.begin_application_request(&sender, &request(1, "request-00000001")),
+        Err((
+            "request-0000000000000001-0000000000000001".to_owned(),
+            ReasonCode::ReplayedRequest,
+        ))
     );
     lifecycle.shutdown();
     assert!(
@@ -145,6 +161,44 @@ fn concurrent_replay_shutdown_and_replay_window_fail_closed() {
                 .contains("healthy")
         );
     }
+    assert_eq!(
+        lifecycle.begin_application_request(&sender, &request(1, "evicted")),
+        Err((
+            "request-0000000000000001-0000000000000001".to_owned(),
+            ReasonCode::StaleRequest,
+        ))
+    );
+    let evicted_id_with_newer_sequence = br#"{"schemaVersion":1,"requestId":"request-0000000000000001-0000000000000001","sequence":66,"timeoutMs":1000,"operation":{"kind":"application-health"}}"#;
+    assert_eq!(
+        lifecycle.begin_application_request(&sender, evicted_id_with_newer_sequence),
+        Err((
+            "request-0000000000000001-0000000000000001".to_owned(),
+            ReasonCode::InvalidRequest,
+        ))
+    );
+}
+
+#[test]
+fn request_identifier_must_match_authenticated_generation_and_sequence() {
+    let (mut lifecycle, sender) = started();
+    let mismatched = br#"{"schemaVersion":1,"requestId":"request-0000000000000002-0000000000000001","sequence":1,"timeoutMs":1000,"operation":{"kind":"application-health"}}"#;
+    assert_eq!(
+        lifecycle.begin_application_request(&sender, mismatched),
+        Err((
+            "request-0000000000000002-0000000000000001".to_owned(),
+            ReasonCode::InvalidRequest,
+        ))
+    );
+}
+
+#[test]
+fn renderer_generation_exhaustion_fails_closed_without_reuse() {
+    let mut lifecycle = HostLifecycle {
+        generation: MAX_SEQUENCE,
+        ..HostLifecycle::default()
+    };
+    assert_eq!(lifecycle.begin_renderer_session(nonce('a')), None);
+    assert!(lifecycle.current_document_authority().is_none());
 }
 
 #[test]
@@ -157,10 +211,7 @@ fn malformed_missing_cross_generation_and_late_cancellation_are_closed() {
     );
     assert!(
         lifecycle
-            .cancel_application_request(
-                &sender,
-                br#"{"schemaVersion":1,"requestId":"request-00000001"}"#,
-            )
+            .cancel_application_request(&sender, &cancel_for(1, 1),)
             .contains("unauthorized")
     );
     let accepted = lifecycle
@@ -178,10 +229,7 @@ fn malformed_missing_cross_generation_and_late_cancellation_are_closed() {
     );
     assert!(
         lifecycle
-            .cancel_application_request(
-                &current,
-                br#"{"schemaVersion":1,"requestId":"request-00000002"}"#,
-            )
+            .cancel_application_request(&current, &cancel_for(1, 1),)
             .contains("unauthorized")
     );
     assert!(
@@ -231,10 +279,7 @@ fn injected_unavailable_timeout_and_renderer_loss_are_terminal() {
     lifecycle.set_test_now_ms(1);
     assert!(
         lifecycle
-            .cancel_application_request(
-                &sender,
-                br#"{"schemaVersion":1,"requestId":"request-00000003"}"#,
-            )
+            .cancel_application_request(&sender, &cancel_for(1, 3),)
             .contains("cancelled")
     );
     lifecycle.set_test_now_ms(2);
@@ -260,10 +305,7 @@ fn explicit_cancellation_at_deadline_never_beats_timeout() {
     lifecycle.set_test_now_ms(1000);
     assert!(
         lifecycle
-            .cancel_application_request(
-                &sender,
-                br#"{"schemaVersion":1,"requestId":"request-00000001"}"#,
-            )
+            .cancel_application_request(&sender, &cancel_for(1, 1),)
             .contains("timed-out")
     );
     assert!(

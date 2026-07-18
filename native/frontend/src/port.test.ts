@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  canonicalRequestId,
   createRendererPort,
   expectedSourceRevision,
   isHealthResponse,
@@ -27,6 +28,16 @@ function healthy(request: HealthRequest): string {
 }
 
 describe("renderer health port", () => {
+  it("composes the identifier from authenticated generation and sequence", () => {
+    expect(canonicalRequestId(1, 1)).toBe(
+      "request-0000000000000001-0000000000000001",
+    );
+    expect(
+      canonicalRequestId(9_007_199_254_740_991, 9_007_199_254_740_991),
+    ).toBe("request-9007199254740991-9007199254740991");
+    expect(() => canonicalRequestId(0, 1)).toThrow("request-id-boundary");
+  });
+
   it("uses the host-installed generation and waits for its exact event", async () => {
     const originalWindow = Reflect.get(globalThis, "window");
     const fakeWindow = Object.assign(new EventTarget(), {
@@ -96,12 +107,7 @@ describe("renderer health port", () => {
         return healthy(request);
       },
     );
-    const ids = ["request-00000001", "request-00000002"];
-    const port = createRendererPort(
-      invoke,
-      () => ids.shift() ?? "request-00000003",
-      async () => authority,
-    );
+    const port = createRendererPort(invoke, async () => authority);
 
     await port.health();
     await port.health();
@@ -109,8 +115,14 @@ describe("renderer health port", () => {
     expect(
       requests.map(({ requestId, sequence }) => ({ requestId, sequence })),
     ).toEqual([
-      { requestId: "request-00000001", sequence: 1 },
-      { requestId: "request-00000002", sequence: 2 },
+      {
+        requestId: "request-0000000000000007-0000000000000001",
+        sequence: 1,
+      },
+      {
+        requestId: "request-0000000000000007-0000000000000002",
+        sequence: 2,
+      },
     ]);
   });
 
@@ -134,11 +146,9 @@ describe("renderer health port", () => {
       },
     );
     const controller = new AbortController();
-    const pending = createRendererPort(
-      invoke,
-      () => "request-00000001",
-      async () => authority,
-    ).health(controller.signal);
+    const pending = createRendererPort(invoke, async () => authority).health(
+      controller.signal,
+    );
     await Promise.resolve();
     controller.abort();
     resolveRequest?.("");
@@ -149,7 +159,7 @@ describe("renderer health port", () => {
       generation: 7,
       request: JSON.stringify({
         schemaVersion: 1,
-        requestId: "request-00000001",
+        requestId: "request-0000000000000007-0000000000000001",
       }),
     });
   });
@@ -181,11 +191,7 @@ describe("renderer health port", () => {
     ]) {
       const invoke = vi.fn(async () => encoded);
       await expect(
-        createRendererPort(
-          invoke,
-          () => "request-00000001",
-          async () => authority,
-        ).health(),
+        createRendererPort(invoke, async () => authority).health(),
       ).rejects.toThrow("application-health-failed");
     }
     expect(() => JSON.parse("not-json") as unknown).toThrow();
@@ -196,11 +202,9 @@ describe("renderer health port", () => {
     preAborted.abort();
     const invoke = vi.fn(async () => "unused");
     await expect(
-      createRendererPort(
-        invoke,
-        () => "request-00000001",
-        async () => authority,
-      ).health(preAborted.signal),
+      createRendererPort(invoke, async () => authority).health(
+        preAborted.signal,
+      ),
     ).rejects.toThrow("application-health-cancelled");
     expect(invoke).not.toHaveBeenCalled();
 
@@ -208,7 +212,6 @@ describe("renderer health port", () => {
     const duringGeneration = new AbortController();
     const generationPending = createRendererPort(
       invoke,
-      () => "request-00000001",
       () =>
         new Promise<RendererAuthority>((resolve) => {
           provideAuthority = resolve;
@@ -244,7 +247,6 @@ describe("renderer health port", () => {
     const controller = new AbortController();
     const pending = createRendererPort(
       racedInvoke,
-      () => "request-00000002",
       async () => authority,
     ).health(controller.signal);
     controller.abort();
@@ -259,11 +261,7 @@ describe("renderer health port", () => {
       () => Promise.reject(new Error("transport unavailable")),
     ]) {
       await expect(
-        createRendererPort(
-          vi.fn(failure),
-          () => "request-00000001",
-          async () => authority,
-        ).health(),
+        createRendererPort(vi.fn(failure), async () => authority).health(),
       ).rejects.toThrow("application-health-failed");
     }
   });
