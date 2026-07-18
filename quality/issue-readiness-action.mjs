@@ -80,6 +80,13 @@ export function decideReadiness({
       outcome: "reject",
       reasons: ["A closed issue cannot remain implementation ready."],
     };
+  if (action === "reopened" && currentReadinessLifecycle)
+    return {
+      outcome: "reject",
+      reasons: [
+        "A reopened issue must return to status: new and obtain fresh readiness.",
+      ],
+    };
   if (!isRequest && !isRevalidation) return { outcome: "ignore", reasons: [] };
   if (action === "unlabeled" && label === "status: ready")
     return {
@@ -230,6 +237,22 @@ async function postComment(repository, issueNumber, body) {
   });
 }
 
+async function reloadReopenedIssue(repository, eventIssue) {
+  const current = await githubRequest(
+    `/repos/${repository}/issues/${eventIssue?.number}`,
+  );
+  if (
+    current?.number !== eventIssue?.number ||
+    current?.state !== "open" ||
+    typeof current?.body !== "string" ||
+    typeof current?.title !== "string" ||
+    typeof current?.updated_at !== "string" ||
+    !Array.isArray(current?.labels)
+  )
+    throw new Error("Reloaded reopened issue response is malformed.");
+  return current;
+}
+
 function readinessEventFacts(event, labels) {
   const statuses = lifecycleLabels(labels);
   const hasReadyLabel = statuses.includes("status: ready");
@@ -301,6 +324,7 @@ function validationWithLifecycleConflicts({
 async function applyReadinessDecision({
   comment,
   decision,
+  expectedIssueUpdatedAt,
   issueNumber,
   repository,
   statuses,
@@ -316,19 +340,48 @@ async function applyReadinessDecision({
     await invalidateLinkedPullRequestContracts(repository, issueNumber);
     return;
   }
-  for (const status of statuses)
+  let linkedContractsInvalidated = false;
+  let statusesToRemove = statuses;
+  if (expectedIssueUpdatedAt !== undefined) {
+    const current = await reloadReopenedIssue(repository, {
+      number: issueNumber,
+    });
+    if (current.updated_at !== expectedIssueUpdatedAt)
+      throw new Error("Issue changed before readiness reconciliation.");
+    statusesToRemove = lifecycleLabels(current.labels);
+    await invalidateLinkedPullRequestContracts(repository, issueNumber);
+    linkedContractsInvalidated = true;
+  }
+  for (const status of statusesToRemove)
     await removeLabel(repository, issueNumber, status);
   await addLabel(repository, issueNumber, "status: new");
+  if (expectedIssueUpdatedAt !== undefined) {
+    const readback = await reloadReopenedIssue(repository, {
+      number: issueNumber,
+    });
+    const readbackStatuses = lifecycleLabels(readback.labels);
+    if (readbackStatuses.length !== 1 || readbackStatuses[0] !== "status: new")
+      throw new Error(
+        "Reopened issue readiness reconciliation failed read-back.",
+      );
+  }
   await postComment(repository, issueNumber, comment);
-  await invalidateLinkedPullRequestContracts(repository, issueNumber);
+  if (!linkedContractsInvalidated)
+    await invalidateLinkedPullRequestContracts(repository, issueNumber);
 }
 
 export async function runIssueReadinessAction({ event, now = new Date() }) {
   const repository = process.env.GITHUB_REPOSITORY;
   if (typeof repository !== "string" || !repository.includes("/"))
     throw new Error("GITHUB_REPOSITORY is missing or invalid.");
-  const issue = event.issue;
+  let issue = event.issue;
   if (issue?.pull_request !== undefined) return { outcome: "ignore" };
+  if (event.action === "reopened") {
+    const current = await reloadReopenedIssue(repository, issue);
+    if (current.updated_at !== issue?.updated_at)
+      return { outcome: "ignore", reason: "stale_reopened_event" };
+    issue = current;
+  }
   const labels = Array.isArray(issue?.labels) ? issue.labels : [];
   const facts = readinessEventFacts(event, labels);
   if (!facts.relevant) return { outcome: "ignore" };
@@ -373,6 +426,8 @@ export async function runIssueReadinessAction({ event, now = new Date() }) {
   await applyReadinessDecision({
     comment,
     decision,
+    expectedIssueUpdatedAt:
+      event.action === "reopened" ? issue.updated_at : undefined,
     issueNumber: issue.number,
     repository,
     statuses: facts.statuses,

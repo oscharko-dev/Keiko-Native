@@ -374,6 +374,25 @@ export function pullRequestAcceptedTarget(body) {
   return pullRequestScope(sections).acceptedTarget;
 }
 
+export function pullRequestDeliveryIdentityMatches({ issue, pullRequest }) {
+  const sections = markdownSections(
+    typeof pullRequest?.body === "string" ? pullRequest.body : "",
+  );
+  const scope = pullRequestScope(sections);
+  const issueKind = labelsToNames(issue?.labels).includes("type: epic")
+    ? "epic"
+    : "implementation";
+  const issueTarget = issueDeliveryTarget(issue?.body ?? "", issueKind);
+  return (
+    Number.isInteger(issue?.number) &&
+    scope.acceptedIssueNumber === issue.number &&
+    scope.acceptedTarget === pullRequest?.base?.ref &&
+    scope.acceptedTarget === issueTarget &&
+    scope.actualSource === pullRequest?.head?.ref &&
+    sourceContainsIssueNumber(scope.actualSource ?? "", issue.number)
+  );
+}
+
 export function validatePullRequestContract({
   comments,
   issue,

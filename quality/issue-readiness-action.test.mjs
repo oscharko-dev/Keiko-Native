@@ -72,6 +72,10 @@ function installGitHubFetchMock(
   {
     comments = [],
     deleteStatus = 204,
+    issueSnapshotError,
+    issueSnapshotStatuses = [],
+    issueSnapshots = [],
+    labelPostStatus = 201,
     permission = "write",
     pullRequests = [],
   } = {},
@@ -79,6 +83,7 @@ function installGitHubFetchMock(
   const originalFetch = globalThis.fetch;
   const originalRepository = process.env.GITHUB_REPOSITORY;
   const calls = [];
+  let issueSnapshotIndex = 0;
   process.env.GITHUB_REPOSITORY = "keiko/Keiko-Native";
   globalThis.fetch = async (url, options = {}) => {
     calls.push({ method: options.method ?? "GET", url: String(url) });
@@ -86,6 +91,17 @@ function installGitHubFetchMock(
       return permission === "error"
         ? new Response("permission unavailable", { status: 503 })
         : Response.json({ permission });
+    if (
+      String(url).endsWith("/issues/42") &&
+      (options.method ?? "GET") === "GET"
+    ) {
+      if (issueSnapshotError !== undefined) throw new Error(issueSnapshotError);
+      const snapshot = issueSnapshots[issueSnapshotIndex];
+      const status = issueSnapshotStatuses[issueSnapshotIndex] ?? 200;
+      issueSnapshotIndex += 1;
+      if (status !== 200) return new Response("provider failure", { status });
+      return Response.json(snapshot ?? {});
+    }
     if (
       String(url).includes("/comments?") &&
       (options.method ?? "GET") === "GET"
@@ -97,6 +113,8 @@ function installGitHubFetchMock(
       return new Response(deleteStatus === 204 ? null : "missing", {
         status: deleteStatus,
       });
+    if (options.method === "POST" && String(url).endsWith("/labels"))
+      return Response.json({}, { status: labelPostStatus });
     return Response.json({}, { status: 201 });
   };
   t.after(() => {
@@ -298,6 +316,427 @@ test("leaves closed lifecycle reconciliation to the lifecycle workflow", async (
     ),
   );
 });
+
+test("invalidates readiness when an issue is reopened", async (t) => {
+  const body = validTaskBody();
+  const title = "Implement governed workspace opening";
+  const accepted = readinessComment({
+    actor: "planner",
+    decision: { outcome: "accept", reasons: [] },
+    now: "2026-07-16T12:00:00.000Z",
+    validation: {
+      failures: [],
+      fingerprint: semanticIssueFingerprint(body, title),
+      version: "v1",
+    },
+  });
+  const calls = installGitHubFetchMock(t, {
+    comments: [
+      {
+        body: accepted,
+        id: 1,
+        user: {
+          id: 41898282,
+          login: "github-actions[bot]",
+          type: "Bot",
+        },
+      },
+    ],
+    issueSnapshots: [
+      {
+        body,
+        labels: [{ name: "type: task" }, { name: "status: ready" }],
+        number: 42,
+        state: "open",
+        title,
+        updated_at: "2026-07-16T12:00:01Z",
+      },
+      {
+        body,
+        labels: [{ name: "type: task" }, { name: "status: ready" }],
+        number: 42,
+        state: "open",
+        title,
+        updated_at: "2026-07-16T12:00:01Z",
+      },
+      {
+        body,
+        labels: [{ name: "type: task" }, { name: "status: new" }],
+        number: 42,
+        state: "open",
+        title,
+        updated_at: "2026-07-16T12:00:02Z",
+      },
+    ],
+  });
+
+  const result = await runIssueReadinessAction({
+    event: issueEvent({
+      action: "reopened",
+      issue: {
+        body,
+        labels: [{ name: "type: task" }, { name: "status: ready" }],
+        number: 42,
+        title,
+        updated_at: "2026-07-16T12:00:01Z",
+      },
+    }),
+  });
+
+  assert.equal(result.outcome, "reject");
+  assert.match(result.reasons.join("\n"), /reopened issue/u);
+  assert.ok(
+    calls.some(
+      (call) =>
+        call.method === "DELETE" &&
+        call.url.endsWith("/labels/status%3A%20ready"),
+    ),
+  );
+  assert.ok(
+    calls.some(
+      (call) => call.method === "POST" && call.url.endsWith("/labels"),
+    ),
+  );
+});
+
+test("ignores a replayed reopen event after lifecycle state advances", async (t) => {
+  const calls = installGitHubFetchMock(t, {
+    issueSnapshots: [
+      {
+        body: validTaskBody(),
+        labels: [{ name: "type: task" }, { name: "status: blocked" }],
+        number: 42,
+        state: "open",
+        title: "Implement governed workspace opening",
+        updated_at: "2026-07-16T12:00:03Z",
+      },
+    ],
+  });
+  const result = await runIssueReadinessAction({
+    event: issueEvent({
+      action: "reopened",
+      issue: {
+        body: validTaskBody(),
+        labels: [{ name: "type: task" }, { name: "status: ready" }],
+        number: 42,
+        title: "Implement governed workspace opening",
+        updated_at: "2026-07-16T12:00:01Z",
+      },
+    }),
+  });
+
+  assert.equal(result.outcome, "ignore");
+  assert.equal(result.reason, "stale_reopened_event");
+  assert.equal(
+    calls.filter((call) => ["DELETE", "POST"].includes(call.method)).length,
+    0,
+  );
+});
+
+test("fails a reopen reset when the issue changes before mutation", async (t) => {
+  const body = validTaskBody();
+  const title = "Implement governed workspace opening";
+  const accepted = readinessComment({
+    actor: "planner",
+    decision: { outcome: "accept", reasons: [] },
+    now: "2026-07-16T12:00:00.000Z",
+    validation: {
+      failures: [],
+      fingerprint: semanticIssueFingerprint(body, title),
+      version: "v1",
+    },
+  });
+  const calls = installGitHubFetchMock(t, {
+    comments: [
+      {
+        body: accepted,
+        id: 1,
+        user: {
+          id: 41898282,
+          login: "github-actions[bot]",
+          type: "Bot",
+        },
+      },
+    ],
+    issueSnapshots: [
+      {
+        body,
+        labels: [{ name: "type: task" }, { name: "status: ready" }],
+        number: 42,
+        state: "open",
+        title,
+        updated_at: "2026-07-16T12:00:01Z",
+      },
+      {
+        body,
+        labels: [{ name: "type: task" }, { name: "status: blocked" }],
+        number: 42,
+        state: "open",
+        title,
+        updated_at: "2026-07-16T12:00:02Z",
+      },
+    ],
+  });
+
+  await assert.rejects(
+    runIssueReadinessAction({
+      event: issueEvent({
+        action: "reopened",
+        issue: {
+          body,
+          labels: [{ name: "type: task" }, { name: "status: ready" }],
+          number: 42,
+          title,
+          updated_at: "2026-07-16T12:00:01Z",
+        },
+      }),
+    }),
+    /changed before readiness reconciliation/u,
+  );
+  assert.equal(
+    calls.filter((call) => ["DELETE", "POST"].includes(call.method)).length,
+    0,
+  );
+});
+
+for (const status of [403, 404, 409, 422, 429, 503]) {
+  test(`fails closed when reopened issue reload returns ${status}`, async (t) => {
+    const calls = installGitHubFetchMock(t, {
+      issueSnapshotStatuses: [status],
+    });
+    await assert.rejects(
+      runIssueReadinessAction({
+        event: issueEvent({
+          action: "reopened",
+          issue: {
+            body: validTaskBody(),
+            labels: [{ name: "type: task" }, { name: "status: ready" }],
+            number: 42,
+            title: "Implement governed workspace opening",
+            updated_at: "2026-07-16T12:00:01Z",
+          },
+        }),
+      }),
+      new RegExp(`failed with ${status}`, "u"),
+    );
+    assert.equal(
+      calls.filter((call) => ["DELETE", "POST"].includes(call.method)).length,
+      0,
+    );
+  });
+}
+
+test("fails closed when reopened issue reload times out", async (t) => {
+  const calls = installGitHubFetchMock(t, {
+    issueSnapshotError: "provider timeout",
+  });
+  await assert.rejects(
+    runIssueReadinessAction({
+      event: issueEvent({
+        action: "reopened",
+        issue: {
+          body: validTaskBody(),
+          labels: [{ name: "type: task" }, { name: "status: ready" }],
+          number: 42,
+          title: "Implement governed workspace opening",
+          updated_at: "2026-07-16T12:00:01Z",
+        },
+      }),
+    }),
+    /provider timeout/u,
+  );
+  assert.equal(
+    calls.filter((call) => ["DELETE", "POST"].includes(call.method)).length,
+    0,
+  );
+});
+
+test("fails closed on malformed reopen state and partial mutation read-back", async (t) => {
+  const malformedCalls = installGitHubFetchMock(t, {
+    issueSnapshots: [{}],
+  });
+  await assert.rejects(
+    runIssueReadinessAction({
+      event: issueEvent({
+        action: "reopened",
+        issue: {
+          body: validTaskBody(),
+          labels: [{ name: "type: task" }, { name: "status: ready" }],
+          number: 42,
+          title: "Implement governed workspace opening",
+          updated_at: "2026-07-16T12:00:01Z",
+        },
+      }),
+    }),
+    /response is malformed/u,
+  );
+  assert.equal(
+    malformedCalls.filter((call) => ["DELETE", "POST"].includes(call.method))
+      .length,
+    0,
+  );
+});
+
+test("fails reopen reconciliation after a conflicting partial mutation", async (t) => {
+  const body = validTaskBody();
+  const title = "Implement governed workspace opening";
+  const accepted = readinessComment({
+    actor: "planner",
+    decision: { outcome: "accept", reasons: [] },
+    now: "2026-07-16T12:00:00.000Z",
+    validation: {
+      failures: [],
+      fingerprint: semanticIssueFingerprint(body, title),
+      version: "v1",
+    },
+  });
+  const calls = installGitHubFetchMock(t, {
+    comments: [
+      {
+        body: accepted,
+        id: 1,
+        user: {
+          id: 41898282,
+          login: "github-actions[bot]",
+          type: "Bot",
+        },
+      },
+    ],
+    issueSnapshots: [
+      {
+        body,
+        labels: [{ name: "type: task" }, { name: "status: ready" }],
+        number: 42,
+        state: "open",
+        title,
+        updated_at: "2026-07-16T12:00:01Z",
+      },
+      {
+        body,
+        labels: [{ name: "type: task" }, { name: "status: ready" }],
+        number: 42,
+        state: "open",
+        title,
+        updated_at: "2026-07-16T12:00:01Z",
+      },
+      {
+        body,
+        labels: [
+          { name: "type: task" },
+          { name: "status: blocked" },
+          { name: "status: new" },
+        ],
+        number: 42,
+        state: "open",
+        title,
+        updated_at: "2026-07-16T12:00:02Z",
+      },
+    ],
+    pullRequests: [
+      {
+        body: "## Scope\n\n- Accepted issue: #42",
+        head: { sha: "c".repeat(40) },
+      },
+    ],
+  });
+  await assert.rejects(
+    runIssueReadinessAction({
+      event: issueEvent({
+        action: "reopened",
+        issue: {
+          body,
+          labels: [{ name: "type: task" }, { name: "status: ready" }],
+          number: 42,
+          title,
+          updated_at: "2026-07-16T12:00:01Z",
+        },
+      }),
+    }),
+    /failed read-back/u,
+  );
+  assert.ok(calls.some((call) => call.method === "DELETE"));
+  assert.ok(
+    calls.some(
+      (call) => call.method === "POST" && call.url.endsWith("/labels"),
+    ),
+  );
+  assert.ok(
+    calls.some(
+      (call) =>
+        call.method === "POST" &&
+        call.url.endsWith(`/statuses/${"c".repeat(40)}`),
+    ),
+  );
+});
+
+for (const mutationFailure of [
+  { deleteStatus: 403, labelPostStatus: 201, status: 403 },
+  { deleteStatus: 204, labelPostStatus: 422, status: 422 },
+]) {
+  test(`fails reopened issue mutation on ${mutationFailure.status}`, async (t) => {
+    const body = validTaskBody();
+    const title = "Implement governed workspace opening";
+    const accepted = readinessComment({
+      actor: "planner",
+      decision: { outcome: "accept", reasons: [] },
+      now: "2026-07-16T12:00:00.000Z",
+      validation: {
+        failures: [],
+        fingerprint: semanticIssueFingerprint(body, title),
+        version: "v1",
+      },
+    });
+    const calls = installGitHubFetchMock(t, {
+      comments: [
+        {
+          body: accepted,
+          id: 1,
+          user: {
+            id: 41898282,
+            login: "github-actions[bot]",
+            type: "Bot",
+          },
+        },
+      ],
+      deleteStatus: mutationFailure.deleteStatus,
+      issueSnapshots: [
+        {
+          body,
+          labels: [{ name: "type: task" }, { name: "status: ready" }],
+          number: 42,
+          state: "open",
+          title,
+          updated_at: "2026-07-16T12:00:01Z",
+        },
+        {
+          body,
+          labels: [{ name: "type: task" }, { name: "status: ready" }],
+          number: 42,
+          state: "open",
+          title,
+          updated_at: "2026-07-16T12:00:01Z",
+        },
+      ],
+      labelPostStatus: mutationFailure.labelPostStatus,
+    });
+    await assert.rejects(
+      runIssueReadinessAction({
+        event: issueEvent({
+          action: "reopened",
+          issue: {
+            body,
+            labels: [{ name: "type: task" }, { name: "status: ready" }],
+            number: 42,
+            title,
+            updated_at: "2026-07-16T12:00:01Z",
+          },
+        }),
+      }),
+      new RegExp(`failed with ${mutationFailure.status}`, "u"),
+    );
+    assert.ok(calls.some((call) => call.method === "DELETE"));
+  });
+}
 
 test("invalidates stale readiness retained by a paused issue", async (t) => {
   const body = validTaskBody();

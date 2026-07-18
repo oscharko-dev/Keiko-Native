@@ -12,7 +12,10 @@ import {
   runIssueLifecycleCli,
 } from "./issue-lifecycle-action.mjs";
 
-const issueBody = "## Planning contract\n\n- Contract version: `v2`\n";
+const issueBody = [
+  "## Planning contract\n\n- Contract version: `v2`",
+  "## Execution Authority\n\n- Exact delivery target: `dev`",
+].join("\n\n");
 const issueTitle = "Governed lifecycle test issue";
 const validation = {
   failures: [],
@@ -47,6 +50,7 @@ function issue(labels = ["status: ready"], overrides = {}) {
     node_id: "issue-node-42",
     number: 27,
     title: issueTitle,
+    updated_at: "2026-07-17T12:00:00Z",
     ...overrides,
   };
 }
@@ -457,6 +461,13 @@ test("plans validated assignment claim and release transitions", async (t) => {
 });
 
 test("plans pull request lifecycle topology from trusted PR events", async (t) => {
+  const deliveryBody = [
+    "## Scope",
+    "",
+    "- Accepted issue: #27",
+    "- Accepted target branch: `dev`",
+    "- Actual source branch: `codex/27-lifecycle`",
+  ].join("\n");
   const opened = requestMock(t, { issueLabels: ["status: in progress"] });
   const openedResult = await runIssueLifecycleAction({
     event: {
@@ -567,16 +578,31 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
 
   const synchronizedReady = requestMock(t, {
     issueLabels: ["status: ready for human review"],
+    pullRequestDetails: {
+      40: {
+        base: { ref: "dev" },
+        body: deliveryBody,
+        draft: false,
+        head: { ref: "codex/27-lifecycle", sha: "c".repeat(40) },
+        node_id: "pr-node-40",
+        number: 40,
+        state: "open",
+        updated_at: "2026-07-17T12:00:01Z",
+      },
+    },
   });
   const synchronizedReadyResult = await runIssueLifecycleAction({
     event: {
       action: "synchronize",
       prContract: { validated: true },
       pull_request: {
-        body: "## Scope\n\n- Accepted issue: #27",
+        base: { ref: "dev" },
+        body: deliveryBody,
         draft: false,
-        head: { sha: "c".repeat(40) },
+        head: { ref: "codex/27-lifecycle", sha: "c".repeat(40) },
         node_id: "pr-node-40",
+        number: 40,
+        updated_at: "2026-07-17T12:00:01Z",
       },
     },
     request: synchronizedReady.request,
@@ -590,28 +616,327 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
     remove: ["status: ready for human review"],
   });
 
-  const synchronizedContractFailure = requestMock(t, {
-    issueLabels: ["status: ready for human review"],
-  });
   process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = "enabled";
   delete process.env.KEIKO_PR_CONTRACT_RESULT;
   try {
-    const synchronizedContractFailureResult = await runIssueLifecycleAction({
+    for (const action of ["synchronize", "converted_to_draft"]) {
+      const failedContract = requestMock(t, {
+        issueLabels: ["status: ready for human review"],
+        pullRequestDetails: {
+          40: {
+            base: { ref: "dev" },
+            body: deliveryBody,
+            draft: action === "converted_to_draft",
+            head: { ref: "codex/27-lifecycle", sha: "c".repeat(40) },
+            node_id: "pr-node-40",
+            number: 40,
+            state: "open",
+            updated_at: "2026-07-17T12:00:01Z",
+          },
+        },
+      });
+      let mutationCount = 0;
+      const failedContractResult = await runIssueLifecycleAction({
+        event: {
+          action,
+          pull_request: {
+            base: { ref: "dev" },
+            body: deliveryBody,
+            draft: action === "converted_to_draft",
+            head: { ref: "codex/27-lifecycle", sha: "c".repeat(40) },
+            node_id: "pr-node-40",
+            number: 40,
+            updated_at: "2026-07-17T12:00:01Z",
+          },
+        },
+        request: async (path, options = {}) => {
+          if (path.endsWith("/issues/27") && mutationCount === 2)
+            return issue(["status: pr open"]);
+          const response = await failedContract.request(path, options);
+          if (
+            options.method === "DELETE" ||
+            (options.method === "POST" && path.endsWith("/labels"))
+          )
+            mutationCount += 1;
+          return response;
+        },
+      });
+      assert.equal(failedContractResult.outcome, "applied");
+      assert.equal(failedContractResult.desiredState, "status: pr open");
+      assert.equal(mutationCount, 2);
+    }
+
+    for (const stale of [
+      {
+        action: "synchronize",
+        currentDraft: false,
+        currentHead: "d".repeat(40),
+        eventDraft: false,
+      },
+      {
+        action: "converted_to_draft",
+        currentDraft: false,
+        currentHead: "c".repeat(40),
+        eventDraft: true,
+      },
+    ]) {
+      const staleEvent = requestMock(t, {
+        issueLabels: ["status: ready for human review"],
+        pullRequestDetails: {
+          40: {
+            base: { ref: "dev" },
+            body: deliveryBody,
+            draft: stale.currentDraft,
+            head: { ref: "codex/27-lifecycle", sha: stale.currentHead },
+            node_id: "pr-node-40",
+            number: 40,
+            state: "open",
+          },
+        },
+      });
+      const staleEventResult = await runIssueLifecycleAction({
+        event: {
+          action: stale.action,
+          prContract: { validated: true },
+          pull_request: {
+            base: { ref: "dev" },
+            body: deliveryBody,
+            draft: stale.eventDraft,
+            head: { ref: "codex/27-lifecycle", sha: "c".repeat(40) },
+            node_id: "pr-node-40",
+            number: 40,
+          },
+        },
+        request: staleEvent.request,
+      });
+      assert.equal(staleEventResult.outcome, "failed");
+      assert.deepEqual(staleEventResult.failures, [
+        "current_pull_request_evidence_required",
+      ]);
+      assert.equal(
+        staleEvent.calls.filter((call) =>
+          ["DELETE", "POST"].includes(call.method),
+        ).length,
+        0,
+      );
+    }
+
+    const wrongBoundary = requestMock(t, {
+      issueLabels: ["status: ready for human review"],
+      pullRequestDetails: {
+        40: {
+          base: { ref: "release" },
+          body: "## Scope\n\n- Accepted issue: #27",
+          draft: false,
+          head: { ref: "other/change", sha: "c".repeat(40) },
+          node_id: "pr-node-40",
+          number: 40,
+          state: "open",
+        },
+      },
+    });
+    const wrongBoundaryResult = await runIssueLifecycleAction({
+      event: {
+        action: "synchronize",
+        prContract: { validated: true },
+        pull_request: {
+          base: { ref: "release" },
+          body: "## Scope\n\n- Accepted issue: #27",
+          draft: false,
+          head: { ref: "other/change", sha: "c".repeat(40) },
+          node_id: "pr-node-40",
+          number: 40,
+        },
+      },
+      request: wrongBoundary.request,
+    });
+    assert.equal(wrongBoundaryResult.outcome, "failed");
+    assert.equal(
+      wrongBoundary.calls.filter((call) =>
+        ["DELETE", "POST"].includes(call.method),
+      ).length,
+      0,
+    );
+
+    const duplicateEvent = requestMock(t, {
+      issueLabels: ["status: ready for human review"],
+      pullRequestDetails: {
+        40: {
+          base: { ref: "dev" },
+          body: deliveryBody,
+          draft: false,
+          head: { ref: "codex/27-lifecycle", sha: "c".repeat(40) },
+          node_id: "pr-node-40",
+          number: 40,
+          state: "open",
+        },
+      },
+      pullRequests: [
+        {
+          body: deliveryBody,
+          head: { sha: "e".repeat(40) },
+          node_id: "pr-node-41",
+        },
+      ],
+    });
+    const duplicateEventResult = await runIssueLifecycleAction({
+      event: {
+        action: "synchronize",
+        prContract: { validated: true },
+        pull_request: {
+          base: { ref: "dev" },
+          body: deliveryBody,
+          draft: false,
+          head: { ref: "codex/27-lifecycle", sha: "c".repeat(40) },
+          node_id: "pr-node-40",
+          number: 40,
+        },
+      },
+      request: duplicateEvent.request,
+    });
+    assert.equal(duplicateEventResult.outcome, "failed");
+    assert.equal(
+      duplicateEvent.calls.filter((call) =>
+        ["DELETE", "POST"].includes(call.method),
+      ).length,
+      0,
+    );
+
+    const replayedEvent = requestMock(t, {
+      issueLabels: ["status: ready for human review"],
+      issueOverrides: { updated_at: "2026-07-17T12:00:02Z" },
+      pullRequestDetails: {
+        40: {
+          base: { ref: "dev" },
+          body: deliveryBody,
+          draft: false,
+          head: { ref: "codex/27-lifecycle", sha: "c".repeat(40) },
+          node_id: "pr-node-40",
+          number: 40,
+          state: "open",
+          updated_at: "2026-07-17T12:00:01Z",
+        },
+      },
+    });
+    const replayedEventResult = await runIssueLifecycleAction({
+      event: {
+        action: "synchronize",
+        prContract: { validated: true },
+        pull_request: {
+          base: { ref: "dev" },
+          body: deliveryBody,
+          draft: false,
+          head: { ref: "codex/27-lifecycle", sha: "c".repeat(40) },
+          node_id: "pr-node-40",
+          number: 40,
+          updated_at: "2026-07-17T12:00:01Z",
+        },
+      },
+      request: replayedEvent.request,
+    });
+    assert.equal(replayedEventResult.outcome, "failed");
+    assert.deepEqual(replayedEventResult.failures, [
+      "current_pull_request_evidence_required",
+    ]);
+    assert.equal(
+      replayedEvent.calls.filter((call) =>
+        ["DELETE", "POST"].includes(call.method),
+      ).length,
+      0,
+    );
+
+    for (const status of [403, 404, 409, 422, 429, 503, "timeout"]) {
+      const unavailableCurrentPr = requestMock(t, {
+        failures: {
+          "/repos/keiko/Keiko-Native/pulls/40": status,
+        },
+        issueLabels: ["status: ready for human review"],
+      });
+      const unavailableResult = await runIssueLifecycleAction({
+        event: {
+          action: "synchronize",
+          pull_request: {
+            base: { ref: "dev" },
+            body: deliveryBody,
+            draft: false,
+            head: { ref: "codex/27-lifecycle", sha: "c".repeat(40) },
+            node_id: "pr-node-40",
+            number: 40,
+          },
+        },
+        request: unavailableCurrentPr.request,
+      });
+      assert.equal(unavailableResult.outcome, "failed");
+      assert.equal(
+        unavailableCurrentPr.calls.filter((call) =>
+          ["DELETE", "POST"].includes(call.method),
+        ).length,
+        0,
+      );
+    }
+
+    const malformedCurrentPr = requestMock(t, {
+      issueLabels: ["status: ready for human review"],
+      pullRequestDetails: { 40: { number: 40 } },
+    });
+    const malformedCurrentPrResult = await runIssueLifecycleAction({
       event: {
         action: "synchronize",
         pull_request: {
-          body: "## Scope\n\n- Accepted issue: #27",
+          base: { ref: "dev" },
+          body: deliveryBody,
           draft: false,
-          head: { sha: "c".repeat(40) },
+          head: { ref: "codex/27-lifecycle", sha: "c".repeat(40) },
           node_id: "pr-node-40",
+          number: 40,
+          updated_at: "2026-07-17T12:00:01Z",
         },
       },
-      request: synchronizedContractFailure.request,
+      request: malformedCurrentPr.request,
     });
-    assert.equal(synchronizedContractFailureResult.outcome, "failed");
-    assert.deepEqual(synchronizedContractFailureResult.failures, [
-      "pr_contract_success_required",
-    ]);
+    assert.equal(malformedCurrentPrResult.outcome, "failed");
+    assert.equal(
+      malformedCurrentPr.calls.filter((call) =>
+        ["DELETE", "POST"].includes(call.method),
+      ).length,
+      0,
+    );
+
+    const partialMutation = requestMock(t, {
+      failures: { POST: 422 },
+      issueLabels: ["status: ready for human review"],
+      pullRequestDetails: {
+        40: {
+          base: { ref: "dev" },
+          body: deliveryBody,
+          draft: false,
+          head: { ref: "codex/27-lifecycle", sha: "c".repeat(40) },
+          node_id: "pr-node-40",
+          number: 40,
+          state: "open",
+          updated_at: "2026-07-17T12:00:01Z",
+        },
+      },
+    });
+    await assert.rejects(
+      runIssueLifecycleAction({
+        event: {
+          action: "synchronize",
+          pull_request: {
+            base: { ref: "dev" },
+            body: deliveryBody,
+            draft: false,
+            head: { ref: "codex/27-lifecycle", sha: "c".repeat(40) },
+            node_id: "pr-node-40",
+            number: 40,
+            updated_at: "2026-07-17T12:00:01Z",
+          },
+        },
+        request: partialMutation.request,
+      }),
+      /failed with 422/u,
+    );
+    assert.ok(partialMutation.calls.some((call) => call.method === "DELETE"));
   } finally {
     if (previousActivation === undefined)
       delete process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;

@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { githubRequestFor } from "./github-api.mjs";
 import {
   pullRequestAcceptedTarget,
+  pullRequestDeliveryIdentityMatches,
   pullRequestIssueNumber,
 } from "./pr-contract.mjs";
 import {
@@ -314,7 +315,26 @@ function desiredStateForPullRequestEvent({
     sourceState: currentState,
   });
   if (result.ok) {
-    const targetRequiresContract = [PR_OPEN, REVIEW].includes(result.target);
+    const reviewDemotion =
+      currentState === REVIEW &&
+      result.target === PR_OPEN &&
+      ["synchronize", "converted_to_draft"].includes(event.action);
+    if (
+      reviewDemotion &&
+      (event.currentPullRequest?.validated !== true ||
+        event.otherOpenPullRequest !== undefined)
+    )
+      return enabled
+        ? {
+            failures: ["current_pull_request_evidence_required"],
+            outcome: "failed",
+          }
+        : {
+            outcome: "ignored",
+            reason: "pre_activation_current_pull_request_required",
+          };
+    const targetRequiresContract =
+      [PR_OPEN, REVIEW].includes(result.target) && !reviewDemotion;
     const contractSucceeded = requiresRetainedPullRequestContract(event, result)
       ? hasRetainedPullRequestContractSuccess(event, result)
       : hasTrustedPullRequestContractSuccess(event);
@@ -524,6 +544,43 @@ function needsRetainedClaimEvidence(event) {
   );
 }
 
+function needsCurrentPullRequestEvidence(event) {
+  return (
+    event?.pull_request !== undefined &&
+    ["synchronize", "converted_to_draft"].includes(event.action)
+  );
+}
+
+async function currentPullRequestEvidence(event, issue, repository, request) {
+  const eventPullRequest = event.pull_request;
+  const number = eventPullRequest?.number;
+  if (!Number.isInteger(number)) return { validated: false };
+  try {
+    const current = await request(`/repos/${repository}/pulls/${number}`);
+    const currentUpdatedAt = Date.parse(current?.updated_at ?? "");
+    const issueUpdatedAt = Date.parse(issue?.updated_at ?? "");
+    return {
+      validated:
+        current?.number === number &&
+        pullRequestIdentity(current) ===
+          pullRequestIdentity(eventPullRequest) &&
+        current?.base?.ref === eventPullRequest?.base?.ref &&
+        current?.head?.sha === eventPullRequest?.head?.sha &&
+        current?.head?.ref === eventPullRequest?.head?.ref &&
+        current?.body === eventPullRequest?.body &&
+        current?.state === "open" &&
+        current?.draft === eventPullRequest?.draft &&
+        current?.updated_at === eventPullRequest?.updated_at &&
+        Number.isFinite(currentUpdatedAt) &&
+        Number.isFinite(issueUpdatedAt) &&
+        currentUpdatedAt > issueUpdatedAt &&
+        pullRequestDeliveryIdentityMatches({ issue, pullRequest: current }),
+    };
+  } catch {
+    return { validated: false };
+  }
+}
+
 async function eventWithDerivedEvidence({
   event,
   issue,
@@ -572,6 +629,22 @@ async function eventWithDerivedEvidence({
     const claim = retainedAssignmentClaim(issue);
     if (claim !== undefined) evidencedEvent = { ...evidencedEvent, claim };
   }
+  if (needsCurrentPullRequestEvidence(event))
+    evidencedEvent = {
+      ...evidencedEvent,
+      currentPullRequest: await currentPullRequestEvidence(
+        event,
+        issue,
+        repository,
+        request,
+      ),
+      otherOpenPullRequest: await firstValidatedLinkedOpenPullRequest(
+        repository,
+        issueNumber,
+        request,
+        pullRequestIdentity(event.pull_request),
+      ),
+    };
   return evidencedEvent;
 }
 
