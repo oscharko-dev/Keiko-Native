@@ -165,6 +165,7 @@ export function packagePolicyFailures({
     "acceptedSpdxExpressions",
     "allowedBundlePaths",
     "allowedFileClasses",
+    "allowedFileModes",
     "bundleIdentifier",
     "cargoInventory",
     "expectedLocks",
@@ -219,7 +220,9 @@ export function packagePolicyFailures({
     JSON.stringify(requiredNotices) !==
       JSON.stringify([closed.CLOSED_PACKAGE_PATHS[2]]) ||
     JSON.stringify(policy.allowedFileClasses) !==
-      JSON.stringify(closed.CLOSED_FILE_CLASSES)
+      JSON.stringify(closed.CLOSED_FILE_CLASSES) ||
+    JSON.stringify(policy.allowedFileModes) !==
+      JSON.stringify(closed.CLOSED_FILE_MODES)
   ) {
     failures.push("package-policy-path-classes");
   }
@@ -229,6 +232,11 @@ export function packagePolicyFailures({
   ) {
     failures.push("package-observed-file-classes");
   }
+  const fileModes = Object.fromEntries(
+    files.map(({ mode, path }) => [path, mode]),
+  );
+  if (JSON.stringify(fileModes) !== JSON.stringify(closed.CLOSED_FILE_MODES))
+    failures.push("package-observed-file-modes");
   const actualPaths = files.map(({ path }) => path).sort();
   if (
     JSON.stringify(actualPaths) !== JSON.stringify([...allowedPaths].sort())

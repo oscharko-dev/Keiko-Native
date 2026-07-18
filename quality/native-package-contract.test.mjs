@@ -58,6 +58,11 @@ test("package policy requires exact paths, dependencies, notices and SPDX", () =
       "Contents/MacOS/keiko-native-desktop": "mach-o-executable",
       "Contents/Resources/THIRD-PARTY-NOTICES.json": "dependency-notice",
     },
+    allowedFileModes: {
+      "Contents/Info.plist": "0644",
+      "Contents/MacOS/keiko-native-desktop": "0755",
+      "Contents/Resources/THIRD-PARTY-NOTICES.json": "0644",
+    },
     cargoInventory: dependencies,
     npmInventory: [],
     acceptedSpdxExpressions: reviewedSpdx,
@@ -87,14 +92,16 @@ test("package policy requires exact paths, dependencies, notices and SPDX", () =
     },
   };
   const files = [
-    { path: "Contents/Info.plist", bytes: Buffer.from("plist") },
+    { path: "Contents/Info.plist", bytes: Buffer.from("plist"), mode: "0644" },
     {
       path: "Contents/MacOS/keiko-native-desktop",
       bytes: Buffer.from("product"),
+      mode: "0755",
     },
     {
       path: "Contents/Resources/THIRD-PARTY-NOTICES.json",
       bytes: Buffer.from("notice"),
+      mode: "0644",
     },
   ];
   const fileClasses = { ...policy.allowedFileClasses };
@@ -144,6 +151,10 @@ test("package policy requires exact paths, dependencies, notices and SPDX", () =
     { ...policy, allowedBundlePaths: [...policy.allowedBundlePaths, "extra"] },
     { ...policy, requiredNoticePaths: [] },
     { ...policy, allowedFileClasses: { ...fileClasses, extra: "raw" } },
+    {
+      ...policy,
+      allowedFileModes: { ...policy.allowedFileModes, extra: "0644" },
+    },
     { ...policy, cargoInventory: [] },
     { ...policy, npmInventory: [dependency] },
     { ...policy, acceptedSpdxExpressions: [] },

@@ -32,8 +32,9 @@ static void copy_regular(int source_parent, const char *name, int dest_parent) {
   struct stat before;
   if (source < 0 || fstat(source, &before) || !S_ISREG(before.st_mode))
     fail("copy-source");
+  mode_t destination_mode = (before.st_mode & 0111) ? 0755 : 0644;
   int dest = openat(dest_parent, name,
-                    O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0500);
+                    O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, destination_mode);
   if (dest < 0) fail("copy-create");
   char buffer[65536];
   ssize_t size;
@@ -73,7 +74,7 @@ void copy_directory(int source, int destination, const char *exclude,
     }
     if (S_ISREG(before.st_mode)) copy_regular(source, entry->d_name, destination);
     else if (S_ISDIR(before.st_mode)) {
-      if (mkdirat(destination, entry->d_name, 0700)) fail("copy-mkdir");
+      if (mkdirat(destination, entry->d_name, 0755)) fail("copy-mkdir");
       int child_source = openat(source, entry->d_name,
                                 O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
       int child_dest = openat(destination, entry->d_name,
@@ -129,9 +130,10 @@ void print_tree(int root, const char *prefix, const char *exclude, int depth) {
     char path[PATH_MAX];
     if (snprintf(path, sizeof(path), "%s%s%s", prefix, prefix[0] ? "/" : "",
                  entry->d_name) >= (int)sizeof(path)) fail("path-too-long");
-    if (S_ISREG(metadata.st_mode)) printf("F\t%s\n", path);
+    if (S_ISREG(metadata.st_mode))
+      printf("F\t%04o\t%s\n", (unsigned)(metadata.st_mode & 0777), path);
     else if (S_ISDIR(metadata.st_mode)) {
-      printf("D\t%s\n", path);
+      printf("D\t%04o\t%s\n", (unsigned)(metadata.st_mode & 0777), path);
       int child = openat(root, entry->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
       if (child < 0) fail("list-directory");
       print_tree(child, path, NULL, depth + 1);

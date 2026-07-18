@@ -34,6 +34,7 @@ test("package I/O fails closed when snapshot helper operations are unavailable",
       /output-copy/u,
     );
     await assert.rejects(io.filesBelow("source"), /output-inventory/u);
+    assert.throws(() => io.fileMode("source/file", "source"), /output-mode/u);
     assert.throws(() => io.preparePackageRoot(), /package-root/u);
     assert.throws(
       () => io.writeOutputFile("manifest.json", "value"),

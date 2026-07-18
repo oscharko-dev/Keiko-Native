@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import {
+  chmod,
   cp,
   lstat,
   mkdir,
@@ -38,6 +39,8 @@ test(
       await mkdir(join(root, "source/nested"), { recursive: true });
       await mkdir(join(root, "source/.bin"));
       await writeFile(join(root, "source/nested/value"), "alpha");
+      await writeFile(join(root, "source/nested/executable"), "#!/bin/sh\n");
+      await chmod(join(root, "source/nested/executable"), 0o755);
       await writeFile(join(root, "source/.bin/ignored"), "ignored");
       await mkdir(join(root, "destination"));
       fs.copyTree(
@@ -51,9 +54,27 @@ test(
         fs.read(join(root, "destination"), "copy/nested/value", "utf8"),
         "alpha",
       );
+      assert.equal(
+        (await lstat(join(root, "destination/copy/nested/value"))).mode & 0o777,
+        0o644,
+      );
+      assert.equal(
+        (await lstat(join(root, "destination/copy/nested"))).mode & 0o777,
+        0o755,
+      );
+      assert.equal(
+        (await lstat(join(root, "destination/copy"))).mode & 0o777,
+        0o755,
+      );
+      assert.equal(
+        (await lstat(join(root, "destination/copy/nested/executable"))).mode &
+          0o777,
+        0o755,
+      );
       assert.deepEqual(fs.list(join(root, "destination"), "copy"), [
-        { path: "nested", type: "D" },
-        { path: "nested/value", type: "F" },
+        { mode: "0755", path: "nested", type: "D" },
+        { mode: "0755", path: "nested/executable", type: "F" },
+        { mode: "0644", path: "nested/value", type: "F" },
       ]);
       fs.write(
         join(root, "destination"),

@@ -139,10 +139,10 @@ export function createNativeFs(helperPath) {
         .split("\n")
         .filter(Boolean)
         .map((line) => {
-          const match = /^(D|F)\t(.+)$/u.exec(line);
+          const match = /^(D|F)\t(0[0-7]{3})\t(.+)$/u.exec(line);
           if (!match)
             throw new Error("Native filesystem helper rejected inventory");
-          return { path: match[2], type: match[1] };
+          return { mode: match[2], path: match[3], type: match[1] };
         })
         .toSorted((left, right) => left.path.localeCompare(right.path));
     },

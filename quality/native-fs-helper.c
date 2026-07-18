@@ -283,6 +283,8 @@ int native_fs_run(int argc, char **argv) {
     int destination_root = open_absolute(argv[4], 0, &destination_chain);
     int destination = open_dir_at_path(destination_root, argv[5], 1,
                                        &destination_chain);
+    if (strcmp(argv[5], ".") && fchmod(destination, 0755))
+      fail("copy-directory-mode");
     refresh_chain(&source_chain);
     copy_directory(source, destination, argc == 7 ? argv[6] : NULL, 0);
     verify_absolute(argv[4], destination_root);

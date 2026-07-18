@@ -10,6 +10,12 @@ export const CLOSED_FILE_CLASSES = {
   "Contents/Resources/THIRD-PARTY-NOTICES.json": "dependency-notice",
 };
 
+export const CLOSED_FILE_MODES = {
+  "Contents/Info.plist": "0644",
+  "Contents/MacOS/keiko-native-desktop": "0755",
+  "Contents/Resources/THIRD-PARTY-NOTICES.json": "0644",
+};
+
 export const CLOSED_PROHIBITED_MARKERS = [
   "--health-json",
   "codex/9-desktop-host-evaluation",

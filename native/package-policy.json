@@ -12,6 +12,11 @@
     "Contents/MacOS/keiko-native-desktop": "mach-o-executable",
     "Contents/Resources/THIRD-PARTY-NOTICES.json": "dependency-notice"
   },
+  "allowedFileModes": {
+    "Contents/Info.plist": "0644",
+    "Contents/MacOS/keiko-native-desktop": "0755",
+    "Contents/Resources/THIRD-PARTY-NOTICES.json": "0644"
+  },
   "requiredNoticePaths": ["Contents/Resources/THIRD-PARTY-NOTICES.json"],
   "acceptedSpdxExpressions": [
     "(MIT OR Apache-2.0) AND Unicode-3.0",

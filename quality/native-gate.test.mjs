@@ -264,8 +264,8 @@ lto = true
 
   const manifest = nativeGateTestSupport.packageManifest({
     files: [
-      { path: "z", sha256: "2", bytes: Buffer.from("") },
-      { path: "a", sha256: "1", bytes: Buffer.from("") },
+      { path: "z", sha256: "2", bytes: Buffer.from(""), mode: "0755" },
+      { path: "a", sha256: "1", bytes: Buffer.from(""), mode: "0644" },
     ],
     policySha256: "b".repeat(64),
     revision: "a".repeat(40),

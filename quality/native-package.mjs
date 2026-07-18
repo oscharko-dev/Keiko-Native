@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 
 import {
@@ -43,7 +43,7 @@ function packageManifest({ files, policySha256, revision }) {
     platform: "macos-arm64",
     policySha256,
     inventory: files
-      .map(({ path, sha256 }) => ({ path, sha256 }))
+      .map(({ mode, path, sha256 }) => ({ mode, path, sha256 }))
       .toSorted((a, b) => a.path.localeCompare(b.path)),
     redaction: "closed",
   };
@@ -111,6 +111,7 @@ export function createNativePackageGate({
   captureOutputTree,
   captureRepositoryState,
   cargoMetadata,
+  fileMode = async (path) => ((await lstat(path)).mode & 0o777).toString(8),
   filesBelow,
   frontendRoot,
   nativeRoot,
@@ -186,6 +187,7 @@ export function createNativePackageGate({
     const files = await Promise.all(
       (await filesBelow(inventoryRoot)).map(async (path) => ({
         bytes: await readOutputFile(path, inventoryRoot),
+        mode: String(await fileMode(path, inventoryRoot)).padStart(4, "0"),
         path: relative(inventoryRoot, path).split("\\").join("/"),
         sha256: "",
       })),

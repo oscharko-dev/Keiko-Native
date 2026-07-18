@@ -28,6 +28,14 @@ export function createNativePackageIo({
         .filter(({ type }) => type === "F")
         .map(({ path }) => join(root, ...path.split("/")));
     },
+    fileMode(path, root) {
+      const inventory = listSnapshotOutput(root);
+      const entry = inventory?.find(
+        (item) => item.path === relative(root, path).split("\\").join("/"),
+      );
+      if (entry?.type !== "F") throw rejected("output-mode");
+      return entry.mode;
+    },
     preparePackageRoot() {
       if (
         !outputRoot ||
