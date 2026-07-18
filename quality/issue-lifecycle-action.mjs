@@ -117,6 +117,16 @@ function derivedAssignmentRelease(event, issue) {
   };
 }
 
+function retainedAssignmentClaim(issue) {
+  const [assignee] = [...assignedLogins(issue)].sort();
+  return assignee === undefined
+    ? undefined
+    : {
+        id: `${issueIdentity(issue)}:assignment:${assignee}`,
+        validated: true,
+      };
+}
+
 function pullRequestIdentity(pullRequest) {
   if (
     typeof pullRequest?.node_id === "string" &&
@@ -151,8 +161,12 @@ function pullRequestLifecycleEvent(event) {
       ? event.action
       : "ready_for_review";
   if (event.action === "ready_for_review") return "ready_for_review";
-  if (["synchronize", "converted_to_draft"].includes(event.action))
-    return "opened";
+  if (event.action === "synchronize")
+    return event.pull_request?.draft === false &&
+      hasTrustedPullRequestContractSuccess(event)
+      ? "ready_for_review"
+      : "opened";
+  if (event.action === "converted_to_draft") return "opened";
   if (event.action === "closed" && event.pull_request?.merged !== true)
     return "closed_unmerged";
   return undefined;
@@ -389,8 +403,18 @@ function needsOtherOpenPullRequestEvidence(event) {
   );
 }
 
+function needsRetainedClaimEvidence(event) {
+  return (
+    event?.pull_request !== undefined &&
+    event.action === "closed" &&
+    event.pull_request?.merged !== true &&
+    event.claim === undefined
+  );
+}
+
 async function eventWithDerivedEvidence({
   event,
+  issue,
   issueNumber,
   repository,
   request,
@@ -414,6 +438,10 @@ async function eventWithDerivedEvidence({
     );
     if (otherOpenPullRequest !== undefined)
       evidencedEvent = { ...evidencedEvent, otherOpenPullRequest };
+  }
+  if (needsRetainedClaimEvidence(event)) {
+    const claim = retainedAssignmentClaim(issue);
+    if (claim !== undefined) evidencedEvent = { ...evidencedEvent, claim };
   }
   return evidencedEvent;
 }
@@ -644,6 +672,7 @@ export async function runIssueLifecycleAction({
   const enabled = enabledLifecycleActivation();
   const evidencedEvent = await eventWithDerivedEvidence({
     event,
+    issue,
     issueNumber,
     repository,
     request,

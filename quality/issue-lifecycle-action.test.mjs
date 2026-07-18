@@ -439,6 +439,61 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
     remove: ["status: pr open"],
   });
 
+  const synchronizedReady = requestMock(t, {
+    issueLabels: ["status: pr open"],
+  });
+  const synchronizedReadyResult = await runIssueLifecycleAction({
+    event: {
+      action: "synchronize",
+      prContract: { validated: true },
+      pull_request: {
+        body: "## Scope\n\n- Accepted issue: #27",
+        draft: false,
+        head: { sha: "c".repeat(40) },
+        node_id: "pr-node-40",
+      },
+    },
+    request: synchronizedReady.request,
+  });
+  assert.equal(synchronizedReadyResult.outcome, "planned");
+  assert.equal(
+    synchronizedReadyResult.desiredState,
+    "status: ready for human review",
+  );
+  assert.deepEqual(synchronizedReadyResult.plan, {
+    apply: ["status: ready for human review"],
+    failures: [],
+    ok: true,
+    remove: ["status: pr open"],
+  });
+
+  const synchronizedContractFailure = requestMock(t, {
+    issueLabels: ["status: ready for human review"],
+  });
+  const synchronizedContractFailureResult = await runIssueLifecycleAction({
+    event: {
+      action: "synchronize",
+      pull_request: {
+        body: "## Scope\n\n- Accepted issue: #27",
+        draft: false,
+        head: { sha: "c".repeat(40) },
+        node_id: "pr-node-40",
+      },
+    },
+    request: synchronizedContractFailure.request,
+  });
+  assert.equal(synchronizedContractFailureResult.outcome, "planned");
+  assert.equal(
+    synchronizedContractFailureResult.desiredState,
+    "status: pr open",
+  );
+  assert.deepEqual(synchronizedContractFailureResult.plan, {
+    apply: ["status: pr open"],
+    failures: [],
+    ok: true,
+    remove: ["status: ready for human review"],
+  });
+
   const closedWithAnotherOpen = requestMock(t, {
     issueLabels: ["status: pr open"],
     pullRequests: [
@@ -509,6 +564,34 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
     failures: [],
     ok: true,
     remove: ["status: pr open"],
+  });
+
+  const closedWithRetainedClaim = requestMock(t, {
+    issueLabels: ["status: ready for human review"],
+    issueOverrides: { assignees: [{ login: "runner" }] },
+  });
+  const closedWithRetainedClaimResult = await runIssueLifecycleAction({
+    event: {
+      action: "closed",
+      pull_request: {
+        body: "## Scope\n\n- Accepted issue: #27",
+        head: { sha: "f".repeat(40) },
+        merged: false,
+        node_id: "pr-node-41",
+      },
+    },
+    request: closedWithRetainedClaim.request,
+  });
+  assert.equal(closedWithRetainedClaimResult.outcome, "planned");
+  assert.equal(
+    closedWithRetainedClaimResult.desiredState,
+    "status: in progress",
+  );
+  assert.deepEqual(closedWithRetainedClaimResult.plan, {
+    apply: ["status: in progress"],
+    failures: [],
+    ok: true,
+    remove: ["status: ready for human review"],
   });
 
   const preActivationReady = requestMock(t, { issueLabels: ["status: ready"] });
