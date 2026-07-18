@@ -39,7 +39,7 @@ function machineReadinessComment(id = 101) {
   };
 }
 
-function issue(labels = ["status: ready"]) {
+function issue(labels = ["status: ready"], overrides = {}) {
   return {
     body: issueBody,
     id: 42,
@@ -47,12 +47,18 @@ function issue(labels = ["status: ready"]) {
     node_id: "issue-node-42",
     number: 27,
     title: issueTitle,
+    ...overrides,
   };
 }
 
 function requestMock(
   t,
-  { comments = [machineReadinessComment()], failures = {}, issueLabels } = {},
+  {
+    comments = [machineReadinessComment()],
+    failures = {},
+    issueLabels,
+    issueOverrides,
+  } = {},
 ) {
   const calls = [];
   const request = async (path, options = {}) => {
@@ -67,7 +73,7 @@ function requestMock(
     if (path.includes("/comments?")) return comments;
     if (path.includes("/labels?"))
       return LIFECYCLE_STATES.map((name) => ({ name }));
-    if (path.includes("/issues/27")) return issue(issueLabels);
+    if (path.includes("/issues/27")) return issue(issueLabels, issueOverrides);
     return {};
   };
   const originalRepository = process.env.GITHUB_REPOSITORY;
@@ -236,6 +242,7 @@ test("ignores events without a lifecycle destination and fails bad read-back", a
 test("removes lifecycle labels for non-completed closures", async (t) => {
   const planned = requestMock(t, {
     issueLabels: ["status: ready", "status: blocked"],
+    issueOverrides: { state: "closed", state_reason: "not_planned" },
   });
   const plannedResult = await runIssueLifecycleAction({
     event: {
@@ -256,6 +263,7 @@ test("removes lifecycle labels for non-completed closures", async (t) => {
   let deleteCount = 0;
   const active = requestMock(t, {
     issueLabels: ["status: ready", "status: blocked"],
+    issueOverrides: { state: "closed", state_reason: "duplicate" },
   });
   const previousActivation = process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
   process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = "enabled";
@@ -270,7 +278,8 @@ test("removes lifecycle labels for non-completed closures", async (t) => {
       issue: { number: 27, state_reason: "duplicate" },
     },
     request: async (path, options) => {
-      if (path.includes("/issues/27") && deleteCount === 2) return issue([]);
+      if (path.includes("/issues/27") && deleteCount === 2)
+        return issue([], { state: "closed", state_reason: "duplicate" });
       const response = await active.request(path, options);
       if (options?.method === "DELETE") deleteCount += 1;
       return response;
@@ -283,6 +292,7 @@ test("removes lifecycle labels for non-completed closures", async (t) => {
   let malformedDeleteCount = 0;
   const malformedReadback = requestMock(t, {
     issueLabels: ["status: ready", "status: blocked"],
+    issueOverrides: { state: "closed", state_reason: "not_planned" },
   });
   const malformedResult = await runIssueLifecycleAction({
     event: {
@@ -305,7 +315,10 @@ test("removes lifecycle labels for non-completed closures", async (t) => {
     /read-back labels are unavailable/u,
   );
 
-  const unsupported = requestMock(t, { issueLabels: ["status: ready"] });
+  const unsupported = requestMock(t, {
+    issueLabels: ["status: ready"],
+    issueOverrides: { state: "closed", state_reason: "unsupported" },
+  });
   const unsupportedResult = await runIssueLifecycleAction({
     event: {
       action: "closed",
@@ -491,6 +504,7 @@ test("covers alternate fail-closed and no-op lifecycle branches", async (t) => {
 
   const closed = requestMock(t, {
     issueLabels: ["status: ready for human review"],
+    issueOverrides: { state: "closed", state_reason: "completed" },
   });
   assert.deepEqual(
     (
@@ -511,7 +525,10 @@ test("covers alternate fail-closed and no-op lifecycle branches", async (t) => {
     },
   );
 
-  const prematureClosed = requestMock(t, { issueLabels: ["status: new"] });
+  const prematureClosed = requestMock(t, {
+    issueLabels: ["status: new"],
+    issueOverrides: { state: "closed", state_reason: "completed" },
+  });
   const prematureClosedResult = await runIssueLifecycleAction({
     event: {
       action: "closed",
@@ -527,6 +544,7 @@ test("covers alternate fail-closed and no-op lifecycle branches", async (t) => {
 
   const conflictedClosed = requestMock(t, {
     issueLabels: ["status: ready for human review", "status: blocked"],
+    issueOverrides: { state: "closed", state_reason: "completed" },
   });
   const conflictedClosedResult = await runIssueLifecycleAction({
     event: {
@@ -539,6 +557,23 @@ test("covers alternate fail-closed and no-op lifecycle branches", async (t) => {
   assert.equal(conflictedClosedResult.outcome, "failed");
   assert.deepEqual(conflictedClosedResult.failures, [
     "completion_evidence_required",
+  ]);
+
+  const staleClosedEvent = requestMock(t, {
+    issueLabels: ["status: ready for human review"],
+    issueOverrides: { state: "open", state_reason: null },
+  });
+  const staleClosedResult = await runIssueLifecycleAction({
+    event: {
+      action: "closed",
+      expectedReadinessCommentId: 101,
+      issue: { number: 27, state_reason: "completed" },
+    },
+    request: staleClosedEvent.request,
+  });
+  assert.equal(staleClosedResult.outcome, "failed");
+  assert.deepEqual(staleClosedResult.failures, [
+    "current_closed_state_required",
   ]);
 
   const edited = requestMock(t, { issueLabels: ["status: ready"] });

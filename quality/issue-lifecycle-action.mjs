@@ -103,11 +103,13 @@ function desiredStateForLabelEvent(event, currentState, enabled, readiness) {
 
 function desiredStateForClosure(event, issue) {
   if (event?.action !== "closed") return undefined;
+  if (issue?.state !== "closed")
+    return { failures: ["current_closed_state_required"], outcome: "failed" };
   const closure = evaluateClosurePrecondition({
     completionEvidence: {
       validated: hasSoleLifecycleState(issue, LIFECYCLE_STATES[5]),
     },
-    reason: event.issue?.state_reason,
+    reason: issue.state_reason,
   });
   if (!closure.ok) return { failures: [closure.reason], outcome: "failed" };
   return closure.removeLifecycleLabels === true
