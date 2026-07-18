@@ -190,6 +190,26 @@ void test_barrier_at(const char *expected) {
   if (point && !strcmp(point, expected)) wait_at_barrier();
 }
 
+static int test_failure_at(const char *variable, const char *expected) {
+  const char *value = getenv(variable);
+  while (value && *value) {
+    const char *end = strchr(value, ',');
+    size_t length = end ? (size_t)(end - value) : strlen(value);
+    if (strlen(expected) == length && !strncmp(value, expected, length))
+      return 1;
+    value = end ? end + 1 : NULL;
+  }
+  return 0;
+}
+
+int sync_directory(int directory, const char *point) {
+  if (test_failure_at("KEIKO_FS_HELPER_TEST_FAIL_SYNC", point)) {
+    errno = EIO;
+    return -1;
+  }
+  return fsync(directory);
+}
+
 static void copy_bytes(int source, int destination, struct stat *before) {
   char buffer[65536];
   ssize_t size;

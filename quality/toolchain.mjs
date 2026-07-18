@@ -75,13 +75,13 @@ export function workflowToolchainFailures(workflow) {
       activationName,
       activationEnd < 0 ? undefined : activationEnd,
     );
+    const activationRuns = runCommands(activation);
     if (
       activationName < 0 ||
       activationName > firstNpm ||
       !activation.includes("run: |") ||
-      !activation.includes("corepack enable npm") ||
-      !activation.includes("corepack install --global npm@11.16.0") ||
-      !activation.includes("node quality/check-toolchain.mjs") ||
+      activationRuns.length !== 1 ||
+      !validActivationCommand(activationRuns[0].command) ||
       /^\s+if:/mu.test(activation)
     )
       failures.push("workflow-npm-activation");
@@ -93,6 +93,51 @@ export function workflowToolchainFailures(workflow) {
       failures.push("workflow-node-version");
   }
   return failures;
+}
+
+function validActivationCommand(command) {
+  const segments = shellCommandSegments(command);
+  const expected = [
+    ["corepack", "enable", "npm"],
+    ["corepack", "install", "--global", "npm@11.16.0"],
+    ["node", "quality/check-toolchain.mjs"],
+  ];
+  const positions = expected.map((tokens) =>
+    segments.findIndex((segment) => sameTokens(segment, tokens)),
+  );
+  if (
+    positions.some((position) => position < 0) ||
+    expected.some(
+      (tokens) =>
+        segments.filter((segment) => sameTokens(segment, tokens)).length !== 1,
+    ) ||
+    !(positions[0] < positions[1] && positions[1] < positions[2])
+  )
+    return false;
+  return segments.every(
+    (segment, index) =>
+      index === positions[0] ||
+      index === positions[1] ||
+      index > positions[2] ||
+      !segment.some((token) => containsLexicalNpmToken(token)),
+  );
+}
+
+function shellCommandSegments(command) {
+  const segments = [[]];
+  for (const token of shellTokens(command)) {
+    if (token.operator) {
+      if (segments.at(-1).length > 0) segments.push([]);
+    } else segments.at(-1).push(token.value);
+  }
+  return segments.filter((segment) => segment.length > 0);
+}
+
+function sameTokens(actual, expected) {
+  return (
+    actual.length === expected.length &&
+    actual.every((token, index) => token === expected[index])
+  );
 }
 
 function runCommands(job) {

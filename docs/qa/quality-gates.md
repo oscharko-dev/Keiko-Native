@@ -158,7 +158,7 @@ tests reject missing, conditional, reordered, or version-ranged activation.
 Productive native quality begins with the exact standalone frontend `npm ci` command owned by
 `native:dependencies`; install scripts and npm workspace inference are disabled. Each native gate
 captures the exact Git tree into a private mode-0700 snapshot and compiles the repository-owned
-native filesystem quality helper from the five expected Git blobs. The runner verifies the source
+native filesystem quality helper from the six expected Git blobs. The runner verifies the source
 set, Git-blob IDs, SHA-256 digests, and tree identity before compilation and verifies the sources
 again before publishing the private mode-0700 executable. Compiler inputs are inherited read-only
 descriptors, including descriptor-bound local headers; mutable source pathnames are never compiler

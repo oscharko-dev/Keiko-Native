@@ -29,12 +29,23 @@ static int swap_entries(int parent, const char *left, const char *right) {
 #endif
 }
 
+static int move_entry_exclusive(int parent, const char *source,
+                                const char *destination) {
+#ifdef __APPLE__
+  return renameatx_np(parent, source, parent, destination, RENAME_EXCL);
+#else
+  return (int)syscall(SYS_renameat2, parent, source, parent, destination,
+                      RENAME_NOREPLACE);
+#endif
+}
+
 static void rollback_publication(int parent, const char *leaf,
-                                 const char *staging, int replaced) {
+                                 const char *retained, int replaced) {
   remove_entry(parent, leaf);
-  if (replaced && renameat(parent, staging, parent, leaf))
+  if (replaced && renameat(parent, retained, parent, leaf))
     fail("publish-rollback");
-  (void)fsync(parent);
+  if (sync_directory(parent, "publish-rollback-sync"))
+    fail("publish-rollback-sync");
 }
 
 static void copy_regular(int source_parent, const char *name, int dest_parent) {
@@ -150,6 +161,36 @@ void remove_entry(int parent, const char *name) {
   }
 }
 
+int try_remove_entry(int parent, const char *name) {
+  struct stat entry;
+  if (fstatat(parent, name, &entry, AT_SYMLINK_NOFOLLOW))
+    return errno == ENOENT ? 0 : -1;
+  if (!S_ISDIR(entry.st_mode)) return unlinkat(parent, name, 0);
+  int child = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+  DIR *directory = child < 0 ? NULL : fdopendir(dup(child));
+  if (!directory) {
+    if (child >= 0) close(child);
+    return -1;
+  }
+  int result = 0;
+  errno = 0;
+  struct dirent *nested;
+  while ((nested = readdir(directory))) {
+    if (!strcmp(nested->d_name, ".") || !strcmp(nested->d_name, ".."))
+      continue;
+    if (try_remove_entry(child, nested->d_name)) {
+      result = -1;
+      break;
+    }
+    errno = 0;
+  }
+  if (!result && errno) result = -1;
+  closedir(directory);
+  close(child);
+  if (!result && unlinkat(parent, name, AT_REMOVEDIR)) result = -1;
+  return result;
+}
+
 void print_tree(int root, const char *prefix, const char *exclude, int depth) {
   struct stat directory_before, directory_after;
   if (fsync(root) || fstat(root, &directory_before))
@@ -184,7 +225,7 @@ void print_tree(int root, const char *prefix, const char *exclude, int depth) {
 
 void publish_staged(int parent, chain_t *chain, const char *leaf,
                     const char *staging, int stage) {
-  if (fsync(stage)) fail("stage-sync");
+  if (sync_directory(stage, "stage-sync")) fail("stage-sync");
   struct stat stage_before, stage_named;
   if (fstat(stage, &stage_before)) fail("stage-stat");
   refresh_chain_leaf(chain);
@@ -196,6 +237,10 @@ void publish_staged(int parent, chain_t *chain, const char *leaf,
     fail("stage-rebound");
   struct stat existing;
   int replaced = 0;
+  char cleanup[NAME_MAX + 1];
+  if (snprintf(cleanup, sizeof(cleanup), ".keiko-cleanup-%ld",
+               (long)getpid()) >= (int)sizeof(cleanup))
+    fail("cleanup-name");
   if (!fstatat(parent, leaf, &existing, AT_SYMLINK_NOFOLLOW)) {
     if (!S_ISDIR(existing.st_mode)) {
       remove_entry(parent, staging);
@@ -210,6 +255,15 @@ void publish_staged(int parent, chain_t *chain, const char *leaf,
     remove_entry(parent, staging);
     fail("publish-rename");
   }
+  const char *retained = staging;
+  if (replaced) {
+    if (move_entry_exclusive(parent, staging, cleanup)) {
+      rollback_publication(parent, leaf, staging, replaced);
+      close(stage);
+      fail("publish-retain");
+    }
+    retained = cleanup;
+  }
   struct stat published, stage_after, parent_before, parent_after;
   if (fstat(parent, &parent_before)) fail("publish-parent-stat");
   test_barrier_at("published-leaf");
@@ -217,27 +271,27 @@ void publish_staged(int parent, chain_t *chain, const char *leaf,
       !same_stat(&parent_before, &parent_after) || fstat(stage, &stage_after) ||
       fstatat(parent, leaf, &published, AT_SYMLINK_NOFOLLOW) ||
       !same_stat(&stage_after, &published)) {
-    rollback_publication(parent, leaf, staging, replaced);
+    rollback_publication(parent, leaf, retained, replaced);
     close(stage);
     fail("publish-rebound");
   }
-  if (fsync(parent)) {
-    rollback_publication(parent, leaf, staging, replaced);
+  if (sync_directory(parent, "publish-parent-sync")) {
+    rollback_publication(parent, leaf, retained, replaced);
     close(stage);
     fail("publish-sync");
   }
   if (fstat(stage, &stage_after) ||
       fstatat(parent, leaf, &published, AT_SYMLINK_NOFOLLOW) ||
       !same_stat(&stage_after, &published)) {
-    rollback_publication(parent, leaf, staging, replaced);
+    rollback_publication(parent, leaf, retained, replaced);
     close(stage);
     fail("publish-rebound");
   }
-  if (replaced) {
-    remove_entry(parent, staging);
-    if (fsync(parent)) fail("publish-cleanup-sync");
-  }
   close(stage);
+  if (replaced) {
+    (void)try_remove_entry(parent, cleanup);
+    (void)sync_directory(parent, "publish-cleanup-sync");
+  }
   refresh_chain_leaf(chain);
   close_chain(chain, 1);
 }

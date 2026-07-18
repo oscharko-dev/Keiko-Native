@@ -219,6 +219,36 @@ static void copy_file(int stage, const bound_entry_t *entry) {
   close_chain(&chain, 0);
 }
 
+static size_t path_depth(const char *path) {
+  size_t depth = 1;
+  for (const char *cursor = path; *cursor; cursor++)
+    if (*cursor == '/') depth++;
+  return depth;
+}
+
+static void sync_staged_directories(int stage, bound_entry_t *entries,
+                                    size_t count) {
+  for (size_t depth = MAX_DEPTH; depth > 0; depth--)
+    for (size_t i = 1; i < count; i++) {
+      if (entries[i].type != 'D' || path_depth(entries[i].path) != depth)
+        continue;
+      chain_t chain = {0};
+      char leaf[NAME_MAX + 1];
+      int parent = open_parent(stage, entries[i].path, 0, &chain, leaf);
+      int directory =
+          openat(parent, leaf, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+      struct stat descriptor, named;
+      if (directory < 0 || fstat(directory, &descriptor) ||
+          fstatat(parent, leaf, &named, AT_SYMLINK_NOFOLLOW) ||
+          !same_stat(&descriptor, &named))
+        fail("bound-directory-rebound");
+      if (sync_directory(directory, "bound-directory-sync"))
+        fail("bound-directory-sync");
+      close(directory);
+      close_chain(&chain, 0);
+    }
+}
+
 int run_publish_bound(int argc, char **argv) {
   char *count_end = NULL;
   long parsed = argc > 4 ? strtol(argv[4], &count_end, 10) : 0;
@@ -245,6 +275,7 @@ int run_publish_bound(int argc, char **argv) {
     if (entries[i].type == 'D') create_directory(stage, &entries[i]);
   for (size_t i = 0; i < count; i++)
     if (entries[i].type == 'F') copy_file(stage, &entries[i]);
+  sync_staged_directories(stage, entries, count);
   if (!validate_inventory(entries, count)) {
     close(stage);
     remove_entry(parent, staging);
