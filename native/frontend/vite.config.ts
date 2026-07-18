@@ -17,6 +17,7 @@ export default defineConfig({
   test: {
     coverage: {
       all: true,
+      clean: false,
       include: ["src/**/*.ts"],
       provider: "v8",
       reporter: ["text", "json-summary"],

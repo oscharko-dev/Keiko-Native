@@ -54,6 +54,7 @@ test("frontend cache stays inside the governed writable output root", () => {
     readFileSync(join(root, "frontend/package.json"), "utf8"),
   );
   assert.match(config, /cacheDir: "dist\/\.vite-cache"/u);
+  assert.match(config, /coverage: \{\s+all: true,\s+clean: false,/u);
   assert.doesNotMatch(config, /cacheDir: "node_modules/u);
   for (const script of ["build", "coverage", "test"])
     assert.match(frontendPackage.scripts[script], /--configLoader runner/u);
