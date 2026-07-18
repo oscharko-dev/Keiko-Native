@@ -8,10 +8,10 @@ on:
 permissions: {}
 
 jobs:
-  bootstrap-negative-matrix:
-    name: Bootstrap negative contract matrix
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+  native-mutation-security:
+    name: Native mutation security
+    runs-on: macos-14
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -22,12 +22,16 @@ jobs:
         with:
           node-version: "24.18.0"
           package-manager-cache: false
+      - name: Install exact Rust and mutation toolchains
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          cargo install cargo-mutants --version 27.1.0 --locked
       - run: npm ci --ignore-scripts
       - run: npm run coverage
-      - name: Enforce real mutation testing before productive phase
-        run: |
-          phase="$(node -p "require('./quality/project.json').phase")"
-          if [ "$phase" != "bootstrap" ]; then
-            echo "Productive phase requires a language-specific mutation runner."
-            exit 1
-          fi
+      - name: Run productive Rust mutation suite
+        run: >-
+          cargo mutants --manifest-path native/Cargo.toml
+          --package keiko-application
+          --package keiko-ui-port
+          --package keiko-host-macos
+          --timeout 120

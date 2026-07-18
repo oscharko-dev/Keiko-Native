@@ -126,16 +126,84 @@ const productiveExtensions = new Set([
   ".tsx",
 ]);
 
-const ignoredDirectories = new Set([".git", "coverage", "node_modules"]);
+const ignoredDirectories = new Set([
+  ".git",
+  "coverage",
+  "dist",
+  "node_modules",
+  "target",
+]);
 const ignoredProductRoots = new Set([".github", "quality"]);
 const requiredTargetCommands = [
   "architecture",
   "build",
   "coverage",
+  "format",
+  "lint",
   "package",
+  "platform",
   "security",
+  "signing",
   "test",
 ];
+
+const adr0004SourceRoots = [
+  "native/crates/keiko-application/src/",
+  "native/crates/keiko-ui-port/src/",
+  "native/crates/keiko-host-macos/src/",
+  "native/apps/keiko-desktop/src/",
+  "native/frontend/src/",
+];
+
+const adr0004TestRoots = ["native/tests/"];
+
+const adr0004SupportFiles = [
+  "native/Cargo.toml",
+  "native/Cargo.lock",
+  "native/rust-toolchain.toml",
+  "native/apps/keiko-desktop/Cargo.toml",
+  "native/apps/keiko-desktop/build.rs",
+  "native/apps/keiko-desktop/icons/icon.png",
+  "native/apps/keiko-desktop/tauri.conf.json",
+  "native/crates/keiko-application/Cargo.toml",
+  "native/crates/keiko-ui-port/Cargo.toml",
+  "native/crates/keiko-host-macos/Cargo.toml",
+  "native/frontend/index.html",
+  "native/frontend/package.json",
+  "native/frontend/package-lock.json",
+  "native/frontend/tsconfig.json",
+  "native/frontend/vite.config.ts",
+  "native/package-policy.json",
+  "native/third-party-notices.json",
+];
+
+const adr0004TargetCommands = {
+  architecture: "native:architecture",
+  build: "native:build",
+  coverage: "native:coverage",
+  format: "native:format",
+  lint: "native:lint",
+  package: "native:package",
+  platform: "native:platform",
+  security: "native:security",
+  signing: "native:signing",
+  test: "native:test",
+};
+
+function sameStringSet(actual, expected) {
+  return (
+    Array.isArray(actual) &&
+    actual.length === expected.length &&
+    expected.every((value) => actual.includes(value)) &&
+    new Set(actual).size === actual.length
+  );
+}
+
+function nativeTargetSourceRoots(target) {
+  if (Array.isArray(target?.sourceRoots)) return target.sourceRoots;
+  if (typeof target?.sourceRoot === "string") return [target.sourceRoot];
+  return [];
+}
 
 export function isSafeRepositoryPath(value) {
   return (
@@ -162,12 +230,18 @@ export function validateNativeTarget(target, productiveSourceRoots) {
     !/^[a-z][a-z0-9+-]{0,31}$/u.test(target.language)
   )
     failures.push("Native target language is invalid.");
+  const sourceRoots = nativeTargetSourceRoots(target);
   if (
-    !isSafeRepositoryPath(target?.sourceRoot) ||
-    !productiveSourceRoots.includes(target.sourceRoot)
+    sourceRoots.length === 0 ||
+    sourceRoots.some(
+      (sourceRoot) =>
+        !isSafeRepositoryPath(sourceRoot) ||
+        !productiveSourceRoots.includes(sourceRoot),
+    ) ||
+    new Set(sourceRoots).size !== sourceRoots.length
   )
     failures.push(
-      "Native target sourceRoot must name a declared repository source root.",
+      "Native target source roots must name declared repository source roots.",
     );
   if (
     !Array.isArray(target?.platforms) ||
@@ -185,6 +259,60 @@ export function validateNativeTarget(target, productiveSourceRoots) {
     if (!/^[a-z0-9][a-z0-9:_-]*$/u.test(target?.commands?.[command] ?? ""))
       failures.push(`Native target command is missing: ${command}.`);
   }
+  return failures;
+}
+
+function adr0004DeclarationFailures(manifest) {
+  if (manifest.phase !== "productive") return [];
+  const failures = [];
+  if (!sameStringSet(manifest.productiveSourceRoots, adr0004SourceRoots))
+    failures.push("Productive source roots must match ADR-0004 exactly.");
+  if (!sameStringSet(manifest.testSourceRoots, adr0004TestRoots))
+    failures.push("Test source roots must match ADR-0004 exactly.");
+  if (!sameStringSet(manifest.supportFiles, adr0004SupportFiles))
+    failures.push("Support files must match ADR-0004 exactly.");
+  if (
+    JSON.stringify(manifest.coverageToolchains) !==
+    JSON.stringify({
+      productiveRust: "1.92.0",
+      rustBranch: "nightly-2026-07-17",
+      cargoLlvmCov: "0.8.7",
+      frontend: "vitest-v8",
+    })
+  )
+    failures.push("Coverage toolchains must match the ADR-0004 amendment.");
+  if (
+    JSON.stringify(manifest.coverageExclusions) !==
+    JSON.stringify([
+      {
+        path: "native/apps/keiko-desktop/src/main.rs",
+        evidence: "acceptance:macos",
+      },
+    ])
+  ) {
+    failures.push(
+      "Coverage exclusions must bind only thin Tauri wiring to packaged acceptance.",
+    );
+  }
+  if (manifest.nativeTargets.length !== 1) {
+    failures.push("ADR-0004 declares exactly one native target.");
+    return failures;
+  }
+  const [target] = manifest.nativeTargets;
+  if (target?.name !== "keiko-native-desktop")
+    failures.push("ADR-0004 native target name must be keiko-native-desktop.");
+  if (target?.language !== "rust")
+    failures.push("ADR-0004 native target language must be rust.");
+  if (!sameStringSet(target?.platforms, ["macos"]))
+    failures.push("ADR-0004 native target platform must be macos only.");
+  if (!sameStringSet(target?.architectures, ["arm64"]))
+    failures.push("ADR-0004 native target architecture must be arm64.");
+  if (!sameStringSet(nativeTargetSourceRoots(target), adr0004SourceRoots))
+    failures.push("ADR-0004 native target roots must match its source roots.");
+  if (
+    JSON.stringify(target?.commands) !== JSON.stringify(adr0004TargetCommands)
+  )
+    failures.push("ADR-0004 native target commands must match the root gates.");
   return failures;
 }
 
@@ -207,11 +335,12 @@ function productiveManifestFailures(manifest) {
   failures.push(
     ...targets.flatMap((target) => validateNativeTarget(target, roots)),
   );
-  const targetedRoots = new Set(targets.map((target) => target?.sourceRoot));
+  const targetedRoots = new Set(targets.flatMap(nativeTargetSourceRoots));
   if (roots.some((root) => !targetedRoots.has(root)))
     failures.push(
       "Every productive source root must belong to a declared native target.",
     );
+  failures.push(...adr0004DeclarationFailures(manifest));
   return failures;
 }
 
@@ -228,8 +357,12 @@ export function validateManifest(manifest) {
   const failures = [];
   if (manifest?.schemaVersion !== 1)
     failures.push("Unsupported quality manifest schema.");
-  if (manifest?.qualityProfile !== "keiko-native-bootstrap-v1")
-    failures.push("The Keiko Native bootstrap quality profile is required.");
+  const expectedProfile =
+    manifest?.phase === "productive"
+      ? "keiko-native-productive-v1"
+      : "keiko-native-bootstrap-v1";
+  if (manifest?.qualityProfile !== expectedProfile)
+    failures.push(`The ${expectedProfile} quality profile is required.`);
   if (!new Set(["bootstrap", "productive"]).has(manifest?.phase))
     failures.push("Project phase must be bootstrap or productive.");
   if (manifest?.baseBranch !== "dev")
@@ -242,6 +375,16 @@ export function validateManifest(manifest) {
     failures.push("productiveSourceRoots must be an array.");
   if (!Array.isArray(manifest?.nativeTargets))
     failures.push("nativeTargets must be an array.");
+  if (
+    manifest?.phase === "productive" &&
+    !Array.isArray(manifest?.testSourceRoots)
+  )
+    failures.push("testSourceRoots must be an array in productive mode.");
+  if (
+    manifest?.phase === "productive" &&
+    !Array.isArray(manifest?.supportFiles)
+  )
+    failures.push("supportFiles must be an array in productive mode.");
   for (const metric of ["branches", "functions", "lines", "statements"]) {
     if (manifest?.minimumCoverage?.[metric] !== 85)
       failures.push(`Minimum ${metric} coverage must remain 85.`);
@@ -588,9 +731,15 @@ async function codeQualityStandardFailures(root, files) {
 }
 
 async function sourceRootFailures(root, manifest) {
-  const sourceRoots = Array.isArray(manifest?.productiveSourceRoots)
-    ? manifest.productiveSourceRoots
-    : [];
+  const sourceRoots = [
+    ...(Array.isArray(manifest?.productiveSourceRoots)
+      ? manifest.productiveSourceRoots
+      : []),
+    ...(Array.isArray(manifest?.testSourceRoots)
+      ? manifest.testSourceRoots
+      : []),
+    ...(Array.isArray(manifest?.supportFiles) ? manifest.supportFiles : []),
+  ];
   const results = await Promise.all(
     sourceRoots.map(async (sourceRoot) => ({
       exists: await exists(join(root, sourceRoot)),
@@ -600,6 +749,29 @@ async function sourceRootFailures(root, manifest) {
   return results
     .filter((result) => !result.exists)
     .map((result) => `Declared source root is missing: ${result.sourceRoot}.`);
+}
+
+function nativeDeclarationFailures(files, manifest) {
+  if (manifest?.phase !== "productive") return [];
+  const roots = [
+    ...(Array.isArray(manifest.productiveSourceRoots)
+      ? manifest.productiveSourceRoots
+      : []),
+    ...(Array.isArray(manifest.testSourceRoots)
+      ? manifest.testSourceRoots
+      : []),
+  ];
+  const support = new Set(
+    Array.isArray(manifest.supportFiles) ? manifest.supportFiles : [],
+  );
+  return files
+    .filter((file) => file.startsWith("native/"))
+    .filter((file) => !file.startsWith("native/apps/keiko-desktop/gen/"))
+    .filter(
+      (file) =>
+        !support.has(file) && !roots.some((root) => file.startsWith(root)),
+    )
+    .map((file) => `Undeclared native source, test, or support file: ${file}.`);
 }
 
 async function contractFailures(root, files, manifest) {
@@ -619,6 +791,7 @@ async function contractFailures(root, files, manifest) {
     ...(await agentPlanningBaselineFailures(root, files)),
     ...(await codeQualityStandardFailures(root, files)),
     ...bootstrapFailures,
+    ...nativeDeclarationFailures(files, manifest),
     ...(await sourceRootFailures(root, manifest)),
   ];
   return { failures, productiveSources };
@@ -635,7 +808,7 @@ async function productiveCommandFailures(root, ci, manifest) {
     typeof packageJson.scripts?.quality === "string"
       ? packageJson.scripts.quality
       : "";
-  return manifest.nativeTargets.flatMap((target) =>
+  const failures = manifest.nativeTargets.flatMap((target) =>
     Object.values(
       target?.commands !== null &&
         typeof target?.commands === "object" &&
@@ -659,6 +832,19 @@ async function productiveCommandFailures(root, ci, manifest) {
         return failures;
       }),
   );
+  for (const command of ["acceptance:macos"]) {
+    if (typeof packageJson.scripts?.[command] !== "string")
+      failures.push(`Native acceptance package script is missing: ${command}.`);
+    if (!ci.includes(`npm run ${command}`))
+      failures.push(
+        `CI does not execute native acceptance command: ${command}.`,
+      );
+  }
+  for (const marker of ["macos-14", "macos-26", 'test "$(uname -m)" = arm64']) {
+    if (!ci.includes(marker))
+      failures.push(`Native CI marker is missing: ${marker}.`);
+  }
+  return failures;
 }
 
 function unpinnedWorkflowFailures(workflows) {

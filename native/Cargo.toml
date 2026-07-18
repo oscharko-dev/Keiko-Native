@@ -1,0 +1,25 @@
+[workspace]
+members = [
+  "apps/keiko-desktop",
+  "crates/keiko-application",
+  "crates/keiko-host-macos",
+  "crates/keiko-ui-port",
+]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/oscharko-dev/Keiko-Native"
+rust-version = "1.92.0"
+version = "0.1.0"
+
+[workspace.dependencies]
+keiko-application = { path = "crates/keiko-application" }
+keiko-host-macos = { path = "crates/keiko-host-macos" }
+keiko-ui-port = { path = "crates/keiko-ui-port" }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.145"
+tauri = { version = "=2.11.5", default-features = false }
+tauri-build = { version = "=2.6.3", default-features = false }
+wry = { version = "=0.55.1", default-features = false }

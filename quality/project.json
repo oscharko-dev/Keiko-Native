@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "qualityProfile": "keiko-native-bootstrap-v1",
-  "phase": "bootstrap",
+  "qualityProfile": "keiko-native-productive-v1",
+  "phase": "productive",
   "baseBranch": "dev",
   "sourceSpecification": {
     "document": "Keiko-Native-Fachkonzept.md",
@@ -10,8 +10,72 @@
     "sha256": "d77a78fb79fc1de882487195d3f2295936f24a34e6bc0579106ad06104737a98",
     "repositoryAccess": "private-external"
   },
-  "productiveSourceRoots": [],
-  "nativeTargets": [],
+  "productiveSourceRoots": [
+    "native/crates/keiko-application/src/",
+    "native/crates/keiko-ui-port/src/",
+    "native/crates/keiko-host-macos/src/",
+    "native/apps/keiko-desktop/src/",
+    "native/frontend/src/"
+  ],
+  "testSourceRoots": ["native/tests/"],
+  "supportFiles": [
+    "native/Cargo.toml",
+    "native/Cargo.lock",
+    "native/rust-toolchain.toml",
+    "native/apps/keiko-desktop/Cargo.toml",
+    "native/apps/keiko-desktop/build.rs",
+    "native/apps/keiko-desktop/icons/icon.png",
+    "native/apps/keiko-desktop/tauri.conf.json",
+    "native/crates/keiko-application/Cargo.toml",
+    "native/crates/keiko-ui-port/Cargo.toml",
+    "native/crates/keiko-host-macos/Cargo.toml",
+    "native/frontend/index.html",
+    "native/frontend/package.json",
+    "native/frontend/package-lock.json",
+    "native/frontend/tsconfig.json",
+    "native/frontend/vite.config.ts",
+    "native/package-policy.json",
+    "native/third-party-notices.json"
+  ],
+  "nativeTargets": [
+    {
+      "name": "keiko-native-desktop",
+      "language": "rust",
+      "platforms": ["macos"],
+      "architectures": ["arm64"],
+      "sourceRoots": [
+        "native/crates/keiko-application/src/",
+        "native/crates/keiko-ui-port/src/",
+        "native/crates/keiko-host-macos/src/",
+        "native/apps/keiko-desktop/src/",
+        "native/frontend/src/"
+      ],
+      "commands": {
+        "architecture": "native:architecture",
+        "build": "native:build",
+        "coverage": "native:coverage",
+        "format": "native:format",
+        "lint": "native:lint",
+        "package": "native:package",
+        "platform": "native:platform",
+        "security": "native:security",
+        "signing": "native:signing",
+        "test": "native:test"
+      }
+    }
+  ],
+  "coverageToolchains": {
+    "productiveRust": "1.92.0",
+    "rustBranch": "nightly-2026-07-17",
+    "cargoLlvmCov": "0.8.7",
+    "frontend": "vitest-v8"
+  },
+  "coverageExclusions": [
+    {
+      "path": "native/apps/keiko-desktop/src/main.rs",
+      "evidence": "acceptance:macos"
+    }
+  ],
   "minimumCoverage": {
     "branches": 85,
     "functions": 85,

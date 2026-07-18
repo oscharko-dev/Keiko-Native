@@ -175,15 +175,46 @@ unavailable host, and shutdown are terminal for that request. CH-3 may inject cl
 and unavailable adapters in tests, but no mutation, delay, diagnostic, or evaluation command is
 compiled into the product package.
 
+#### CH-3 transport and evidence amendment
+
+Issue #12 contract v3 narrows the transport and evidence details without changing the selected
+host, renderer, versions, productive roots, platform scope, or trust boundary. The product retains
+one operation, `application-health`, through `application_request`, and adds one closed Tauri
+command, `application_cancel`. Its request contains exactly `schemaVersion` and the identifier of
+an accepted in-flight request; it carries no generic payload or privileged capability.
+
+Every `main` page-load start creates a monotonically increasing host-owned renderer generation.
+Replacing or destroying a renderer fails its previous generation closed, cancels its in-flight
+requests, and discards late completion. Cancellation is valid only from the authenticated current
+generation that owns the identifier. The bundled frontend uses a fresh identifier and increasing
+sequence for every request and invokes `application_cancel` when its local `AbortSignal` fires.
+
+The packaged renderer validates its first health response before sending a second request with a
+fresh identifier and sequence. Host acceptance of the second request emits one bounded body-free
+acknowledgement to the package process. The CH-3 harness observes that acknowledgement, requests a
+normal application quit, enforces the 5,000 ms shutdown budget, and requires zero owned descendants.
+Injected contract tests prove renderer loss and session replacement. Actual packaged renderer-kill
+and recovery acceptance remains assigned to CH-5.
+
+Stable Rust 1.92.0 remains authoritative for formatting, linting, productive build, test, and
+package commands. Rust branch instrumentation alone uses `nightly-2026-07-17` and
+`cargo-llvm-cov` 0.8.7; frontend branch instrumentation uses Vitest V8 coverage. Both enforce the
+repository's 85 percent line, branch, function, and statement floors. The productive declaration
+enumerates the test root and every support file, and package acceptance uses closed path,
+file-class, dependency, SPDX, notice, CSP, navigation, and production-hook policies.
+
+Rust unit instrumentation excludes only the thin Tauri `main.rs` framework wiring, whose real
+composition is instead mandatory in both packaged-shell acceptance runs. No application, port,
+host lifecycle, transport, origin, navigation, cancellation, or evidence policy is excluded.
+
 ### Repository-owned packaged-shell harness
 
 The root `acceptance:macos` command owns the stable harness. It builds and launches the exact
 `keiko-native-desktop` package from a clean workspace, obtains the package digest and immutable
-build identity, performs the health roundtrip through the actual bundled renderer, kills the
-renderer to observe unavailable/recovery behavior, requests normal application shutdown, escalates
-only after 5,000 ms, and proves zero owned descendant processes. Contract-mode tests additionally
-cover every request bound and reason code through dependency injection without adding a product
-command.
+build identity, observes the two-request health acknowledgement through the actual bundled
+renderer, requests normal application shutdown, escalates only after 5,000 ms, and proves zero
+owned descendant processes. Contract-mode tests cover renderer loss, session replacement, every
+request bound, and every reason code through dependency injection without adding a product command.
 
 The harness writes schema `keiko-native-packaged-shell-evidence/v1`, containing only source
 revision, readiness fingerprint, package and lock digests, runner image identifier, architecture,

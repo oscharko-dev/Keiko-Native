@@ -33,6 +33,8 @@ jobs:
         with:
           node-version: "24.18.0"
           package-manager-cache: false
+      - name: Install exact productive Rust toolchain
+        run: rustup toolchain install 1.92.0 --profile minimal --component rustfmt
       - run: npm ci --ignore-scripts
       - run: npm run quality
       - run: npm audit --audit-level=high
@@ -121,6 +123,7 @@ jobs:
       - core-quality
       - coverage-sonar
       - cross-platform-smoke
+      - native
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
@@ -130,8 +133,9 @@ jobs:
           CORE_QUALITY_RESULT: ${{ needs.core-quality.result }}
           COVERAGE_SONAR_RESULT: ${{ needs.coverage-sonar.result }}
           CROSS_PLATFORM_RESULT: ${{ needs.cross-platform-smoke.result }}
+          NATIVE_RESULT: ${{ needs.native.result }}
         run: |
-          for result in "$CORE_QUALITY_RESULT" "$COVERAGE_SONAR_RESULT" "$CROSS_PLATFORM_RESULT"; do
+          for result in "$CORE_QUALITY_RESULT" "$COVERAGE_SONAR_RESULT" "$CROSS_PLATFORM_RESULT" "$NATIVE_RESULT"; do
             if [ "$result" != "success" ]; then
               echo "Required CI dependency did not succeed: $result"
               exit 1
@@ -223,9 +227,13 @@ jobs:
           subject-path: sbom.cdx.json
 
   native:
-    name: native
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    name: native (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-14, macos-26]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -236,6 +244,33 @@ jobs:
         with:
           node-version: "24.18.0"
           package-manager-cache: false
+      - name: Verify authoritative runner
+        run: |
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          test "$RUNNER_ARCH" = ARM64
+      - name: Install exact productive and coverage-only Rust toolchains
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component rustfmt --component clippy
+          rustup toolchain install nightly-2026-07-17 --profile minimal --component llvm-tools-preview
+          cargo install cargo-llvm-cov --version 0.8.7 --locked
       - run: npm ci --ignore-scripts
-      - run: npm run check:contract
-      - run: npm run build
+      - run: npm run native:format
+      - run: npm run native:lint
+      - run: npm run native:architecture
+      - run: npm run native:build
+      - run: npm run native:coverage
+      - run: npm run native:package
+      - run: npm run native:platform
+      - run: npm run native:security
+      - run: npm run native:signing
+      - run: npm run native:test
+      - run: npm run acceptance:macos
+        env:
+          KEIKO_NATIVE_REQUIRE_MACOS: "1"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-foundation-${{ matrix.runner }}
+          path: native/target/keiko-native-package/acceptance-evidence.json
+          if-no-files-found: error
+          retention-days: 30

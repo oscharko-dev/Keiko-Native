@@ -41,6 +41,10 @@ build/Release
 
 # Dependency directories
 node_modules/
+native/frontend/node_modules/
+native/frontend/dist/
+native/target/
+native/apps/keiko-desktop/gen/
 jspm_packages/
 
 # Snowpack dependency directory (https://snowpack.dev/)

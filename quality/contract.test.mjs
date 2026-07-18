@@ -39,8 +39,12 @@ const validTarget = {
     architecture: "native:architecture",
     build: "native:build",
     coverage: "native:coverage",
+    format: "native:format",
+    lint: "native:lint",
     package: "native:package",
+    platform: "native:platform",
     security: "native:security",
+    signing: "native:signing",
     test: "native:test",
   },
   language: "swift",
@@ -48,6 +52,98 @@ const validTarget = {
   platforms: ["macos"],
   sourceRoot: "Sources",
 };
+
+const adr0004SourceRoots = [
+  "native/crates/keiko-application/src/",
+  "native/crates/keiko-ui-port/src/",
+  "native/crates/keiko-host-macos/src/",
+  "native/apps/keiko-desktop/src/",
+  "native/frontend/src/",
+];
+
+const adr0004TestRoots = ["native/tests/"];
+
+const adr0004SupportFiles = [
+  "native/Cargo.toml",
+  "native/Cargo.lock",
+  "native/rust-toolchain.toml",
+  "native/apps/keiko-desktop/Cargo.toml",
+  "native/apps/keiko-desktop/build.rs",
+  "native/apps/keiko-desktop/icons/icon.png",
+  "native/apps/keiko-desktop/tauri.conf.json",
+  "native/crates/keiko-application/Cargo.toml",
+  "native/crates/keiko-ui-port/Cargo.toml",
+  "native/crates/keiko-host-macos/Cargo.toml",
+  "native/frontend/index.html",
+  "native/frontend/package.json",
+  "native/frontend/package-lock.json",
+  "native/frontend/tsconfig.json",
+  "native/frontend/vite.config.ts",
+  "native/package-policy.json",
+  "native/third-party-notices.json",
+];
+
+const coverageToolchains = {
+  productiveRust: "1.92.0",
+  rustBranch: "nightly-2026-07-17",
+  cargoLlvmCov: "0.8.7",
+  frontend: "vitest-v8",
+};
+
+const adr0004Target = {
+  architectures: ["arm64"],
+  commands: {
+    architecture: "native:architecture",
+    build: "native:build",
+    coverage: "native:coverage",
+    format: "native:format",
+    lint: "native:lint",
+    package: "native:package",
+    platform: "native:platform",
+    security: "native:security",
+    signing: "native:signing",
+    test: "native:test",
+  },
+  language: "rust",
+  name: "keiko-native-desktop",
+  platforms: ["macos"],
+  sourceRoots: adr0004SourceRoots,
+};
+
+const productiveCommands = [
+  ...Object.values(adr0004Target.commands),
+  "acceptance:macos",
+];
+
+function productiveManifest(overrides = {}) {
+  return {
+    ...validManifest,
+    coverageExclusions: [
+      {
+        path: "native/apps/keiko-desktop/src/main.rs",
+        evidence: "acceptance:macos",
+      },
+    ],
+    coverageToolchains,
+    nativeTargets: [adr0004Target],
+    phase: "productive",
+    productiveSourceRoots: adr0004SourceRoots,
+    qualityProfile: "keiko-native-productive-v1",
+    supportFiles: adr0004SupportFiles,
+    testSourceRoots: adr0004TestRoots,
+    ...overrides,
+  };
+}
+
+async function createDeclaredNativePaths(root) {
+  for (const sourceRoot of [...adr0004SourceRoots, ...adr0004TestRoots]) {
+    await mkdir(join(root, sourceRoot), { recursive: true });
+  }
+  for (const file of adr0004SupportFiles) {
+    await mkdir(join(root, file, ".."), { recursive: true });
+    await writeFile(join(root, file), "fixture\n");
+  }
+}
 
 test("accepts the governed bootstrap manifest", () => {
   assert.deepEqual(validateManifest(validManifest), []);
@@ -89,9 +185,22 @@ test("requires an immutable governed source Fachkonzept identity", () => {
 
 test("requires productive roots and targets together", () => {
   const failures = validateManifest({ ...validManifest, phase: "productive" });
-  assert.deepEqual(failures, [
-    "Productive projects must declare source roots and native targets.",
-  ]);
+  assert.ok(
+    failures.includes(
+      "The keiko-native-productive-v1 quality profile is required.",
+    ),
+  );
+  assert.ok(
+    failures.includes("testSourceRoots must be an array in productive mode."),
+  );
+  assert.ok(
+    failures.includes("supportFiles must be an array in productive mode."),
+  );
+  assert.ok(
+    failures.includes(
+      "Productive projects must declare source roots and native targets.",
+    ),
+  );
 });
 
 test("rejects malformed collection fields", () => {
@@ -120,7 +229,7 @@ test("validates contained source paths and complete native target gates", () => 
   assert.ok(
     validateNativeTarget({ ...validTarget, commands: {}, platforms: [] }, [
       "Other",
-    ]).length > 6,
+    ]).length > 8,
   );
 });
 
@@ -846,14 +955,9 @@ test("fails closed for missing declared productive roots", async () => {
   try {
     await writeFile(
       join(root, "quality/project.json"),
-      JSON.stringify({
-        ...validManifest,
-        nativeTargets: [validTarget],
-        phase: "productive",
-        productiveSourceRoots: ["Sources"],
-      }),
+      JSON.stringify(productiveManifest()),
     );
-    const commandNames = Object.values(validTarget.commands);
+    const commandNames = productiveCommands;
     await writeFile(
       join(root, "package.json"),
       JSON.stringify({
@@ -870,7 +974,7 @@ test("fails closed for missing declared productive roots", async () => {
     const ci = await readFile(ciPath, "utf8");
     await writeFile(
       ciPath,
-      `${ci}\n${commandNames.map((command) => `npm run ${command}`).join("\n")}`,
+      `${ci}\n${commandNames.map((command) => `npm run ${command}`).join("\n")}\nmacos-14\nmacos-26\ntest "$(uname -m)" = arm64`,
     );
     const result = await validateRepository(root);
     assert.match(
@@ -885,18 +989,16 @@ test("fails closed for missing declared productive roots", async () => {
 test("accepts declared productive source roots and targets", async () => {
   const root = await fixtureRepository();
   try {
-    await mkdir(join(root, "Sources"));
-    await writeFile(join(root, "Sources/App.swift"), "struct App {}\n");
+    await createDeclaredNativePaths(root);
+    await writeFile(
+      join(root, "native/crates/keiko-application/src/lib.rs"),
+      'pub fn health() -> &\'static str { "healthy" }\n',
+    );
     await writeFile(
       join(root, "quality/project.json"),
-      JSON.stringify({
-        ...validManifest,
-        nativeTargets: [validTarget],
-        phase: "productive",
-        productiveSourceRoots: ["Sources"],
-      }),
+      JSON.stringify(productiveManifest()),
     );
-    const commandNames = Object.values(validTarget.commands);
+    const commandNames = productiveCommands;
     await writeFile(
       join(root, "package.json"),
       JSON.stringify({
@@ -913,35 +1015,43 @@ test("accepts declared productive source roots and targets", async () => {
     const ci = await readFile(ciPath, "utf8");
     await writeFile(
       ciPath,
-      `${ci}\n${commandNames.map((command) => `npm run ${command}`).join("\n")}`,
+      `${ci}\n${commandNames.map((command) => `npm run ${command}`).join("\n")}\nmacos-14\nmacos-26\ntest "$(uname -m)" = arm64`,
     );
     const result = await validateRepository(root);
     assert.deepEqual(result.failures, []);
-    assert.equal(result.productiveSourceCount, 1);
+    assert.equal(result.productiveSourceCount, 3);
   } finally {
     await rm(root, { force: true, recursive: true });
   }
 });
 
+test("productive coverage exclusion stays bound to packaged acceptance", () => {
+  assert.ok(
+    validateManifest(productiveManifest({ coverageExclusions: [] })).includes(
+      "Coverage exclusions must bind only thin Tauri wiring to packaged acceptance.",
+    ),
+  );
+});
+
 test("fails closed when productive commands are not wired locally and in CI", async () => {
   const root = await fixtureRepository();
   try {
-    await mkdir(join(root, "Sources"));
-    await writeFile(join(root, "Sources/App.swift"), "struct App {}\n");
+    await createDeclaredNativePaths(root);
+    await writeFile(
+      join(root, "native/crates/keiko-application/src/lib.rs"),
+      'pub fn health() -> &\'static str { "healthy" }\n',
+    );
     await writeFile(
       join(root, "quality/project.json"),
-      JSON.stringify({
-        ...validManifest,
-        nativeTargets: [validTarget],
-        phase: "productive",
-        productiveSourceRoots: ["Sources"],
-      }),
+      JSON.stringify(productiveManifest()),
     );
     const result = await validateRepository(root);
     const failures = result.failures.join("\n");
     assert.match(failures, /Native target package script is missing/u);
     assert.match(failures, /Local quality does not execute/u);
     assert.match(failures, /CI does not execute/u);
+    assert.match(failures, /Native acceptance package script is missing/u);
+    assert.match(failures, /Native CI marker is missing/u);
   } finally {
     await rm(root, { force: true, recursive: true });
   }
@@ -951,18 +1061,14 @@ test("reports malformed productive manifests without throwing", async () => {
   const root = await fixtureRepository();
   try {
     const manifests = [
-      {
-        ...validManifest,
+      productiveManifest({
         nativeTargets: [{ ...validTarget, commands: undefined }],
-        phase: "productive",
         productiveSourceRoots: ["Sources"],
-      },
-      {
-        ...validManifest,
+      }),
+      productiveManifest({
         nativeTargets: "App",
-        phase: "productive",
         productiveSourceRoots: 42,
-      },
+      }),
     ];
     for (const manifest of manifests) {
       await writeFile(
