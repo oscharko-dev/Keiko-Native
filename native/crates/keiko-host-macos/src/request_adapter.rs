@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use keiko_application::current_build_identity;
 use keiko_ui_port::{ReasonCode, dispatch_health, encode_error, encode_success};
 
-use crate::{ExecutionObservation, HostLifecycle};
+use crate::HostLifecycle;
 
 pub struct ApplicationRequestOutput {
     pub acknowledged: bool,
@@ -36,26 +36,13 @@ pub fn application_request(
         }
     };
     let acknowledged = accepted.sequence() == 2;
-    let started = std::time::Instant::now();
     let encoded = encode_success(&dispatch_health(
         accepted.request.clone(),
         current_build_identity(),
     ));
-    let completed_at_ms = u16::try_from(started.elapsed().as_millis()).unwrap_or(u16::MAX);
-    std::thread::yield_now();
     let encoded = lifecycle.lock().map_or_else(
         |_| encode_error("unknown-request", ReasonCode::InternalFailure),
-        |mut lifecycle| {
-            lifecycle.complete_with_encoded(
-                accepted,
-                ExecutionObservation {
-                    cancelled_at_ms: None,
-                    completed_at_ms: Some(completed_at_ms),
-                    host_available: true,
-                },
-                encoded,
-            )
-        },
+        |mut lifecycle| lifecycle.complete_with_encoded(accepted, encoded),
     );
     ApplicationRequestOutput {
         acknowledged: acknowledged && encoded.contains("\"status\":\"healthy\""),

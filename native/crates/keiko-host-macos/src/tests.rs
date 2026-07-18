@@ -204,55 +204,72 @@ fn malformed_missing_cross_generation_and_late_cancellation_are_closed() {
 #[test]
 fn injected_unavailable_timeout_and_renderer_loss_are_terminal() {
     let (mut lifecycle, sender) = started();
+    lifecycle.set_test_now_ms(0);
     let unavailable = lifecycle
         .begin_application_request(&sender, &request(1, "request-00000001"))
         .expect("accepted");
+    lifecycle.set_test_now_ms(1);
     assert!(
         lifecycle
-            .complete_observed(
-                unavailable,
-                ExecutionObservation {
-                    cancelled_at_ms: None,
-                    completed_at_ms: None,
-                    host_available: false,
-                },
-            )
+            .complete_unavailable(unavailable)
             .contains("host-unavailable")
     );
+    lifecycle.set_test_now_ms(0);
     let timeout = lifecycle
         .begin_application_request(&sender, &request(2, "request-00000002"))
         .expect("accepted");
+    lifecycle.set_test_now_ms(1000);
     assert!(
         lifecycle
-            .complete_observed(
-                timeout,
-                ExecutionObservation {
-                    cancelled_at_ms: Some(1000),
-                    completed_at_ms: None,
-                    host_available: true,
-                },
-            )
+            .complete_application_request(timeout)
             .contains("timed-out")
     );
+    lifecycle.set_test_now_ms(0);
     let cancelled = lifecycle
         .begin_application_request(&sender, &request(3, "request-00000003"))
         .expect("accepted");
+    lifecycle.set_test_now_ms(1);
     assert!(
         lifecycle
-            .complete_observed(
-                cancelled,
-                ExecutionObservation {
-                    cancelled_at_ms: Some(1),
-                    completed_at_ms: Some(2),
-                    host_available: true,
-                },
+            .cancel_application_request(
+                &sender,
+                br#"{"schemaVersion":1,"requestId":"request-00000003"}"#,
             )
+            .contains("cancelled")
+    );
+    lifecycle.set_test_now_ms(2);
+    assert!(
+        lifecycle
+            .complete_application_request(cancelled)
             .contains("cancelled")
     );
     lifecycle.renderer_lost();
     assert_eq!(
         lifecycle.begin_application_request(&sender, &request(4, "request-00000004")),
         Err(("unknown-request".to_owned(), ReasonCode::Unauthorized))
+    );
+}
+
+#[test]
+fn explicit_cancellation_at_deadline_never_beats_timeout() {
+    let (mut lifecycle, sender) = started();
+    lifecycle.set_test_now_ms(0);
+    let accepted = lifecycle
+        .begin_application_request(&sender, &request(1, "request-00000001"))
+        .expect("accepted");
+    lifecycle.set_test_now_ms(1000);
+    assert!(
+        lifecycle
+            .cancel_application_request(
+                &sender,
+                br#"{"schemaVersion":1,"requestId":"request-00000001"}"#,
+            )
+            .contains("timed-out")
+    );
+    assert!(
+        lifecycle
+            .complete_application_request(accepted)
+            .contains("timed-out")
     );
 }
 

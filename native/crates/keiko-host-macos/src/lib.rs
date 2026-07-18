@@ -9,10 +9,12 @@ use keiko_ui_port::{
 pub mod document_nonce;
 #[cfg(feature = "tauri-host")]
 mod request_adapter;
+mod request_timing;
 #[cfg(feature = "tauri-host")]
 pub mod tauri_adapter;
 #[cfg(feature = "tauri-host")]
 pub use request_adapter::{ApplicationRequestOutput, application_cancel, application_request};
+use request_timing::{InFlight, MonotonicClock, terminal_reason};
 
 const REPLAY_WINDOW: usize = 64;
 
@@ -32,12 +34,6 @@ struct RendererSession {
     replayed_ids: VecDeque<String>,
 }
 
-#[derive(Debug)]
-struct InFlight {
-    cancelled: bool,
-    generation: u64,
-}
-
 #[derive(Debug, Eq, PartialEq)]
 pub struct AcceptedRequest {
     generation: u64,
@@ -50,26 +46,14 @@ impl AcceptedRequest {
     }
 }
 
-#[derive(Clone, Copy)]
-struct ExecutionObservation {
-    cancelled_at_ms: Option<u16>,
-    completed_at_ms: Option<u16>,
-    host_available: bool,
-}
-
-impl ExecutionObservation {
-    const HEALTHY: Self = Self {
-        cancelled_at_ms: None,
-        completed_at_ms: Some(0),
-        host_available: true,
-    };
-}
-
 #[derive(Debug)]
 pub struct HostLifecycle {
     accepting: bool,
+    clock: MonotonicClock,
     generation: u64,
     in_flight: HashMap<String, InFlight>,
+    page_load_ambiguous: bool,
+    pending_page_loads: u32,
     session: Option<RendererSession>,
 }
 
@@ -77,14 +61,49 @@ impl Default for HostLifecycle {
     fn default() -> Self {
         Self {
             accepting: true,
+            clock: MonotonicClock::default(),
             generation: 0,
             in_flight: HashMap::new(),
+            page_load_ambiguous: false,
+            pending_page_loads: 0,
             session: None,
         }
     }
 }
 
 impl HostLifecycle {
+    pub fn begin_renderer_page_load<F>(&mut self, nonce_producer: F) -> bool
+    where
+        F: FnOnce(&HostLifecycle) -> Option<String>,
+    {
+        if self.pending_page_loads > 0 {
+            self.page_load_ambiguous = true;
+        }
+        self.pending_page_loads = self.pending_page_loads.saturating_add(1);
+        activate_renderer_document(self, nonce_producer)
+    }
+
+    pub fn finish_renderer_page_load(&mut self) -> Option<(u64, String)> {
+        if self.pending_page_loads == 0 {
+            self.renderer_lost();
+            return None;
+        }
+        self.pending_page_loads -= 1;
+        if self.page_load_ambiguous {
+            self.retire_renderer_authority();
+            if self.pending_page_loads == 0 {
+                self.page_load_ambiguous = false;
+            }
+            return None;
+        }
+        if self.pending_page_loads != 0 {
+            self.page_load_ambiguous = true;
+            self.retire_renderer_authority();
+            return None;
+        }
+        self.current_document_authority()
+    }
+
     pub fn begin_renderer_session(&mut self, document_nonce: String) -> Option<u64> {
         self.cancel_generation();
         if !valid_document_nonce(&document_nonce) {
@@ -102,15 +121,24 @@ impl HostLifecycle {
     }
 
     pub fn renderer_lost(&mut self) {
+        self.retire_renderer_authority();
+        self.page_load_ambiguous = false;
+        self.pending_page_loads = 0;
+    }
+
+    fn retire_renderer_authority(&mut self) {
         self.cancel_generation();
         self.session = None;
     }
 
     pub fn shutdown(&mut self) {
         self.accepting = false;
+        let now_ms = self.clock.now_ms();
         for request in self.in_flight.values_mut() {
-            request.cancelled = true;
+            request.cancelled_at_ms.get_or_insert(now_ms);
         }
+        self.page_load_ambiguous = false;
+        self.pending_page_loads = 0;
         self.session = None;
     }
 
@@ -143,8 +171,9 @@ impl HostLifecycle {
         self.validate_sender(context)?;
         let request =
             parse_request(bytes).map_err(|reason| ("unknown-request".to_owned(), reason))?;
-        let (request_id, sequence, _) = request_metadata(&request);
+        let (request_id, sequence, timeout_ms) = request_metadata(&request);
         let request_id = request_id.to_owned();
+        let started_at_ms = self.clock.now_ms();
         let session = self
             .session
             .as_mut()
@@ -168,8 +197,10 @@ impl HostLifecycle {
         self.in_flight.insert(
             request_id,
             InFlight {
-                cancelled: false,
+                cancelled_at_ms: None,
                 generation: context.generation,
+                started_at_ms,
+                timeout_ms,
             },
         );
         Ok(AcceptedRequest {
@@ -179,7 +210,11 @@ impl HostLifecycle {
     }
 
     pub fn complete_application_request(&mut self, accepted: AcceptedRequest) -> String {
-        self.complete_observed(accepted, ExecutionObservation::HEALTHY)
+        let encoded = encode_success(&dispatch_health(
+            accepted.request.clone(),
+            current_build_identity(),
+        ));
+        self.complete_with_encoded(accepted, encoded)
     }
 
     pub fn cancel_application_request(&mut self, context: &SenderContext, bytes: &[u8]) -> String {
@@ -191,41 +226,40 @@ impl HostLifecycle {
             Err(reason) => return encode_error("unknown-request", reason),
         };
         let request_id = cancel_request_id(&request);
+        let now_ms = self.clock.now_ms();
         let Some(in_flight) = self.in_flight.get_mut(request_id) else {
             return encode_error(request_id, ReasonCode::Unauthorized);
         };
         if in_flight.generation != context.generation {
             return encode_error(request_id, ReasonCode::Unauthorized);
         }
-        in_flight.cancelled = true;
-        encode_cancelled(request_id)
+        let cancelled_at_ms = *in_flight.cancelled_at_ms.get_or_insert(now_ms);
+        if cancelled_at_ms.saturating_sub(in_flight.started_at_ms)
+            >= u64::from(in_flight.timeout_ms)
+        {
+            encode_error(request_id, ReasonCode::TimedOut)
+        } else {
+            encode_cancelled(request_id)
+        }
     }
 
-    fn complete_observed(
-        &mut self,
-        accepted: AcceptedRequest,
-        observation: ExecutionObservation,
-    ) -> String {
-        let encoded = encode_success(&dispatch_health(
-            accepted.request.clone(),
-            current_build_identity(),
-        ));
-        self.complete_with_encoded(accepted, observation, encoded)
+    fn complete_with_encoded(&mut self, accepted: AcceptedRequest, encoded: String) -> String {
+        self.complete_with_availability(accepted, encoded, true)
     }
 
-    fn complete_with_encoded(
+    fn complete_with_availability(
         &mut self,
         accepted: AcceptedRequest,
-        observation: ExecutionObservation,
         encoded: String,
+        host_available: bool,
     ) -> String {
-        let (request_id, _, timeout_ms) = request_metadata(&accepted.request);
+        let completed_at_ms = self.clock.now_ms();
+        let (request_id, _, _) = request_metadata(&accepted.request);
         let request_id = request_id.to_owned();
         let Some(in_flight) = self.in_flight.remove(&request_id) else {
             return encode_error(&request_id, ReasonCode::InternalFailure);
         };
-        let cancelled = in_flight.cancelled || in_flight.generation != accepted.generation;
-        if let Some(reason) = terminal_reason(observation, timeout_ms, cancelled) {
+        if let Some(reason) = terminal_reason(&in_flight, completed_at_ms, host_available) {
             return encode_error(&request_id, reason);
         }
         encoded
@@ -258,11 +292,26 @@ impl HostLifecycle {
 
     fn cancel_generation(&mut self) {
         let generation = self.session.as_ref().map(|session| session.generation);
+        let now_ms = self.clock.now_ms();
         for request in self.in_flight.values_mut() {
             if Some(request.generation) == generation {
-                request.cancelled = true;
+                request.cancelled_at_ms.get_or_insert(now_ms);
             }
         }
+    }
+
+    #[cfg(test)]
+    fn set_test_now_ms(&mut self, now_ms: u64) {
+        self.clock.set_test_now_ms(now_ms);
+    }
+
+    #[cfg(test)]
+    fn complete_unavailable(&mut self, accepted: AcceptedRequest) -> String {
+        let encoded = encode_success(&dispatch_health(
+            accepted.request.clone(),
+            current_build_identity(),
+        ));
+        self.complete_with_availability(accepted, encoded, false)
     }
 }
 
@@ -270,7 +319,7 @@ pub fn activate_renderer_document<F>(lifecycle: &mut HostLifecycle, nonce_produc
 where
     F: FnOnce(&HostLifecycle) -> Option<String>,
 {
-    lifecycle.renderer_lost();
+    lifecycle.retire_renderer_authority();
     nonce_producer(lifecycle)
         .and_then(|nonce| lifecycle.begin_renderer_session(nonce))
         .is_some()
@@ -281,30 +330,6 @@ fn valid_document_nonce(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn terminal_reason(
-    observation: ExecutionObservation,
-    timeout_ms: u16,
-    cancelled: bool,
-) -> Option<ReasonCode> {
-    if !observation.host_available {
-        return Some(ReasonCode::HostUnavailable);
-    }
-    if observation
-        .cancelled_at_ms
-        .is_some_and(|at| at < timeout_ms)
-        || cancelled
-    {
-        return Some(ReasonCode::Cancelled);
-    }
-    if observation
-        .completed_at_ms
-        .is_none_or(|at| at >= timeout_ms)
-    {
-        return Some(ReasonCode::TimedOut);
-    }
-    None
 }
 
 pub fn is_bundled_origin(origin: &str) -> bool {
@@ -333,6 +358,9 @@ pub fn is_bundled_navigation(url: &tauri::Url) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod timing_tests;
 
 #[cfg(all(test, feature = "tauri-host"))]
 mod adapter_tests;

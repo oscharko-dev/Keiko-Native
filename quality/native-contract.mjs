@@ -11,12 +11,6 @@ export function redactionMatches(value) {
   return denied.filter((pattern) => pattern.test(value)).map(String);
 }
 
-export function redactDiagnostic(value) {
-  return redactionMatches(value).length === 0
-    ? value
-    : "redacted native command failure";
-}
-
 export function sourceDeclarationFailures(paths, project) {
   const roots = [...project.productiveSourceRoots, ...project.testSourceRoots];
   const support = new Set(project.supportFiles);

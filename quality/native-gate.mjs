@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 
 import {
   manifestFailures,
-  redactDiagnostic,
   redactionMatches,
   sourceDeclarationFailures,
 } from "./native-contract.mjs";
@@ -18,6 +17,7 @@ import {
 import {
   commandFailure,
   productiveRustEnv as createProductiveRustEnv,
+  runNativeGateCli,
   sanitizeOutput,
 } from "./native-process.mjs";
 
@@ -392,8 +392,7 @@ export async function main(mode) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  main(process.argv[2]).catch((error) => {
-    console.error(redactDiagnostic(error.message));
-    process.exitCode = 1;
+  runNativeGateCli(main, process.argv[2]).then((exitCode) => {
+    process.exitCode = exitCode;
   });
 }
