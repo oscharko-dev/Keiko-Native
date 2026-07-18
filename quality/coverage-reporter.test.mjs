@@ -305,6 +305,32 @@ test("failure diagnostics fail closed for relative and spaced paths in every fie
   }
 });
 
+test("failure diagnostics fail closed for scheme, drive-relative, and filename grammars", () => {
+  for (const value of [
+    "urn:customer:private-record",
+    "data:text,customer-record",
+    "C:private-folder",
+    "customer-record.mjs:17",
+    "customer-record.test.mjs:17:9",
+  ]) {
+    const diagnostic = failureDiagnostic({
+      details: {
+        error: {
+          code: "ERR_ASSERTION",
+          failureType: "testCodeFailure",
+          message: value,
+        },
+      },
+      name: value,
+    });
+    assert.equal(
+      diagnostic,
+      "✖ <redacted-diagnostic> [testCodeFailure:ERR_ASSERTION] <redacted-diagnostic>\n",
+    );
+    assert.ok(!diagnostic.includes(value));
+  }
+});
+
 test("failure diagnostics fail closed for every ECMA control-string family", () => {
   const hostileValues = [
     "\u009b31mC1-CSI-secret",
@@ -349,6 +375,19 @@ test("failure diagnostics retain ordinary bounded ASCII text", () => {
       name: "ordinary deterministic assertion",
     }),
     "✖ ordinary deterministic assertion [testCodeFailure:ERR_ASSERTION] Expected status 7 but received 9; retry is unavailable.\n",
+  );
+  assert.equal(
+    failureDiagnostic({
+      details: {
+        error: {
+          code: "ERR_ASSERTION",
+          failureType: "testCodeFailure",
+          message: "status: 7; version 1.2.3. Recovery is unavailable.",
+        },
+      },
+      name: "ordinary version boundary",
+    }),
+    "✖ ordinary version boundary [testCodeFailure:ERR_ASSERTION] status: 7; version 1.2.3. Recovery is unavailable.\n",
   );
 });
 

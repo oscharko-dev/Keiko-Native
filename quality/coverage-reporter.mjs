@@ -55,6 +55,10 @@ const sensitiveDiagnosticMarker =
   /\b(?:api[-_ ]?key|authorization|bearer|cookie|credential|password|private[-_ ]?key|secret|token)\b/iu;
 const tokenLikeDiagnostic =
   /(?:^|[^A-Za-z0-9+_=-])[A-Za-z0-9+_=-]{24,}(?=$|[^A-Za-z0-9+_=-])/u;
+const uriSchemeDiagnostic = /\b[A-Za-z][A-Za-z0-9+.-]*:[^ ]/u;
+const driveRelativeDiagnostic = /\b[A-Za-z]:[A-Za-z0-9._-]/u;
+const filenameDiagnostic =
+  /\b[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_+-]+)*\.[A-Za-z][A-Za-z0-9_+-]{0,15}(?::\d+(?::\d+)?)?(?=$|[ .,;!?()])/u;
 const redactedDiagnostic = "<redacted-diagnostic>";
 
 function sanitizeDiagnostic(value, maximum, fallback) {
@@ -64,7 +68,10 @@ function sanitizeDiagnostic(value, maximum, fallback) {
     sharedSanitized !== value ||
     !safeDiagnosticCharacters.test(value) ||
     sensitiveDiagnosticMarker.test(value) ||
-    tokenLikeDiagnostic.test(value)
+    tokenLikeDiagnostic.test(value) ||
+    uriSchemeDiagnostic.test(value) ||
+    driveRelativeDiagnostic.test(value) ||
+    filenameDiagnostic.test(value)
   )
     return redactedDiagnostic;
   let sanitized = value.trim();
