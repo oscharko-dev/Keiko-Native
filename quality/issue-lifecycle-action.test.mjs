@@ -120,10 +120,12 @@ test("workflow loads protected dev code with read-only credentials", async () =>
     workflow,
     /types: \[assigned, closed, edited, labeled, reopened, unassigned, unlabeled\]/u,
   );
+  assert.match(workflow, /workflow_call:/u);
   assert.match(
     workflow,
-    /group: issue-lifecycle-\$\{\{ github\.event\.issue\.number \}\}/u,
+    /group: issue-lifecycle-\$\{\{ inputs\.issue_number \|\| github\.event\.issue\.number \}\}/u,
   );
+  assert.match(workflow, /cancel-in-progress: false/u);
   assert.match(workflow, /ref: dev/u);
   assert.match(workflow, /persist-credentials: false/u);
   assert.match(workflow, /contents: read/u);
@@ -135,16 +137,19 @@ test("workflow loads protected dev code with read-only credentials", async () =>
     "utf8",
   );
   assert.match(pullRequestWorkflow, /pull_request_target:/u);
+  assert.match(pullRequestWorkflow, /cancel-in-progress: false/u);
   assert.match(
     pullRequestWorkflow,
-    /run: node quality\/issue-lifecycle-action\.mjs/u,
+    /uses: \.\/\.github\/workflows\/issue-lifecycle\.yml/u,
   );
   assert.match(
     pullRequestWorkflow,
-    /KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled/u,
+    /issue_number: \$\{\{ needs\.contract\.outputs\.issue-number \}\}/u,
   );
-  assert.match(pullRequestWorkflow, /KEIKO_PR_CONTRACT_RESULT=success/u);
-  assert.match(pullRequestWorkflow, /if: always\(\)/u);
+  assert.match(
+    pullRequestWorkflow,
+    /pr_contract_result: \$\{\{ needs\.contract\.result \}\}/u,
+  );
   assert.match(pullRequestWorkflow, /closed/u);
 });
 
@@ -1140,7 +1145,7 @@ test("covers alternate fail-closed and no-op lifecycle branches", async (t) => {
     );
   }
 
-  const closedWithFinalDelivery = requestMock(t, {
+  const closedWithStaleIssueContract = requestMock(t, {
     commitStatuses: {
       "Issue contract current": "failure",
       "PR contract": "success",
@@ -1160,24 +1165,49 @@ test("covers alternate fail-closed and no-op lifecycle branches", async (t) => {
     },
     pullRequests: [finalDeliveryCandidate],
   });
-  assert.deepEqual(
-    (
-      await runIssueLifecycleAction({
-        event: {
-          action: "closed",
-          expectedReadinessCommentId: 101,
-          issue: { number: 27, state_reason: "completed" },
-        },
-        request: closedWithFinalDelivery.request,
-      })
-    ).plan,
-    {
-      apply: ["status: done"],
-      failures: [],
-      ok: true,
-      remove: ["status: ready for human review"],
+  const staleIssueContractResult = await runIssueLifecycleAction({
+    event: {
+      action: "closed",
+      expectedReadinessCommentId: 101,
+      issue: { number: 27, state_reason: "completed" },
     },
-  );
+    request: closedWithStaleIssueContract.request,
+  });
+  assert.equal(staleIssueContractResult.outcome, "failed");
+  assert.deepEqual(staleIssueContractResult.failures, [
+    "completion_evidence_required",
+  ]);
+
+  const closedWithFinalDelivery = requestMock(t, {
+    issueLabels: ["status: ready for human review"],
+    issueOverrides: { state: "closed", state_reason: "completed" },
+    pullRequestDetails: {
+      40: {
+        base: { ref: "dev" },
+        body: finalDeliveryBody,
+        head: { sha: mergedHead },
+        merged: true,
+        merged_by: { login: "Niko4417" },
+        node_id: "pr-node-40",
+        number: 40,
+      },
+    },
+    pullRequests: [finalDeliveryCandidate],
+  });
+  const finalDeliveryResult = await runIssueLifecycleAction({
+    event: {
+      action: "closed",
+      expectedReadinessCommentId: 101,
+      issue: { number: 27, state_reason: "completed" },
+    },
+    request: closedWithFinalDelivery.request,
+  });
+  assert.deepEqual(finalDeliveryResult.plan, {
+    apply: ["status: done"],
+    failures: [],
+    ok: true,
+    remove: ["status: ready for human review"],
+  });
 
   const prematureClosed = requestMock(t, {
     issueLabels: ["status: new"],

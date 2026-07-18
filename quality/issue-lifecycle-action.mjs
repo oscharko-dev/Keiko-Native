@@ -432,12 +432,6 @@ function retainedPullRequestStatusesSucceeded(repository, headSha, request) {
   ]);
 }
 
-function finalPullRequestContractSucceeded(repository, headSha, request) {
-  return requiredPullRequestStatusesSucceeded(repository, headSha, request, [
-    "PR contract",
-  ]);
-}
-
 async function firstValidatedLinkedOpenPullRequest(
   repository,
   issueNumber,
@@ -500,7 +494,7 @@ async function finalDeliveryEvidence(repository, issueNumber, request) {
       )
         continue;
       if (
-        await finalPullRequestContractSucceeded(
+        await retainedPullRequestStatusesSucceeded(
           repository,
           linked.headSha,
           request,

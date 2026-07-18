@@ -100,10 +100,13 @@ const issueLifecycleTriggerTypes = [
 
 const issueLifecycleMarkers = [
   "name: Issue lifecycle",
-  "group: issue-lifecycle-${{ github.event.issue.number }}",
+  "workflow_call:",
+  "group: issue-lifecycle-${{ inputs.issue_number || github.event.issue.number }}",
+  "cancel-in-progress: false",
   "ref: dev",
   "persist-credentials: false",
   "KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
+  "KEIKO_PR_CONTRACT_RESULT: ${{ inputs.pr_contract_result }}",
   "node quality/issue-lifecycle-action.mjs",
 ];
 
@@ -124,13 +127,15 @@ const pullRequestContractMarkers = [
   "ready_for_review",
   "converted_to_draft",
   "closed",
+  "cancel-in-progress: false",
   "name: Evaluate trusted PR metadata",
+  "issue-number: ${{ steps.contract.outputs.issue-number }}",
   "ref: dev",
   "statuses: write",
   "node quality/pr-contract-action.mjs",
-  "KEIKO_PR_CONTRACT_RESULT=success",
-  "if: always()",
-  "node quality/issue-lifecycle-action.mjs",
+  "uses: ./.github/workflows/issue-lifecycle.yml",
+  "issue_number: ${{ needs.contract.outputs.issue-number }}",
+  "pr_contract_result: ${{ needs.contract.result }}",
 ];
 
 const canonicalLifecycleStates = Object.freeze([

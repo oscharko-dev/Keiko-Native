@@ -20,13 +20,15 @@ permissions: {}
 
 concurrency:
   group: pr-contract-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   contract:
     name: Evaluate trusted PR metadata
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      issue-number: ${{ steps.contract.outputs.issue-number }}
     permissions:
       contents: read
       issues: read
@@ -44,14 +46,20 @@ jobs:
           node-version: "24.18.0"
           package-manager-cache: false
       - name: Validate issue, readiness, evidence, and delivery authority
+        id: contract
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          node quality/pr-contract-action.mjs
-          echo "KEIKO_PR_CONTRACT_RESULT=success" >> "$GITHUB_ENV"
-      - name: Compute the inert PR lifecycle decision
-        if: always()
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled
-        run: node quality/issue-lifecycle-action.mjs
+        run: node quality/pr-contract-action.mjs
+
+  lifecycle:
+    name: Serialize inert PR lifecycle transition
+    needs: contract
+    if: ${{ needs.contract.result == 'success' && needs.contract.outputs.issue-number != '' }}
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    uses: ./.github/workflows/issue-lifecycle.yml
+    with:
+      issue_number: ${{ needs.contract.outputs.issue-number }}
+      pr_contract_result: ${{ needs.contract.result }}
