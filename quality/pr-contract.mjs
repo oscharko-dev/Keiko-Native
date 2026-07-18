@@ -353,6 +353,11 @@ export function pullRequestIssueNumber(body) {
   );
 }
 
+export function pullRequestAcceptedTarget(body) {
+  const sections = markdownSections(typeof body === "string" ? body : "");
+  return pullRequestScope(sections).acceptedTarget;
+}
+
 export function validatePullRequestContract({
   comments,
   issue,

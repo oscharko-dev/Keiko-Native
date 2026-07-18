@@ -2,7 +2,10 @@ import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 import { githubRequestFor } from "./github-api.mjs";
-import { pullRequestIssueNumber } from "./pr-contract.mjs";
+import {
+  pullRequestAcceptedTarget,
+  pullRequestIssueNumber,
+} from "./pr-contract.mjs";
 import {
   LIFECYCLE_STATES,
   planStatusLabelReconciliation,
@@ -24,6 +27,7 @@ const lifecycleActivationEnabled = "enabled";
 const pullRequestContractSuccess = "success";
 const githubRequest = githubRequestFor("keiko-native-issue-lifecycle");
 const assignmentClaimPermissions = new Set(["admin", "maintain", "write"]);
+const devHumanMergers = new Set(["niko4417", "oscharko"]);
 const READY = LIFECYCLE_STATES[2];
 const PR_OPEN = LIFECYCLE_STATES[4];
 const REVIEW = LIFECYCLE_STATES[5];
@@ -244,9 +248,7 @@ function desiredStateForClosure(event, issue) {
   if (issue?.state !== "closed")
     return { failures: ["current_closed_state_required"], outcome: "failed" };
   const closure = evaluateClosurePrecondition({
-    completionEvidence: {
-      validated: hasSoleLifecycleState(issue, LIFECYCLE_STATES[5]),
-    },
+    completionEvidence: event.completionEvidence,
     reason: issue.state_reason,
   });
   if (!closure.ok) return { failures: [closure.reason], outcome: "failed" };
@@ -388,7 +390,7 @@ async function allProviderLabels(repository, request) {
   }
 }
 
-function linkedOpenPullRequestEvidence(pullRequest, issueNumber, excludeId) {
+function linkedPullRequestEvidence(pullRequest, issueNumber, excludeId) {
   const id = pullRequestIdentity(pullRequest);
   const headSha = pullRequest?.head?.sha;
   if (
@@ -401,10 +403,11 @@ function linkedOpenPullRequestEvidence(pullRequest, issueNumber, excludeId) {
   return { headSha, id, validated: true };
 }
 
-async function retainedPullRequestStatusesSucceeded(
+async function requiredPullRequestStatusesSucceeded(
   repository,
   headSha,
   request,
+  requiredContexts,
 ) {
   try {
     const status = await request(
@@ -416,12 +419,23 @@ async function retainedPullRequestStatusesSucceeded(
         .filter((entry) => entry?.state === "success")
         .map((entry) => entry?.context),
     );
-    return ["PR contract", "Issue contract current"].every((context) =>
-      successfulContexts.has(context),
-    );
+    return requiredContexts.every((context) => successfulContexts.has(context));
   } catch {
     return false;
   }
+}
+
+function retainedPullRequestStatusesSucceeded(repository, headSha, request) {
+  return requiredPullRequestStatusesSucceeded(repository, headSha, request, [
+    "PR contract",
+    "Issue contract current",
+  ]);
+}
+
+function finalPullRequestContractSucceeded(repository, headSha, request) {
+  return requiredPullRequestStatusesSucceeded(repository, headSha, request, [
+    "PR contract",
+  ]);
 }
 
 async function firstValidatedLinkedOpenPullRequest(
@@ -437,7 +451,7 @@ async function firstValidatedLinkedOpenPullRequest(
     if (!Array.isArray(batch))
       throw new Error("Open pull requests response is malformed.");
     for (const pullRequest of batch) {
-      const linked = linkedOpenPullRequestEvidence(
+      const linked = linkedPullRequestEvidence(
         pullRequest,
         issueNumber,
         excludeId,
@@ -456,21 +470,45 @@ async function firstValidatedLinkedOpenPullRequest(
   }
 }
 
-async function hasLinkedOpenPullRequest(repository, issueNumber, request) {
+function acceptedDeliveryBoundary(pullRequest) {
+  const target = pullRequestAcceptedTarget(pullRequest?.body);
+  if (target !== pullRequest?.base?.ref) return false;
+  if (target !== "dev") return true;
+  return devHumanMergers.has(pullRequest?.merged_by?.login?.toLowerCase());
+}
+
+async function finalDeliveryEvidence(repository, issueNumber, request) {
   for (let page = 1; ; page += 1) {
     const batch = await request(
-      `/repos/${repository}/pulls?state=open&per_page=100&page=${page}`,
+      `/repos/${repository}/pulls?state=closed&per_page=100&page=${page}`,
     );
     if (!Array.isArray(batch))
-      throw new Error("Open pull requests response is malformed.");
-    if (
-      batch.some(
-        (pullRequest) =>
-          linkedOpenPullRequestEvidence(pullRequest, issueNumber) !== undefined,
+      throw new Error("Closed pull requests response is malformed.");
+    for (const pullRequest of batch) {
+      const linked = linkedPullRequestEvidence(pullRequest, issueNumber);
+      if (linked === undefined || !Number.isInteger(pullRequest?.number))
+        continue;
+      const detail = await request(
+        `/repos/${repository}/pulls/${pullRequest.number}`,
+      );
+      if (
+        detail?.number !== pullRequest.number ||
+        detail?.merged !== true ||
+        detail?.head?.sha !== linked.headSha ||
+        linkedPullRequestEvidence(detail, issueNumber)?.id !== linked.id ||
+        !acceptedDeliveryBoundary(detail)
       )
-    )
-      return true;
-    if (batch.length < 100) return false;
+        continue;
+      if (
+        await finalPullRequestContractSucceeded(
+          repository,
+          linked.headSha,
+          request,
+        )
+      )
+        return { headSha: linked.headSha, id: linked.id, validated: true };
+    }
+    if (batch.length < 100) return undefined;
   }
 }
 
@@ -512,11 +550,19 @@ async function eventWithDerivedEvidence({
   if (event?.action === "unassigned" && event.hasOpenPullRequest === undefined)
     evidencedEvent = {
       ...evidencedEvent,
-      hasOpenPullRequest: await hasLinkedOpenPullRequest(
-        repository,
-        issueNumber,
-        request,
-      ),
+      hasOpenPullRequest:
+        (await firstValidatedLinkedOpenPullRequest(
+          repository,
+          issueNumber,
+          request,
+        )) !== undefined,
+    };
+  if (event?.action === "closed" && issue?.state_reason === "completed")
+    evidencedEvent = {
+      ...evidencedEvent,
+      completionEvidence: hasSoleLifecycleState(issue, REVIEW)
+        ? await finalDeliveryEvidence(repository, issueNumber, request)
+        : undefined,
     };
   if (needsOtherOpenPullRequestEvidence(event)) {
     const otherOpenPullRequest = await firstValidatedLinkedOpenPullRequest(

@@ -63,6 +63,7 @@ function requestMock(
     issueLabels,
     issueOverrides,
     permission = "write",
+    pullRequestDetails = {},
     pullRequests = [],
   } = {},
 ) {
@@ -90,6 +91,9 @@ function requestMock(
       };
     if (path.includes("/labels?"))
       return LIFECYCLE_STATES.map((name) => ({ name }));
+    const pullRequestNumber = path.match(/\/pulls\/(\d+)$/u)?.[1];
+    if (pullRequestNumber !== undefined)
+      return pullRequestDetails[pullRequestNumber] ?? {};
     if (path.includes("/pulls?")) return pullRequests;
     if (path.includes("/issues/27")) return issue(issueLabels, issueOverrides);
     return {};
@@ -372,6 +376,34 @@ test("plans validated assignment claim and release transitions", async (t) => {
       call.path.includes("/pulls?state=open&per_page=100&page=1"),
     ),
   );
+
+  const rawReleaseWithRejectedPullRequest = requestMock(t, {
+    commitStatuses: {
+      "Issue contract current": "failure",
+      "PR contract": "success",
+    },
+    issueLabels: ["status: in progress"],
+    issueOverrides: { assignees: [] },
+    pullRequests: [
+      {
+        body: "## Scope\n\n- Accepted issue: #27",
+        head: { sha: "a".repeat(40) },
+        node_id: "pr-node-rejected",
+      },
+    ],
+  });
+  const rejectedPullRequestReleaseResult = await runIssueLifecycleAction({
+    event: {
+      action: "unassigned",
+      assignee: { login: "runner" },
+      expectedReadinessCommentId: 101,
+      issue: { number: 27 },
+      sender: { login: "maintainer" },
+    },
+    request: rawReleaseWithRejectedPullRequest.request,
+  });
+  assert.equal(rejectedPullRequestReleaseResult.outcome, "planned");
+  assert.equal(rejectedPullRequestReleaseResult.desiredState, "status: ready");
 });
 
 test("plans pull request lifecycle topology from trusted PR events", async (t) => {
@@ -1026,9 +1058,107 @@ test("covers alternate fail-closed and no-op lifecycle branches", async (t) => {
     /Issue number/u,
   );
 
-  const closed = requestMock(t, {
+  const closedWithoutDelivery = requestMock(t, {
     issueLabels: ["status: ready for human review"],
     issueOverrides: { state: "closed", state_reason: "completed" },
+  });
+  const closedWithoutDeliveryResult = await runIssueLifecycleAction({
+    event: {
+      action: "closed",
+      expectedReadinessCommentId: 101,
+      issue: { number: 27, state_reason: "completed" },
+    },
+    request: closedWithoutDelivery.request,
+  });
+  assert.equal(closedWithoutDeliveryResult.outcome, "failed");
+  assert.deepEqual(closedWithoutDeliveryResult.failures, [
+    "completion_evidence_required",
+  ]);
+
+  const mergedHead = "d".repeat(40);
+  const finalDeliveryBody =
+    "## Scope\n\n- Accepted issue: #27\n- Accepted target branch: dev";
+  const finalDeliveryCandidate = {
+    body: finalDeliveryBody,
+    head: { sha: mergedHead },
+    node_id: "pr-node-40",
+    number: 40,
+  };
+  for (const [name, detail] of [
+    [
+      "wrong target",
+      {
+        base: { ref: "epic/27-delivery" },
+        head: { sha: mergedHead },
+        merged_by: { login: "Niko4417" },
+      },
+    ],
+    [
+      "mismatched head",
+      {
+        base: { ref: "dev" },
+        head: { sha: "e".repeat(40) },
+        merged_by: { login: "Niko4417" },
+      },
+    ],
+    [
+      "non-human dev merger",
+      {
+        base: { ref: "dev" },
+        head: { sha: mergedHead },
+        merged_by: { login: "merge-bot[bot]" },
+      },
+    ],
+  ]) {
+    const rejectedFinalDelivery = requestMock(t, {
+      issueLabels: ["status: ready for human review"],
+      issueOverrides: { state: "closed", state_reason: "completed" },
+      pullRequestDetails: {
+        40: {
+          body: finalDeliveryBody,
+          merged: true,
+          node_id: "pr-node-40",
+          number: 40,
+          ...detail,
+        },
+      },
+      pullRequests: [finalDeliveryCandidate],
+    });
+    const rejectedFinalDeliveryResult = await runIssueLifecycleAction({
+      event: {
+        action: "closed",
+        expectedReadinessCommentId: 101,
+        issue: { number: 27, state_reason: "completed" },
+      },
+      request: rejectedFinalDelivery.request,
+    });
+    assert.equal(rejectedFinalDeliveryResult.outcome, "failed", name);
+    assert.deepEqual(
+      rejectedFinalDeliveryResult.failures,
+      ["completion_evidence_required"],
+      name,
+    );
+  }
+
+  const closedWithFinalDelivery = requestMock(t, {
+    commitStatuses: {
+      "Issue contract current": "failure",
+      "PR contract": "success",
+    },
+    issueLabels: ["status: ready for human review"],
+    issueOverrides: { state: "closed", state_reason: "completed" },
+    pullRequestDetails: {
+      40: {
+        base: { ref: "dev" },
+        body: finalDeliveryBody,
+        head: { sha: mergedHead },
+        merged: true,
+        merged_by: { login: "Niko4417" },
+        node_id: "pr-node-40",
+        number: 40,
+      },
+    },
+    pullRequests: [finalDeliveryCandidate],
   });
   assert.deepEqual(
     (
@@ -1038,7 +1168,7 @@ test("covers alternate fail-closed and no-op lifecycle branches", async (t) => {
           expectedReadinessCommentId: 101,
           issue: { number: 27, state_reason: "completed" },
         },
-        request: closed.request,
+        request: closedWithFinalDelivery.request,
       })
     ).plan,
     {
