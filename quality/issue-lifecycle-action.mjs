@@ -118,7 +118,9 @@ function derivedAssignmentRelease(event, issue) {
 }
 
 function retainedAssignmentClaim(issue) {
-  const [assignee] = [...assignedLogins(issue)].sort();
+  const [assignee] = [...assignedLogins(issue)].sort((left, right) =>
+    left.localeCompare(right),
+  );
   return assignee === undefined
     ? undefined
     : {
