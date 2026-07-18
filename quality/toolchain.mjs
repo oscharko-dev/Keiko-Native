@@ -1,6 +1,12 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
+import {
+  inheritedWorkflowControlFailures,
+  protectedStepControlFailures,
+  workflowJobs,
+} from "./workflow-structure.mjs";
+
 export const exactToolchain = Object.freeze({
   node: "24.18.0",
   npm: "11.16.0",
@@ -60,21 +66,9 @@ function exactDevEngine(value, name, version) {
 }
 
 export function workflowToolchainFailures(workflow) {
-  const failures = [];
-  const normalized = workflow.replaceAll("\r", "");
-  if (hasKeyAtIndentation(normalized, "defaults", 0))
-    failures.push("workflow-defaults");
-  if (hasExecutionEnvironment(normalized, 0))
-    failures.push("workflow-environment");
-  const jobs = normalized.split(/(?=^  [A-Za-z0-9_-]+:\s*$)/mu);
-  for (const job of jobs) {
-    if (/^    continue-on-error:/mu.test(job))
-      failures.push("workflow-job-continue-on-error");
-    if (hasKeyAtIndentation(job, "defaults", 4))
-      failures.push("workflow-job-defaults");
-    if (hasExecutionEnvironment(job, 4))
-      failures.push("workflow-job-environment");
-    if (npmStepHasDirectControl(job))
+  const failures = inheritedWorkflowControlFailures(workflow);
+  for (const { source: job, steps } of workflowJobs(workflow)) {
+    if (npmStepHasDirectControl(steps))
       failures.push("workflow-npm-step-control");
     const firstNpm = runCommands(job)
       .filter(({ command }) => containsNpmExecutable(command))
@@ -104,55 +98,12 @@ export function workflowToolchainFailures(workflow) {
   return failures;
 }
 
-function hasKeyAtIndentation(source, key, indentation) {
-  return new RegExp(`^${" ".repeat(indentation)}${key}:`, "mu").test(source);
-}
-
-function hasExecutionEnvironment(source, indentation) {
-  const lines = source.split("\n");
-  const prefix = " ".repeat(indentation);
-  const key = /^(?:BASH_ENV|ENV|NODE_OPTIONS|PATH)$/iu;
-  for (let index = 0; index < lines.length; index += 1) {
-    const match = new RegExp(`^${prefix}env:\\s*(.*)$`, "u").exec(lines[index]);
-    if (!match) continue;
-    if (environmentNames(match[1]).some((name) => key.test(name))) return true;
-    for (index += 1; index < lines.length; index += 1) {
-      const line = lines[index];
-      if (!line.trim()) continue;
-      const currentIndentation = /^\s*/u.exec(line)[0].length;
-      if (currentIndentation <= indentation) {
-        index -= 1;
-        break;
-      }
-      if (currentIndentation === indentation + 2) {
-        const name = /^\s*["']?([^:"']+)["']?\s*:/u.exec(line)?.[1];
-        if (name && key.test(name.trim())) return true;
-      }
-    }
-  }
-  return false;
-}
-
-function environmentNames(value) {
-  if (!value.trim().startsWith("{")) return [];
-  return [...value.matchAll(/(?:[{,]\s*)["']?([^,:}"']+)["']?\s*:/gu)].map(
-    (match) => match[1].trim(),
+function npmStepHasDirectControl(steps) {
+  return steps.some(
+    (step) =>
+      runCommands(step).some(({ command }) => containsNpmExecutable(command)) &&
+      protectedStepControlFailures(step).length > 0,
   );
-}
-
-function npmStepHasDirectControl(job) {
-  return job
-    .split(/(?=^      - )/mu)
-    .some(
-      (step) =>
-        runCommands(step).some(({ command }) =>
-          containsNpmExecutable(command),
-        ) &&
-        (/^(?:      - |        )(?:continue-on-error|if|shell|working-directory):/mu.test(
-          step,
-        ) ||
-          hasExecutionEnvironment(step.replace(/^      - /u, "        "), 8)),
-    );
 }
 
 function validActivationStep(activation) {

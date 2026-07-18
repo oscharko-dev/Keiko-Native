@@ -2,6 +2,7 @@ import { access, readFile, readdir } from "node:fs/promises";
 import { extname, join, relative, sep } from "node:path";
 
 import { workflowToolchainFailures } from "./toolchain.mjs";
+import { nativeMatrixCommandFailures } from "./workflow-structure.mjs";
 
 const sourceSpecificationIdentity = {
   date: "2026-07-15",
@@ -166,6 +167,21 @@ const requiredTargetCommands = [
   "security",
   "signing",
   "test",
+];
+
+const nativeCiCommands = [
+  "native:dependencies",
+  "native:format",
+  "native:lint",
+  "native:architecture",
+  "native:build",
+  "native:coverage",
+  "native:package",
+  "native:platform",
+  "native:security",
+  "native:signing",
+  "native:test",
+  "acceptance:macos",
 ];
 
 const adr0004SourceRoots = [
@@ -855,21 +871,14 @@ async function productiveCommandFailures(root, ci, manifest) {
           failures.push(
             `Local quality does not execute native target command: ${command}.`,
           );
-        if (!ci.includes(`npm run ${command}`))
-          failures.push(
-            `CI does not execute native target command: ${command}.`,
-          );
         return failures;
       }),
   );
   for (const command of ["acceptance:macos"]) {
     if (typeof packageJson.scripts?.[command] !== "string")
       failures.push(`Native acceptance package script is missing: ${command}.`);
-    if (!ci.includes(`npm run ${command}`))
-      failures.push(
-        `CI does not execute native acceptance command: ${command}.`,
-      );
   }
+  failures.push(...nativeMatrixCommandFailures(ci, nativeCiCommands));
   for (const marker of ["macos-14", "macos-26", 'test "$(uname -m)" = arm64']) {
     if (!ci.includes(marker))
       failures.push(`Native CI marker is missing: ${marker}.`);

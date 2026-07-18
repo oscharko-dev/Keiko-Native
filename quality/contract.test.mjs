@@ -119,6 +119,20 @@ const productiveCommands = [
   "acceptance:macos",
 ];
 
+const productiveCiCommands = [
+  "native:dependencies",
+  "native:format",
+  "native:lint",
+  "native:architecture",
+  "native:build",
+  "native:coverage",
+  "native:package",
+  "native:platform",
+  "native:security",
+  "native:signing",
+  "native:test",
+];
+
 function productiveManifest(overrides = {}) {
   return {
     ...validManifest,
@@ -137,6 +151,28 @@ function productiveManifest(overrides = {}) {
     testSourceRoots: adr0004TestRoots,
     ...overrides,
   };
+}
+
+function withProductiveCi(workflow) {
+  const steps = [
+    "      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
+    "        with:",
+    '          node-version: "24.18.0"',
+    "      - name: Activate exact npm 11.16.0",
+    "        run: |",
+    "          corepack enable npm",
+    "          corepack install --global npm@11.16.0",
+    "          node quality/check-toolchain.mjs",
+    "      - name: Verify authoritative runner",
+    "        run: |",
+    '          test "$(uname -m)" = arm64',
+    "      - run: npm ci --ignore-scripts",
+    ...productiveCiCommands.map((command) => `      - run: npm run ${command}`),
+    "      - run: npm run acceptance:macos",
+    "        env:",
+    '          KEIKO_NATIVE_REQUIRE_MACOS: "1"',
+  ];
+  return workflow.replace("      - run: native", steps.join("\n"));
 }
 
 async function createDeclaredNativePaths(root) {
@@ -1042,10 +1078,7 @@ test("fails closed for missing declared productive roots", async () => {
     );
     const ciPath = join(root, ".github/workflows/ci.yml");
     const ci = await readFile(ciPath, "utf8");
-    await writeFile(
-      ciPath,
-      `${ci}\n${commandNames.map((command) => `npm run ${command}`).join("\n")}\nmacos-14\nmacos-26\ntest "$(uname -m)" = arm64`,
-    );
+    await writeFile(ciPath, withProductiveCi(ci));
     const result = await validateRepository(root);
     assert.match(
       result.failures.join("\n"),
@@ -1083,10 +1116,7 @@ test("accepts declared productive source roots and targets", async () => {
     );
     const ciPath = join(root, ".github/workflows/ci.yml");
     const ci = await readFile(ciPath, "utf8");
-    await writeFile(
-      ciPath,
-      `${ci}\n${commandNames.map((command) => `npm run ${command}`).join("\n")}\nmacos-14\nmacos-26\ntest "$(uname -m)" = arm64`,
-    );
+    await writeFile(ciPath, withProductiveCi(ci));
     const result = await validateRepository(root);
     assert.deepEqual(result.failures, []);
     assert.equal(result.productiveSourceCount, 3);
@@ -1119,7 +1149,7 @@ test("fails closed when productive commands are not wired locally and in CI", as
     const failures = result.failures.join("\n");
     assert.match(failures, /Native target package script is missing/u);
     assert.match(failures, /Local quality does not execute/u);
-    assert.match(failures, /CI does not execute/u);
+    assert.match(failures, /Native CI command step/u);
     assert.match(failures, /Native acceptance package script is missing/u);
     assert.match(failures, /Native CI marker is missing/u);
   } finally {
