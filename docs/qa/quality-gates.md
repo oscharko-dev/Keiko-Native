@@ -147,6 +147,17 @@ Run `npm run quality` and `npm audit --audit-level=high` before the first push. 
 findings locally, add a prevention test or contract check, rerun the affected gate, and then rerun
 the complete local suite before another push. GitHub is remote-only validation, not the test loop.
 
+Productive native quality begins with the exact standalone frontend `npm ci` command owned by
+`native:dependencies`; install scripts and npm workspace inference are disabled. Each native gate
+then copies that installation into a private snapshot before capturing the exact Git tree. The
+snapshot requires the npm-ci hidden lock marker, binds it to the committed lock and exact installed
+package inventory, rejects unexpected or non-regular inputs, and retains a deterministic digest of
+every copied dependency byte. It becomes read-only before the native command starts, and the command
+never reads the original `node_modules` after source capture. This proves reproducibility of the
+installed tree used by the gate; it does not independently reproduce npm registry tarball-integrity
+verification. That residual trust remains with the preceding exact npm-ci operation and npm's
+verification of the committed integrity records.
+
 The bootstrap quality control plane deliberately keeps third-party execution surface minimal:
 Prettier is the only npm development dependency. Markdown policy and LCOV generation are local,
 tested Node.js gates, and coverage uses the Node.js 24 test runner with the same 85% floors.

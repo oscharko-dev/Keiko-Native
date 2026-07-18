@@ -6,23 +6,35 @@ import {
   mkdir,
   mkdtemp,
   readFile,
-  rename,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { captureDependencySnapshot } from "./native-dependencies.mjs";
+
 const GENERATED = ["native/apps/keiko-desktop/gen", "native/frontend/dist"];
 
 export async function runNativeSnapshot({ mode, repositoryRoot }) {
-  const captured = captureRepository(repositoryRoot);
   const temporaryRoot = await mkdtemp(join(tmpdir(), "keiko-native-snapshot-"));
   await chmod(temporaryRoot, 0o700);
   const snapshotRoot = join(temporaryRoot, "repository");
+  const dependencyRoot = join(temporaryRoot, "dependencies");
   const outputRoot = join(temporaryRoot, "output");
   const manifestPath = join(temporaryRoot, "manifest.json");
   try {
+    await mkdir(dependencyRoot);
+    const dependencies = await captureDependencySnapshot({
+      frontendRoot: join(repositoryRoot, "native/frontend"),
+      snapshotRoot: dependencyRoot,
+      async writeFile(path, bytes) {
+        await mkdir(dirname(path), { recursive: true });
+        await writeFile(path, bytes, { mode: 0o555 });
+      },
+    });
+    const captured = captureRepository(repositoryRoot);
     await mkdir(snapshotRoot);
     await mkdir(outputRoot);
     materialize(repositoryRoot, snapshotRoot, captured.head, captured.entries);
@@ -36,10 +48,15 @@ export async function runNativeSnapshot({ mode, repositoryRoot }) {
     }
     await writeFile(
       manifestPath,
-      `${JSON.stringify({ files, head: captured.head, tree: captured.tree })}\n`,
+      `${JSON.stringify({ dependencies, files, head: captured.head, tree: captured.tree })}\n`,
       { mode: 0o600 },
     );
-    await installFrontendDependencies(snapshotRoot, repositoryRoot);
+    const lockEntry = files.find(
+      ({ path }) => path === "native/frontend/package-lock.json",
+    );
+    if (lockEntry?.sha256 !== dependencies.lockSha256)
+      throw new Error("Immutable snapshot rejected dependency-lock-drift");
+    await installFrontendDependencies(snapshotRoot, dependencyRoot);
     for (const path of GENERATED)
       await mkdir(join(snapshotRoot, path), { recursive: true });
     if (process.platform !== "win32") protectInputs(snapshotRoot);
@@ -131,29 +148,18 @@ function materialize(repositoryRoot, snapshotRoot, head, entries) {
     throw new Error("Immutable snapshot rejected extraction");
 }
 
-async function installFrontendDependencies(snapshotRoot, repositoryRoot) {
-  const cacheResult = command("npm", ["config", "get", "cache"], {
-    cwd: repositoryRoot,
-  });
-  const cache =
-    cacheResult.status === 0 ? String(cacheResult.stdout).trim() : "";
-  const args = [
-    "--prefix",
-    join(snapshotRoot, "native/frontend"),
-    "ci",
-    "--ignore-scripts",
-    "--offline",
-  ];
-  if (cache) args.push("--cache", cache);
-  const rootPackage = join(snapshotRoot, "package.json");
-  const heldPackage = join(snapshotRoot, ".keiko-root-package-held");
-  await rename(rootPackage, heldPackage);
-  try {
-    const result = command("npm", args, { cwd: snapshotRoot });
-    if (result.status !== 0 || result.error)
-      throw new Error("Immutable snapshot rejected dependency-install");
-  } finally {
-    await rename(heldPackage, rootPackage);
+async function installFrontendDependencies(snapshotRoot, dependencyRoot) {
+  const destination = join(snapshotRoot, "native/frontend/node_modules");
+  await cp(dependencyRoot, destination, { recursive: true });
+  const bin = join(destination, ".bin");
+  await mkdir(bin);
+  for (const [name, target] of Object.entries({
+    tauri: "../@tauri-apps/cli/tauri.js",
+    tsc: "../typescript/bin/tsc",
+    vite: "../vite/bin/vite.js",
+    vitest: "../vitest/vitest.mjs",
+  })) {
+    await symlink(target, join(bin, name));
   }
 }
 

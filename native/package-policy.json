@@ -39,7 +39,7 @@
   ],
   "expectedLocks": {
     "cargoSha256": "c8965be31fd9d43356a6ef13e856aed369b66580402a96272c058889d7457ee8",
-    "npmSha256": "6471a5453e8e4ee8ba0db538e4ae6fde56acb770545c28d5723bf9136e46cc1b"
+    "npmSha256": "5af86c5a3c4754abd5d4b047d89150e86d3513c7bac723166e02fe3ff6bc24a8"
   },
   "cargoInventory": [
     {
@@ -2495,12 +2495,6 @@
     {
       "dev": false,
       "license": "MIT",
-      "name": "js-tokens",
-      "version": "4.0.0"
-    },
-    {
-      "dev": false,
-      "license": "MIT",
       "name": "react-dom",
       "version": "19.2.7"
     },
@@ -3151,6 +3145,12 @@
       "license": "MIT",
       "name": "html-escaper",
       "version": "2.0.2"
+    },
+    {
+      "dev": true,
+      "license": "MIT",
+      "name": "js-tokens",
+      "version": "10.0.0"
     },
     {
       "dev": true,

@@ -120,13 +120,28 @@ test("snapshot manifest binds declared input bytes and detects drift", async () 
   try {
     await mkdir(join(repository, "native"), { recursive: true });
     const source = join(repository, "native/source.rs");
+    const dependency = join(
+      repository,
+      "native/frontend/node_modules/fixture/index.js",
+    );
+    await mkdir(join(repository, "native/frontend/node_modules/fixture"), {
+      recursive: true,
+    });
     await writeFile(source, "owned");
+    await writeFile(dependency, "dependency");
     const sha256 = await import("node:crypto").then(({ createHash }) =>
       createHash("sha256").update("owned").digest("hex"),
+    );
+    const dependencySha256 = await import("node:crypto").then(
+      ({ createHash }) =>
+        createHash("sha256").update("dependency").digest("hex"),
     );
     await writeFile(
       manifest,
       JSON.stringify({
+        dependencies: {
+          files: [{ path: "fixture/index.js", sha256: dependencySha256 }],
+        },
         files: [{ path: "native/source.rs", sha256 }],
         head: "a".repeat(40),
         tree: "b".repeat(40),
@@ -143,6 +158,12 @@ test("snapshot manifest binds declared input bytes and detects drift", async () 
       readSnapshotInput(join(repository, "outside"), repository),
       /undeclared-input/u,
     );
+    await writeFile(dependency, "drift");
+    await assert.rejects(
+      guard.assertUnchanged("dependency-drift"),
+      /dependency-drift/u,
+    );
+    await writeFile(dependency, "dependency");
     await writeFile(source, "drift");
     await assert.rejects(guard.assertUnchanged("drift"), /input-drift/u);
   } finally {
@@ -158,6 +179,7 @@ test("snapshot runner cleans its private root when the isolated command fails", 
   const root = await mkdtemp(join(tmpdir(), "keiko-snapshot-cleanup-"));
   try {
     await mkdir(join(root, "native/frontend"), { recursive: true });
+    await mkdir(join(root, "native/frontend/node_modules"));
     await writeFile(
       join(root, "package.json"),
       JSON.stringify({ private: true }),
@@ -186,7 +208,7 @@ test("snapshot runner cleans its private root when the isolated command fails", 
     );
     await assert.rejects(
       runNativeSnapshot({ mode: "security", repositoryRoot: root }),
-      /Immutable snapshot rejected dependency-install/u,
+      /Immutable snapshot rejected dependency-missing-npm-ci-marker/u,
     );
     const after = (await readdir(tmpdir())).filter((name) =>
       name.startsWith("keiko-native-snapshot-"),

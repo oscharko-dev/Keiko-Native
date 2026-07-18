@@ -85,6 +85,17 @@ export async function createSnapshotGuard(repositoryRoot) {
           repositoryRoot,
         );
       }
+      for (const entry of value.dependencies?.files ?? []) {
+        const path = join(
+          repositoryRoot,
+          "native/frontend/node_modules",
+          ...entry.path.split("/"),
+        );
+        if (
+          digest(await readOpenedRegular(path, repositoryRoot)) !== entry.sha256
+        )
+          throw new Error("Immutable snapshot rejected dependency-drift");
+      }
       if (!stage) throw new Error("Immutable snapshot rejected missing-stage");
     },
   };

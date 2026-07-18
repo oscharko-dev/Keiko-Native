@@ -255,6 +255,7 @@ jobs:
           rustup toolchain install nightly-2026-07-17 --profile minimal --component llvm-tools-preview
           cargo install cargo-llvm-cov --version 0.8.7 --locked
       - run: npm ci --ignore-scripts
+      - run: npm run native:dependencies
       - run: npm run native:format
       - run: npm run native:lint
       - run: npm run native:architecture
