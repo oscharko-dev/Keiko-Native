@@ -338,11 +338,12 @@ async function allProviderLabels(repository, request) {
   }
 }
 
-function linkedOpenPullRequestEvidence(pullRequest, issueNumber) {
+function linkedOpenPullRequestEvidence(pullRequest, issueNumber, excludeId) {
   const id = pullRequestIdentity(pullRequest);
   const headSha = pullRequest?.head?.sha;
   if (
     id === undefined ||
+    id === excludeId ||
     pullRequestIssueNumber(pullRequest?.body) !== issueNumber ||
     !/^[0-9a-f]{40}$/u.test(headSha ?? "")
   )
@@ -350,7 +351,12 @@ function linkedOpenPullRequestEvidence(pullRequest, issueNumber) {
   return { id, validated: true };
 }
 
-async function firstLinkedOpenPullRequest(repository, issueNumber, request) {
+async function firstLinkedOpenPullRequest(
+  repository,
+  issueNumber,
+  request,
+  excludeId,
+) {
   for (let page = 1; ; page += 1) {
     const batch = await request(
       `/repos/${repository}/pulls?state=open&per_page=100&page=${page}`,
@@ -359,7 +365,7 @@ async function firstLinkedOpenPullRequest(repository, issueNumber, request) {
       throw new Error("Open pull requests response is malformed.");
     const linked = batch
       .map((pullRequest) =>
-        linkedOpenPullRequestEvidence(pullRequest, issueNumber),
+        linkedOpenPullRequestEvidence(pullRequest, issueNumber, excludeId),
       )
       .find((pullRequest) => pullRequest !== undefined);
     if (linked !== undefined) return linked;
@@ -404,6 +410,7 @@ async function eventWithDerivedEvidence({
       repository,
       issueNumber,
       request,
+      pullRequestIdentity(event.pull_request),
     );
     if (otherOpenPullRequest !== undefined)
       evidencedEvent = { ...evidencedEvent, otherOpenPullRequest };

@@ -444,6 +444,11 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
     pullRequests: [
       {
         body: "## Scope\n\n- Accepted issue: #27",
+        head: { sha: "f".repeat(40) },
+        node_id: "pr-node-41",
+      },
+      {
+        body: "## Scope\n\n- Accepted issue: #27",
         head: { sha: "e".repeat(40) },
         node_id: "pr-node-42",
       },
@@ -474,6 +479,37 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
       call.path.includes("/pulls?state=open&per_page=100&page=1"),
     ),
   );
+
+  const closedWithOnlyStaleSelfOpen = requestMock(t, {
+    issueLabels: ["status: pr open"],
+    pullRequests: [
+      {
+        body: "## Scope\n\n- Accepted issue: #27",
+        head: { sha: "f".repeat(40) },
+        node_id: "pr-node-41",
+      },
+    ],
+  });
+  const closedWithOnlyStaleSelfOpenResult = await runIssueLifecycleAction({
+    event: {
+      action: "closed",
+      pull_request: {
+        body: "## Scope\n\n- Accepted issue: #27",
+        head: { sha: "f".repeat(40) },
+        merged: false,
+        node_id: "pr-node-41",
+      },
+    },
+    request: closedWithOnlyStaleSelfOpen.request,
+  });
+  assert.equal(closedWithOnlyStaleSelfOpenResult.outcome, "planned");
+  assert.equal(closedWithOnlyStaleSelfOpenResult.desiredState, "status: ready");
+  assert.deepEqual(closedWithOnlyStaleSelfOpenResult.plan, {
+    apply: ["status: ready"],
+    failures: [],
+    ok: true,
+    remove: ["status: pr open"],
+  });
 
   const preActivationReady = requestMock(t, { issueLabels: ["status: ready"] });
   const preActivationReadyResult = await runIssueLifecycleAction({
