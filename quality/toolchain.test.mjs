@@ -147,6 +147,26 @@ test("every npm workflow consumer activates and verifies the exact toolchain fir
         "          corepack enable npm",
         "          npm ci --ignore-scripts\n          corepack enable npm",
       ),
+      workflow.replace(
+        "          corepack enable npm",
+        "          true || corepack enable npm",
+      ),
+      workflow.replace(
+        "          corepack install --global npm@11.16.0",
+        "          true || corepack install --global npm@11.16.0",
+      ),
+      workflow.replace(
+        "          node quality/check-toolchain.mjs",
+        "          true || node quality/check-toolchain.mjs",
+      ),
+      workflow.replace(
+        "      - name: Activate exact npm 11.16.0\n",
+        [
+          "      - name: Activate exact npm 11.16.0",
+          "        continue-on-error: true",
+          "",
+        ].join("\n"),
+      ),
       moveFirstActivationAfterNpm(workflow),
     ]) {
       assert.ok(workflowToolchainFailures(mutated).length > 0, name);

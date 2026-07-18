@@ -5,9 +5,9 @@
   "type": "module",
   "license": "Apache-2.0",
   "scripts": {
-    "build": "npm run typecheck && vite build --configLoader runner",
-    "coverage": "vitest run --configLoader runner --coverage",
-    "test": "npm run typecheck && vitest run --configLoader runner",
+    "build": "npm run typecheck && vite build --configLoader native",
+    "coverage": "vitest run --configLoader native --coverage",
+    "test": "npm run typecheck && vitest run --configLoader native",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

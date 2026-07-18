@@ -48,7 +48,7 @@ test("productive roots named by ADR-0004 exist", () => {
   }
 });
 
-test("frontend cache stays inside the governed writable output root", () => {
+test("frontend build and test loaders preserve the npm-ci inventory", () => {
   const config = readFileSync(join(root, "frontend/vite.config.ts"), "utf8");
   const frontendPackage = JSON.parse(
     readFileSync(join(root, "frontend/package.json"), "utf8"),
@@ -56,6 +56,11 @@ test("frontend cache stays inside the governed writable output root", () => {
   assert.match(config, /cacheDir: "dist\/\.vite-cache"/u);
   assert.match(config, /coverage: \{\s+all: true,\s+clean: false,/u);
   assert.doesNotMatch(config, /cacheDir: "node_modules/u);
-  for (const script of ["build", "coverage", "test"])
-    assert.match(frontendPackage.scripts[script], /--configLoader runner/u);
+  for (const script of ["build", "coverage", "test"]) {
+    assert.match(frontendPackage.scripts[script], /--configLoader native/u);
+    assert.doesNotMatch(
+      frontendPackage.scripts[script],
+      /configLoader runner/u,
+    );
+  }
 });

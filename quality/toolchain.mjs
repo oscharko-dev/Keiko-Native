@@ -82,7 +82,7 @@ export function workflowToolchainFailures(workflow) {
       !activation.includes("run: |") ||
       activationRuns.length !== 1 ||
       !validActivationCommand(activationRuns[0].command) ||
-      /^\s+if:/mu.test(activation)
+      /^\s+(?:continue-on-error|if):/mu.test(activation)
     )
       failures.push("workflow-npm-activation");
     const setup = job.slice(0, Math.max(activationName, 0));
@@ -96,47 +96,18 @@ export function workflowToolchainFailures(workflow) {
 }
 
 function validActivationCommand(command) {
-  const segments = shellCommandSegments(command);
   const expected = [
-    ["corepack", "enable", "npm"],
-    ["corepack", "install", "--global", "npm@11.16.0"],
-    ["node", "quality/check-toolchain.mjs"],
+    "corepack enable npm",
+    "corepack install --global npm@11.16.0",
+    "node quality/check-toolchain.mjs",
   ];
-  const positions = expected.map((tokens) =>
-    segments.findIndex((segment) => sameTokens(segment, tokens)),
-  );
-  if (
-    positions.some((position) => position < 0) ||
-    expected.some(
-      (tokens) =>
-        segments.filter((segment) => sameTokens(segment, tokens)).length !== 1,
-    ) ||
-    !(positions[0] < positions[1] && positions[1] < positions[2])
-  )
-    return false;
-  return segments.every(
-    (segment, index) =>
-      index === positions[0] ||
-      index === positions[1] ||
-      index > positions[2] ||
-      !segment.some((token) => containsLexicalNpmToken(token)),
-  );
-}
-
-function shellCommandSegments(command) {
-  const segments = [[]];
-  for (const token of shellTokens(command)) {
-    if (token.operator) {
-      if (segments.at(-1).length > 0) segments.push([]);
-    } else segments.at(-1).push(token.value);
-  }
-  return segments.filter((segment) => segment.length > 0);
-}
-
-function sameTokens(actual, expected) {
+  const actual = command
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
   return (
     actual.length === expected.length &&
-    actual.every((token, index) => token === expected[index])
+    actual.every((line, index) => line === expected[index])
   );
 }
 
