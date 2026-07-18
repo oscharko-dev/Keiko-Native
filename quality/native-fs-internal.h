@@ -14,6 +14,7 @@
 
 typedef struct {
   int fd[MAX_DEPTH];
+  char name[MAX_DEPTH][NAME_MAX + 1];
   struct stat before[MAX_DEPTH];
   size_t count;
 } chain_t;
@@ -23,6 +24,10 @@ int same_stat(const struct stat *a, const struct stat *b);
 int valid_component(const char *value);
 void close_chain(chain_t *chain, int verify);
 void refresh_chain(chain_t *chain);
+void refresh_chain_leaf(chain_t *chain);
+void verify_chain(chain_t *chain, int metadata);
+void test_barrier(void);
+void test_barrier_at(const char *point);
 int open_parent(int root, const char *path, int create, chain_t *chain,
                 char leaf[NAME_MAX + 1]);
 void copy_directory(int source, int destination, const char *exclude,

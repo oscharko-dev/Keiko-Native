@@ -49,10 +49,21 @@ static void copy_regular(int source_parent, const char *name, int dest_parent) {
       offset += written;
     }
   }
-  struct stat after;
+  struct stat after, destination_before, destination_after, parent_before,
+      parent_after;
   if (size < 0 || fstat(source, &after) || !same_stat(&before, &after))
     fail("copy-source-changed");
   if (fsync(dest)) fail("copy-sync");
+  if (fstat(dest, &destination_before) || fstat(dest_parent, &parent_before))
+    fail("copy-destination-stat");
+  test_barrier_at("copy-file-created");
+  if (fstat(dest_parent, &parent_after) ||
+      !same_stat(&parent_before, &parent_after) ||
+      fstat(dest, &destination_after) ||
+      fstatat(dest_parent, name, &after, AT_SYMLINK_NOFOLLOW) ||
+      !same_stat(&destination_before, &destination_after) ||
+      !same_stat(&destination_after, &after))
+    fail("copy-destination-rebound");
   close(source);
   close(dest);
 }
@@ -84,6 +95,18 @@ void copy_directory(int source, int destination, const char *exclude,
                               O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
       if (child_source < 0 || child_dest < 0) fail("copy-directory-open");
       copy_directory(child_source, child_dest, NULL, depth + 1);
+      struct stat child_before, child_after, named, parent_before, parent_after;
+      if (fstat(child_dest, &child_before) ||
+          fstat(destination, &parent_before))
+        fail("copy-directory-stat");
+      test_barrier_at("copy-directory-created");
+      if (fstat(destination, &parent_after) ||
+          !same_stat(&parent_before, &parent_after) ||
+          fstat(child_dest, &child_after) ||
+          fstatat(destination, entry->d_name, &named, AT_SYMLINK_NOFOLLOW) ||
+          !same_stat(&child_before, &child_after) ||
+          !same_stat(&child_after, &named))
+        fail("copy-directory-rebound");
       close(child_source);
       close(child_dest);
     } else fail("unsupported-entry");
@@ -153,6 +176,7 @@ void publish_tree(int source, int destination_root, const char *path) {
   chain_t chain = {0};
   char leaf[NAME_MAX + 1];
   int parent = open_parent(destination_root, path, 1, &chain, leaf);
+  refresh_chain(&chain);
   char staging[NAME_MAX + 1];
   if (snprintf(staging, sizeof(staging), ".keiko-stage-%ld", (long)getpid()) >=
       (int)sizeof(staging)) fail("stage-name");
@@ -161,8 +185,17 @@ void publish_tree(int source, int destination_root, const char *path) {
   if (stage < 0) fail("stage-open");
   copy_directory(source, stage, NULL, 0);
   if (fsync(stage)) fail("stage-sync");
-  close(stage);
+  struct stat stage_before, stage_named;
+  if (fstat(stage, &stage_before)) fail("stage-stat");
+  refresh_chain_leaf(&chain);
+  test_barrier();
+  verify_chain(&chain, 1);
+  if (fstat(stage, &stage_named) || !same_stat(&stage_before, &stage_named) ||
+      fstatat(parent, staging, &stage_named, AT_SYMLINK_NOFOLLOW) ||
+      !same_stat(&stage_before, &stage_named))
+    fail("stage-rebound");
   struct stat existing;
+  int replaced = 0;
   if (!fstatat(parent, leaf, &existing, AT_SYMLINK_NOFOLLOW)) {
     if (!S_ISDIR(existing.st_mode)) {
       remove_entry(parent, staging);
@@ -172,11 +205,19 @@ void publish_tree(int source, int destination_root, const char *path) {
       remove_entry(parent, staging);
       fail("publish-swap");
     }
-    remove_entry(parent, staging);
+    replaced = 1;
   } else if (errno != ENOENT || renameat(parent, staging, parent, leaf)) {
     remove_entry(parent, staging);
     fail("publish-rename");
   }
+  struct stat published, stage_after;
+  if (fstat(stage, &stage_after) ||
+      fstatat(parent, leaf, &published, AT_SYMLINK_NOFOLLOW) ||
+      !same_stat(&stage_after, &published))
+    fail("publish-rebound");
+  if (replaced) remove_entry(parent, staging);
   if (fsync(parent)) fail("publish-sync");
-  close_chain(&chain, 0);
+  close(stage);
+  refresh_chain_leaf(&chain);
+  close_chain(&chain, 1);
 }

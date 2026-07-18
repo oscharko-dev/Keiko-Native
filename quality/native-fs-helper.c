@@ -50,19 +50,35 @@ int valid_component(const char *value) {
          strchr(value, '/') == NULL;
 }
 
-static void remember(chain_t *chain, int fd) {
+static int same_object(const struct stat *a, const struct stat *b) {
+  return a->st_dev == b->st_dev && a->st_ino == b->st_ino &&
+         a->st_mode == b->st_mode;
+}
+
+static void remember(chain_t *chain, int fd, const char *name) {
   if (chain->count == MAX_DEPTH || fstat(fd, &chain->before[chain->count]))
     fail("depth-or-stat");
+  if (name && strlen(name) > NAME_MAX) fail("component-too-long");
   chain->fd[chain->count++] = fd;
+  strcpy(chain->name[chain->count - 1], name ? name : "");
+}
+
+void verify_chain(chain_t *chain, int metadata) {
+  for (size_t i = 0; i < chain->count; i++) {
+    struct stat after, named;
+    if (fstat(chain->fd[i], &after) ||
+        (metadata && !same_parent(&chain->before[i], &after)))
+      fail("parent-changed");
+    if (i && chain->name[i][0] &&
+        (fstatat(chain->fd[i - 1], chain->name[i], &named,
+                 AT_SYMLINK_NOFOLLOW) ||
+         !same_object(&after, &named)))
+      fail("parent-rebound");
+  }
 }
 
 void close_chain(chain_t *chain, int verify) {
-  for (size_t i = 0; i < chain->count; i++) {
-    struct stat after;
-    if (verify && (fstat(chain->fd[i], &after) ||
-                   !same_parent(&chain->before[i], &after)))
-      fail("parent-changed");
-  }
+  if (verify) verify_chain(chain, 1);
   while (chain->count) close(chain->fd[--chain->count]);
 }
 
@@ -71,11 +87,21 @@ void refresh_chain(chain_t *chain) {
     if (fstat(chain->fd[i], &chain->before[i])) fail("parent-stat");
 }
 
+void refresh_chain_leaf(chain_t *chain) {
+  struct stat after;
+  if (!chain->count || fstat(chain->fd[chain->count - 1], &after))
+    fail("parent-stat");
+  for (size_t i = 0; i < chain->count; i++)
+    if (chain->before[i].st_dev == after.st_dev &&
+        chain->before[i].st_ino == after.st_ino)
+      chain->before[i] = after;
+}
+
 static int open_absolute(const char *path, int create, chain_t *chain) {
   if (path[0] != '/') fail("root-not-absolute");
   int current = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
   if (current < 0) fail("root-open");
-  remember(chain, current);
+  remember(chain, current, NULL);
   char copy[PATH_MAX];
   if (strlen(path) >= sizeof(copy)) fail("path-too-long");
   strcpy(copy, path);
@@ -92,7 +118,7 @@ static int open_absolute(const char *path, int create, chain_t *chain) {
         !S_ISDIR(entry.st_mode))
       fail("directory-entry");
     current = next;
-    remember(chain, current);
+    remember(chain, current, part);
   }
   return current;
 }
@@ -126,7 +152,7 @@ int open_parent(int root, const char *path, int create, chain_t *chain,
   strcpy(leaf, name);
   int current = dup(root);
   if (current < 0) fail("root-dup");
-  remember(chain, current);
+  remember(chain, current, NULL);
   if (!parents) return current;
   char *save = NULL;
   for (char *part = strtok_r(parents, "/", &save); part;
@@ -141,16 +167,25 @@ int open_parent(int root, const char *path, int create, chain_t *chain,
         !S_ISDIR(entry.st_mode))
       fail("parent-entry");
     current = next;
-    remember(chain, current);
+    remember(chain, current, part);
   }
   return current;
 }
 
-static void barrier(void) {
-  if (!getenv("KEIKO_FS_HELPER_TEST_BARRIER")) return;
+static void wait_at_barrier(void) {
   char byte = 'R';
   if (write(3, &byte, 1) != 1 || read(4, &byte, 1) != 1)
     fail("test-barrier");
+}
+
+void test_barrier(void) {
+  const char *point = getenv("KEIKO_FS_HELPER_TEST_BARRIER");
+  if (point && !strcmp(point, "1")) wait_at_barrier();
+}
+
+void test_barrier_at(const char *expected) {
+  const char *point = getenv("KEIKO_FS_HELPER_TEST_BARRIER");
+  if (point && !strcmp(point, expected)) wait_at_barrier();
 }
 
 static void copy_bytes(int source, int destination, struct stat *before) {
@@ -193,7 +228,7 @@ static void read_file(int root, const char *path, int output) {
   if (file < 0 || fstat(file, &before) || !S_ISREG(before.st_mode))
     fail("regular-open");
   refresh_chain(&chain);
-  barrier();
+  test_barrier();
   copy_bytes(file, output, &before);
   if (fstatat(parent, leaf, &named, AT_SYMLINK_NOFOLLOW) ||
       !same_stat(&before, &named))
@@ -206,7 +241,8 @@ static int create_file(int root, const char *path, mode_t mode, chain_t *chain) 
   char leaf[NAME_MAX + 1];
   int parent = open_parent(root, path, 1, chain, leaf);
   refresh_chain(chain);
-  barrier();
+  test_barrier();
+  verify_chain(chain, 1);
   int file = openat(parent, leaf, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,
                     mode);
   if (file < 0) fail("exclusive-create");
@@ -230,7 +266,7 @@ static int open_dir_at_path(int root, const char *path, int create,
   if (!strcmp(path, ".")) {
     int result = dup(root);
     if (result < 0) fail("root-dup");
-    remember(chain, result);
+    remember(chain, result, NULL);
     return result;
   }
   char leaf[NAME_MAX + 1];
@@ -239,7 +275,7 @@ static int open_dir_at_path(int root, const char *path, int create,
     fail("mkdir");
   int result = openat(parent, leaf, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
   if (result < 0) fail("directory-open");
-  remember(chain, result);
+  remember(chain, result, leaf);
   return result;
 }
 
@@ -251,19 +287,25 @@ int native_fs_run(int argc, char **argv) {
   else if (!strcmp(argv[1], "write") && argc == 5) {
     chain_t chain = {0};
     int file = create_file(root, argv[3], (mode_t)strtol(argv[4], NULL, 8), &chain);
-    refresh_chain(&chain);
     copy_stream(STDIN_FILENO, file);
     if (fsync(file)) fail("write-sync");
     struct stat written;
     if (fstat(file, &written)) fail("written-stat");
     verify_file_path(root, argv[3], &written);
+    refresh_chain_leaf(&chain);
+    test_barrier_at("write-complete");
+    verify_chain(&chain, 1);
+    verify_file_path(root, argv[3], &written);
     close(file);
-    close_chain(&chain, 0);
+    close_chain(&chain, 1);
   } else if (!strcmp(argv[1], "mkdir") && argc == 4) {
     chain_t chain = {0};
     int directory = open_dir_at_path(root, argv[3], 1, &chain);
     (void)directory;
-    close_chain(&chain, 0);
+    refresh_chain(&chain);
+    test_barrier();
+    verify_chain(&chain, 1);
+    close_chain(&chain, 1);
   } else if (!strcmp(argv[1], "list") && (argc == 4 || argc == 5)) {
     chain_t chain = {0};
     int directory = open_dir_at_path(root, argv[3], 0, &chain);
@@ -274,12 +316,20 @@ int native_fs_run(int argc, char **argv) {
     chain_t chain = {0};
     char leaf[NAME_MAX + 1];
     int parent = open_parent(root, argv[3], 1, &chain, leaf);
+    refresh_chain(&chain);
+    test_barrier();
+    verify_chain(&chain, 1);
     if (symlinkat(argv[4], parent, leaf)) fail("symlink-create");
     struct stat entry;
     if (fstatat(parent, leaf, &entry, AT_SYMLINK_NOFOLLOW) ||
         !S_ISLNK(entry.st_mode)) fail("symlink-type");
-    refresh_chain(&chain);
-    close_chain(&chain, 0);
+    refresh_chain_leaf(&chain);
+    test_barrier_at("symlink-created");
+    verify_chain(&chain, 1);
+    struct stat verified;
+    if (fstatat(parent, leaf, &verified, AT_SYMLINK_NOFOLLOW) ||
+        !same_stat(&entry, &verified)) fail("symlink-rebound");
+    close_chain(&chain, 1);
   } else if (!strcmp(argv[1], "copy-tree") && (argc == 6 || argc == 7)) {
     chain_t source_chain = {0}, destination_chain = {0};
     int source = open_dir_at_path(root, argv[3], 0, &source_chain);
@@ -289,20 +339,28 @@ int native_fs_run(int argc, char **argv) {
     if (strcmp(argv[5], ".") && fchmod(destination, 0755))
       fail("copy-directory-mode");
     refresh_chain(&source_chain);
+    refresh_chain(&destination_chain);
+    test_barrier();
+    verify_chain(&source_chain, 1);
+    verify_chain(&destination_chain, 1);
     copy_directory(source, destination, argc == 7 ? argv[6] : NULL, 0);
+    refresh_chain_leaf(&destination_chain);
     verify_absolute(argv[4], destination_root);
-    close_chain(&source_chain, 1); close_chain(&destination_chain, 0);
+    close_chain(&source_chain, 1); close_chain(&destination_chain, 1);
   } else if (!strcmp(argv[1], "publish") && argc == 6) {
     chain_t source_chain = {0}, destination_chain = {0};
     int source = open_dir_at_path(root, argv[3], 0, &source_chain);
     int destination_root = open_absolute(argv[4], 1, &destination_chain);
+    refresh_chain(&destination_chain);
     refresh_chain(&source_chain);
     publish_tree(source, destination_root, argv[5]);
     verify_absolute(argv[4], destination_root);
-    close_chain(&source_chain, 0);
-    close_chain(&destination_chain, 0);
+    close_chain(&source_chain, 1);
+    refresh_chain_leaf(&destination_chain);
+    close_chain(&destination_chain, 1);
   } else fail("usage");
   verify_absolute(argv[2], root);
-  close_chain(&root_chain, 0);
+  refresh_chain_leaf(&root_chain);
+  close_chain(&root_chain, 1);
   return 0;
 }
