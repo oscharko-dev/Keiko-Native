@@ -20,6 +20,7 @@ import {
   validateRepository,
   workflowEventTargetsBranch,
 } from "./contract.mjs";
+import { governedWorkflowJobSteps } from "./workflow-job-contracts.mjs";
 
 const validManifest = {
   baseBranch: "dev",
@@ -119,20 +120,6 @@ const productiveCommands = [
   "acceptance:macos",
 ];
 
-const productiveCiCommands = [
-  "native:dependencies",
-  "native:format",
-  "native:lint",
-  "native:architecture",
-  "native:build",
-  "native:coverage",
-  "native:package",
-  "native:platform",
-  "native:security",
-  "native:signing",
-  "native:test",
-];
-
 function productiveManifest(overrides = {}) {
   return {
     ...validManifest,
@@ -151,42 +138,6 @@ function productiveManifest(overrides = {}) {
     testSourceRoots: adr0004TestRoots,
     ...overrides,
   };
-}
-
-function withProductiveCi(workflow) {
-  const steps = [
-    "      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
-    "        with:",
-    '          node-version: "24.18.0"',
-    "      - name: Activate exact npm 11.16.0",
-    "        run: |",
-    "          corepack enable npm",
-    "          corepack install --global npm@11.16.0",
-    "          node quality/check-toolchain.mjs",
-    "      - name: Verify authoritative runner",
-    "        run: |",
-    '          test "$(uname -m)" = arm64',
-    "      - run: npm ci --ignore-scripts",
-    ...productiveCiCommands.map((command) => `      - run: npm run ${command}`),
-    "      - run: npm run acceptance:macos",
-    "        env:",
-    '          KEIKO_NATIVE_REQUIRE_MACOS: "1"',
-  ];
-  return workflow.replace("      - run: native", steps.join("\n"));
-}
-
-function exactToolchainSteps(commands) {
-  return [
-    "      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
-    "        with:",
-    '          node-version: "24.18.0"',
-    "      - name: Activate exact npm 11.16.0",
-    "        run: |",
-    "          corepack enable npm",
-    "          corepack install --global npm@11.16.0",
-    "          node quality/check-toolchain.mjs",
-    ...commands.map((command) => `      - run: ${command}`),
-  ];
 }
 
 async function createDeclaredNativePaths(root) {
@@ -642,52 +593,15 @@ async function fixtureRepository() {
       "  core-quality:",
       "    name: Core quality",
       "    steps:",
-      ...exactToolchainSteps([
-        "npm ci --ignore-scripts",
-        "npm run quality",
-        "npm audit --audit-level=high",
-      ]),
+      ...governedWorkflowJobSteps["core-quality"],
       "  coverage-sonar:",
       "    name: Coverage and SonarCloud",
       "    steps:",
-      ...exactToolchainSteps(["npm ci --ignore-scripts"]),
-      "      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "        with:",
-      "          ref: ${{ github.event_name == 'workflow_dispatch' && 'dev' || github.ref }}",
-      "      - name: Verify manual analysis is bound to remote dev",
-      "        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev'",
-      "        run: |",
-      '          if [ "$(git rev-parse HEAD)" != "$(git rev-parse refs/remotes/origin/dev)" ]; then',
-      "            exit 1",
-      "          fi",
-      "      - run: npm run coverage",
-      "      - name: Download and verify Sonar Scanner CLI",
-      "        if: >-",
-      "          (github.event_name == 'pull_request' && github.base_ref == 'dev') ||",
-      "          (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||",
-      "          (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev')",
-      "        run: verify-scanner",
-      "      - name: SonarQube Cloud analysis",
-      "        if: >-",
-      "          (github.event_name == 'pull_request' && github.base_ref == 'dev') ||",
-      "          (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||",
-      "          (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev')",
-      "        env:",
-      "          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}",
-      "        run: |",
-      '          if [ -z "$SONAR_TOKEN" ]; then',
-      "            exit 1",
-      "          fi",
-      "          sonar-scanner -Dsonar.qualitygate.wait=true",
+      ...governedWorkflowJobSteps["coverage-sonar"],
       "  cross-platform-smoke:",
       "    name: Cross-platform smoke",
       "    steps:",
-      ...exactToolchainSteps([
-        "npm ci --ignore-scripts",
-        "npm run check:contract",
-        "npm test",
-        "npm run build",
-      ]),
+      ...governedWorkflowJobSteps["cross-platform-smoke"],
       "  ci:",
       "    name: ci",
       "    if: ${{ always() }}",
@@ -713,10 +627,7 @@ async function fixtureRepository() {
       "  verify-pinned-shas:",
       "    name: Verify pinned action SHAs",
       "    steps:",
-      ...exactToolchainSteps([
-        "npm ci --ignore-scripts",
-        "npm run check:contract",
-      ]),
+      ...governedWorkflowJobSteps["verify-pinned-shas"],
       "  zizmor:",
       "    name: zizmor",
       "    steps:",
@@ -724,29 +635,14 @@ async function fixtureRepository() {
       "  build-scan-sbom-smoke:",
       "    name: Build, scan, SBOM, smoke",
       "    steps:",
-      ...exactToolchainSteps([
-        "npm ci --ignore-scripts",
-        "npm run build",
-        "npm audit --audit-level=high",
-      ]),
-      "      - name: Generate CycloneDX SBOM",
-      "        run: npm sbom --sbom-format cyclonedx > sbom.cdx.json",
+      ...governedWorkflowJobSteps["build-scan-sbom-smoke"],
       "  native-matrix:",
       "    name: native (${{ matrix.runner }})",
       "    strategy:",
       "      matrix:",
       "        runner: [macos-14, macos-26]",
       "    steps:",
-      "      - name: Verify authoritative runner",
-      "        run: |",
-      '          test "$(uname -m)" = arm64',
-      ...exactToolchainSteps([
-        "npm ci --ignore-scripts",
-        ...productiveCiCommands.map((command) => `npm run ${command}`),
-      ]),
-      "      - run: npm run acceptance:macos",
-      "        env:",
-      '          KEIKO_NATIVE_REQUIRE_MACOS: "1"',
+      ...governedWorkflowJobSteps["native-matrix"],
       "  native:",
       "    name: native",
       "    if: ${{ always() }}",
@@ -1094,9 +990,6 @@ test("fails closed for missing declared productive roots", async () => {
         ]),
       }),
     );
-    const ciPath = join(root, ".github/workflows/ci.yml");
-    const ci = await readFile(ciPath, "utf8");
-    await writeFile(ciPath, withProductiveCi(ci));
     const result = await validateRepository(root);
     assert.match(
       result.failures.join("\n"),
@@ -1132,9 +1025,6 @@ test("accepts declared productive source roots and targets", async () => {
         ]),
       }),
     );
-    const ciPath = join(root, ".github/workflows/ci.yml");
-    const ci = await readFile(ciPath, "utf8");
-    await writeFile(ciPath, withProductiveCi(ci));
     const result = await validateRepository(root);
     assert.deepEqual(result.failures, []);
     assert.equal(result.productiveSourceCount, 3);

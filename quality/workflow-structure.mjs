@@ -1,76 +1,8 @@
+import { governedWorkflowJobSteps } from "./workflow-job-contracts.mjs";
+
 const jobBoundary = /(?=^  [A-Za-z0-9_-]+:\s*$)/mu;
 const stepBoundary = /(?=^      - )/mu;
 const safeEnvironment = Object.freeze({ KEIKO_NATIVE_REQUIRE_MACOS: "1" });
-const activationStep = [
-  "      - name: Activate exact npm 11.16.0",
-  "        run: |",
-  "          corepack enable npm",
-  "          corepack install --global npm@11.16.0",
-  "          node quality/check-toolchain.mjs",
-].join("\n");
-const nativeCommands = [
-  "native:dependencies",
-  "native:format",
-  "native:lint",
-  "native:architecture",
-  "native:build",
-  "native:coverage",
-  "native:package",
-  "native:platform",
-  "native:security",
-  "native:signing",
-  "native:test",
-];
-const governedNpmJobs = Object.freeze({
-  "build-scan-sbom-smoke": [
-    activationStep,
-    runStep("npm ci --ignore-scripts"),
-    runStep("npm run build"),
-    runStep("npm audit --audit-level=high"),
-    [
-      "      - name: Generate CycloneDX SBOM",
-      "        run: npm sbom --sbom-format cyclonedx > sbom.cdx.json",
-    ].join("\n"),
-  ],
-  "core-quality": [
-    activationStep,
-    runStep("npm ci --ignore-scripts"),
-    runStep("npm run quality"),
-    runStep("npm audit --audit-level=high"),
-  ],
-  "coverage-sonar": [
-    activationStep,
-    runStep("npm ci --ignore-scripts"),
-    runStep("npm run coverage"),
-  ],
-  "cross-platform-smoke": [
-    activationStep,
-    runStep("npm ci --ignore-scripts"),
-    runStep("npm run check:contract"),
-    runStep("npm test"),
-    runStep("npm run build"),
-  ],
-  "native-matrix": [
-    activationStep,
-    runStep("npm ci --ignore-scripts"),
-    ...nativeCommands.map((command) => runStep(`npm run ${command}`)),
-    [
-      "      - run: npm run acceptance:macos",
-      "        env:",
-      '          KEIKO_NATIVE_REQUIRE_MACOS: "1"',
-    ].join("\n"),
-  ],
-  "native-mutation-security": [
-    activationStep,
-    runStep("npm ci --ignore-scripts"),
-    runStep("npm run coverage"),
-  ],
-  "verify-pinned-shas": [
-    activationStep,
-    runStep("npm ci --ignore-scripts"),
-    runStep("npm run check:contract"),
-  ],
-});
 
 export function workflowJobs(workflow) {
   const normalized = workflow.replaceAll("\r", "");
@@ -147,17 +79,17 @@ export function workflowStepShapeFailures(workflow) {
     : [];
 }
 
-export function governedNpmJobFailures(workflow) {
+export function governedWorkflowJobFailures(workflow) {
   const failures = [];
   for (const { id, steps } of workflowJobs(workflow)) {
-    const expected = governedNpmJobs[id];
+    const expected = governedWorkflowJobSteps[id];
     if (!expected) continue;
-    const actual = steps.filter(hasNpmLexeme).map((step) => step.trimEnd());
+    const actual = steps.map((step) => step.trimEnd());
     if (
       actual.length !== expected.length ||
       actual.some((step, index) => step !== expected[index])
     )
-      failures.push(`workflow-npm-contract-${id}`);
+      failures.push(`workflow-job-contract-${id}`);
   }
   return failures;
 }
@@ -201,16 +133,6 @@ function canonicalCommandStep(command) {
     "        env:",
     '          KEIKO_NATIVE_REQUIRE_MACOS: "1"',
   ].join("\n");
-}
-
-function runStep(command) {
-  return `      - run: ${command}`;
-}
-
-function hasNpmLexeme(step) {
-  return /(?:^|[^A-Za-z0-9_.-])(?:npm|npx)(?:\.cmd)?(?:$|[^A-Za-z0-9_.-])/iu.test(
-    step,
-  );
 }
 
 function canonicalStepShape(step) {

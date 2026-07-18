@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 import {
-  governedNpmJobFailures,
+  governedWorkflowJobFailures,
   inheritedWorkflowControlFailures,
   protectedStepControlFailures,
   workflowJobs,
@@ -71,7 +71,7 @@ export function workflowToolchainFailures(workflow) {
   const failures = [
     ...inheritedWorkflowControlFailures(workflow),
     ...workflowStepShapeFailures(workflow),
-    ...governedNpmJobFailures(workflow),
+    ...governedWorkflowJobFailures(workflow),
   ];
   for (const { source: job, steps } of workflowJobs(workflow)) {
     if (npmStepHasDirectControl(steps))

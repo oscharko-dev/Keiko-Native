@@ -149,6 +149,20 @@ test("clean repository rejects noncanonical npm steps and inherited keys", async
         "  core-quality:\n",
         '  core-quality:\n    "continue-on-error": true\n',
       ),
+    (workflow) =>
+      workflow.replace(
+        "      - run: npm ci --ignore-scripts",
+        [
+          "      - name: Mutate later execution context",
+          "        run: echo 'BASH_ENV=/tmp/owned' >> \"$GITHUB_ENV\"",
+          "      - run: npm ci --ignore-scripts",
+        ].join("\n"),
+      ),
+    (workflow) =>
+      workflow.replace(
+        "      - run: npm ci --ignore-scripts",
+        "      - run: true\n      - run: npm ci --ignore-scripts",
+      ),
   ];
   await rejectCleanArchiveMutations(mutations, /workflow-/u);
 });
