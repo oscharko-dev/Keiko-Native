@@ -253,12 +253,8 @@ function desiredStateForPullRequestEvent({
     sourceState: currentState,
   });
   if (result.ok) return { desiredState: result.target };
-  if (
-    !enabled &&
-    currentState === READY &&
-    result.reason === "lifecycle_edge_not_allowed"
-  )
-    return { outcome: "ignored", reason: "pre_activation_pr_ready_source" };
+  if (!enabled)
+    return { outcome: "ignored", reason: "pre_activation_pr_topology" };
   return { failures: [result.reason], outcome: "failed" };
 }
 

@@ -335,9 +335,25 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
     request: preActivationReady.request,
   });
   assert.equal(preActivationReadyResult.outcome, "ignored");
+  assert.equal(preActivationReadyResult.reason, "pre_activation_pr_topology");
+
+  const preActivationUnlabeled = requestMock(t, { issueLabels: [] });
+  const preActivationUnlabeledResult = await runIssueLifecycleAction({
+    event: {
+      action: "synchronize",
+      expectedReadinessCommentId: 101,
+      pull_request: {
+        body: "## Scope\n\n- Accepted issue: #27",
+        head: { sha: "b".repeat(40) },
+        node_id: "pr-node-40",
+      },
+    },
+    request: preActivationUnlabeled.request,
+  });
+  assert.equal(preActivationUnlabeledResult.outcome, "ignored");
   assert.equal(
-    preActivationReadyResult.reason,
-    "pre_activation_pr_ready_source",
+    preActivationUnlabeledResult.reason,
+    "pre_activation_pr_topology",
   );
 });
 
