@@ -169,10 +169,10 @@ Node and macOS do not expose descriptor-based process execution (`fexecve`) thro
 spawn interface. Helper execution therefore trusts the fresh same-user mode-0700 snapshot root,
 opens the expected helper without following links, binds its SHA-256 and full file identity, and
 checks descriptor-to-name identity immediately before and after pathname spawn. A changed owner,
-mode, name, byte digest, or identity fails closed. This boundary excludes a malicious process already
-running as the same local account, which can modify another same-user private directory; defending
-against that stronger host-compromise model would require a separately approved native launcher or
-privilege boundary and is outside the repository quality helper's authority.
+mode, name, byte digest, or identity fails closed. This boundary excludes a malicious process
+already running as the same local account, which can modify another same-user private directory;
+defending against that stronger host-compromise model would require a separately approved native
+launcher or privilege boundary and is outside the repository quality helper's authority.
 
 On macOS and Linux, that dependency-free POSIX C helper performs mutable dependency, generated
 package, evidence, and delivery operations through descriptor-relative traversal. It rejects

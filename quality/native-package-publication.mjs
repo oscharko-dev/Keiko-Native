@@ -44,7 +44,6 @@ export function publishValidatedPackage({
     });
     beforePublish?.();
     nativeFs.publishBound(destinationRoot, destinationPath, bound);
-    verifyBoundEntries(bound);
   } finally {
     for (const entry of bound) closeSync(entry.fd);
   }
@@ -192,18 +191,6 @@ function readBound(entry) {
   if (!sameMetadata(entry.metadata, fstatSync(entry.fd, { bigint: true })))
     throw rejected("package-file-drift");
   return bytes;
-}
-
-function verifyBoundEntries(bound) {
-  for (const entry of bound) {
-    const descriptor = fstatSync(entry.fd, { bigint: true });
-    const named = lstatSync(entry.absolute, { bigint: true });
-    if (
-      !sameMetadata(entry.metadata, descriptor) ||
-      !sameMetadata(descriptor, named)
-    )
-      throw rejected("package-entry-drift");
-  }
 }
 
 function sameMetadata(left, right) {

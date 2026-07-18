@@ -45,13 +45,20 @@ test(
   async () => {
     await fixture(
       "acceptance",
-      async ({ destination, nativeFs, packageRoot }) => {
+      async ({ destination, executable, nativeFs, packageRoot }) => {
+        const postCommitMutation = {
+          ...nativeFs,
+          publishBound(...args) {
+            nativeFs.publishBound(...args);
+            writeFileSync(executable, "post-commit-source-drift");
+          },
+        };
         publishValidatedPackage({
           cargoLockSha256: "e".repeat(64),
           destinationPath: "delivery",
           destinationRoot: destination,
           mode: "acceptance",
-          nativeFs,
+          nativeFs: postCommitMutation,
           npmLockSha256: "f".repeat(64),
           packageRoot,
           policySha256: "d".repeat(64),
@@ -74,6 +81,17 @@ test(
         await assert.rejects(readFile(join(destination, "delivery/old")), {
           code: "ENOENT",
         });
+        assert.equal(
+          (
+            await readFile(
+              join(
+                destination,
+                "delivery/Keiko Native.app/Contents/MacOS/keiko-native-desktop",
+              ),
+            )
+          ).toString("hex"),
+          "cffaedfe0c000001",
+        );
       },
     );
   },
