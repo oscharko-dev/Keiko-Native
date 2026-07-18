@@ -286,6 +286,24 @@ test("evaluates PR open and unmerged-close recovery topology", () => {
   );
   assertReason(
     evaluatePullRequestTopology({
+      claim: { id: "claim-1", validated: true },
+      event: "closed_unmerged",
+      readiness: current,
+      sourceState: "status: blocked",
+    }),
+    "resume_evidence_required",
+  );
+  assertReason(
+    evaluatePullRequestTopology({
+      event: "closed_unmerged",
+      otherOpenPullRequest: { id: 41, validated: true },
+      readiness: current,
+      sourceState: "status: waiting for user",
+    }),
+    "resume_evidence_required",
+  );
+  assertReason(
+    evaluatePullRequestTopology({
       claim: "unknown",
       event: "closed_unmerged",
       readiness: current,
