@@ -222,6 +222,14 @@ function requiresRetainedPullRequestContract(event, result) {
   );
 }
 
+function pullRequestContractSucceeded({ event, prEvent, result }) {
+  if (prEvent === "closed_merged")
+    return event.currentMergedPullRequest?.validated === true;
+  if (requiresRetainedPullRequestContract(event, result))
+    return hasRetainedPullRequestContractSuccess(event, result);
+  return hasTrustedPullRequestContractSuccess(event);
+}
+
 function unauthorizedRawLabelResult(enabled) {
   return enabled
     ? {
@@ -341,12 +349,11 @@ function desiredStateForPullRequestEvent({
           };
     const targetRequiresContract =
       [PR_OPEN, REVIEW].includes(result.target) && !reviewDemotion;
-    const contractSucceeded =
-      prEvent === "closed_merged"
-        ? event.currentMergedPullRequest?.validated === true
-        : requiresRetainedPullRequestContract(event, result)
-          ? hasRetainedPullRequestContractSuccess(event, result)
-          : hasTrustedPullRequestContractSuccess(event);
+    const contractSucceeded = pullRequestContractSucceeded({
+      event,
+      prEvent,
+      result,
+    });
     if (targetRequiresContract && !contractSucceeded) {
       return enabled
         ? { failures: ["pr_contract_success_required"], outcome: "failed" }
