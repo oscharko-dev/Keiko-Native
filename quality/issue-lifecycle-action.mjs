@@ -6,6 +6,7 @@ import {
   pullRequestAcceptedTarget,
   pullRequestDeliveryIdentityMatches,
   pullRequestIssueNumber,
+  validatePullRequestContract,
 } from "./pr-contract.mjs";
 import {
   LIFECYCLE_STATES,
@@ -26,6 +27,7 @@ import { semanticIssueFingerprint } from "./issue-contract.mjs";
 
 const lifecycleActivationEnabled = "enabled";
 const pullRequestContractSuccess = "success";
+const githubActionsAppId = "15368";
 const githubRequest = githubRequestFor("keiko-native-issue-lifecycle");
 const assignmentClaimPermissions = new Set(["admin", "maintain", "write"]);
 const devHumanMergers = new Set(["niko4417", "oscharko"]);
@@ -193,6 +195,8 @@ function pullRequestLifecycleEvent(event) {
   if (event.action === "ready_for_review") return "opened";
   if (event.action === "synchronize") return "opened";
   if (event.action === "converted_to_draft") return "opened";
+  if (event.action === "closed" && event.pull_request?.merged === true)
+    return "closed_merged";
   if (event.action === "closed" && event.pull_request?.merged !== true)
     return "closed_unmerged";
   return undefined;
@@ -217,6 +221,17 @@ function requiresRetainedPullRequestContract(event, result) {
     result.pullRequestId !== undefined &&
     result.pullRequestId !== pullRequestIdentity(event?.pull_request)
   );
+}
+
+function pullRequestContractSucceeded({ event, prEvent, result }) {
+  if (prEvent === "closed_merged")
+    return (
+      event.currentMergedPullRequest?.validated === true &&
+      hasTrustedPullRequestContractSuccess(event)
+    );
+  if (requiresRetainedPullRequestContract(event, result))
+    return hasRetainedPullRequestContractSuccess(event, result);
+  return hasTrustedPullRequestContractSuccess(event);
 }
 
 function unauthorizedRawLabelResult(enabled) {
@@ -310,7 +325,10 @@ function desiredStateForPullRequestEvent({
     claim: event.claim,
     event: prEvent,
     otherOpenPullRequest: event.otherOpenPullRequest,
-    pullRequest: pullRequestEvidence(event, issueNumber),
+    pullRequest:
+      prEvent === "closed_merged"
+        ? event.currentMergedPullRequest
+        : pullRequestEvidence(event, issueNumber),
     readiness,
     sourceState: currentState,
   });
@@ -334,16 +352,22 @@ function desiredStateForPullRequestEvent({
             reason: "pre_activation_current_pull_request_required",
           };
     const targetRequiresContract =
-      [PR_OPEN, REVIEW].includes(result.target) && !reviewDemotion;
-    const contractSucceeded = requiresRetainedPullRequestContract(event, result)
-      ? hasRetainedPullRequestContractSuccess(event, result)
-      : hasTrustedPullRequestContractSuccess(event);
+      prEvent === "closed_merged" ||
+      ([PR_OPEN, REVIEW].includes(result.target) && !reviewDemotion);
+    const contractSucceeded = pullRequestContractSucceeded({
+      event,
+      prEvent,
+      result,
+    });
     if (targetRequiresContract && !contractSucceeded) {
       return enabled
         ? { failures: ["pr_contract_success_required"], outcome: "failed" }
         : { outcome: "ignored", reason: "pre_activation_pr_contract_required" };
     }
-    return { desiredState: result.target };
+    return {
+      closeIssue: result.closeIssue === true,
+      desiredState: result.target,
+    };
   }
   if (!enabled)
     return { outcome: "ignored", reason: "pre_activation_pr_topology" };
@@ -433,13 +457,33 @@ async function requiredPullRequestStatusesSucceeded(
     const status = await request(
       `/repos/${repository}/commits/${headSha}/status`,
     );
-    if (!Array.isArray(status?.statuses)) return false;
-    const successfulContexts = new Set(
-      status.statuses
-        .filter((entry) => entry?.state === "success")
-        .map((entry) => entry?.context),
+    if (
+      status?.sha !== headSha ||
+      status?.repository?.full_name !== repository ||
+      !Array.isArray(status?.statuses)
+    )
+      return false;
+    return requiredContexts.every((context) => {
+      const current = status.statuses.find(
+        (entry) => entry?.context === context,
+      );
+      return (
+        current?.state === "success" && statusProducedByGitHubActions(current)
+      );
+    });
+  } catch {
+    return false;
+  }
+}
+
+function statusProducedByGitHubActions(status) {
+  try {
+    const avatar = new URL(status?.avatar_url);
+    return (
+      avatar.protocol === "https:" &&
+      avatar.hostname === "avatars.githubusercontent.com" &&
+      avatar.pathname === `/in/${githubActionsAppId}`
     );
-    return requiredContexts.every((context) => successfulContexts.has(context));
   } catch {
     return false;
   }
@@ -491,7 +535,84 @@ function acceptedDeliveryBoundary(pullRequest) {
   return devHumanMergers.has(pullRequest?.merged_by?.login?.toLowerCase());
 }
 
-async function finalDeliveryEvidence(repository, issueNumber, request) {
+function terminalLifecycleActivation(issue) {
+  return [REVIEW, LIFECYCLE_STATES[8]].some((state) =>
+    hasSoleLifecycleState(issue, state),
+  )
+    ? "enabled"
+    : "disabled";
+}
+
+function finalDeliveryDetailMatches({
+  comments,
+  detail,
+  issue,
+  issueNumber,
+  linked,
+  pullRequest,
+  repository,
+}) {
+  if (detail?.number !== pullRequest.number) return false;
+  if (detail?.merged !== true || detail?.state !== "closed") return false;
+  if (!Number.isFinite(Date.parse(detail?.updated_at ?? ""))) return false;
+  if (detail?.head?.sha !== linked.headSha) return false;
+  if (linkedPullRequestEvidence(detail, issueNumber)?.id !== linked.id)
+    return false;
+  if (!acceptedDeliveryBoundary(detail)) return false;
+  return (
+    validatePullRequestContract({
+      comments,
+      issue,
+      lifecycleActivation: terminalLifecycleActivation(issue),
+      pullRequest: detail,
+      repository,
+      terminalDelivery: true,
+    }).failures.length === 0
+  );
+}
+
+async function finalDeliveryCandidateEvidence({
+  comments,
+  issue,
+  issueNumber,
+  pullRequest,
+  repository,
+  request,
+}) {
+  const linked = linkedPullRequestEvidence(pullRequest, issueNumber);
+  if (linked === undefined || !Number.isInteger(pullRequest?.number))
+    return undefined;
+  const detail = await request(
+    `/repos/${repository}/pulls/${pullRequest.number}`,
+  );
+  if (
+    !finalDeliveryDetailMatches({
+      comments,
+      detail,
+      issue,
+      issueNumber,
+      linked,
+      pullRequest,
+      repository,
+    })
+  )
+    return undefined;
+  return (await retainedPullRequestStatusesSucceeded(
+    repository,
+    linked.headSha,
+    request,
+  ))
+    ? { headSha: linked.headSha, id: linked.id, validated: true }
+    : undefined;
+}
+
+async function finalDeliveryEvidence({
+  comments,
+  issue,
+  issueNumber,
+  repository,
+  request,
+}) {
   for (let page = 1; ; page += 1) {
     const batch = await request(
       `/repos/${repository}/pulls?state=closed&per_page=100&page=${page}`,
@@ -499,28 +620,15 @@ async function finalDeliveryEvidence(repository, issueNumber, request) {
     if (!Array.isArray(batch))
       throw new Error("Closed pull requests response is malformed.");
     for (const pullRequest of batch) {
-      const linked = linkedPullRequestEvidence(pullRequest, issueNumber);
-      if (linked === undefined || !Number.isInteger(pullRequest?.number))
-        continue;
-      const detail = await request(
-        `/repos/${repository}/pulls/${pullRequest.number}`,
-      );
-      if (
-        detail?.number !== pullRequest.number ||
-        detail?.merged !== true ||
-        detail?.head?.sha !== linked.headSha ||
-        linkedPullRequestEvidence(detail, issueNumber)?.id !== linked.id ||
-        !acceptedDeliveryBoundary(detail)
-      )
-        continue;
-      if (
-        await retainedPullRequestStatusesSucceeded(
-          repository,
-          linked.headSha,
-          request,
-        )
-      )
-        return { headSha: linked.headSha, id: linked.id, validated: true };
+      const evidence = await finalDeliveryCandidateEvidence({
+        comments,
+        issue,
+        issueNumber,
+        pullRequest,
+        repository,
+        request,
+      });
+      if (evidence !== undefined) return evidence;
     }
     if (batch.length < 100) return undefined;
   }
@@ -549,6 +657,69 @@ function needsCurrentPullRequestEvidence(event) {
     event?.pull_request !== undefined &&
     ["synchronize", "converted_to_draft"].includes(event.action)
   );
+}
+
+function needsMergedPullRequestEvidence(event) {
+  return (
+    event?.pull_request !== undefined &&
+    event.action === "closed" &&
+    event.pull_request?.merged === true
+  );
+}
+
+async function currentMergedPullRequestEvidence(
+  event,
+  issue,
+  repository,
+  request,
+) {
+  const eventPullRequest = event.pull_request;
+  const number = eventPullRequest?.number;
+  if (!Number.isInteger(number)) return { validated: false };
+  try {
+    const current = await request(`/repos/${repository}/pulls/${number}`);
+    const currentIdentity = pullRequestIdentity(current);
+    const eventIdentity = pullRequestIdentity(eventPullRequest);
+    const currentUpdatedAt = Date.parse(current?.updated_at ?? "");
+    const issueUpdatedAt = Date.parse(issue?.updated_at ?? "");
+    const headSha = current?.head?.sha;
+    const completedIssue =
+      issue?.state === "closed" &&
+      issue?.state_reason === "completed" &&
+      (hasSoleLifecycleState(issue, REVIEW) ||
+        hasSoleLifecycleState(issue, LIFECYCLE_STATES[8]));
+    const validated =
+      current?.number === number &&
+      currentIdentity !== undefined &&
+      currentIdentity === eventIdentity &&
+      current?.base?.ref === eventPullRequest?.base?.ref &&
+      current?.head?.sha === eventPullRequest?.head?.sha &&
+      current?.head?.ref === eventPullRequest?.head?.ref &&
+      current?.body === eventPullRequest?.body &&
+      current?.state === "closed" &&
+      current?.merged === true &&
+      eventPullRequest?.state === "closed" &&
+      eventPullRequest?.merged === true &&
+      current?.updated_at === eventPullRequest?.updated_at &&
+      Number.isFinite(currentUpdatedAt) &&
+      Number.isFinite(issueUpdatedAt) &&
+      (completedIssue || currentUpdatedAt > issueUpdatedAt) &&
+      pullRequestDeliveryIdentityMatches({ issue, pullRequest: current }) &&
+      acceptedDeliveryBoundary(current) &&
+      /^[0-9a-f]{40}$/u.test(headSha ?? "") &&
+      (await retainedPullRequestStatusesSucceeded(
+        repository,
+        headSha,
+        request,
+      ));
+    return {
+      completedIssue,
+      id: validated ? currentIdentity : undefined,
+      validated,
+    };
+  } catch {
+    return { validated: false };
+  }
 }
 
 async function currentPullRequestEvidence(event, issue, repository, request) {
@@ -582,6 +753,7 @@ async function currentPullRequestEvidence(event, issue, repository, request) {
 }
 
 async function eventWithDerivedEvidence({
+  comments,
   event,
   issue,
   issueNumber,
@@ -608,11 +780,23 @@ async function eventWithDerivedEvidence({
           request,
         )) !== undefined,
     };
-  if (event?.action === "closed" && issue?.state_reason === "completed")
+  if (
+    event?.pull_request === undefined &&
+    event?.action === "closed" &&
+    issue?.state_reason === "completed"
+  )
     evidencedEvent = {
       ...evidencedEvent,
-      completionEvidence: hasSoleLifecycleState(issue, REVIEW)
-        ? await finalDeliveryEvidence(repository, issueNumber, request)
+      completionEvidence: [REVIEW, LIFECYCLE_STATES[8]].some((state) =>
+        hasSoleLifecycleState(issue, state),
+      )
+        ? await finalDeliveryEvidence({
+            comments,
+            issue,
+            issueNumber,
+            repository,
+            request,
+          })
         : undefined,
     };
   if (needsOtherOpenPullRequestEvidence(event)) {
@@ -643,6 +827,16 @@ async function eventWithDerivedEvidence({
         issueNumber,
         request,
         pullRequestIdentity(event.pull_request),
+      ),
+    };
+  if (needsMergedPullRequestEvidence(event))
+    evidencedEvent = {
+      ...evidencedEvent,
+      currentMergedPullRequest: await currentMergedPullRequestEvidence(
+        event,
+        issue,
+        repository,
+        request,
       ),
     };
   return evidencedEvent;
@@ -676,6 +870,48 @@ async function addLabels(repository, issueNumber, labels, request) {
     method: "POST",
     payload: { labels },
   });
+}
+
+async function closeIssueAsCompleted({
+  desiredState,
+  issue,
+  issueNumber,
+  repository,
+  request,
+}) {
+  const labels = labelNames(issue);
+  if (!Array.isArray(labels))
+    return {
+      failures: ["Issue labels are unavailable for completed closure."],
+      ok: false,
+    };
+  const desiredLabels = [
+    ...labels.filter((label) => !label?.startsWith("status: ")),
+    desiredState,
+  ];
+  await request(`/repos/${repository}/issues/${issueNumber}`, {
+    method: "PATCH",
+    payload: {
+      labels: desiredLabels,
+      state: "closed",
+      state_reason: "completed",
+    },
+  });
+  const readback = await reloadIssue(repository, issueNumber, request);
+  const statusReadback = verifyStatusLabelReadback({
+    actualIssueIdentity: issueIdentity(readback),
+    desiredState,
+    expectedIssueIdentity: issueIdentity(issue),
+    labels: labelNames(readback),
+  });
+  return statusReadback.ok &&
+    readback.state === "closed" &&
+    readback.state_reason === "completed"
+    ? { issue: readback, ok: true }
+    : {
+        failures: ["Completed issue closure read-back did not match."],
+        ok: false,
+      };
 }
 
 function planLifecycleLabelRemoval(issue) {
@@ -802,6 +1038,7 @@ async function reconcileLifecycleRemoval({
 }
 
 async function reconcileDesiredStatus({
+  closeIssue,
   desiredState,
   enabled,
   issue,
@@ -825,12 +1062,26 @@ async function reconcileDesiredStatus({
   if (!enabled)
     return {
       activation: "disabled",
+      closeIssue,
       desiredState,
       now: now.toISOString(),
       outcome: "planned",
       plan: reconciliation,
       readiness,
     };
+
+  if (closeIssue === true) {
+    const closure = await closeIssueAsCompleted({
+      desiredState,
+      issue,
+      issueNumber,
+      repository,
+      request,
+    });
+    return closure.ok
+      ? { closeIssue, desiredState, outcome: "applied", plan: reconciliation }
+      : failed(closure.failures);
+  }
 
   for (const label of reconciliation.remove)
     await removeLabel(repository, issueNumber, label, request);
@@ -843,7 +1094,7 @@ async function reconcileDesiredStatus({
     labels: labelNames(readback),
   });
   return verified.ok
-    ? { desiredState, outcome: "applied", plan: reconciliation }
+    ? { closeIssue, desiredState, outcome: "applied", plan: reconciliation }
     : failed(verified.failures);
 }
 
@@ -868,6 +1119,10 @@ export async function runIssueLifecycleAction({
   ]);
   const providerValidation = validateProviderStatusLabels(providerLabels);
   if (!providerValidation.ok) return failed(providerValidation.failures);
+  if (event?.pull_request !== undefined) {
+    const labelFailure = exactLifecycleLabelFailure(issue);
+    if (labelFailure !== undefined) return labelFailure;
+  }
   const currentState = currentLifecycleState(issue, event);
 
   const readiness = evaluateReadinessForIssue({
@@ -877,6 +1132,7 @@ export async function runIssueLifecycleAction({
   });
   const enabled = enabledLifecycleActivation();
   const evidencedEvent = await eventWithDerivedEvidence({
+    comments,
     event,
     issue,
     issueNumber,
@@ -905,6 +1161,7 @@ export async function runIssueLifecycleAction({
       request,
     });
   return reconcileDesiredStatus({
+    closeIssue: desired.closeIssue === true,
     desiredState: desired.desiredState,
     enabled,
     issue,

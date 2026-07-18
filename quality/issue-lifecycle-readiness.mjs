@@ -9,6 +9,7 @@ import {
 const READY = LIFECYCLE_STATES[2];
 const IN_PROGRESS = LIFECYCLE_STATES[3];
 const PR_OPEN = LIFECYCLE_STATES[4];
+const REVIEW = LIFECYCLE_STATES[5];
 const BLOCKED = LIFECYCLE_STATES[6];
 const WAITING = LIFECYCLE_STATES[7];
 const DONE = LIFECYCLE_STATES[8];
@@ -128,6 +129,41 @@ export function evaluateClaimRelease({
   return failures.length > 0 ? fail(failures[0]) : ok({ target: READY });
 }
 
+function evaluateMergedPullRequestTopology({
+  pullRequest,
+  readiness,
+  sourceState,
+}) {
+  if (
+    [REVIEW, DONE].includes(sourceState) &&
+    pullRequest?.completedIssue === true
+  ) {
+    if (pullRequest?.validated !== true) return fail("validated_pr_required");
+    return topologyResult(sourceState, DONE, {
+      pullRequestId: pullRequest.id,
+    });
+  }
+  if (sourceState === DONE) {
+    if (pullRequest?.validated !== true) return fail("validated_pr_required");
+    return fail("completed_issue_required");
+  }
+  const failures = requireCurrent(readiness);
+  if (failures.length > 0) return fail(failures[0]);
+  if (pullRequest?.validated !== true) return fail("validated_pr_required");
+  if ([BLOCKED, WAITING].includes(sourceState))
+    return fail("resume_evidence_required");
+  if (![PR_OPEN, REVIEW].includes(sourceState))
+    return fail("merged_pr_source_required");
+  if (sourceState === REVIEW)
+    return topologyResult(sourceState, DONE, {
+      closeIssue: true,
+      pullRequestId: pullRequest.id,
+    });
+  return topologyResult(sourceState, IN_PROGRESS, {
+    pullRequestId: pullRequest.id,
+  });
+}
+
 export function evaluatePullRequestTopology({
   claim,
   event,
@@ -136,6 +172,12 @@ export function evaluatePullRequestTopology({
   readiness,
   sourceState,
 }) {
+  if (event === "closed_merged")
+    return evaluateMergedPullRequestTopology({
+      pullRequest,
+      readiness,
+      sourceState,
+    });
   const failures = requireCurrent(readiness);
   if (failures.length > 0) return fail(failures[0]);
   if (["opened", "reopened"].includes(event)) {
