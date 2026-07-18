@@ -83,6 +83,11 @@ export function decideReadiness({
       outcome: "reject",
       reasons: ["The implementation-ready label was removed."],
     };
+  if (action === "unlabeled" && prTrackedLifecycleLabels.has(label))
+    return {
+      outcome: "reject",
+      reasons: ["The pull-request lifecycle label was removed."],
+    };
   if (isRequest && !actorAuthorized)
     return {
       outcome: "reject",
@@ -232,6 +237,10 @@ function readinessEventFacts(event, labels) {
     event.action === "unlabeled" &&
     event.label?.name === "status: ready" &&
     event.sender?.login !== "github-actions[bot]";
+  const removesPrTrackedWork =
+    event.action === "unlabeled" &&
+    prTrackedLifecycleLabels.has(event.label?.name) &&
+    event.sender?.login !== "github-actions[bot]";
   const isLifecycleRevalidation =
     ["edited", "reopened", "labeled", "unlabeled", "closed"].includes(
       event.action,
@@ -245,7 +254,12 @@ function readinessEventFacts(event, labels) {
     hasReadyLabel,
     isInitialRequest,
     pausesPrTrackedWork,
-    relevant: isInitialRequest || isLifecycleRevalidation || isReadinessRemoval,
+    relevant:
+      isInitialRequest ||
+      isLifecycleRevalidation ||
+      isReadinessRemoval ||
+      removesPrTrackedWork,
+    removesPrTrackedWork,
     statuses,
   };
 }
@@ -323,7 +337,8 @@ export async function runIssueReadinessAction({ event, now = new Date() }) {
   const decision = decideReadiness({
     action: event.action,
     actorAuthorized,
-    hasCurrentReadinessLifecycle: facts.hasCurrentReadinessLifecycle,
+    hasCurrentReadinessLifecycle:
+      facts.hasCurrentReadinessLifecycle || facts.removesPrTrackedWork,
     hasReadyLabel: facts.hasReadyLabel,
     label: event.label?.name,
     previousRecord: readinessRecordFromComments(comments),
