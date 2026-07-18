@@ -1,6 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
 
 const ACKNOWLEDGEMENT = "keiko-native-health-ack/v1 sequence=2";
+export const FUNCTIONAL_ACKNOWLEDGEMENT_WATCHDOG_MS = 30_000;
+export const SHUTDOWN_BUDGET_MS = 5_000;
 
 function boundedTail(value) {
   return value.slice(-1024);
@@ -84,6 +86,25 @@ function forceCleanup(processControl, pid) {
   return remaining;
 }
 
+function lifecycleFailureClass(error) {
+  const message = error instanceof Error ? error.message : "";
+  if (message.startsWith("Packaged health acknowledgement timed out"))
+    return "acknowledgement-timeout";
+  if (message.startsWith("Packaged shell exited before acknowledgement"))
+    return "pre-acknowledgement-exit";
+  if (message.startsWith("Packaged shell failed to start"))
+    return "launch-failed";
+  if (message.startsWith("Packaged shell did not shut down"))
+    return "shutdown-timeout";
+  if (message.startsWith("Packaged shell quit helper exceeded"))
+    return "shutdown-deadline-exceeded";
+  if (message.startsWith("Packaged shell shutdown was not normal"))
+    return "abnormal-shutdown";
+  if (message.startsWith("Packaged shell left owned descendants"))
+    return "owned-descendant-leak";
+  return "lifecycle-failed";
+}
+
 export async function runPackagedLifecycle({
   clock = performance,
   executable,
@@ -100,13 +121,17 @@ export async function runPackagedLifecycle({
   let acknowledgementMs;
   let shutdownMs;
   let failure;
-  let cleanupFailure;
+  let cleanupFailureClass;
   try {
-    await waitForAcknowledgement(child, 5000, timers);
+    await waitForAcknowledgement(
+      child,
+      FUNCTIONAL_ACKNOWLEDGEMENT_WATCHDOG_MS,
+      timers,
+    );
     const acknowledgedAt = clock.now();
     acknowledgementMs = Math.round(acknowledgedAt - startedAt);
-    const deadline = acknowledgedAt + 5000;
-    const exited = waitForExit(child, 5000, timers);
+    const deadline = acknowledgedAt + SHUTDOWN_BUDGET_MS;
+    const exited = waitForExit(child, SHUTDOWN_BUDGET_MS, timers);
     if (child.exitCode === null && child.signalCode === null) {
       const remainingMs = Math.max(0, Math.round(deadline - clock.now()));
       await Promise.race([
@@ -133,13 +158,18 @@ export async function runPackagedLifecycle({
   } finally {
     try {
       if (forceCleanup(processControl, child.pid) !== 0)
-        cleanupFailure = new Error("Packaged shell cleanup did not converge");
-    } catch (error) {
-      cleanupFailure = error;
+        cleanupFailureClass = "cleanup-non-convergent";
+    } catch {
+      cleanupFailureClass = "cleanup-control-failed";
     }
   }
+  if (failure && cleanupFailureClass)
+    throw new Error(
+      `Packaged shell lifecycle and cleanup failed (${lifecycleFailureClass(failure)}; ${cleanupFailureClass})`,
+    );
   if (failure) throw failure;
-  if (cleanupFailure) throw cleanupFailure;
+  if (cleanupFailureClass)
+    throw new Error(`Packaged shell cleanup failed (${cleanupFailureClass})`);
   return { acknowledgementMs, cleanupOwnedDescendants: 0, shutdownMs };
 }
 

@@ -202,6 +202,7 @@ export const governedWorkflowJobSteps = Object.freeze({
       "            0BSD, Apache-2.0, BSD-2-Clause, BSD-3-Clause, BlueOak-1.0.0, CC-BY-4.0,",
       "            CC0-1.0, ISC, MIT, MPL-2.0, Python-2.0, Unicode-3.0, Unlicense, WTFPL,",
       "            Zlib",
+      "          allow-dependencies-licenses: pkg:cargo/target-lexicon@0.12.16",
       "          retry-on-snapshot-warnings: true",
       "          retry-on-snapshot-warnings-timeout: 120",
       "          show-openssf-scorecard: true",

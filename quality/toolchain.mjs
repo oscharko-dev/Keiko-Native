@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, relative } from "node:path";
 
 import {
   governedWorkflowJobFailures,
@@ -14,6 +15,10 @@ export const exactToolchain = Object.freeze({
   npm: "11.16.0",
 });
 
+export function canonicalLineEndings(value) {
+  return value.replaceAll("\r\n", "\n");
+}
+
 export function exactToolchainFailures({
   nodeVersion,
   npmConfig = "engine-strict=true\n",
@@ -23,7 +28,8 @@ export function exactToolchainFailures({
   const failures = [];
   if (nodeVersion !== exactToolchain.node) failures.push("node-version");
   if (npmVersion !== exactToolchain.npm) failures.push("npm-version");
-  if (npmConfig !== "engine-strict=true\n") failures.push("npm-engine-strict");
+  if (canonicalLineEndings(npmConfig) !== "engine-strict=true\n")
+    failures.push("npm-engine-strict");
   if (
     packageContract?.engines?.node !== exactToolchain.node ||
     packageContract?.engines?.npm !== exactToolchain.npm ||
@@ -310,15 +316,50 @@ function shellTokens(command) {
 }
 
 export function enforceExactToolchain({
+  execPath = process.execPath,
   nodeVersion = process.versions.node,
-  npmCommand = process.platform === "win32" ? "npm.cmd" : "npm",
   npmConfigPath = new URL("../.npmrc", import.meta.url),
   packagePath = new URL("../package.json", import.meta.url),
+  platform = process.platform,
+  readFile = readFileSync,
+  realpath = realpathSync,
   run = spawnSync,
+  stat = statSync,
 } = {}) {
-  const npm = run(npmCommand, ["--version"], {
+  let node;
+  let npmCli;
+  try {
+    node = realpath(execPath);
+    if (!isAbsolute(node) || !stat(node).isFile()) throw new Error();
+    const prefix = dirname(node);
+    const npmRoot = realpath(
+      platform === "win32"
+        ? join(prefix, "node_modules/npm")
+        : join(prefix, "../lib/node_modules/npm"),
+    );
+    npmCli = realpath(join(npmRoot, "bin/npm-cli.js"));
+    const npmPackage = JSON.parse(
+      readFile(join(npmRoot, "package.json"), "utf8"),
+    );
+    const inside = relative(npmRoot, npmCli);
+    if (
+      !stat(npmCli).isFile() ||
+      inside === "" ||
+      inside.startsWith("..") ||
+      isAbsolute(inside) ||
+      npmPackage.name !== "npm" ||
+      npmPackage.version !== exactToolchain.npm ||
+      npmPackage.bin?.npm !== "bin/npm-cli.js"
+    )
+      throw new Error();
+  } catch {
+    throw new Error("Exact toolchain rejected bundled-npm");
+  }
+  const npm = run(node, [npmCli, "--version"], {
     encoding: "utf8",
+    env: {},
     maxBuffer: 1024,
+    shell: false,
     stdio: "pipe",
   });
   const npmVersion =
@@ -326,8 +367,8 @@ export function enforceExactToolchain({
   let packageContract;
   let npmConfig;
   try {
-    packageContract = JSON.parse(readFileSync(packagePath, "utf8"));
-    npmConfig = readFileSync(npmConfigPath, "utf8");
+    packageContract = JSON.parse(readFile(packagePath, "utf8"));
+    npmConfig = readFile(npmConfigPath, "utf8");
   } catch {
     throw new Error("Exact toolchain rejected package-contract");
   }

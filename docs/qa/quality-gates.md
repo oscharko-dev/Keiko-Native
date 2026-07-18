@@ -156,6 +156,12 @@ bundled npm 11.16.0 before any npm command. Workflows do not replace the bundled
 Corepack shims. Contract tests reject missing, conditional, reordered, or version-drifted
 verification.
 
+Packaged-shell acceptance uses a 30,000 ms functional-liveness watchdog while waiting for the
+two-request acknowledgement. This operational bound allows cold macOS/WebKit startup without
+turning the harness into a startup-performance assertion; performance-distribution evidence remains
+excluded. Once acknowledgement arrives, the independently accepted 5,000 ms normal-shutdown budget
+still applies exactly, and each application IPC request remains bounded to 1,000 ms.
+
 Cargo's committed lock is intentionally cross-target, while the declared native deliverable is
 only `aarch64-apple-darwin`. Vulnerability workflows therefore derive a transient inventory from
 the exact locked Cargo resolve graph filtered to that target, then scan it with the checksum-pinned
@@ -168,6 +174,13 @@ Review retains its exact diff, scope, license, and OpenSSF checks; only its plat
 vulnerability decision is disabled in favor of the target-aware OSV step in the same read-only job.
 No advisory exception, ignore list, warning mode, universal-Cargo-lock scan, or lowered threshold is
 permitted.
+
+Dependency Review's license parser cannot represent the SPDX expression
+`Apache-2.0 WITH LLVM-exception` even though that expression is already accepted by the
+repository-owned dependency policy. The workflow therefore carries one exact package-URL exception,
+`pkg:cargo/target-lexicon@0.12.16`, for that already-reviewed locked package. Contract checks reject
+removal, version drift, or any additional package exception; the general license allowlist, scope,
+OpenSSF, and target-aware vulnerability controls remain unchanged.
 
 Tauri 2.11.5 reaches `urlpattern` 0.3.0 through `tauri-utils` 2.9.3 on macOS arm64. That frozen stack
 currently retains five visible RustSec informational-unmaintained signals with no patched version:

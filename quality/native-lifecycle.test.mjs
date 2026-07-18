@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 
-import { runPackagedLifecycle } from "./native-lifecycle.mjs";
+import {
+  FUNCTIONAL_ACKNOWLEDGEMENT_WATCHDOG_MS,
+  SHUTDOWN_BUDGET_MS,
+  runPackagedLifecycle,
+} from "./native-lifecycle.mjs";
 
 class Stream extends EventEmitter {
   setEncoding() {}
@@ -39,6 +43,67 @@ function fixture({ descendantCount = 0, descendantCounts, terminate } = {}) {
 function acknowledge(child) {
   child.stderr.emit("data", "keiko-native-health-ack/v1 sequence=2\n");
 }
+
+test("functional acknowledgement and shutdown use separate exact budgets", async () => {
+  assert.equal(FUNCTIONAL_ACKNOWLEDGEMENT_WATCHDOG_MS, 30_000);
+  assert.equal(SHUTDOWN_BUDGET_MS, 5_000);
+
+  for (const acknowledgementAt of [5_001, 30_000]) {
+    let now = 0;
+    const scheduled = [];
+    const timers = {
+      clearTimeout() {},
+      setTimeout(_callback, timeout) {
+        scheduled.push(timeout);
+        return scheduled.length;
+      },
+    };
+    const { calls, child, control } = fixture();
+    const pending = runPackagedLifecycle({
+      clock: { now: () => now },
+      executable: "/package/app",
+      packageRoot: "/package",
+      processControl: control,
+      timers,
+    });
+    now = acknowledgementAt;
+    acknowledge(child);
+    assert.deepEqual(await pending, {
+      acknowledgementMs: acknowledgementAt,
+      cleanupOwnedDescendants: 0,
+      shutdownMs: 0,
+    });
+    assert.equal(scheduled[0], FUNCTIONAL_ACKNOWLEDGEMENT_WATCHDOG_MS);
+    assert.ok(
+      calls.some(
+        (call) => call[0] === "terminate" && call[2] === SHUTDOWN_BUDGET_MS,
+      ),
+    );
+  }
+});
+
+test("missing acknowledgement fails closed at the functional watchdog", async () => {
+  const scheduled = [];
+  const timers = {
+    clearTimeout() {},
+    setTimeout(callback, timeout) {
+      scheduled.push(timeout);
+      queueMicrotask(callback);
+      return scheduled.length;
+    },
+  };
+  const { control } = fixture();
+  await assert.rejects(
+    runPackagedLifecycle({
+      executable: "/package/app",
+      packageRoot: "/package",
+      processControl: control,
+      timers,
+    }),
+    /acknowledgement timed out/u,
+  );
+  assert.equal(scheduled[0], FUNCTIONAL_ACKNOWLEDGEMENT_WATCHDOG_MS);
+});
 
 test("lifecycle binds normal quit and cleanup to the spawned exact PID", async () => {
   const { calls, child, control } = fixture();
@@ -147,10 +212,10 @@ test("remaining owned descendants fail closed when cleanup cannot converge", asy
     processControl: control,
   });
   acknowledge(child);
-  await assert.rejects(pending, /cleanup did not converge/u);
+  await assert.rejects(pending, /cleanup-non-convergent/u);
 });
 
-test("cleanup failure never replaces the primary lifecycle failure", async () => {
+test("primary and cleanup failures retain both bounded closed classes", async () => {
   const { child, control } = fixture({ descendantCount: 1 });
   const pending = runPackagedLifecycle({
     executable: "/package/app",
@@ -159,7 +224,12 @@ test("cleanup failure never replaces the primary lifecycle failure", async () =>
   });
   child.exitCode = 2;
   child.emit("exit", 2, null);
-  await assert.rejects(pending, /before acknowledgement \(status:2\)/u);
+  await assert.rejects(pending, (error) => {
+    assert.match(error.message, /pre-acknowledgement-exit/u);
+    assert.match(error.message, /cleanup-non-convergent/u);
+    assert.doesNotMatch(error.message, /status:2/u);
+    return true;
+  });
 });
 
 test("nonzero and signalled leader exits never become normal shutdown", async () => {

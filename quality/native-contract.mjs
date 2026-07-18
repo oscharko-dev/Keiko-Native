@@ -1,4 +1,5 @@
 import * as closed from "./native-package-policy.mjs";
+import { FUNCTIONAL_ACKNOWLEDGEMENT_WATCHDOG_MS } from "./native-lifecycle.mjs";
 
 export function redactionMatches(value) {
   const denied = [
@@ -362,7 +363,7 @@ export function evidenceFailures(evidence, expected) {
   if (
     !Number.isSafeInteger(evidence.acknowledgementMs) ||
     evidence.acknowledgementMs < 0 ||
-    evidence.acknowledgementMs > 5000
+    evidence.acknowledgementMs > FUNCTIONAL_ACKNOWLEDGEMENT_WATCHDOG_MS
   )
     failures.push("evidence-acknowledgement-duration");
   if (

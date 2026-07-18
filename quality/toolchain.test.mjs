@@ -1,12 +1,20 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync, realpathSync, statSync } from "node:fs";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import test from "node:test";
 
 import {
+  enforceExactToolchain,
   exactToolchainFailures,
   workflowToolchainFailures,
 } from "./toolchain.mjs";
@@ -100,6 +108,111 @@ test("exact toolchain contract accepts only Node 24.18.0 and npm 11.16.0", () =>
         ...mutation,
       }).length > 0,
     );
+  }
+  assert.deepEqual(
+    exactToolchainFailures({
+      nodeVersion: "24.18.0",
+      npmConfig: "engine-strict=true\r\n",
+      npmVersion: "11.16.0",
+      packageContract: exactPackage,
+    }),
+    [],
+  );
+  for (const npmConfig of [
+    "engine-strict=true\r",
+    "engine-strict=true \n",
+    "engine-strict=true\r\nextra=true\r\n",
+  ]) {
+    assert.ok(
+      exactToolchainFailures({
+        nodeVersion: "24.18.0",
+        npmConfig,
+        npmVersion: "11.16.0",
+        packageContract: exactPackage,
+      }).includes("npm-engine-strict"),
+    );
+  }
+});
+
+test("Windows setup-node layout invokes only the exact bundled npm CLI", async () => {
+  const root = await mkdtemp(join(tmpdir(), "keiko-windows-toolchain-"));
+  try {
+    const node = join(root, "node.exe");
+    const npmRoot = join(root, "node_modules/npm");
+    const npmCli = join(npmRoot, "bin/npm-cli.js");
+    const packagePath = join(root, "repository-package.json");
+    const npmConfigPath = join(root, ".npmrc");
+    await mkdir(join(npmRoot, "bin"), { recursive: true });
+    await writeFile(node, "fixture");
+    await writeFile(npmCli, "fixture");
+    await writeFile(
+      join(npmRoot, "package.json"),
+      JSON.stringify({
+        bin: { npm: "bin/npm-cli.js" },
+        name: "npm",
+        version: "11.16.0",
+      }),
+    );
+    await writeFile(packagePath, JSON.stringify(exactPackage));
+    await writeFile(npmConfigPath, "engine-strict=true\r\n");
+    const calls = [];
+    enforceExactToolchain({
+      execPath: node,
+      nodeVersion: "24.18.0",
+      npmConfigPath,
+      packagePath,
+      platform: "win32",
+      run: (...args) => {
+        calls.push(args);
+        return { error: undefined, status: 0, stdout: "11.16.0\r\n" };
+      },
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(realpathSync(calls[0][0]), realpathSync(node));
+    assert.deepEqual(calls[0][1], [realpathSync(npmCli), "--version"]);
+    assert.deepEqual(calls[0][2].env, {});
+    assert.equal(calls[0][2].shell, false);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("missing or semantically drifted bundled npm fails before spawn", async () => {
+  const root = await mkdtemp(join(tmpdir(), "keiko-bundled-npm-"));
+  try {
+    const node = join(root, "node.exe");
+    const npmRoot = join(root, "node_modules/npm");
+    const npmCli = join(npmRoot, "bin/npm-cli.js");
+    await mkdir(join(npmRoot, "bin"), { recursive: true });
+    await writeFile(node, "fixture");
+    await writeFile(npmCli, "fixture");
+    for (const packageContract of [
+      { bin: { npm: "bin/npm-cli.js" }, name: "owned", version: "11.16.0" },
+      { bin: { npm: "bin/npm-cli.js" }, name: "npm", version: "11.16.1" },
+      { bin: { npm: "other.js" }, name: "npm", version: "11.16.0" },
+    ]) {
+      await writeFile(
+        join(npmRoot, "package.json"),
+        JSON.stringify(packageContract),
+      );
+      let invoked = false;
+      assert.throws(
+        () =>
+          enforceExactToolchain({
+            execPath: node,
+            nodeVersion: "24.18.0",
+            platform: "win32",
+            run: () => {
+              invoked = true;
+              return { status: 0, stdout: "11.16.0" };
+            },
+          }),
+        /bundled-npm/u,
+      );
+      assert.equal(invoked, false);
+    }
+  } finally {
+    await rm(root, { force: true, recursive: true });
   }
 });
 

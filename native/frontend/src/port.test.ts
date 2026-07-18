@@ -124,6 +124,7 @@ describe("renderer health port", () => {
         sequence: 2,
       },
     ]);
+    expect(requests.map(({ timeoutMs }) => timeoutMs)).toEqual([1000, 1000]);
   });
 
   it("sends only the closed cancellation request when aborted", async () => {

@@ -723,6 +723,31 @@ test("rejects temporary experiment source during bootstrap", async () => {
   }
 });
 
+test("root npm configuration accepts only exact LF or CRLF content", async () => {
+  const root = await fixtureRepository();
+  try {
+    const npmConfig = join(root, ".npmrc");
+    await writeFile(npmConfig, "engine-strict=true\r\n");
+    assert.doesNotMatch(
+      (await validateRepository(root)).failures.join("\n"),
+      /Root npm configuration/u,
+    );
+    for (const invalid of [
+      "engine-strict=true\r",
+      "engine-strict=true \r\n",
+      "engine-strict=true\r\nextra=true\r\n",
+    ]) {
+      await writeFile(npmConfig, invalid);
+      assert.match(
+        (await validateRepository(root)).failures.join("\n"),
+        /Root npm configuration/u,
+      );
+    }
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
 test("fails closed when an applicable CI job becomes dev-only", async () => {
   const root = await fixtureRepository();
   try {
@@ -1219,6 +1244,7 @@ test("dependency review closes target-aware vulnerability and license policy", (
     "          allow-licenses: >-",
     "            0BSD, Apache-2.0, BSD-2-Clause, BSD-3-Clause, BlueOak-1.0.0, CC-BY-4.0,",
     "            CC0-1.0, ISC, MIT, MPL-2.0, Python-2.0, Unicode-3.0, Unlicense, WTFPL, Zlib",
+    "          allow-dependencies-licenses: pkg:cargo/target-lexicon@0.12.16",
     "          retry-on-snapshot-warnings: true",
   ].join("\n");
   assert.deepEqual(dependencyReviewWorkflowFailures(valid), []);
@@ -1240,6 +1266,15 @@ test("dependency review closes target-aware vulnerability and license policy", (
     valid.replace("Unicode-3.0, ", ""),
     valid.replace(", Zlib", ""),
     valid.replace("Zlib", "Zlib-plus"),
+    valid.replace(
+      "          allow-dependencies-licenses: pkg:cargo/target-lexicon@0.12.16\n",
+      "",
+    ),
+    valid.replace("target-lexicon@0.12.16", "target-lexicon@0.12.15"),
+    valid.replace(
+      "target-lexicon@0.12.16",
+      "target-lexicon@0.12.16,pkg:cargo/owned@1.0.0",
+    ),
   ]) {
     assert.ok(dependencyReviewWorkflowFailures(mutation).length > 0);
   }

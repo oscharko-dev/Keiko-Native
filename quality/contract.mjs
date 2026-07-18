@@ -2,7 +2,10 @@ import { access, readFile, readdir } from "node:fs/promises";
 import { extname, join, relative, sep } from "node:path";
 
 import { canonicalCoverageCommand } from "./coverage-reporter.mjs";
-import { workflowToolchainFailures } from "./toolchain.mjs";
+import {
+  canonicalLineEndings,
+  workflowToolchainFailures,
+} from "./toolchain.mjs";
 import { nativeMatrixCommandFailures } from "./workflow-structure.mjs";
 import { requiredGovernedWorkflowJobs } from "./workflow-job-contracts.mjs";
 
@@ -802,7 +805,7 @@ async function sourceRootFailures(root, manifest) {
 
 async function npmConfigurationFailures(root, files) {
   if (!files.includes(".npmrc")) return [];
-  return (await readFile(join(root, ".npmrc"), "utf8")) ===
+  return canonicalLineEndings(await readFile(join(root, ".npmrc"), "utf8")) ===
     "engine-strict=true\n"
     ? []
     : ["Root npm configuration must contain only engine-strict=true."];
@@ -988,6 +991,9 @@ export function dependencyReviewWorkflowFailures(workflow) {
     .map((license) => license.trim())
     .filter(Boolean)
     .toSorted();
+  const dependencyLicenseExceptions = lines.filter((line) =>
+    line.trim().startsWith("allow-dependencies-licenses:"),
+  );
   const failures = [];
   if (severity.length !== 1)
     failures.push("Dependency Review severity must be exactly moderate.");
@@ -1024,6 +1030,15 @@ export function dependencyReviewWorkflowFailures(workflow) {
   )
     failures.push(
       "Dependency Review license allowlist is not the exact accepted set.",
+    );
+  if (
+    JSON.stringify(dependencyLicenseExceptions.map((line) => line.trim())) !==
+    JSON.stringify([
+      "allow-dependencies-licenses: pkg:cargo/target-lexicon@0.12.16",
+    ])
+  )
+    failures.push(
+      "Dependency Review dependency license exception must be the exact accepted target-lexicon purl.",
     );
   return failures;
 }

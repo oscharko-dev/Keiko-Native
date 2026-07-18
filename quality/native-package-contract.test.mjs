@@ -287,6 +287,12 @@ test("evidence schema and redaction fail closed", () => {
     npmLockSha256: evidence.npmLockSha256,
   };
   assert.deepEqual(evidenceFailures(evidence, bindings), []);
+  for (const acknowledgementMs of [5_001, 30_000]) {
+    assert.deepEqual(
+      evidenceFailures({ ...evidence, acknowledgementMs }, bindings),
+      [],
+    );
+  }
   for (const mutation of [
     { ...evidence, extra: true },
     { ...evidence, schema: "other" },
@@ -302,7 +308,7 @@ test("evidence schema and redaction fail closed", () => {
       ...evidence,
       boundedReasonCodes: [...evidence.boundedReasonCodes, "extra"],
     },
-    { ...evidence, acknowledgementMs: 5001 },
+    { ...evidence, acknowledgementMs: 30_001 },
     { ...evidence, shutdownMs: 1.5 },
     { ...evidence, cleanupOwnedDescendants: 1 },
     { ...evidence, redaction: "open" },
