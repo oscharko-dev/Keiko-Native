@@ -23,6 +23,7 @@ import { semanticIssueFingerprint } from "./issue-contract.mjs";
 const lifecycleActivationEnabled = "enabled";
 const pullRequestContractSuccess = "success";
 const githubRequest = githubRequestFor("keiko-native-issue-lifecycle");
+const assignmentClaimPermissions = new Set(["admin", "maintain", "write"]);
 const READY = LIFECYCLE_STATES[2];
 const PR_OPEN = LIFECYCLE_STATES[4];
 const REVIEW = LIFECYCLE_STATES[5];
@@ -94,7 +95,7 @@ function assignedLogins(issue) {
   );
 }
 
-function derivedAssignmentClaim(event, issue) {
+function assignmentClaimCandidate(event, issue) {
   const actor = event?.sender?.login;
   const assignee = event?.assignee?.login;
   if (typeof actor !== "string" || typeof assignee !== "string")
@@ -104,6 +105,30 @@ function derivedAssignmentClaim(event, issue) {
     id: `${issueIdentity(issue)}:assignment:${assignee}`,
     validated: true,
   };
+}
+
+async function actorCanClaimAssignment(repository, actor, request) {
+  if (typeof actor !== "string" || actor.trim() === "") return false;
+  try {
+    const result = await request(
+      `/repos/${repository}/collaborators/${encodeURIComponent(actor)}/permission`,
+    );
+    return assignmentClaimPermissions.has(result?.permission);
+  } catch {
+    return false;
+  }
+}
+
+async function derivedAssignmentClaim({ event, issue, repository, request }) {
+  const claim = assignmentClaimCandidate(event, issue);
+  if (claim === undefined) return undefined;
+  return (await actorCanClaimAssignment(
+    repository,
+    event.sender.login,
+    request,
+  ))
+    ? claim
+    : undefined;
 }
 
 function derivedAssignmentRelease(event, issue) {
@@ -228,7 +253,7 @@ function desiredStateForClaimEvent(
   issue,
 ) {
   if (event?.action === "assigned") {
-    const claim = event.claim ?? derivedAssignmentClaim(event, issue);
+    const claim = event.claim;
     const result = evaluateClaimPrecondition({
       claim,
       readiness,
@@ -416,6 +441,15 @@ async function eventWithDerivedEvidence({
   request,
 }) {
   let evidencedEvent = event;
+  if (event?.action === "assigned" && event.claim === undefined) {
+    const claim = await derivedAssignmentClaim({
+      event,
+      issue,
+      repository,
+      request,
+    });
+    if (claim !== undefined) evidencedEvent = { ...evidencedEvent, claim };
+  }
   if (event?.action === "unassigned" && event.hasOpenPullRequest === undefined)
     evidencedEvent = {
       ...evidencedEvent,
@@ -517,7 +551,7 @@ function issueIdentity(issue) {
 function readinessEvent(event) {
   if (event?.pull_request !== undefined) return { action: "pull_request" };
   return event.action === "edited"
-    ? { action: "edited", editKind: event.editKind ?? "unknown" }
+    ? { action: "edited", editKind: event.editKind }
     : { action: event.action };
 }
 
