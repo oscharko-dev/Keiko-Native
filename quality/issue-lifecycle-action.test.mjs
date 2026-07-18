@@ -358,6 +358,98 @@ test("reconciles label-less reopen and overlapping requested labels", async (t) 
   });
 });
 
+test("requires current readiness before ready label transitions", async (t) => {
+  const readyTransitionEvent = {
+    action: "labeled",
+    expectedReadinessCommentId: 101,
+    label: { name: "status: ready" },
+    issue: { number: 27 },
+    transitionRequest: {
+      actorRole: "planner",
+      eventIdentity: "label-event-27",
+      requestedSource: "status: triaged",
+    },
+  };
+  const previousActivation = process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
+  t.after(() => {
+    if (previousActivation === undefined)
+      delete process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
+    else process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = previousActivation;
+  });
+
+  process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = "enabled";
+  const missingReadiness = requestMock(t, {
+    comments: [],
+    issueLabels: ["status: triaged", "status: ready"],
+  });
+  const missingReadinessResult = await runIssueLifecycleAction({
+    event: readyTransitionEvent,
+    request: missingReadiness.request,
+  });
+  assert.equal(missingReadinessResult.outcome, "failed");
+  assert.deepEqual(missingReadinessResult.failures, [
+    "current_readiness_required",
+  ]);
+
+  process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = "disabled";
+  const currentReadiness = requestMock(t, {
+    issueLabels: ["status: triaged", "status: ready"],
+  });
+  const currentReadinessResult = await runIssueLifecycleAction({
+    event: readyTransitionEvent,
+    request: currentReadiness.request,
+  });
+  assert.equal(currentReadinessResult.outcome, "planned");
+  assert.equal(currentReadinessResult.desiredState, "status: ready");
+  assert.deepEqual(currentReadinessResult.plan, {
+    apply: [],
+    failures: [],
+    ok: true,
+    remove: ["status: triaged"],
+  });
+});
+
+test("fails closed when provider issue identity is unavailable", async (t) => {
+  const missingInitialIdentity = requestMock(t);
+  await assert.rejects(
+    runIssueLifecycleAction({
+      event: reopenedEvent,
+      request: async (path, options) =>
+        path.endsWith("/issues/27")
+          ? { ...issue(["status: ready"]), id: undefined, node_id: undefined }
+          : missingInitialIdentity.request(path, options),
+    }),
+    /Reloaded issue response is malformed/u,
+  );
+
+  let reloaded = false;
+  const missingReadbackIdentity = requestMock(t, {
+    issueLabels: ["status: ready"],
+  });
+  const previousActivation = process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
+  process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = "enabled";
+  t.after(() => {
+    if (previousActivation === undefined)
+      delete process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
+    else process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = previousActivation;
+  });
+  await assert.rejects(
+    runIssueLifecycleAction({
+      event: reopenedEvent,
+      request: async (path, options) => {
+        if (path.includes("/issues/27") && reloaded) {
+          const { id, node_id, ...withoutIdentity } = issue(["status: new"]);
+          return withoutIdentity;
+        }
+        const response = await missingReadbackIdentity.request(path, options);
+        if (options?.method === "POST") reloaded = true;
+        return response;
+      },
+    }),
+    /Reloaded issue response is malformed/u,
+  );
+});
+
 test("runs the CLI wrapper with a hermetic event file", async (t) => {
   const eventPath = join(
     await mkdtemp(join(tmpdir(), "keiko-lifecycle-")),

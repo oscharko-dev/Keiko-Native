@@ -17,6 +17,7 @@ import { semanticIssueFingerprint } from "./issue-contract.mjs";
 
 const lifecycleActivationEnabled = "enabled";
 const githubRequest = githubRequestFor("keiko-native-issue-lifecycle");
+const READY = LIFECYCLE_STATES[2];
 
 function labelNames(issue) {
   return Array.isArray(issue?.labels)
@@ -86,15 +87,15 @@ function unauthorizedRawLabelResult(enabled) {
     : { outcome: "ignored", reason: "raw_lifecycle_label_event" };
 }
 
-function desiredStateForLabelEvent(event, currentState, enabled) {
+function desiredStateForLabelEvent(event, currentState, enabled, readiness) {
   const requestedTarget = labelRequestTarget(event);
   if (requestedTarget === undefined) return undefined;
   if (!hasTransitionRequest(event)) return unauthorizedRawLabelResult(enabled);
-  const failures = transitionRequestFailures(
-    event,
-    currentState,
-    requestedTarget,
-  );
+  const failures = [
+    ...transitionRequestFailures(event, currentState, requestedTarget),
+  ];
+  if (requestedTarget === READY && readiness.current !== true)
+    failures.push("current_readiness_required");
   return failures.length > 0
     ? { failures, outcome: "failed" }
     : { desiredState: requestedTarget };
@@ -120,7 +121,7 @@ function desiredStateForEvent(event, readiness, currentState, enabled, issue) {
   if (event?.action === "edited" && readiness.current !== true)
     return { desiredState: LIFECYCLE_STATES[0] };
   return (
-    desiredStateForLabelEvent(event, currentState, enabled) ??
+    desiredStateForLabelEvent(event, currentState, enabled, readiness) ??
     desiredStateForClosure(event, issue) ??
     {}
   );
@@ -158,7 +159,11 @@ async function allProviderLabels(repository, request) {
 
 async function reloadIssue(repository, issueNumber, request) {
   const issue = await request(`/repos/${repository}/issues/${issueNumber}`);
-  if (issue?.number !== issueNumber || typeof issue?.title !== "string")
+  if (
+    issue?.number !== issueNumber ||
+    typeof issue?.title !== "string" ||
+    issueIdentity(issue) === undefined
+  )
     throw new Error("Reloaded issue response is malformed.");
   return issue;
 }
@@ -206,7 +211,14 @@ function verifyLifecycleLabelRemoval({
 }
 
 function issueIdentity(issue) {
-  return issue.node_id ?? String(issue.id);
+  if (typeof issue?.node_id === "string" && issue.node_id.trim() !== "")
+    return issue.node_id;
+  if (
+    Number.isInteger(issue?.id) ||
+    (typeof issue?.id === "string" && issue.id.trim() !== "")
+  )
+    return String(issue.id);
+  return undefined;
 }
 
 function readinessEvent(event) {
