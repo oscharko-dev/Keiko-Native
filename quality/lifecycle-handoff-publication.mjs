@@ -13,6 +13,7 @@ const same = isDeepStrictEqual;
 const record = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const text = (value) => typeof value === "string" && value.length > 0;
+const compareText = (left, right) => left.localeCompare(right);
 const reject = (code) => ({ code, message, ok: false });
 
 function classificationMatches(classification, accepted) {
@@ -73,7 +74,7 @@ function resultMatches(result, context, generation) {
 function uniqueResultIdentities(generation) {
   const results = contexts.map((context) => generation.results[context]);
   const unique = (select) =>
-    new Set(results.map(select)).size === contexts.length;
+    new Set(results.map((result) => select(result))).size === contexts.length;
   return (
     unique((result) => result.producer) &&
     unique((result) => result.workflowRun) &&
@@ -84,7 +85,12 @@ function uniqueResultIdentities(generation) {
 function authenticatedResults(input, accepted) {
   const generation = input.generation;
   if (!generationMatches(input)) return false;
-  if (!same(Object.keys(generation.results).sort(), [...contexts].sort()))
+  if (
+    !same(
+      Object.keys(generation.results).sort(compareText),
+      [...contexts].sort(compareText),
+    )
+  )
     return false;
   if (
     !contexts.every((context) =>

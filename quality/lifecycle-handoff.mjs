@@ -25,6 +25,8 @@ const text = (value) => typeof value === "string" && value.length > 0;
 const record = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const same = isDeepStrictEqual;
+const compareText = (left, right) => left.localeCompare(right);
+const compareDiff = (left, right) => compareText(left.path, right.path);
 function receipt(value) {
   return (
     record(value) && text(value.path) && /^[0-9a-f]{64}$/u.test(value.digest)
@@ -56,9 +58,7 @@ function diffIdentity(diff) {
       previous,
       status,
     }))
-    .toSorted((left, right) =>
-      left.path < right.path ? -1 : left.path === right.path ? 0 : 1,
-    );
+    .toSorted(compareDiff);
 }
 function normalBinding(authority, binding, target, diff) {
   if (!text(authority.scope)) return reject("invalid_normal_scope");
@@ -164,7 +164,10 @@ function generationResultsShape(generation, classification, contexts, request) {
     generation.lane === classification.binding.lane,
     generation.submode === (classification.binding.submode ?? null),
     record(generation.results),
-    same(Object.keys(generation.results).toSorted(), [...contexts].toSorted()),
+    same(
+      Object.keys(generation.results).toSorted(compareText),
+      [...contexts].toSorted(compareText),
+    ),
     validProducerMap(generation.expectedProducers, contexts),
     same(request?.classification, classification),
     matchesCurrentLifecycleGeneration(generation, request),
