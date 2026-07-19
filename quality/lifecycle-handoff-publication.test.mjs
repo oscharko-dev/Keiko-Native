@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { issueSchemaForLabels } from "./issue-contract.mjs";
 import { coalesceLifecycleInputGeneration } from "./lifecycle-handoff-generation.mjs";
 import {
   evaluatePublicationLifecycleHandoff,
@@ -8,7 +9,6 @@ import {
 import { classifyLifecycleHandoffLane } from "./lifecycle-handoff.mjs";
 import { verifyPublicationCandidate } from "./publication-candidate.mjs";
 import { contractSha256 } from "./repository-contract.mjs";
-
 const repository = "oscharko-dev/Keiko-Native";
 const base = "1".repeat(40);
 const head = "2".repeat(40);
@@ -24,9 +24,13 @@ const producers = {
   "PR contract": "pr-contract.yml@protected-dev",
 };
 const text = (value) => ({ type: "string", value });
-
+const taskHeadings = issueSchemaForLabels(["type: task"]).requiredHeadings;
+const completeSection =
+  "- Contract version: `v3`\n- Applicability: Required\n- Actor: Developer\n- [x] Scope and verification are complete.\n\n```text\nnode --test quality/lifecycle-handoff-publication.test.mjs\n```";
+// prettier-ignore
+const contractBody = taskHeadings.map((heading) => `## ${heading}\n\n${heading === "Acceptance criteria" ? "- [ ] AC1 — Candidate is accepted." : completeSection}`).join("\n\n");
 function ordinaryCandidate() {
-  const contractBytes = Buffer.from("accepted issue contract\n");
+  const contractBytes = Buffer.from(contractBody);
   const candidate = {
     digest: contractSha256(contractBytes).digest,
     mode: "100644",
@@ -106,7 +110,8 @@ function rewriteReceipt(input, mutate) {
 function reversedMultiCandidate() {
   const input = ordinaryCandidate();
   const path = "docs/contracts/task-31-v3-r1.md";
-  const bytes = Buffer.from("second accepted issue contract\n");
+  // prettier-ignore
+  const bytes = Buffer.from(contractBody.replace("Candidate", "Second candidate"));
   const digest = contractSha256(bytes).digest;
   input.diff.files.unshift({ mode: "100644", path, status: "added" });
   input.newlyAdded.entries.push({ bytes, mode: "100644", path });
@@ -221,10 +226,7 @@ function handoffInput(candidate) {
   };
   let state = coalesceLifecycleInputGeneration(request);
   for (const context of contexts) {
-    const output =
-      context === "Contract publication"
-        ? structuredClone(accepted)
-        : { context, ok: true };
+    const output = structuredClone(accepted);
     state = coalesceLifecycleInputGeneration({
       ...request,
       completion: completion(state, context, output),
@@ -238,7 +240,6 @@ function handoffInput(candidate) {
     generationRequest: request,
   };
 }
-
 test("re-evaluates and accepts the exact ordinary B2 candidate and matrix", () => {
   const candidate = reversedMultiCandidate();
   const accepted = verifyPublicationCandidate(candidate);
@@ -319,15 +320,14 @@ test("rejects fabricated output, stale generations, and identity replay", () => 
     return evaluatePublicationLifecycleHandoff(input);
   };
   for (const [index, result] of [
-    mutate((input) => {
-      input.generation.results["Contract publication"].output = {
-        binding: {
-          ...input.classification.binding.candidate,
-          observations: [],
-        },
-        ok: true,
-      };
-    }),
+    ...contexts.flatMap((context) => [
+      mutate((input) => {
+        input.generation.results[context].output = { context, ok: true };
+      }),
+      mutate((input) => {
+        input.generation.results[context].output.binding.observations = [];
+      }),
+    ]),
     mutate(
       (input) =>
         (input.generation.results["Contract publication"].generation =

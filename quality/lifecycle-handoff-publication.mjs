@@ -56,7 +56,7 @@ function generationMatches(input) {
   );
 }
 
-function resultMatches(result, context, generation) {
+function resultMatches(result, context, generation, accepted) {
   result = Object(result);
   return [
     result.conclusion === "success",
@@ -69,6 +69,7 @@ function resultMatches(result, context, generation) {
     text(result.result),
     Object(result.output).ok === true,
     Object(result.output).readinessClaim !== true,
+    same(result.output, accepted),
   ].every(Boolean);
 }
 
@@ -95,12 +96,11 @@ function authenticatedResults(input, accepted) {
     return false;
   if (
     !contexts.every((context) =>
-      resultMatches(generation.results[context], context, generation),
+      resultMatches(generation.results[context], context, generation, accepted),
     )
   )
     return false;
-  if (!uniqueResultIdentities(generation)) return false;
-  return same(generation.results["Contract publication"].output, accepted);
+  return uniqueResultIdentities(generation);
 }
 
 function successfulMatrix(classification, accepted) {
