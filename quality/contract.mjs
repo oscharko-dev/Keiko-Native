@@ -9,6 +9,20 @@ const sourceSpecificationIdentity = {
   version: "0.6",
 };
 
+const repositoryControlPlaneModules = Object.freeze([
+  "quality/publication-contract-schema.mjs",
+  "quality/repository-contract-chain.mjs",
+  "quality/repository-contract.mjs",
+  "quality/publication-candidate.mjs",
+  "quality/publication-contract.mjs",
+  "quality/lifecycle-generation.mjs",
+  "quality/lifecycle-handoff-generation.mjs",
+  "quality/lifecycle-handoff-publication.mjs",
+  "quality/lifecycle-handoff.mjs",
+  "quality/merge-group.mjs",
+  "quality/epic-merge-broker.mjs",
+]);
+
 const requiredFiles = [
   ".gitar/review/00-governance-and-delivery.md",
   ".gitar/review/10-security-and-trust-boundaries.md",
@@ -22,9 +36,11 @@ const requiredFiles = [
   ".github/pull_request_template.md",
   ".github/workflows/ci.yml",
   ".github/workflows/codeql.yml",
+  ".github/workflows/contract-publication.yml",
   ".github/workflows/dependency-review.yml",
   ".github/workflows/issue-lifecycle.yml",
   ".github/workflows/issue-readiness.yml",
+  ".github/workflows/merge-group.yml",
   ".github/workflows/mutation-security.yml",
   ".github/workflows/osv-scanner.yml",
   ".github/workflows/pr-contract.yml",
@@ -51,6 +67,7 @@ const requiredFiles = [
   "quality/markdown-contract.mjs",
   "quality/pr-contract-action.mjs",
   "quality/pr-contract.mjs",
+  ...repositoryControlPlaneModules,
   "socket.yml",
   "sonar-project.properties",
 ];
@@ -165,6 +182,59 @@ const lifecycleCoverageIncludes = [
   "quality/issue-lifecycle.mjs",
   "quality/issue-lifecycle-readiness.mjs",
   "quality/issue-lifecycle-action.mjs",
+];
+
+const repositoryControlPlaneCoverageIncludes = repositoryControlPlaneModules;
+const requiredCoverageArguments = Object.freeze([
+  "--test-coverage-branches=85",
+  "--test-coverage-functions=85",
+  "--test-coverage-lines=85",
+  "--test-reporter=./quality/coverage-reporter.mjs",
+  "quality/*.test.mjs",
+]);
+const coverageArgumentPatterns = Object.freeze([
+  /^--test-coverage-include=quality\/[A-Za-z0-9._-]+\.mjs$/u,
+  /^--test-coverage-(?:branches|functions|lines)=85$/u,
+  /^--test-reporter=\.\/quality\/coverage-reporter\.mjs$/u,
+  /^quality\/\*\.test\.mjs$/u,
+]);
+
+const inertWorkflowMarkers = [
+  "permissions: {}",
+  "if: ${{ false }}",
+  "contents: read",
+  "ref: dev",
+  "persist-credentials: false",
+  'node-version: "24.18.0"',
+  "package-manager-cache: false",
+];
+
+const contractPublicationWorkflowMarkers = [
+  "name: Contract publication (inert)",
+  "workflow_dispatch:",
+  "KEIKO_CONTRACT_PUBLICATION_ACTIVATION: disabled",
+  "node --check quality/publication-contract.mjs",
+  "node --check quality/lifecycle-handoff-publication.mjs",
+];
+
+const mergeGroupWorkflowMarkers = [
+  "name: Merge group policy (inert)",
+  "merge_group:",
+  "types: [checks_requested]",
+  "workflow_dispatch:",
+  "KEIKO_EPIC_MERGE_AUTOMATION: disabled",
+  "KEIKO_MERGE_GROUP_ACTIVATION: disabled",
+  "node --check quality/merge-group.mjs",
+  "node --check quality/epic-merge-broker.mjs",
+];
+
+const activationRunbookMarkers = [
+  "## Pending contract-publication controls",
+  "Contract publication remains disabled",
+  "The `Contract publication` context is not enrolled as",
+  "## Pending merge-queue and epic-merge controls",
+  "The merge queue remains disabled",
+  "Automated epic-branch merge remains disabled",
 ];
 
 const productiveExtensions = new Set([
@@ -589,17 +659,70 @@ async function lifecycleProjectionFailures(root, files) {
   );
 }
 
+function directNodeCoverageArguments(command) {
+  const arguments_ = command.trim().split(/\s+/u);
+  const directPrefix = ["node", "--test", "--experimental-test-coverage"];
+  const direct = directPrefix.every(
+    (value, index) => arguments_[index] === value,
+  );
+  const commandArguments = arguments_.slice(directPrefix.length);
+  const unique = new Set(commandArguments);
+  const allowed = commandArguments.every((value) =>
+    coverageArgumentPatterns.some((pattern) => pattern.test(value)),
+  );
+  const complete = requiredCoverageArguments.every((value) =>
+    unique.has(value),
+  );
+  return direct &&
+    unique.size === commandArguments.length &&
+    allowed &&
+    complete
+    ? new Set(arguments_)
+    : undefined;
+}
+
 async function coverageIncludeFailures(root, files) {
   if (!files.includes("package.json")) return [];
   const packageJson = await readJson(join(root, "package.json"));
   const coverage = packageJson.scripts?.coverage ?? "";
-  return lifecycleCoverageIncludes
+  const coverageArguments = directNodeCoverageArguments(coverage);
+  const shapeFailures =
+    coverageArguments === undefined
+      ? ["Coverage command must remain one direct Node test invocation."]
+      : [];
+  const missingLifecycle = lifecycleCoverageIncludes
     .filter(
-      (include) => !coverage.includes(`--test-coverage-include=${include}`),
+      (include) =>
+        !coverageArguments?.has(`--test-coverage-include=${include}`),
     )
     .map(
       (include) =>
         `Coverage command must include lifecycle control-plane module: ${include}.`,
+    );
+  const missingRepositoryControlPlane = repositoryControlPlaneCoverageIncludes
+    .filter(
+      (include) =>
+        !coverageArguments?.has(`--test-coverage-include=${include}`),
+    )
+    .map(
+      (include) =>
+        `Coverage command must include repository control-plane module: ${include}.`,
+    );
+  return [
+    ...shapeFailures,
+    ...missingLifecycle,
+    ...missingRepositoryControlPlane,
+  ];
+}
+
+async function activationRunbookFailures(root, files) {
+  const path = "docs/qa/repository-activation.md";
+  const runbook = await readText(root, files, path);
+  return activationRunbookMarkers
+    .filter((marker) => !runbook.includes(marker))
+    .map(
+      (marker) =>
+        `Activation runbook is missing pending control marker: ${marker}.`,
     );
 }
 
@@ -637,6 +760,7 @@ async function contractFailures(root, files, manifest) {
     ...(await lifecycleLinkFailures(root, files)),
     ...(await lifecycleProjectionFailures(root, files)),
     ...(await coverageIncludeFailures(root, files)),
+    ...(await activationRunbookFailures(root, files)),
     ...bootstrapFailures,
     ...(await sourceRootFailures(root, manifest)),
   ];
@@ -761,6 +885,72 @@ function workflowWritePermissions(workflow) {
     .filter((name) => name !== undefined);
 }
 
+function workflowEvents(workflow) {
+  const lines = workflow.split(/\r?\n/u);
+  const start = lines.findIndex((line) => line === "on:");
+  if (start === -1) return [];
+  const end = lines.findIndex(
+    (line, index) => index > start && /^\S[^:]*:/u.test(line),
+  );
+  return lines
+    .slice(start + 1, end === -1 ? lines.length : end)
+    .map((line) => /^  ([A-Za-z_][A-Za-z0-9_-]*):/u.exec(line)?.[1])
+    .filter((event) => event !== undefined);
+}
+
+function workflowJobs(workflow) {
+  const lines = workflow.split(/\r?\n/u);
+  const start = lines.findIndex((line) => line === "jobs:");
+  if (start === -1) return [];
+  return lines
+    .slice(start + 1)
+    .map((line) => /^  ([A-Za-z][A-Za-z0-9_-]*):\s*$/u.exec(line)?.[1])
+    .filter((job) => job !== undefined);
+}
+
+function workflowPermissionEntries(workflow) {
+  return workflow
+    .split(/\r?\n/u)
+    .map((line) =>
+      /^\s*([A-Za-z][A-Za-z-]*):\s*(read|write|write-all)\s*(?:#.*)?$/u.exec(
+        line,
+      ),
+    )
+    .filter((match) => match !== null)
+    .map((match) => `${match[1]}:${match[2]}`);
+}
+
+function workflowPermissionDeclarations(workflow) {
+  return workflow
+    .split(/\r?\n/u)
+    .filter((line) => line.trimStart().startsWith("permissions:"));
+}
+
+function workflowRunCommands(workflow) {
+  const lines = workflow.split(/\r?\n/u);
+  const commands = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = /^(\s*)(?:-\s*)?run:\s*(.*)$/u.exec(lines[index]);
+    if (match === null) continue;
+    if (match[2] !== "|") {
+      commands.push(match[2]);
+      continue;
+    }
+    const indentation = match[1].length;
+    for (index += 1; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (line.trim() === "") continue;
+      const currentIndentation = line.length - line.trimStart().length;
+      if (currentIndentation <= indentation) {
+        index -= 1;
+        break;
+      }
+      commands.push(line.trim());
+    }
+  }
+  return commands;
+}
+
 function issueLifecycleWorkflowFailures(workflow) {
   const failures = issueLifecycleMarkers
     .filter((marker) => !workflow.includes(marker))
@@ -820,6 +1010,141 @@ function pullRequestContractWorkflowFailures(workflow) {
   return [...markerFailures, ...unsafeFailures, ...branchFailures];
 }
 
+function inertControlWorkflowFailures(
+  name,
+  workflow,
+  markers,
+  expectedEvents,
+  expectedJob,
+  expectedCommands,
+) {
+  const markerFailures = [...inertWorkflowMarkers, ...markers]
+    .filter((marker) => !workflow.includes(marker))
+    .map((marker) => `${name} workflow is missing marker: ${marker}.`);
+  const writePermissions = [...new Set(workflowWritePermissions(workflow))];
+  if (writePermissions.length > 0)
+    markerFailures.push(
+      `${name} workflow must not request write permissions: ${writePermissions.join(", ")}.`,
+    );
+  const exactShape = [
+    [workflowEvents(workflow), expectedEvents, "event set"],
+    [workflowJobs(workflow), [expectedJob], "job set"],
+    [
+      workflowPermissionDeclarations(workflow),
+      ["permissions: {}", "    permissions:"],
+      "permission declarations",
+    ],
+    [workflowPermissionEntries(workflow), ["contents:read"], "permissions"],
+    [
+      workflow
+        .split(/\r?\n/u)
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith("if:")),
+      ["if: ${{ false }}"],
+      "job guard",
+    ],
+    [
+      workflow
+        .split(/\r?\n/u)
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith("ref:")),
+      ["ref: dev"],
+      "checkout ref",
+    ],
+    [
+      workflow
+        .split(/\r?\n/u)
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith("persist-credentials:")),
+      ["persist-credentials: false"],
+      "credential persistence",
+    ],
+    [
+      workflow
+        .split(/\r?\n/u)
+        .map(actionReference)
+        .filter((reference) => reference !== undefined),
+      [
+        "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+        "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
+      ],
+      "action set",
+    ],
+    [workflowRunCommands(workflow), expectedCommands, "command set"],
+  ];
+  markerFailures.push(
+    ...exactShape
+      .filter(
+        ([observed, expected]) =>
+          observed.some((value, index) => value !== expected[index]) ||
+          observed.length !== expected.length,
+      )
+      .map(
+        ([, , surface]) =>
+          `${name} workflow has unexpected ${surface}; inert shape must remain exact.`,
+      ),
+  );
+  if (!workflow.includes("    permissions:\n      contents: read\n    steps:"))
+    markerFailures.push(
+      `${name} workflow is missing the exact job permission block.`,
+    );
+  const unsafeMarkers = [
+    "Agent-Workflow-Setup",
+    "github.event.pull_request",
+    "github.head_ref",
+    "github.token",
+    "gh api",
+    "git clone",
+    "gh repo",
+    "repository:",
+    "curl ",
+    "wget ",
+    "npm ci",
+    "npm run",
+    "persist-credentials: true",
+    "permissions: read-all",
+    "permissions: write-all",
+    "secrets.",
+  ];
+  markerFailures.push(
+    ...unsafeMarkers
+      .filter((marker) => workflow.includes(marker))
+      .map(
+        (marker) =>
+          `${name} workflow contains unsafe marker or must not consult external orchestration: ${marker}.`,
+      ),
+  );
+  return markerFailures;
+}
+
+function contractPublicationWorkflowFailures(workflow) {
+  return inertControlWorkflowFailures(
+    "Contract publication",
+    workflow,
+    contractPublicationWorkflowMarkers,
+    ["workflow_dispatch"],
+    "validate",
+    [
+      "node --check quality/publication-contract.mjs",
+      "node --check quality/lifecycle-handoff-publication.mjs",
+    ],
+  );
+}
+
+function mergeGroupWorkflowFailures(workflow) {
+  return inertControlWorkflowFailures(
+    "Merge group",
+    workflow,
+    mergeGroupWorkflowMarkers,
+    ["merge_group", "workflow_dispatch"],
+    "evaluate",
+    [
+      "node --check quality/merge-group.mjs",
+      "node --check quality/epic-merge-broker.mjs",
+    ],
+  );
+}
+
 async function workflowFailures(root, manifest) {
   const workflowDirectory = join(root, ".github", "workflows");
   if (!(await exists(workflowDirectory)))
@@ -849,6 +1174,10 @@ async function workflowFailures(root, manifest) {
     ...pullRequestContractWorkflowFailures(
       workflows.get("pr-contract.yml") ?? "",
     ),
+    ...contractPublicationWorkflowFailures(
+      workflows.get("contract-publication.yml") ?? "",
+    ),
+    ...mergeGroupWorkflowFailures(workflows.get("merge-group.yml") ?? ""),
     ...(await productiveCommandFailures(root, ci, manifest)),
   ];
 }

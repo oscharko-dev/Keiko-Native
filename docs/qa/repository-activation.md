@@ -92,3 +92,28 @@ Record the issue, pull request, exact head, actor, result, and timestamp for eac
 
 Activate a status context as required only after the same producer has demonstrated both a failing
 negative case and a successful current-head case. Retain the probe links as the activation record.
+
+## Pending contract-publication controls
+
+Contract publication remains disabled. The inert workflow checks out only protected `dev` with
+non-persistent credentials, requests read-only contents access, and cannot run its job. It does not
+check out or execute pull-request content. The `Contract publication` context is not enrolled as
+required.
+
+Before a human activates publication, complete ADR-0003's negative and positive lane probes,
+authenticate the expected producer, prove exact-head and merge-group emission, and verify the
+signed receipt, isolated merge, actor, ancestry, tree, and exact-byte evidence. Activation must be
+a separate accepted change; do not turn the inert job on or add its context from this baseline.
+
+## Pending merge-queue and epic-merge controls
+
+The merge queue remains disabled until its human liveness and ordering probe passes. The inert
+merge-group workflow checks out only protected `dev` with non-persistent credentials, requests
+read-only contents access, and cannot run its job. It never executes constituent content.
+
+Automated epic-branch merge remains disabled until complete pagination, stable ordering, lock
+fences, dual-ref conditional rejection, and exact parent and outcome evidence are proven live. An
+unavailable, ambiguous, weak, or failed capability selects human-only child integration; it must
+not enable auto-merge or approximate the broker. Enrolling merge-group contexts, configuring the
+queue, granting the broker identity, or enabling either inert job requires a separate accepted
+human activation change.
