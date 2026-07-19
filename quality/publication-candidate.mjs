@@ -1,10 +1,18 @@
+import { TextDecoder } from "node:util";
+
+import { validateIssueContract } from "./issue-contract.mjs";
 import { classifyPublicationLane } from "./publication-contract.mjs";
 import {
   decodeSnapshotReceipt,
   samePublicationBytes,
   validateSnapshotReceipt,
 } from "./publication-contract-schema.mjs";
-import { contractSha256 } from "./repository-contract.mjs";
+import {
+  contractSha256,
+  parseContractPath,
+  parseQuarantineRecoveryDeclarations,
+  parseSupersessionDeclaration,
+} from "./repository-contract.mjs";
 
 const inputKeys = [
   "diff",
@@ -47,6 +55,8 @@ const manifestKeys = [
   "repository",
 ];
 const rejectionMessage = "Publication candidate evidence failed closed.";
+const candidateContractTitle = "Repository publication candidate contract";
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
 
 function reject(code) {
   return { ok: false, rejection: { code, message: rejectionMessage } };
@@ -160,8 +170,45 @@ function receiptContext(input, classification, entries) {
     return { failure: "receipt_pull_request_mismatch" };
   return { validation };
 }
+function candidateContentFailure(entry, observation) {
+  const parsed = parseContractPath(entry.path);
+  if (parsed.ok !== true || observation === undefined)
+    return "invalid_candidate_contract_identity";
+  let body;
+  try {
+    body = strictUtf8.decode(entry.bytes);
+  } catch {
+    return "invalid_candidate_contract_encoding";
+  }
+  const validation = validateIssueContract({
+    body,
+    labels: [`type: ${parsed.contract.type}`],
+    title: candidateContractTitle,
+  });
+  if (
+    validation.failures.length !== 0 ||
+    validation.kind !== parsed.contract.type
+  )
+    return "invalid_candidate_contract_schema";
+  if (validation.version !== `v${parsed.contract.version}`)
+    return "candidate_contract_version_mismatch";
+  const supersession = parseSupersessionDeclaration(body);
+  const recoveries = parseQuarantineRecoveryDeclarations(body);
+  if (supersession.ok !== true || recoveries.ok !== true)
+    return "invalid_candidate_contract_declarations";
+  return same(supersession.supersedes, observation.predecessor) &&
+    same(recoveries.recoveries, observation.recoveries)
+    ? undefined
+    : "candidate_contract_declaration_mismatch";
+}
 function candidateSetFailure(input, classification, validation, entries) {
   const candidates = validation.binding.candidates;
+  const observations = new Map(
+    validation.binding.observations.map((observation) => [
+      observation.candidatePath,
+      observation,
+    ]),
+  );
   const expectedPaths = [
     ...candidates.map((candidate) => candidate.path),
     input.receipt.path,
@@ -187,6 +234,11 @@ function candidateSetFailure(input, classification, validation, entries) {
       contractSha256(entry.bytes).digest !== candidate.digest
     )
       return "candidate_bytes_mismatch";
+    const content = candidateContentFailure(
+      entry,
+      observations.get(candidate.path),
+    );
+    if (content !== undefined) return content;
   }
   return undefined;
 }

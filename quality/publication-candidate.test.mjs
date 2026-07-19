@@ -1,21 +1,56 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { issueSchemaForLabels } from "./issue-contract.mjs";
 import { verifyPublicationCandidate } from "./publication-candidate.mjs";
 import {
   classifyPublicationLane,
   publicationResultMatrix,
 } from "./publication-contract.mjs";
 import { contractSha256 } from "./repository-contract.mjs";
-
 const repository = "oscharko-dev/Keiko-Native";
 const base = "1".repeat(40);
 const head = "2".repeat(40);
 const contractPath = "docs/contracts/task-30-v3-r1.md";
+const historyPath = "docs/contracts/task-30-v3-r3.md";
 const receiptPath = "docs/contracts/publications/pr-77.md";
 const fingerprint = "f".repeat(64);
+// prettier-ignore
+const predecessor = { digest: "a".repeat(64), path: "docs/contracts/task-30-v3-r1.md" };
+// prettier-ignore
+const recovery = { digest: "b".repeat(64), path: "docs/contracts/task-30-v3-r2.md" };
+const taskHeadings = issueSchemaForLabels(["type: task"]).requiredHeadings;
+
+function contractBody({
+  predecessor = null,
+  recoveries = [],
+  version = 3,
+} = {}) {
+  const sections = taskHeadings.map((heading) => {
+    if (heading === "Planning contract")
+      return `## ${heading}\n\n- Contract version: \`v${version}\``;
+    if (heading === "Acceptance journey")
+      return `## ${heading}\n\n- Applicability: Required\n- Actor: Developer`;
+    if (heading === "Acceptance criteria")
+      return `## ${heading}\n\n- [ ] AC1 — Candidate content is validated.`;
+    if (heading === "Verification commands")
+      return `## ${heading}\n\n\`\`\`text\nnode --test quality/publication-candidate.test.mjs\n\`\`\``;
+    if (heading === "Definition of Ready")
+      return `## ${heading}\n\n- [x] Scope and verification are complete.`;
+    return `## ${heading}\n\nComplete governed content for ${heading}.`;
+  });
+  const declarations = [
+    ...(predecessor === null
+      ? []
+      : [`Supersedes: ${predecessor.digest} ${predecessor.path}`]),
+    ...recoveries.map(
+      (recovery) => `Recovers-Publication: ${recovery.digest} ${recovery.path}`,
+    ),
+  ];
+  return [...sections, ...declarations].join("\n\n");
+}
 
 function ordinaryCandidate() {
-  const contractBytes = Buffer.from("accepted issue contract\n");
+  const contractBytes = Buffer.from(contractBody());
   const candidate = {
     digest: contractSha256(contractBytes).digest,
     mode: "100644",
@@ -96,6 +131,35 @@ function rewriteReceipt(input, mutate) {
   return value;
 }
 
+function rewriteContract(
+  input,
+  { body, observation = {}, path = contractPath },
+) {
+  const bytes = body instanceof Uint8Array ? body : Buffer.from(body);
+  const entry = input.newlyAdded.entries.find(
+    (candidate) => candidate.path !== receiptPath,
+  );
+  entry.bytes = bytes;
+  entry.path = path;
+  input.diff.files.find((file) => file.path !== receiptPath).path = path;
+  rewriteReceipt(input, (receipt) => {
+    Object.assign(receipt.candidates[0], {
+      digest: contractSha256(bytes).digest,
+      path,
+    });
+    Object.assign(receipt.observations[0], {
+      candidatePath: path,
+      ...observation,
+    });
+  });
+}
+
+function mutated(mutate, create = ordinaryCandidate) {
+  const input = create();
+  mutate(input);
+  return input;
+}
+
 function migrationCandidate(lifecycle) {
   const input = ordinaryCandidate();
   const readiness =
@@ -138,39 +202,46 @@ test("accepts an exact ordinary pre-merge publication candidate", () => {
   assert.equal(result.binding.receipt.path, receiptPath);
   assert.deepEqual(result.binding.observations[0].linkedPullRequest, null);
 });
-
 test("binds an exact predecessor and quarantine-recovery identity", () => {
   const input = ordinaryCandidate();
-  const path = "docs/contracts/task-30-v3-r3.md";
-  rewriteReceipt(input, (receipt) => {
-    receipt.candidates[0].path = path;
-    Object.assign(receipt.observations[0], {
-      candidatePath: path,
-      predecessor: {
-        digest: "a".repeat(64),
-        path: "docs/contracts/task-30-v3-r1.md",
-      },
-      recoveries: [
-        { digest: "b".repeat(64), path: "docs/contracts/task-30-v3-r2.md" },
-      ],
-      revision: 3,
-    });
+  const recoveries = [recovery];
+  rewriteContract(input, {
+    body: contractBody({ predecessor, recoveries }),
+    observation: { predecessor, recoveries, revision: 3 },
+    path: historyPath,
   });
-  input.diff.files[0].path = path;
-  input.newlyAdded.entries[1].path = path;
   const result = verifyPublicationCandidate(input);
   assert.equal(result.ok, true);
   assert.equal(result.binding.observations[0].recoveries.length, 1);
 });
-
+test("rejects invalid body schemas, path versions, and history declarations", () => {
+  const changed = (body, observation = {}, path = contractPath) => {
+    const input = ordinaryCandidate();
+    rewriteContract(input, { body, observation, path });
+    return input;
+  };
+  // prettier-ignore
+  const invalid = [
+    [changed(contractBody().replace("## Scope", "## Missing scope")), "invalid_candidate_contract_schema"],
+    [changed(contractBody({ version: 2 })), "candidate_contract_version_mismatch"],
+    [changed(contractBody(), { predecessor, revision: 2 }, recovery.path), "candidate_contract_declaration_mismatch"],
+    [changed(contractBody({ predecessor }).replace("a".repeat(64), "A".repeat(64))), "invalid_candidate_contract_declarations"],
+    [changed(contractBody({ predecessor, recoveries: [recovery] }), { predecessor, recoveries: [{ ...recovery, digest: "c".repeat(64) }], revision: 3 }, historyPath), "candidate_contract_declaration_mismatch"],
+    [changed(Buffer.from([0xc3, 0x28])), "invalid_candidate_contract_encoding"],
+  ];
+  for (const [input, code] of invalid) {
+    const result = verifyPublicationCandidate(input);
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.rejection, {
+      code,
+      message: "Publication candidate evidence failed closed.",
+    });
+  }
+});
 test("accepts the six exact retained migration lifecycle candidates", () => {
+  // prettier-ignore
   for (const lifecycle of [
-    "status: ready",
-    "status: in progress",
-    "status: pr open",
-    "status: ready for human review",
-    "status: blocked",
-    "status: waiting for user",
+    "status: ready", "status: in progress", "status: pr open", "status: ready for human review", "status: blocked", "status: waiting for user",
   ]) {
     const result = verifyPublicationCandidate(migrationCandidate(lifecycle));
     assert.equal(result.ok, true, lifecycle);
@@ -178,122 +249,66 @@ test("accepts the six exact retained migration lifecycle candidates", () => {
     assert.equal(result.binding.observations[0].lifecycleLabels[0], lifecycle);
   }
 });
-
 test("requires exact live, receipt, manifest, readiness, and linked-PR evidence", () => {
-  const changed = (
-    mutate,
-    create = () => migrationCandidate("status: pr open"),
-  ) => {
-    const input = create();
-    mutate(input);
-    return input;
-  };
+  const changed = (mutate) =>
+    mutated(mutate, () => migrationCandidate("status: pr open"));
   const rewrite = (mutate) => changed((input) => rewriteReceipt(input, mutate));
+  // prettier-ignore
   const invalid = [
-    changed(
-      (input) => (input.issueObservations[0].fingerprint = "a".repeat(64)),
-    ),
-    changed(
-      (input) =>
-        (input.terminalManifest.entries[0].fingerprint = "a".repeat(64)),
-    ),
+    changed((input) => (input.issueObservations[0].fingerprint = "a".repeat(64))),
+    changed((input) => (input.terminalManifest.entries[0].fingerprint = "a".repeat(64))),
     changed((input) => (input.terminalManifest.path = "docs/qa/stale-v1.md")),
     changed((input) => (input.terminalManifest.digest = "a".repeat(64))),
     changed((input) => (input.terminalManifest.base = head)),
     changed((input) => (input.terminalManifest.mode = "120000")),
     changed((input) => (input.terminalManifest.repository = "other/repo")),
     changed((input) => (input.terminalManifest.bytes = Buffer.from("stale"))),
-    rewrite(
-      (receipt) =>
-        (receipt.observations[0].readinessProducer = "untrusted-producer"),
-    ),
+    rewrite((receipt) => (receipt.observations[0].readinessProducer = "untrusted-producer")),
     changed((input) => {
-      rewriteReceipt(input, (receipt) => {
-        receipt.observations[0].readinessProducer = "attacker";
-      });
+      rewriteReceipt(input, (receipt) => (receipt.observations[0].readinessProducer = "attacker"));
       input.terminalManifest.entries = structuredClone(input.issueObservations);
     }),
     changed((input) => {
-      rewriteReceipt(input, (receipt) => {
-        receipt.observations[0].readiness =
-          "https://github.com/attacker/repo/issues/30#issuecomment-123";
-      });
+      rewriteReceipt(input, (receipt) => (receipt.observations[0].readiness = "https://github.com/attacker/repo/issues/30#issuecomment-123"));
       input.terminalManifest.entries = structuredClone(input.issueObservations);
     }),
     changed((input) => {
-      rewriteReceipt(input, (receipt) => {
-        receipt.observations[0].readiness =
-          "https://github.com/oscharko-dev/Keiko-Native/issues/31#issuecomment-123";
-      });
+      rewriteReceipt(input, (receipt) => (receipt.observations[0].readiness = "https://github.com/oscharko-dev/Keiko-Native/issues/31#issuecomment-123"));
       input.terminalManifest.entries = structuredClone(input.issueObservations);
     }),
     rewrite((receipt) => (receipt.observations[0].readiness = null)),
-    rewrite(
-      (receipt) => (receipt.observations[0].lifecycleLabels = ["status: new"]),
-    ),
-    changed(
-      (input) =>
-        (input.issueObservations[0].linkedPullRequest.head = "4".repeat(40)),
-    ),
+    rewrite((receipt) => (receipt.observations[0].lifecycleLabels = ["status: new"])),
+    changed((input) => (input.issueObservations[0].linkedPullRequest.head = "4".repeat(40))),
     rewrite((receipt) => (receipt.observations[0].linkedPullRequest = null)),
-    changed((input) =>
-      input.terminalManifest.entries.push(input.issueObservations[0]),
-    ),
+    changed((input) => input.terminalManifest.entries.push(input.issueObservations[0])),
     changed((input) => (input.terminalManifest = null)),
     changed((input) => {
-      const forged = {
-        digest: "d".repeat(64),
-        path: "docs/qa/nonexistent-v1.md",
-      };
+      const forged = { digest: "d".repeat(64), path: "docs/qa/nonexistent-v1.md" };
       rewriteReceipt(input, (receipt) => (receipt.terminalManifest = forged));
-      input.terminalManifest = {
-        digest: forged.digest,
-        entries: structuredClone(input.issueObservations),
-        path: forged.path,
-      };
+      input.terminalManifest = { digest: forged.digest, entries: structuredClone(input.issueObservations), path: forged.path };
     }),
   ];
   for (const [index, input] of invalid.entries()) {
     assert.equal(verifyPublicationCandidate(input).ok, false, `${index}`);
   }
 });
-
 test("rejects ordinary readiness, linked-PR, closed-state, and authority smuggling", () => {
-  const altered = (mutate) => {
-    const input = ordinaryCandidate();
-    mutate(input);
-    return input;
-  };
+  const altered = (mutate) => mutated(mutate);
   const rewritten = (mutate) =>
     altered((input) => rewriteReceipt(input, mutate));
+  // prettier-ignore
   for (const input of [
     rewritten((receipt) => {
-      receipt.observations[0].readiness =
-        "https://github.com/oscharko-dev/Keiko-Native/issues/30#issuecomment-123";
-      receipt.observations[0].readinessProducer =
-        "issue-readiness.yml@protected-dev";
+      receipt.observations[0].readiness = "https://github.com/oscharko-dev/Keiko-Native/issues/30#issuecomment-123";
+      receipt.observations[0].readinessProducer = "issue-readiness.yml@protected-dev";
     }),
-    rewritten(
-      (receipt) =>
-        (receipt.observations[0].linkedPullRequest = {
-          head: "3".repeat(40),
-          number: 88,
-          target: "epic/29-contracts",
-        }),
-    ),
+    rewritten((receipt) => (receipt.observations[0].linkedPullRequest = { head: "3".repeat(40), number: 88, target: "epic/29-contracts" })),
     rewritten((receipt) => (receipt.observations[0].state = "closed")),
     altered((input) => (input.target = "main")),
     altered((input) => (input.pullRequest.state = "closed")),
     altered((input) => (input.pullRequest.merged = true)),
     altered((input) => (input.pullRequest = {})),
-    altered(
-      (input) =>
-        (input.terminalManifest = {
-          digest: "c".repeat(64),
-          entries: [],
-          path: "docs/qa/repository-migration-manifest-v1.md",
-        }),
-    ),
+    altered((input) => (input.terminalManifest = { digest: "c".repeat(64), entries: [], path: "docs/qa/repository-migration-manifest-v1.md" })),
     { ...ordinaryCandidate(), unexpected: true },
   ]) {
     assert.equal(verifyPublicationCandidate(input).ok, false);
@@ -301,37 +316,22 @@ test("rejects ordinary readiness, linked-PR, closed-state, and authority smuggli
 });
 
 test("binds exact diff, added paths, modes, bytes, digests, and head", () => {
-  const changed = (mutate) => {
-    const input = ordinaryCandidate();
-    mutate(input);
-    return input;
-  };
+  const changed = (mutate) => mutated(mutate);
+  // prettier-ignore
   const invalid = [
     changed((input) => (input.diff = {})),
     changed((input) => (input.diff.truncated = true)),
     changed((input) => (input.diff.head = "4".repeat(40))),
     changed((input) => (input.receipt.digest = "a".repeat(64))),
-    changed(
-      (input) => (input.receipt.path = "docs/contracts/publications/pr-78.md"),
-    ),
+    changed((input) => (input.receipt.path = "docs/contracts/publications/pr-78.md")),
     changed((input) => (input.receipt.bytes = Buffer.from("changed\n"))),
     changed((input) => (input.receipt = {})),
-    changed((input) =>
-      rewriteReceipt(input, (receipt) => (receipt.pullRequest = 999)),
-    ),
+    changed((input) => rewriteReceipt(input, (receipt) => (receipt.pullRequest = 999))),
     changed((input) => (input.newlyAdded.entries[0].mode = "120000")),
-    changed((input) =>
-      input.newlyAdded.entries[1].bytes.fill("x".charCodeAt(0)),
-    ),
+    changed((input) => input.newlyAdded.entries[1].bytes.fill("x".charCodeAt(0))),
     changed((input) => input.newlyAdded.entries.reverse()),
     changed((input) => input.newlyAdded.entries.pop()),
-    changed((input) =>
-      input.diff.files.push({
-        mode: "100644",
-        path: "README.md",
-        status: "added",
-      }),
-    ),
+    changed((input) => input.diff.files.push({ mode: "100644", path: "README.md", status: "added" })),
   ];
   for (const [index, input] of invalid.entries()) {
     assert.equal(verifyPublicationCandidate(input).ok, false, `${index}`);
