@@ -3,10 +3,12 @@ import { createHash } from "node:crypto";
 import {
   parseContractPath,
   recoverySetFailure,
-  validateContractChain,
 } from "./repository-contract-chain.mjs";
 
-export { parseContractPath, validateContractChain };
+export {
+  parseContractPath,
+  validateContractChain,
+} from "./repository-contract-chain.mjs";
 
 const declarationPattern =
   /^(Supersedes|Recovers-Publication): ([0-9a-f]{64}) (docs\/contracts\/[A-Za-z0-9./-]+\.md)$/u;
@@ -73,7 +75,7 @@ export function parseQuarantineRecoveryDeclarations(body) {
   const recoveries = declarations.map((line) =>
     parseDeclarationLine(line, "Recovers-Publication"),
   );
-  if (recoveries.some((item) => item === undefined)) {
+  if (recoveries.includes(undefined)) {
     return reject(
       "malformed_recovery",
       "Recovery declaration does not match the canonical grammar.",
