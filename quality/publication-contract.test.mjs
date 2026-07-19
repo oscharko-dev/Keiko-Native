@@ -384,6 +384,9 @@ test("rejects unavailable, unauthorized, replayed, stale, or contradictory accep
   for (const [index, input] of invalid.entries()) {
     const result = verifyPublication(input);
     assert.equal(result.ok, false, `invalid fixture ${index}`);
-    assert.doesNotMatch(result.rejection.message, /changed|not json|Mallory/iu);
+    assert.doesNotMatch(
+      result.rejection.message,
+      /changed|not json|Mallory|SECRET/iu,
+    );
   }
 });
