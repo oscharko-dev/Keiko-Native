@@ -226,13 +226,13 @@ function canvasSurface(
     const generation = compositionGeneration;
     const target = event.currentTarget;
     const committedText = event.data;
-    void Promise.resolve().then(() => {
+    globalThis.setTimeout(() => {
       if (!composing || generation !== compositionGeneration) return;
       composing = false;
       model.compositionCommit(committedText);
       target.value = model.committed;
       void controller.commitCanvasText(model.committed);
-    });
+    }, 0);
   };
   const onBlur = (event: FocusEvent<HTMLTextAreaElement>): void => {
     compositionGeneration += 1;

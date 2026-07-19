@@ -189,36 +189,72 @@ describe("closed Foundation presentation", () => {
   });
 
   it("drives composition, commit, cancellation and focus loss through the textarea", async () => {
-    const commit = vi.fn(controller.commitCanvasText);
-    const rendered = renderFoundation(
-      { kind: "canvas", committedText: "bereit" },
-      { ...controller, commitCanvasText: commit },
-    );
-    const textarea = elements(rendered).find(({ type }) => type === "textarea")
-      ?.props as Record<string, (event?: unknown) => void>;
-    const target = { value: "bereit" };
-    textarea.onCompositionStart();
-    textarea.onCompositionUpdate({ data: "かな", currentTarget: target });
-    textarea.onCompositionEnd({ data: "かな", currentTarget: target });
-    await Promise.resolve();
-    expect(target.value).toBe("bereitかな");
-    expect(commit).toHaveBeenLastCalledWith("bereitかな");
+    vi.useFakeTimers();
+    try {
+      const commit = vi.fn(controller.commitCanvasText);
+      const rendered = renderFoundation(
+        { kind: "canvas", committedText: "bereit" },
+        { ...controller, commitCanvasText: commit },
+      );
+      const textarea = elements(rendered).find(
+        ({ type }) => type === "textarea",
+      )?.props as Record<string, (event?: unknown) => void>;
+      const target = { value: "bereit" };
+      textarea.onCompositionStart();
+      textarea.onCompositionUpdate({ data: "かな", currentTarget: target });
+      textarea.onCompositionEnd({ data: "かな", currentTarget: target });
+      vi.runAllTimers();
+      expect(target.value).toBe("bereitかな");
+      expect(commit).toHaveBeenLastCalledWith("bereitかな");
 
-    textarea.onCompositionStart();
-    textarea.onCompositionUpdate({ data: "discard", currentTarget: target });
-    target.value = "bereitかなdiscard";
-    textarea.onCompositionEnd({ data: "discard", currentTarget: target });
-    textarea.onChange({ currentTarget: target });
-    textarea.onBlur({ currentTarget: target });
-    await Promise.resolve();
-    expect(target.value).toBe("bereitかな");
-    expect(commit).toHaveBeenCalledTimes(1);
+      textarea.onCompositionStart();
+      textarea.onCompositionUpdate({ data: "discard", currentTarget: target });
+      target.value = "bereitかなdiscard";
+      textarea.onCompositionEnd({ data: "discard", currentTarget: target });
+      textarea.onChange({ currentTarget: target });
+      textarea.onBlur({ currentTarget: target });
+      vi.runAllTimers();
+      expect(target.value).toBe("bereitかな");
+      expect(commit).toHaveBeenCalledTimes(1);
 
-    target.value = "x".repeat(3000);
-    textarea.onChange({ currentTarget: target });
-    expect(new TextEncoder().encode(target.value).length).toBe(2048);
-    expect(commit).toHaveBeenLastCalledWith(target.value);
-    await Promise.resolve();
+      target.value = "x".repeat(3000);
+      textarea.onChange({ currentTarget: target });
+      expect(new TextEncoder().encode(target.value).length).toBe(2048);
+      expect(commit).toHaveBeenLastCalledWith(target.value);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not commit when WebKit reports composition end before a later focus loss", async () => {
+    vi.useFakeTimers();
+    try {
+      const commit = vi.fn(controller.commitCanvasText);
+      const rendered = renderFoundation(
+        { kind: "canvas", committedText: "bereit" },
+        { ...controller, commitCanvasText: commit },
+      );
+      const textarea = elements(rendered).find(
+        ({ type }) => type === "textarea",
+      )?.props as Record<string, (event?: unknown) => void>;
+      const target = { value: "bereitかな" };
+
+      textarea.onCompositionStart();
+      textarea.onCompositionUpdate({ data: "かな", currentTarget: target });
+      textarea.onCompositionEnd({ data: "かな", currentTarget: target });
+      textarea.onChange({ currentTarget: target });
+
+      // WebKit can move blur into the next event turn. A microtask commit is
+      // therefore too early to distinguish a real commit from focus loss.
+      await Promise.resolve();
+      textarea.onBlur({ currentTarget: target });
+      vi.runAllTimers();
+
+      expect(target.value).toBe("bereit");
+      expect(commit).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
