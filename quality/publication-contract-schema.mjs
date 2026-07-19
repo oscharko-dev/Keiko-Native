@@ -19,21 +19,14 @@ function reject(code) {
     rejection: { code, message: "Snapshot receipt failed closed." },
   };
 }
-function record(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-function sha(value) {
-  return (
-    typeof value === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(value)
-  );
-}
-export function samePublicationBytes(left, right) {
-  return (
-    left instanceof Uint8Array &&
-    right instanceof Uint8Array &&
-    Buffer.from(left).equals(Buffer.from(right))
-  );
-}
+const record = (value) =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+const sha = (value) =>
+  typeof value === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(value);
+export const samePublicationBytes = (left, right) =>
+  left instanceof Uint8Array &&
+  right instanceof Uint8Array &&
+  Buffer.from(left).equals(Buffer.from(right));
 export function decodeSnapshotReceipt(receipt) {
   if (!record(receipt) || !(receipt.bytes instanceof Uint8Array))
     return undefined;
@@ -89,58 +82,57 @@ export function publicationEvidenceMaps(input) {
     ? { failure: "invalid_tree_evidence" }
     : { added, current, publishing };
 }
-function validPullRequest(pr, commit) {
-  return (
-    record(pr) &&
-    positiveInteger(pr.number) &&
-    sha(pr.base) &&
-    sha(pr.head) &&
-    sha(pr.mergeSha) &&
-    pr.mergeSha === commit?.sha &&
-    pr.state === "closed" &&
-    pr.merged === true &&
-    pr.baseRef === "dev"
-  );
-}
+const validPullRequest = (pr, commit) =>
+  record(pr) &&
+  positiveInteger(pr.number) &&
+  sha(pr.base) &&
+  sha(pr.head) &&
+  sha(pr.mergeSha) &&
+  pr.mergeSha === commit?.sha &&
+  pr.state === "closed" &&
+  pr.merged === true &&
+  pr.baseRef === "dev";
+const validVerification = (verification, commit) =>
+  record(verification) &&
+  verification.verified === true &&
+  verification.reason === "valid" &&
+  typeof commit.signedPayload === "string" &&
+  verification.payload === commit.signedPayload &&
+  verification.signer === "github-web-flow";
+const validMergeActor = (input, pr, verification) =>
+  verification.signer !== pr.mergedBy &&
+  typeof pr.mergedBy === "string" &&
+  actorPattern.test(pr.mergedBy) &&
+  Array.isArray(input.allowlistedMergers) &&
+  input.allowlistedMergers.includes(pr.mergedBy);
+const validMergeProof = (group, pr, commit) =>
+  record(group) &&
+  group.base === pr.base &&
+  group.head === pr.head &&
+  sha(group.prefixTree) &&
+  sha(group.resultTree) &&
+  Array.isArray(commit.parents) &&
+  commit.parents.length === 1 &&
+  commit.parents[0].sha === pr.base &&
+  commit.parents[0].tree === group.prefixTree &&
+  commit.tree === group.resultTree;
 export function publicationIdentityFailure(input) {
-  const pr = input?.pullRequest;
-  const commit = input?.commit;
-  const group = input?.validatedGroup;
-  const verification = commit?.verification;
   if (
     !record(input) ||
     !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(input.repository)
   ) {
     return "invalid_publication_identity";
   }
+  const { commit, pullRequest: pr, validatedGroup: group } = input;
   if (!validPullRequest(pr, commit)) return "invalid_pull_request_identity";
+  const verification = commit.verification;
   if (
-    !record(verification) ||
-    verification.verified !== true ||
-    verification.reason !== "valid" ||
-    typeof commit.signedPayload !== "string" ||
-    verification.payload !== commit.signedPayload ||
-    verification.signer !== "github-web-flow" ||
-    verification.signer === pr.mergedBy ||
-    typeof pr.mergedBy !== "string" ||
-    !actorPattern.test(pr.mergedBy) ||
-    !Array.isArray(input.allowlistedMergers) ||
-    !input.allowlistedMergers.includes(pr.mergedBy)
+    !validVerification(verification, commit) ||
+    !validMergeActor(input, pr, verification)
   ) {
     return "invalid_signature_or_actor";
   }
-  if (
-    !record(group) ||
-    group.base !== pr.base ||
-    group.head !== pr.head ||
-    !sha(group.prefixTree) ||
-    !sha(group.resultTree) ||
-    !Array.isArray(commit.parents) ||
-    commit.parents.length !== 1 ||
-    commit.parents[0].sha !== pr.base ||
-    commit.parents[0].tree !== group.prefixTree ||
-    commit.tree !== group.resultTree
-  ) {
+  if (!validMergeProof(group, pr, commit)) {
     return "invalid_isolated_merge_proof";
   }
   return undefined;
@@ -163,12 +155,9 @@ function exactKeys(value, expected) {
     actual.every((key, index) => key === expected[index])
   );
 }
-function positiveInteger(value) {
-  return Number.isSafeInteger(value) && value > 0;
-}
-function digest(value) {
-  return typeof value === "string" && /^[0-9a-f]{64}$/u.test(value);
-}
+const positiveInteger = (value) => Number.isSafeInteger(value) && value > 0;
+const digest = (value) =>
+  typeof value === "string" && /^[0-9a-f]{64}$/u.test(value);
 function sortedUnique(values, identity) {
   const identities = values.map(identity);
   return (
@@ -178,20 +167,14 @@ function sortedUnique(values, identity) {
     )
   );
 }
-function contractBinding(value) {
-  return (
-    exactKeys(value, bindingKeys) &&
-    digest(value.digest) &&
-    parseContractPath(value.path).ok
-  );
-}
-function manifestBinding(value) {
-  return (
-    exactKeys(value, bindingKeys) &&
-    digest(value.digest) &&
-    manifestPattern.test(value.path)
-  );
-}
+const contractBinding = (value) =>
+  exactKeys(value, bindingKeys) &&
+  digest(value.digest) &&
+  parseContractPath(value.path).ok;
+const manifestBinding = (value) =>
+  exactKeys(value, bindingKeys) &&
+  digest(value.digest) &&
+  manifestPattern.test(value.path);
 function candidateFailure(candidate) {
   if (!exactKeys(candidate, candidateKeys)) return "invalid_candidate";
   if (
@@ -233,28 +216,27 @@ function observationIdentityFailure(observation) {
     ? undefined
     : "candidate_identity_mismatch";
 }
+const validObservationCore = (observation) =>
+  positiveInteger(observation.number) &&
+  positiveInteger(observation.version) &&
+  positiveInteger(observation.revision) &&
+  digest(observation.fingerprint) &&
+  ["open", "closed"].includes(observation.state) &&
+  lifecycleFailure(observation.lifecycleLabels) === undefined;
+function readinessFailure(observation) {
+  if (observation.readiness === null) return undefined;
+  if (typeof observation.readiness !== "string")
+    return "invalid_readiness_identity";
+  const readiness = readinessPattern.exec(observation.readiness);
+  return readiness !== null && Number(readiness[1]) === observation.number
+    ? undefined
+    : "invalid_readiness_identity";
+}
 function observationFailure(observation) {
   if (!exactKeys(observation, observationKeys)) return "invalid_observation";
-  if (
-    !positiveInteger(observation.number) ||
-    !positiveInteger(observation.version) ||
-    !positiveInteger(observation.revision) ||
-    !digest(observation.fingerprint) ||
-    !["open", "closed"].includes(observation.state) ||
-    lifecycleFailure(observation.lifecycleLabels) !== undefined
-  ) {
-    return "invalid_observation";
-  }
-  const readiness =
-    typeof observation.readiness === "string"
-      ? readinessPattern.exec(observation.readiness)
-      : null;
-  if (
-    observation.readiness !== null &&
-    (readiness === null || Number(readiness[1]) !== observation.number)
-  ) {
-    return "invalid_readiness_identity";
-  }
+  if (!validObservationCore(observation)) return "invalid_observation";
+  const readiness = readinessFailure(observation);
+  if (readiness !== undefined) return readiness;
   if (
     observation.predecessor !== null &&
     !contractBinding(observation.predecessor)
@@ -266,32 +248,40 @@ function observationFailure(observation) {
     bindingSetFailure(observation.recoveries)
   );
 }
+function validHistoryTransition(prior, current, same, start, item, candidate) {
+  const predecessor = item.predecessor;
+  return (
+    (prior === null ||
+      (prior.issue === current.issue &&
+        [prior.version, prior.version + 1].includes(current.version) &&
+        (!same || prior.type === current.type))) &&
+    (predecessor === null || predecessor.digest !== candidate.digest) &&
+    start <= current.revision &&
+    item.recoveries.length === current.revision - start
+  );
+}
+const validRecoveryIdentity = (identity, current, start) =>
+  identity.issue === current.issue &&
+  identity.type === current.type &&
+  identity.version === current.version &&
+  identity.revision >= start &&
+  identity.revision < current.revision;
 function historyFailure(observation, candidate) {
   const current = parseContractPath(observation.candidatePath).contract;
   const predecessor = observation.predecessor;
-  const previous =
+  const prior =
     predecessor === null ? null : parseContractPath(predecessor.path).contract;
-  const sameVersion = previous?.version === current.version;
-  const start = sameVersion ? previous.revision + 1 : 1;
+  const same = prior?.version === current.version;
+  const start = same ? prior.revision + 1 : 1;
   if (
-    (previous !== null &&
-      (previous.issue !== current.issue ||
-        ![previous.version, previous.version + 1].includes(current.version) ||
-        (sameVersion && previous.type !== current.type))) ||
-    (predecessor !== null && predecessor.digest === candidate.digest) ||
-    start > current.revision ||
-    observation.recoveries.length !== current.revision - start
+    !validHistoryTransition(prior, current, same, start, observation, candidate)
   )
     return "invalid_history_transition";
   const digests = new Set([candidate.digest, predecessor?.digest]);
   for (const recovery of observation.recoveries) {
     const identity = parseContractPath(recovery.path).contract;
     if (
-      identity.issue !== current.issue ||
-      identity.type !== current.type ||
-      identity.version !== current.version ||
-      identity.revision < start ||
-      identity.revision >= current.revision ||
+      !validRecoveryIdentity(identity, current, start) ||
       digests.has(recovery.digest)
     )
       return "invalid_recovery_history";

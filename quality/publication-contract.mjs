@@ -14,6 +14,7 @@ const snapshotTrailer =
   /^Keiko-Publication-Snapshot-SHA256: ([0-9a-f]{64}) (docs\/contracts\/publications\/pr-([1-9]\d*)\.md)$/u;
 const receiptPathPattern =
   /^docs\/contracts\/publications\/pr-([1-9]\d*)\.md$/u;
+const evidenceFailureMessage = "Publication evidence failed closed.";
 function reject(code, message) {
   return { ok: false, rejection: { code, message } };
 }
@@ -115,6 +116,15 @@ function validEnvelope(input) {
     input.base !== input.head
   );
 }
+function validClassificationInput(input) {
+  return (
+    validEnvelope(input) &&
+    input.complete === true &&
+    input.truncated === false &&
+    Array.isArray(input.files) &&
+    input.files.every(validDiffFile)
+  );
+}
 function publicationDiffFailure(files, kinds) {
   const paths = new Set(files.map((file) => file.path));
   if (paths.size !== files.length) return "duplicate_diff_path";
@@ -134,13 +144,7 @@ function laneBinding(input, lane) {
   return { base, head, lane, pullRequest, repository };
 }
 export function classifyPublicationLane(input) {
-  if (
-    !validEnvelope(input) ||
-    input.complete !== true ||
-    input.truncated !== false ||
-    !Array.isArray(input.files) ||
-    input.files.some((file) => !validDiffFile(file))
-  ) {
+  if (!validClassificationInput(input)) {
     return reject(
       "unavailable_diff",
       "Complete trusted diff metadata is required.",
@@ -186,23 +190,26 @@ export function classifyPublicationLane(input) {
 function record(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
+function validReceiptBinding(input, trailers, validation, identity, hash) {
+  const receipt = input.receipt;
+  return (
+    identity !== undefined &&
+    identity.pullRequest === input.pullRequest.number &&
+    receipt.repository === input.repository &&
+    receipt.pullRequest === input.pullRequest.number &&
+    hash.ok &&
+    trailers.snapshot.path === receipt.path &&
+    trailers.snapshot.digest === hash.digest &&
+    validation.binding.pullRequest === input.pullRequest.number
+  );
+}
 function receiptFailure(input, trailers, validation) {
   const receipt = input.receipt;
   const identity = receiptIdentity(receipt?.path);
   const hash = contractSha256(receipt?.bytes);
-  if (
-    identity === undefined ||
-    identity.pullRequest !== input.pullRequest.number ||
-    receipt.repository !== input.repository ||
-    receipt.pullRequest !== input.pullRequest.number ||
-    !hash.ok ||
-    trailers.snapshot.path !== receipt.path ||
-    trailers.snapshot.digest !== hash.digest ||
-    validation.binding.pullRequest !== input.pullRequest.number
-  ) {
-    return "invalid_receipt_binding";
-  }
-  return undefined;
+  return validReceiptBinding(input, trailers, validation, identity, hash)
+    ? undefined
+    : "invalid_receipt_binding";
 }
 function exactCandidateFailure(candidates, trailers, added) {
   if (trailers.contracts.length !== candidates.length)
@@ -308,51 +315,36 @@ function verificationContext(input) {
     ? { maps, trailers, validation }
     : { failure: maps.failure };
 }
+function boundPublicationFailure(input, context) {
+  const { maps, trailers, validation } = context;
+  const failure =
+    receiptFailure(input, trailers, validation) ??
+    exactCandidateFailure(validation.binding.candidates, trailers, maps.added);
+  if (failure !== undefined) return failure;
+  if (
+    maps.added.size !== validation.binding.candidates.length + 1 ||
+    !maps.added.has(input.receipt.path)
+  )
+    return "unexpected_new_blob";
+  return (
+    treeEqualityFailure(maps.added, maps.publishing, maps.current) ??
+    manifestEvidenceFailure(validation.binding, input.terminalManifestEvidence)
+  );
+}
 export function verifyPublication(input) {
   try {
     const context = verificationContext(input);
     if (context.failure !== undefined)
-      return reject(context.failure, "Publication evidence failed closed.");
-    const { maps, trailers, validation } = context;
+      return reject(context.failure, evidenceFailureMessage);
+    const failure = boundPublicationFailure(input, context);
+    if (failure !== undefined) return reject(failure, evidenceFailureMessage);
     const receiptHash = contractSha256(input.receipt.bytes).digest;
-    const receipt = receiptFailure(input, trailers, validation);
-    const candidate = exactCandidateFailure(
-      validation.binding.candidates,
-      trailers,
-      maps.added,
-    );
-    if (receipt !== undefined || candidate !== undefined) {
-      return reject(
-        receipt ?? candidate,
-        "Publication evidence failed closed.",
-      );
-    }
-    if (
-      maps.added.size !== validation.binding.candidates.length + 1 ||
-      !maps.added.has(input.receipt.path)
-    ) {
-      return reject(
-        "unexpected_new_blob",
-        "Publication evidence failed closed.",
-      );
-    }
-    const tree = treeEqualityFailure(maps.added, maps.publishing, maps.current);
-    const manifest = manifestEvidenceFailure(
-      validation.binding,
-      input.terminalManifestEvidence,
-    );
-    if (tree !== undefined || manifest !== undefined) {
-      return reject(tree ?? manifest, "Publication evidence failed closed.");
-    }
     return {
-      binding: normalizedBinding(input, validation, receiptHash),
+      binding: normalizedBinding(input, context.validation, receiptHash),
       ok: true,
     };
   } catch {
-    return reject(
-      "invalid_publication_evidence",
-      "Publication evidence failed closed.",
-    );
+    return reject("invalid_publication_evidence", evidenceFailureMessage);
   }
 }
 const failedContexts = Object.freeze({
@@ -360,25 +352,32 @@ const failedContexts = Object.freeze({
   "Issue contract current": "failure",
   "PR contract": "failure",
 });
-export function publicationResultMatrix(input) {
-  const classification = input?.classification;
+const resultIdentityKeys = "repository pullRequest base head lane".split(" ");
+function classifiedBinding(classification) {
   const binding = classification?.binding;
-  const classified =
-    classification?.ok === true &&
+  return classification?.ok === true &&
     validEnvelope(binding) &&
-    binding.lane === classification.lane;
-  const matches = (result) =>
+    binding.lane === classification.lane
+    ? binding
+    : undefined;
+}
+function matchingResult(result, binding) {
+  return (
     result?.ok === true &&
-    ["repository", "pullRequest", "base", "head", "lane"].every(
-      (key) => result.binding?.[key] === binding[key],
-    );
+    resultIdentityKeys.every((key) => result.binding?.[key] === binding[key])
+  );
+}
+export function publicationResultMatrix(input) {
+  input = Object(input);
+  const classification = input.classification;
+  const binding = classifiedBinding(classification);
   let contexts = failedContexts;
   let lane = "invalid";
-  if (classified && classification.lane === "normal") {
+  if (binding !== undefined && classification.lane === "normal") {
     lane = "normal";
     if (
-      matches(input.normal?.prContract) &&
-      matches(input.normal?.issueContractCurrent)
+      matchingResult(input.normal?.prContract, binding) &&
+      matchingResult(input.normal?.issueContractCurrent, binding)
     ) {
       contexts = {
         "Contract publication": "not_applicable",
@@ -386,9 +385,9 @@ export function publicationResultMatrix(input) {
         "PR contract": "success",
       };
     }
-  } else if (classified && classification.lane === "publication") {
+  } else if (binding !== undefined && classification.lane === "publication") {
     lane = "publication";
-    if (matches(input.publication)) {
+    if (matchingResult(input.publication, binding)) {
       contexts = {
         "Contract publication": "success",
         "Issue contract current": "success",

@@ -278,6 +278,7 @@ test("rejects unknown, missing, raw, malformed, and unauthorized receipt data", 
     changedObservation({ extra: true }),
     changedObservation({ candidatePath: "bad" }),
     changedObservation({ number: 31 }),
+    changedObservation({ readiness: 7 }),
     explosive,
   ];
   for (const value of invalid) {
