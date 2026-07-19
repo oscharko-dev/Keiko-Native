@@ -282,9 +282,8 @@ function generationContexts(input) {
   if (!validProducerMap(input.expectedProducers, contexts)) return undefined;
   return validObservationTarget(input) ? contexts : undefined;
 }
-const validObservationTarget = (input) =>
-  lifecycleObservation(input.inputs)?.target ===
-  input.classification.binding.target;
+const validObservationTarget = ({ inputs, classification }) =>
+  lifecycleObservation(inputs)?.target === classification.binding.target;
 function recoveryFailure(input) {
   const attemptChanged = input.attemptSequence !== input.prior.attemptSequence;
   if (!attemptChanged) return undefined;
@@ -293,7 +292,8 @@ function recoveryFailure(input) {
   if (input.attemptSequence !== input.prior.attemptSequence + 1)
     return "recovery_attempt_mismatch";
   const invalid = [
-    !record(recovery) || !same(Object.keys(recovery), recoveryKeys),
+    !record(recovery) ||
+      !same(new Set(Object.keys(recovery)), new Set(recoveryKeys)),
     recovery.authorized !== true,
     recovery.generation !== input.prior.digest,
     recovery.head !== input.prior.head,

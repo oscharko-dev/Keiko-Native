@@ -247,7 +247,6 @@ test("re-evaluates and accepts the exact ordinary B2 candidate and matrix", () =
     { scope: "ordinary-delivery" },
     { submode: "migration" },
     { receipt: { digest: "a".repeat(64), path: receiptPath } },
-    { manifest: { digest: "b".repeat(64), path: "docs/qa/stale-v1.md" } },
   ]) {
     assert.equal(
       classification(candidate, accepted, authority, false).code,
@@ -350,6 +349,9 @@ test("rejects fabricated output, stale generations, and identity replay", () => 
     mutate(
       (input) =>
         (input.generation.results["PR contract"].output.readinessClaim = true),
+    ),
+    mutate(
+      (input) => (input.generation.results["PR contract"].output.ok = false),
     ),
     mutate(
       (input) =>

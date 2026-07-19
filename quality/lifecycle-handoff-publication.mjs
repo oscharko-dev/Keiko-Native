@@ -67,6 +67,7 @@ function resultMatches(result, context, generation) {
     text(result.producer),
     text(result.workflowRun),
     text(result.result),
+    Object(result.output).ok === true,
     Object(result.output).readinessClaim !== true,
   ].every(Boolean);
 }

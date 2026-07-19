@@ -237,12 +237,12 @@ test("requires authenticated single-step recovery from a terminal generation", (
     prior: initial.generation,
   });
   const recovery = {
+    workflowRun: "recovery-run-1",
     authorized: true,
     generation: failed.generation.digest,
     head: failed.generation.head,
     producer: producers["Lifecycle handoff"],
     result: "recovery-1",
-    workflowRun: "recovery-run-1",
   };
   assertInvalidRecovery(failed, recovery);
   const recovered = coalesceLifecycleInputGeneration(
