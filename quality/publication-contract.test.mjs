@@ -108,19 +108,17 @@ test("parses only a terminal trailer block and rejects malformed trailer sets", 
   const secret = parsePublicationTrailers("SECRET");
   assert.doesNotMatch(secret.rejection.message, /SECRET/iu);
 });
-function diff(overrides = {}) {
-  return {
-    base,
-    complete: true,
-    files: [],
-    head,
-    normalValidated: true,
-    pullRequest: 77,
-    repository,
-    truncated: false,
-    ...overrides,
-  };
-}
+const diff = (overrides = {}) => ({
+  base,
+  complete: true,
+  files: [],
+  head,
+  normalValidated: true,
+  pullRequest: 77,
+  repository,
+  truncated: false,
+  ...overrides,
+});
 test("fails closed on unavailable, ambiguous, mixed, and nonregular diffs", () => {
   assert.equal(classifyPublicationLane(diff()).lane, "normal");
   assert.equal(
@@ -176,31 +174,27 @@ test("fails closed on unavailable, ambiguous, mixed, and nonregular diffs", () =
     "normal",
   );
 });
-function snapshot(candidateDigest) {
-  return {
-    candidates: [
-      { digest: candidateDigest, mode: "100644", path: contractPath },
-    ],
-    observations: [
-      {
-        candidatePath: contractPath,
-        fingerprint: digestB,
-        lifecycleLabels: ["status: new"],
-        number: 30,
-        predecessor: null,
-        readiness: null,
-        recoveries: [],
-        revision: 1,
-        state: "open",
-        type: "task",
-        version: 2,
-      },
-    ],
-    pullRequest: 77,
-    target: "dev",
-    terminalManifest: null,
-  };
-}
+const snapshot = (candidateDigest) => ({
+  candidates: [{ digest: candidateDigest, mode: "100644", path: contractPath }],
+  observations: [
+    {
+      candidatePath: contractPath,
+      fingerprint: digestB,
+      lifecycleLabels: ["status: new"],
+      number: 30,
+      predecessor: null,
+      readiness: null,
+      recoveries: [],
+      revision: 1,
+      state: "open",
+      type: "task",
+      version: 2,
+    },
+  ],
+  pullRequest: 77,
+  target: "dev",
+  terminalManifest: null,
+});
 function publicationFixture(changeReceipt = () => {}) {
   const contractBytes = Buffer.from("canonical contract bytes\n");
   const candidateDigest = contractSha256(contractBytes).digest;
@@ -298,13 +292,11 @@ function migrationFixture() {
   };
   return fixture;
 }
-function decoyEntry() {
-  return {
-    bytes: Buffer.from("decoy"),
-    mode: "100644",
-    path: "docs/contracts/task-31-v1-r1.md",
-  };
-}
+const decoyEntry = () => ({
+  bytes: Buffer.from("decoy"),
+  mode: "100644",
+  path: "docs/contracts/task-31-v1-r1.md",
+});
 test("accepts a fully bound isolated publication and emits normalized identity", () => {
   const result = verifyPublication(publicationFixture());
   const binding = result.binding;
@@ -315,6 +307,14 @@ test("accepts a fully bound isolated publication and emits normalized identity",
   assert.equal(binding.repository, repository);
   assert.equal(binding.pullRequest, 77);
   assert.equal(binding.submode, "ordinary");
+});
+test("binds canonical receipt input to the committed receipt tree entry", () => {
+  const alterReceipt = (r) => (r.observations[0].fingerprint = digestA);
+  const x = publicationFixture(alterReceipt);
+  const p = publicationFixture();
+  for (const t of ["newlyAdded", "publishingTree", "currentTree"])
+    x[t].entries[0].bytes = Buffer.from(p.receipt.bytes);
+  assert.equal(verifyPublication(x).ok, false);
 });
 test("binds migration publication to exact terminal manifest evidence", () => {
   assert.equal(
@@ -362,6 +362,7 @@ test("rejects unavailable, unauthorized, replayed, stale, or contradictory accep
   changed((x) => (x.protectedDev.ancestor = head));
   changed((x) => (x.receipt.path = null));
   changed((x) => (x.receipt.path = "docs/contracts/publications/pr-78.md"));
+  changed((x) => (x.receipt.repository = "other/repository"));
   changed((x) => (x.newlyAdded.entries = "unavailable"));
   changed((x) => x.newlyAdded.entries.pop());
   changed((x) => x.newlyAdded.entries.push({ ...x.newlyAdded.entries[0] }));
