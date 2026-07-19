@@ -19,7 +19,6 @@ const predecessor = { digest: "a".repeat(64), path: "docs/contracts/task-30-v3-r
 // prettier-ignore
 const recovery = { digest: "b".repeat(64), path: "docs/contracts/task-30-v3-r2.md" };
 const taskHeadings = issueSchemaForLabels(["type: task"]).requiredHeadings;
-
 function contractBody({
   predecessor = null,
   recoveries = [],
@@ -194,13 +193,15 @@ function migrationCandidate(lifecycle) {
   };
   return input;
 }
-
 test("accepts an exact ordinary pre-merge publication candidate", () => {
-  const result = verifyPublicationCandidate(ordinaryCandidate());
+  const input = ordinaryCandidate();
+  const result = verifyPublicationCandidate(input);
   assert.equal(result.ok, true);
   assert.equal(result.binding.submode, "ordinary");
   assert.equal(result.binding.receipt.path, receiptPath);
   assert.deepEqual(result.binding.observations[0].linkedPullRequest, null);
+  input.diff.files.reverse();
+  assert.deepEqual(verifyPublicationCandidate(input), result);
 });
 test("binds an exact predecessor and quarantine-recovery identity", () => {
   const input = ordinaryCandidate();
@@ -314,7 +315,6 @@ test("rejects ordinary readiness, linked-PR, closed-state, and authority smuggli
     assert.equal(verifyPublicationCandidate(input).ok, false);
   }
 });
-
 test("binds exact diff, added paths, modes, bytes, digests, and head", () => {
   const changed = (mutate) => mutated(mutate);
   // prettier-ignore
