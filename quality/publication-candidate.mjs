@@ -70,6 +70,7 @@ const repositoryIdentity = (value) =>
   typeof value === "string" &&
   /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(value);
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+const comparePaths = (left, right) => left.localeCompare(right);
 
 function pullRequestFailure(pullRequest) {
   if (!exactKeys(pullRequest, pullRequestKeys)) return "invalid_pull_request";
@@ -164,14 +165,16 @@ function candidateSetFailure(input, classification, validation, entries) {
   const expectedPaths = [
     ...candidates.map((candidate) => candidate.path),
     input.receipt.path,
-  ].sort();
-  const diffPaths = input.diff.files.map((file) => file.path).sort();
+  ].sort(comparePaths);
+  const diffPaths = input.diff.files
+    .map((file) => file.path)
+    .sort(comparePaths);
   if (
     entries.size !== candidates.length + 1 ||
     !same([...entries.keys()], expectedPaths) ||
     !same(diffPaths, expectedPaths) ||
     !same(
-      [...classification.contractPaths].sort(),
+      [...classification.contractPaths].sort(comparePaths),
       candidates.map((candidate) => candidate.path),
     )
   )
