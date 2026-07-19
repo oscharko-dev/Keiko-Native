@@ -888,24 +888,24 @@ function workflowWritePermissions(workflow) {
 
 function workflowEvents(workflow) {
   const lines = workflow.split(/\r?\n/u);
-  const start = lines.findIndex((line) => line === "on:");
+  const start = lines.indexOf("on:");
   if (start === -1) return [];
   const end = lines.findIndex(
     (line, index) => index > start && /^\S[^:]*:/u.test(line),
   );
   return lines
     .slice(start + 1, end === -1 ? lines.length : end)
-    .map((line) => /^  ([A-Za-z_][A-Za-z0-9_-]*):/u.exec(line)?.[1])
+    .map((line) => /^ {2}([A-Za-z_][A-Za-z0-9_-]*):/u.exec(line)?.[1])
     .filter((event) => event !== undefined);
 }
 
 function workflowJobs(workflow) {
   const lines = workflow.split(/\r?\n/u);
-  const start = lines.findIndex((line) => line === "jobs:");
+  const start = lines.indexOf("jobs:");
   if (start === -1) return [];
   return lines
     .slice(start + 1)
-    .map((line) => /^  ([A-Za-z][A-Za-z0-9_-]*):\s*$/u.exec(line)?.[1])
+    .map((line) => /^ {2}([A-Za-z][A-Za-z0-9_-]*):\s*$/u.exec(line)?.[1])
     .filter((job) => job !== undefined);
 }
 
@@ -930,23 +930,36 @@ function workflowPermissionDeclarations(workflow) {
 function workflowRunCommands(workflow) {
   const lines = workflow.split(/\r?\n/u);
   const commands = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    const match = /^(\s*)(?:-\s*)?run:\s*(.*)$/u.exec(lines[index]);
-    if (match === null) continue;
-    if (match[2] !== "|") {
-      commands.push(match[2]);
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index];
+    const indentation = line.length - line.trimStart().length;
+    const item = line.trimStart();
+    const run = item.startsWith("-") ? item.slice(1).trimStart() : item;
+    if (!run.startsWith("run:")) {
+      index += 1;
       continue;
     }
-    const indentation = match[1].length;
-    for (index += 1; index < lines.length; index += 1) {
-      const line = lines[index];
-      if (line.trim() === "") continue;
-      const currentIndentation = line.length - line.trimStart().length;
+    const value = run.slice("run:".length).trimStart();
+    if (value !== "|") {
+      commands.push(value);
+      index += 1;
+      continue;
+    }
+    index += 1;
+    while (index < lines.length) {
+      const blockLine = lines[index];
+      if (blockLine.trim() === "") {
+        index += 1;
+        continue;
+      }
+      const currentIndentation =
+        blockLine.length - blockLine.trimStart().length;
       if (currentIndentation <= indentation) {
-        index -= 1;
         break;
       }
-      commands.push(line.trim());
+      commands.push(blockLine.trim());
+      index += 1;
     }
   }
   return commands;
@@ -1086,9 +1099,7 @@ function inertControlWorkflowFailures(
           `${name} workflow has unexpected ${surface}; inert shape must remain exact.`,
       ),
   );
-  if (
-    !/    permissions:\r?\n      contents: read\r?\n    steps:/u.test(workflow)
-  )
+  if (!/ {4}permissions:\r?\n {6}contents: read\r?\n {4}steps:/u.test(workflow))
     markerFailures.push(
       `${name} workflow is missing the exact job permission block.`,
     );
