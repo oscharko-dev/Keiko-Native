@@ -139,7 +139,7 @@ function surface(
           { className: "eyebrow" },
           "FOUNDATION v0.1 · INTERN",
         ),
-        createElement("h1", { id: "surface-title" }, view.title),
+        surfaceTitle(view.kind, view.title),
         createElement("p", { className: "lede" }, view.explanation),
         createElement(
           "button",
@@ -154,7 +154,7 @@ function surface(
         "div",
         { className: "content-card" },
         createElement("p", { className: "eyebrow" }, "ÜBER DIESE VERSION"),
-        createElement("h1", { id: "surface-title" }, view.productName),
+        surfaceTitle(view.kind, view.productName),
         createElement("p", { className: "lede" }, view.statement),
         createElement(
           "dl",
@@ -191,7 +191,7 @@ function surface(
         "div",
         { className: "content-card" },
         createElement("p", { className: "eyebrow" }, "UPDATE-STATUS"),
-        createElement("h1", { id: "surface-title" }, "Interner Build"),
+        surfaceTitle(view.kind, "Interner Build"),
         createElement("p", { className: "lede" }, view.message),
         createElement(
           "p",
@@ -245,7 +245,7 @@ function canvasSurface(
     "div",
     { className: "canvas-card" },
     createElement("p", { className: "eyebrow" }, "LEERE FOUNDATION-FLÄCHE"),
-    createElement("h1", { id: "surface-title" }, "Die Grundlage läuft."),
+    surfaceTitle(view.kind, "Die Grundlage läuft."),
     createElement(
       "p",
       { className: "lede" },
@@ -290,6 +290,21 @@ function navButton(
     { type: "button", className: "nav-button", onClick: () => void action() },
     label,
   );
+}
+
+function surfaceTitle(
+  kind: FoundationView["kind"],
+  title: string,
+): ReactElement {
+  return createElement(
+    "h1",
+    { id: "surface-title", key: kind, tabIndex: -1, ref: focusSurfaceTitle },
+    title,
+  );
+}
+
+function focusSurfaceTitle(title: HTMLHeadingElement | null): void {
+  title?.focus();
 }
 
 function metadata(label: string, value: string): ReactElement {
