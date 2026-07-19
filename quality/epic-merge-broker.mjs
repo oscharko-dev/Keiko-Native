@@ -16,6 +16,7 @@ const commit = (value) =>
 const digest = (value) =>
   typeof value === "string" && /^[0-9a-f]{64}$/u.test(value);
 const uint = (value) => Number.isSafeInteger(value) && value >= 0;
+const compareText = (left, right) => (left > right) - (left < right);
 const scalarTypes = Object.freeze({ boolean: "bool", string: "string" });
 function exactNode(value) {
   if (value === null) return { type: "null" };
@@ -24,7 +25,7 @@ function exactNode(value) {
   if (record(value)) {
     return {
       fields: Object.keys(value)
-        .toSorted()
+        .toSorted(compareText)
         .map((name) => ({ name, value: exactNode(value[name]) })),
       type: "record",
     };
@@ -32,15 +33,12 @@ function exactNode(value) {
   const type = uint(value) ? "uint" : scalarTypes[typeof value];
   return { type, value };
 }
-const failed = (action, code) =>
-  Object.assign(
-    { action, code },
-    { automation: false, ok: false, retry: false },
-  );
+const inactive = Object.freeze({ automation: false, ok: false, retry: false });
+const active = Object.freeze({ automation: true, ok: true, retry: false });
+const failed = (action, code) => ({ action, code, ...inactive });
 const humanOnly = (code) => failed("human_only", code);
 const noAction = (code) => failed("none", code);
-const automated = (action, extra = {}) =>
-  Object.assign({ action, automation: true, ok: true, retry: false }, extra);
+const automated = (action, extra = {}) => ({ action, ...active, ...extra });
 // prettier-ignore
 const semanticsKeys = Object.freeze(["completePagination", "cursorOrdering", "dualRefConditional", "exactOutcome", "fencing", "liveProbe", "stableReads"]);
 // prettier-ignore
@@ -72,7 +70,8 @@ const preSubmitKeys = Object.freeze(["head", "issueFence", "pullRequest", "repos
 // prettier-ignore
 const brokerReadKeys = Object.freeze(["composition", "contractFingerprint", "cursor", "draft", "evidence", "handoffInput", "head", "issueIdentity", "issueUpdated", "lifecycle", "mergeable", "pagination", "pullRequest", "readiness", "repository", "source", "target", "targetTip"]);
 const exactKeys = (value, keys) =>
-  record(value) && same(Object.keys(value).sort(), [...keys].sort());
+  record(value) &&
+  same(Object.keys(value).toSorted(compareText), keys.toSorted(compareText));
 function locksProven(locks) {
   if (!exactKeys(locks, ["issue", "order", "target"])) return false;
   if (!same(locks.order, ["issue", "target"])) return false;
@@ -205,7 +204,7 @@ function providerReadProven(read, expected) {
 }
 function observedRead(read, expected) {
   if (!providerReadProven(read, expected)) return { kind: "human_only" };
-  if (read.target === "dev" || !/^epic\//u.test(read.target))
+  if (read.target === "dev" || !read.target.startsWith("epic/"))
     return { kind: "human_only" };
   const eligible = [
     read.lifecycle === "status: ready for human review",

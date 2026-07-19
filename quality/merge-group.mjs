@@ -17,6 +17,7 @@ const record = (value) =>
 const text = (value) => typeof value === "string" && value.length > 0;
 const commit = (value) =>
   typeof value === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(value);
+const compareText = (left, right) => (left > right) - (left < right);
 const digest = (value) =>
   typeof value === "string" && /^[0-9a-f]{64}$/u.test(value);
 const typed = (type, value) => ({ type, value });
@@ -29,7 +30,8 @@ const scalarType = (value) =>
     ? "uint"
     : scalarTypes[typeof value];
 const exactKeys = (value, keys) =>
-  record(value) && same(Object.keys(value).sort(), [...keys].sort());
+  record(value) &&
+  same(Object.keys(value).toSorted(compareText), keys.toSorted(compareText));
 // prettier-ignore
 const normalProducerKeys = Object.freeze(["Issue contract current", "Lifecycle handoff", "PR contract"]);
 // prettier-ignore
@@ -46,7 +48,7 @@ function exactNode(value) {
   if (record(value)) {
     return {
       fields: Object.keys(value)
-        .toSorted()
+        .toSorted(compareText)
         .map((name) => field(name, exactNode(value[name]))),
       type: "record",
     };
@@ -127,7 +129,7 @@ function pageMembers(page, index) {
     Array.isArray(page.members),
     text(page.start),
     text(page.end),
-    same(Object.keys(page).sort(), keys.sort()),
+    same(Object.keys(page).toSorted(compareText), keys.toSorted(compareText)),
   ];
   if (!shape.every(Boolean)) return undefined;
   return page.members.every(Number.isSafeInteger) ? page.members : undefined;
