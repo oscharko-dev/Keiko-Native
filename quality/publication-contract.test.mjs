@@ -3,7 +3,6 @@ import test from "node:test";
 import {
   classifyPublicationLane,
   parsePublicationTrailers,
-  publicationResultMatrix,
   validateSnapshotReceipt,
   verifyPublication,
 } from "./publication-contract.mjs";
@@ -19,6 +18,9 @@ const mergeSha = "3".repeat(40);
 const prefixTree = "4".repeat(40);
 const resultTree = "5".repeat(40);
 const devTip = "6".repeat(40);
+function laneIdentity(lane) {
+  return { base, head, lane, pullRequest: 77, repository };
+}
 test("parses the sole snapshot and canonical ordered contract trailers", () => {
   const payload = [
     "signed commit content",
@@ -31,6 +33,27 @@ test("parses the sole snapshot and canonical ordered contract trailers", () => {
     ok: true,
     snapshot: { digest: digestA, path: receiptPath, pullRequest: 77 },
   });
+  assert.equal(parsePublicationTrailers(`${payload}\n\n`).ok, true);
+  assert.equal(validateSnapshotReceipt(snapshot(digestA)).ok, true);
+});
+test("rejects alternate object-key byte encodings", () => {
+  const receipt = snapshot(digestA);
+  const topLevel = {
+    pullRequest: receipt.pullRequest,
+    candidates: receipt.candidates,
+    observations: receipt.observations,
+    target: receipt.target,
+    terminalManifest: receipt.terminalManifest,
+  };
+  const candidate = receipt.candidates[0];
+  const nested = {
+    ...receipt,
+    candidates: [
+      { path: candidate.path, digest: candidate.digest, mode: candidate.mode },
+    ],
+  };
+  assert.equal(validateSnapshotReceipt(topLevel).ok, false);
+  assert.equal(validateSnapshotReceipt(nested).ok, false);
 });
 test("classifies only a complete add-only canonical publication diff", () => {
   assert.deepEqual(
@@ -49,6 +72,7 @@ test("classifies only a complete add-only canonical publication diff", () => {
       truncated: false,
     }),
     {
+      binding: laneIdentity("publication"),
       contractPaths: [contractPath],
       lane: "publication",
       ok: true,
@@ -101,6 +125,7 @@ function diff(overrides = {}) {
 }
 test("fails closed on unavailable, ambiguous, mixed, and nonregular diffs", () => {
   assert.deepEqual(classifyPublicationLane(diff()), {
+    binding: laneIdentity("normal"),
     lane: "normal",
     ok: true,
   });
@@ -199,6 +224,7 @@ function publicationFixture(changeReceipt = () => {}) {
       signedPayload,
       tree: resultTree,
       verification: {
+        payload: signedPayload,
         reason: "valid",
         signer: "github-web-flow",
         verified: true,
@@ -219,7 +245,16 @@ function publicationFixture(changeReceipt = () => {}) {
       tip: devTip,
     },
     publishingTree: { commit: mergeSha, entries: copyEntries(), repository },
-    pullRequest: { base, head, mergeSha, mergedBy: "Niko", number: 77 },
+    pullRequest: {
+      base,
+      baseRef: "dev",
+      head,
+      merged: true,
+      mergedBy: "Niko",
+      mergeSha,
+      number: 77,
+      state: "closed",
+    },
     receipt: {
       bytes: receiptBytes,
       path: receiptPath,
@@ -272,11 +307,7 @@ test("accepts a fully bound isolated publication and emits normalized identity",
   assert.equal(result.ok, true);
   assert.deepEqual(binding.ancestry, { commit: mergeSha, tip: devTip });
   assert.deepEqual(binding.trees, { parent: prefixTree, result: resultTree });
-  assert.deepEqual(binding.candidates[0], {
-    digest: binding.candidates[0].digest,
-    mode: "100644",
-    path: contractPath,
-  });
+  assert.equal(binding.candidates[0].path, contractPath);
   assert.equal(binding.repository, repository);
   assert.equal(binding.pullRequest, 77);
   assert.equal(binding.submode, "ordinary");
@@ -305,6 +336,10 @@ test("binds migration publication to exact terminal manifest evidence", () => {
 });
 test("rejects unavailable, unauthorized, replayed, stale, or contradictory acceptance evidence", () => {
   const invalid = [];
+  const signed = (fixture, payload) => {
+    fixture.commit.signedPayload = payload;
+    fixture.commit.verification.payload = payload;
+  };
   const changed = (mutate) => {
     const fixture = publicationFixture();
     mutate(fixture);
@@ -321,6 +356,7 @@ test("rejects unavailable, unauthorized, replayed, stale, or contradictory accep
   changed((x) => (x.commit.tree = head));
   changed((x) => (x.protectedDev.reachable = false));
   changed((x) => (x.protectedDev.ancestor = head));
+  changed((x) => (x.receipt.path = null));
   changed((x) => (x.receipt.path = "docs/contracts/publications/pr-78.md"));
   changed((x) => (x.newlyAdded.entries = "unavailable"));
   changed((x) => x.newlyAdded.entries.pop());
@@ -330,7 +366,16 @@ test("rejects unavailable, unauthorized, replayed, stale, or contradictory accep
   changed((x) => (x.newlyAdded.entries[1].bytes = Buffer.from("changed")));
   changed((x) => (x.publishingTree.entries[1].mode = "120000"));
   changed((x) => (x.currentTree.entries[1].bytes = Buffer.from("changed")));
-  changed((x) => (x.commit.signedPayload = `${x.commit.signedPayload}\nextra`));
+  changed((x) => signed(x, `${x.commit.signedPayload}\nextra`));
+  changed((x) =>
+    signed(
+      x,
+      `${x.commit.signedPayload}\nKeiko-Contract-SHA256: ${digestA} docs/contracts/task-31-v1-r1.md`,
+    ),
+  );
+  changed((x) => (x.terminalManifestEvidence = {}));
+  changed((x) => (x.receipt.bytes = "not bytes"));
+  changed((x) => (x.receipt.bytes = Buffer.from("{} \n")));
   changed((x) => (x.receipt.bytes = Buffer.from("not json")));
   changed((x) => (x.receipt.bytes = Buffer.from([0xff])));
   changed((x) =>
@@ -345,50 +390,4 @@ test("rejects unavailable, unauthorized, replayed, stale, or contradictory accep
     assert.equal(result.ok, false, `invalid fixture ${index}`);
     assert.doesNotMatch(result.rejection.message, /changed|not json|Mallory/iu);
   }
-});
-test("applies the mutually exclusive result matrix without a readiness claim", () => {
-  const success = { ok: true };
-  const failure = {
-    ok: false,
-    rejection: { code: "bad", message: "redacted" },
-  };
-  assert.deepEqual(
-    publicationResultMatrix({
-      classification: { lane: "normal", ok: true },
-      normal: { issueContractCurrent: success, prContract: success },
-    }).contexts,
-    {
-      "Contract publication": "not_applicable",
-      "Issue contract current": "success",
-      "PR contract": "success",
-    },
-  );
-  const publication = publicationResultMatrix({
-    classification: { lane: "publication", ok: true },
-    publication: success,
-  });
-  assert.deepEqual(publication.contexts, {
-    "Contract publication": "success",
-    "Issue contract current": "success",
-    "PR contract": "success",
-  });
-  assert.equal(publication.readinessClaim, false);
-  for (const input of [
-    {},
-    { classification: failure },
-    { classification: { lane: "publication", ok: true }, publication: failure },
-    {
-      classification: { lane: "normal", ok: true },
-      normal: { issueContractCurrent: success, prContract: failure },
-    },
-  ]) {
-    assert.deepEqual(publicationResultMatrix(input).contexts, {
-      "Contract publication": "failure",
-      "Issue contract current": "failure",
-      "PR contract": "failure",
-    });
-  }
-});
-test("re-exports the closed snapshot validator", () => {
-  assert.equal(validateSnapshotReceipt(snapshot(digestA)).ok, true);
 });

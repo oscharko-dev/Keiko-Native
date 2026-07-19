@@ -1,29 +1,18 @@
 import { parseContractPath } from "./repository-contract.mjs";
-const receiptKeys = [
-  "candidates",
-  "observations",
-  "pullRequest",
-  "target",
-  "terminalManifest",
-];
-const observationKeys = [
-  "candidatePath",
-  "fingerprint",
-  "lifecycleLabels",
-  "number",
-  "predecessor",
-  "readiness",
-  "recoveries",
-  "revision",
-  "state",
-  "type",
-  "version",
-];
+const keys = (value) => value.split(" ");
+const receiptKeys = keys(
+  "candidates observations pullRequest target terminalManifest",
+);
+const observationKeys = keys(
+  "candidatePath fingerprint lifecycleLabels number predecessor readiness " +
+    "recoveries revision state type version",
+);
 const candidateKeys = ["digest", "mode", "path"];
 const bindingKeys = ["digest", "path"];
 const readinessPattern =
-  /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/issues\/[1-9]\d*#issuecomment-[1-9]\d*$/u;
+  /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/issues\/([1-9]\d*)#issuecomment-[1-9]\d*$/u;
 const manifestPattern = /^docs\/qa\/[a-z0-9-]+-v[1-9]\d*\.md$/u;
+const actorPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u;
 function reject(code) {
   return {
     ok: false,
@@ -64,9 +53,8 @@ export function publicationEntryMap(evidence, repository) {
     !record(evidence) ||
     evidence.repository !== repository ||
     !Array.isArray(evidence.entries)
-  ) {
+  )
     return undefined;
-  }
   const entries = new Map();
   for (const entry of evidence.entries) {
     if (
@@ -75,9 +63,8 @@ export function publicationEntryMap(evidence, repository) {
       entry.mode !== "100644" ||
       !(entry.bytes instanceof Uint8Array) ||
       entries.has(entry.path)
-    ) {
+    )
       return undefined;
-    }
     entries.set(entry.path, entry);
   }
   return entries;
@@ -102,6 +89,19 @@ export function publicationEvidenceMaps(input) {
     ? { failure: "invalid_tree_evidence" }
     : { added, current, publishing };
 }
+function validPullRequest(pr, commit) {
+  return (
+    record(pr) &&
+    positiveInteger(pr.number) &&
+    sha(pr.base) &&
+    sha(pr.head) &&
+    sha(pr.mergeSha) &&
+    pr.mergeSha === commit?.sha &&
+    pr.state === "closed" &&
+    pr.merged === true &&
+    pr.baseRef === "dev"
+  );
+}
 export function publicationIdentityFailure(input) {
   const pr = input?.pullRequest;
   const commit = input?.commit;
@@ -113,22 +113,17 @@ export function publicationIdentityFailure(input) {
   ) {
     return "invalid_publication_identity";
   }
-  if (
-    !record(pr) ||
-    !positiveInteger(pr.number) ||
-    !sha(pr.base) ||
-    !sha(pr.head) ||
-    !sha(pr.mergeSha) ||
-    pr.mergeSha !== commit?.sha
-  ) {
-    return "invalid_pull_request_identity";
-  }
+  if (!validPullRequest(pr, commit)) return "invalid_pull_request_identity";
   if (
     !record(verification) ||
     verification.verified !== true ||
     verification.reason !== "valid" ||
-    typeof verification.signer !== "string" ||
+    typeof commit.signedPayload !== "string" ||
+    verification.payload !== commit.signedPayload ||
+    verification.signer !== "github-web-flow" ||
     verification.signer === pr.mergedBy ||
+    typeof pr.mergedBy !== "string" ||
+    !actorPattern.test(pr.mergedBy) ||
     !Array.isArray(input.allowlistedMergers) ||
     !input.allowlistedMergers.includes(pr.mergedBy)
   ) {
@@ -165,7 +160,7 @@ function exactKeys(value, expected) {
   const actual = Object.keys(value);
   return (
     actual.length === expected.length &&
-    expected.every((key) => Object.hasOwn(value, key))
+    actual.every((key, index) => key === expected[index])
   );
 }
 function positiveInteger(value) {
@@ -203,18 +198,16 @@ function candidateFailure(candidate) {
     !parseContractPath(candidate.path).ok ||
     !digest(candidate.digest) ||
     candidate.mode !== "100644"
-  ) {
+  )
     return "invalid_candidate";
-  }
   return undefined;
 }
 function bindingSetFailure(bindings) {
   if (
     !Array.isArray(bindings) ||
     bindings.some((item) => !contractBinding(item))
-  ) {
+  )
     return "invalid_binding_set";
-  }
   return sortedUnique(bindings, (item) => item.path)
     ? undefined
     : "noncanonical_binding_set";
@@ -225,9 +218,8 @@ function lifecycleFailure(labels) {
     labels.length !== 1 ||
     typeof labels[0] !== "string" ||
     !labels[0].startsWith("status: ")
-  ) {
+  )
     return "invalid_lifecycle_labels";
-  }
   return undefined;
 }
 function observationIdentityFailure(observation) {
@@ -253,10 +245,13 @@ function observationFailure(observation) {
   ) {
     return "invalid_observation";
   }
+  const readiness =
+    typeof observation.readiness === "string"
+      ? readinessPattern.exec(observation.readiness)
+      : null;
   if (
     observation.readiness !== null &&
-    (typeof observation.readiness !== "string" ||
-      !readinessPattern.test(observation.readiness))
+    (readiness === null || Number(readiness[1]) !== observation.number)
   ) {
     return "invalid_readiness_identity";
   }
@@ -271,21 +266,43 @@ function observationFailure(observation) {
     bindingSetFailure(observation.recoveries)
   );
 }
-function predecessorConsistency(observation) {
-  if (observation.predecessor === null) return undefined;
-  const predecessor = parseContractPath(observation.predecessor.path).contract;
-  return predecessor.issue === observation.number &&
-    (predecessor.version < observation.version ||
-      (predecessor.version === observation.version &&
-        predecessor.revision < observation.revision))
-    ? undefined
-    : "invalid_predecessor_order";
+function historyFailure(observation, candidate) {
+  const current = parseContractPath(observation.candidatePath).contract;
+  const predecessor = observation.predecessor;
+  const previous =
+    predecessor === null ? null : parseContractPath(predecessor.path).contract;
+  const sameVersion = previous?.version === current.version;
+  const start = sameVersion ? previous.revision + 1 : 1;
+  if (
+    (previous !== null &&
+      (previous.issue !== current.issue ||
+        ![previous.version, previous.version + 1].includes(current.version) ||
+        (sameVersion && previous.type !== current.type))) ||
+    (predecessor !== null && predecessor.digest === candidate.digest) ||
+    start > current.revision ||
+    observation.recoveries.length !== current.revision - start
+  )
+    return "invalid_history_transition";
+  const digests = new Set([candidate.digest, predecessor?.digest]);
+  for (const recovery of observation.recoveries) {
+    const identity = parseContractPath(recovery.path).contract;
+    if (
+      identity.issue !== current.issue ||
+      identity.type !== current.type ||
+      identity.version !== current.version ||
+      identity.revision < start ||
+      identity.revision >= current.revision ||
+      digests.has(recovery.digest)
+    )
+      return "invalid_recovery_history";
+    digests.add(recovery.digest);
+  }
+  return undefined;
 }
 function receiptShapeFailure(receipt) {
   if (!exactKeys(receipt, receiptKeys)) return "invalid_receipt_schema";
-  if (receipt.target !== "dev" || !positiveInteger(receipt.pullRequest)) {
+  if (receipt.target !== "dev" || !positiveInteger(receipt.pullRequest))
     return "invalid_receipt_authority";
-  }
   if (
     !Array.isArray(receipt.observations) ||
     receipt.observations.length === 0 ||
@@ -297,15 +314,13 @@ function receiptShapeFailure(receipt) {
   if (
     receipt.terminalManifest !== null &&
     !manifestBinding(receipt.terminalManifest)
-  ) {
+  )
     return "invalid_terminal_manifest";
-  }
   return undefined;
 }
 function observationSetFailure(observations) {
   for (const observation of observations) {
-    const failure =
-      observationFailure(observation) ?? predecessorConsistency(observation);
+    const failure = observationFailure(observation);
     if (failure !== undefined) return failure;
   }
   return sortedUnique(observations, (item) =>
@@ -324,13 +339,18 @@ function candidateSetFailure(candidates) {
     : "noncanonical_candidate_set";
 }
 function candidateEqualityFailure(receipt) {
-  if (receipt.candidates.length !== receipt.observations.length) {
+  if (receipt.candidates.length !== receipt.observations.length)
     return "candidate_identity_mismatch";
+  const candidates = new Map(
+    receipt.candidates.map((candidate) => [candidate.path, candidate]),
+  );
+  for (const observation of receipt.observations) {
+    const candidate = candidates.get(observation.candidatePath);
+    if (candidate === undefined) return "candidate_identity_mismatch";
+    const failure = historyFailure(observation, candidate);
+    if (failure !== undefined) return failure;
   }
-  const paths = new Set(receipt.candidates.map((candidate) => candidate.path));
-  return receipt.observations.every((item) => paths.has(item.candidatePath))
-    ? undefined
-    : "candidate_identity_mismatch";
+  return undefined;
 }
 function publicationSubmode(receipt) {
   const ordinary = receipt.observations.every(

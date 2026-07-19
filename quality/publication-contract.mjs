@@ -129,6 +129,10 @@ function publicationDiffFailure(files, kinds) {
   }
   return undefined;
 }
+function laneBinding(input, lane) {
+  const { base, head, pullRequest, repository } = input;
+  return { base, head, lane, pullRequest, repository };
+}
 export function classifyPublicationLane(input) {
   if (
     !validEnvelope(input) ||
@@ -153,7 +157,7 @@ export function classifyPublicationLane(input) {
   const receipts = input.files.filter((_, index) => kinds[index] === "receipt");
   if (contractPaths.length === 0 && receipts.length === 0) {
     return input.normalValidated === true
-      ? { lane: "normal", ok: true }
+      ? { binding: laneBinding(input, "normal"), lane: "normal", ok: true }
       : reject(
           "ambiguous_normal_diff",
           "Normal lane requires trusted validation.",
@@ -172,6 +176,7 @@ export function classifyPublicationLane(input) {
     );
   }
   return {
+    binding: laneBinding(input, "publication"),
     contractPaths,
     lane: "publication",
     ok: true,
@@ -357,13 +362,23 @@ const failedContexts = Object.freeze({
 });
 export function publicationResultMatrix(input) {
   const classification = input?.classification;
+  const binding = classification?.binding;
+  const classified =
+    classification?.ok === true &&
+    validEnvelope(binding) &&
+    binding.lane === classification.lane;
+  const matches = (result) =>
+    result?.ok === true &&
+    ["repository", "pullRequest", "base", "head", "lane"].every(
+      (key) => result.binding?.[key] === binding[key],
+    );
   let contexts = failedContexts;
   let lane = "invalid";
-  if (classification?.ok && classification.lane === "normal") {
+  if (classified && classification.lane === "normal") {
     lane = "normal";
     if (
-      input.normal?.prContract?.ok &&
-      input.normal?.issueContractCurrent?.ok
+      matches(input.normal?.prContract) &&
+      matches(input.normal?.issueContractCurrent)
     ) {
       contexts = {
         "Contract publication": "not_applicable",
@@ -371,9 +386,9 @@ export function publicationResultMatrix(input) {
         "PR contract": "success",
       };
     }
-  } else if (classification?.ok && classification.lane === "publication") {
+  } else if (classified && classification.lane === "publication") {
     lane = "publication";
-    if (input.publication?.ok) {
+    if (matches(input.publication)) {
       contexts = {
         "Contract publication": "success",
         "Issue contract current": "success",
