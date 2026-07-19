@@ -285,7 +285,9 @@ function normalizedBinding(input, validation) {
     candidates: binding.candidates.map((candidate) => ({ ...candidate })),
     diff: {
       ...input.diff,
-      files: input.diff.files.map((file) => ({ ...file })),
+      files: input.diff.files
+        .map((file) => ({ ...file }))
+        .sort((left, right) => comparePaths(left.path, right.path)),
     },
     head: input.pullRequest.head,
     lane: "publication",
