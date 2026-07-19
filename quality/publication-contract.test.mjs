@@ -272,27 +272,16 @@ function migrationFixture() {
     digest: "c".repeat(64),
     path: "docs/qa/repository-migration-manifest-v1.md",
   };
+  let entries;
   const fixture = publicationFixture((receipt) => {
     receipt.observations[0].lifecycleLabels = ["status: ready"];
     receipt.observations[0].readiness = readiness;
     receipt.observations[0].readinessProducer =
       "issue-readiness.yml@protected-dev";
     receipt.terminalManifest = manifest;
+    entries = structuredClone(receipt.observations);
   });
-  fixture.terminalManifestEvidence = {
-    ...manifest,
-    entries: [
-      {
-        candidatePath: contractPath,
-        fingerprint: digestB,
-        number: 30,
-        readiness,
-        revision: 1,
-        type: "task",
-        version: 2,
-      },
-    ],
-  };
+  fixture.terminalManifestEvidence = { ...manifest, entries };
   return fixture;
 }
 const decoyEntry = () => ({

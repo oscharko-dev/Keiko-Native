@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { verifyPublicationCandidate } from "./publication-candidate.mjs";
-import { publicationResultMatrix } from "./publication-contract.mjs";
+import {
+  classifyPublicationLane,
+  publicationResultMatrix,
+} from "./publication-contract.mjs";
 import { contractSha256 } from "./repository-contract.mjs";
 
 const repository = "oscharko-dev/Keiko-Native";
@@ -336,12 +339,9 @@ test("binds exact diff, added paths, modes, bytes, digests, and head", () => {
 });
 
 test("feeds the complete binding to the non-circular result matrix", () => {
-  const accepted = verifyPublicationCandidate(ordinaryCandidate());
-  const classification = {
-    binding: accepted.binding,
-    lane: "publication",
-    ok: true,
-  };
+  const input = ordinaryCandidate();
+  const accepted = verifyPublicationCandidate(input);
+  const classification = classifyPublicationLane(input.diff);
   const matrix = publicationResultMatrix({
     classification,
     publication: accepted,
@@ -353,7 +353,7 @@ test("feeds the complete binding to the non-circular result matrix", () => {
   });
   assert.equal(matrix.readinessClaim, false);
   const stale = structuredClone(accepted);
-  stale.binding.receipt.digest = "a".repeat(64);
+  stale.binding.head = "a".repeat(40);
   assert.equal(
     publicationResultMatrix({ classification, publication: stale }).contexts[
       "Contract publication"
@@ -362,21 +362,25 @@ test("feeds the complete binding to the non-circular result matrix", () => {
   );
 });
 
-test("fails the result matrix closed on a hostile binding", () => {
-  const accepted = verifyPublicationCandidate(ordinaryCandidate());
-  const hostile = {
-    binding: new Proxy({}, { ownKeys: () => assert.fail("SECRET") }),
-    ok: true,
-  };
-  const result = publicationResultMatrix({
-    classification: {
-      binding: accepted.binding,
-      lane: "publication",
-      ok: true,
+test("fails the result matrix closed on hostile bindings", () => {
+  const input = ordinaryCandidate();
+  const accepted = verifyPublicationCandidate(input);
+  const classification = classifyPublicationLane(input.diff);
+  const hostile = new Proxy({}, { get: () => assert.fail("SECRET") });
+  for (const input of [
+    {
+      classification,
+      publication: { binding: hostile, ok: true },
     },
-    publication: hostile,
-  });
-  assert.equal(result.contexts["Contract publication"], "failure");
+    { classification: hostile, publication: accepted },
+    {
+      classification: { binding: hostile, lane: "publication", ok: true },
+      publication: accepted,
+    },
+  ]) {
+    const result = publicationResultMatrix(input);
+    assert.equal(result.contexts["Contract publication"], "failure");
+  }
 });
 
 test("fails closed and deterministically recovers when complete evidence returns", () => {

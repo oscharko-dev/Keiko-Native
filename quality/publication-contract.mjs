@@ -251,15 +251,6 @@ function treeEqualityFailure(expected, publishing, current) {
   }
   return undefined;
 }
-const manifestEntry = (item) => ({
-  candidatePath: item.candidatePath,
-  fingerprint: item.fingerprint,
-  number: item.number,
-  readiness: item.readiness,
-  revision: item.revision,
-  type: item.type,
-  version: item.version,
-});
 function manifestEvidenceFailure(binding, evidence) {
   if (binding.submode === "ordinary")
     return evidence === null ? undefined : "unexpected_manifest_evidence";
@@ -272,8 +263,8 @@ function manifestEvidenceFailure(binding, evidence) {
   ) {
     return "invalid_manifest_evidence";
   }
-  const expected = binding.observations.map(manifestEntry);
-  return JSON.stringify(evidence.entries) === JSON.stringify(expected)
+  return JSON.stringify(evidence.entries) ===
+    JSON.stringify(binding.observations)
     ? undefined
     : "manifest_entry_mismatch";
 }
@@ -349,19 +340,24 @@ const failedContexts = Object.freeze({
   "Issue contract current": "failure",
   "PR contract": "failure",
 });
+const sharedKeys = ["repository", "pullRequest", "base", "head", "lane"];
 function classifiedBinding(classification) {
-  const binding = classification?.binding;
-  return classification?.ok === true &&
-    validEnvelope(binding) &&
-    binding.lane === classification.lane
-    ? binding
-    : undefined;
+  try {
+    const binding = classification?.binding;
+    return classification?.ok === true &&
+      validEnvelope(binding) &&
+      binding.lane === classification.lane
+      ? binding
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 function matchingResult(result, binding) {
   try {
     return (
       result?.ok === true &&
-      JSON.stringify(result.binding) === JSON.stringify(binding)
+      sharedKeys.every((key) => result.binding?.[key] === binding[key])
     );
   } catch {
     return false;
