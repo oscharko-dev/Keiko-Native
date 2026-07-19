@@ -11,12 +11,14 @@ use keiko_ui_port::{
 
 mod acknowledgement;
 pub mod document_nonce;
+mod foundation;
 #[cfg(feature = "tauri-host")]
 mod request_adapter;
 mod request_timing;
 #[cfg(feature = "tauri-host")]
 pub mod tauri_adapter;
 use acknowledgement::AcknowledgementState;
+pub use foundation::{FoundationHost, FoundationRequestOutput, foundation_request};
 #[cfg(feature = "tauri-host")]
 pub use request_adapter::{ApplicationRequestOutput, application_cancel, application_request};
 use request_timing::{InFlight, MonotonicClock, terminal_reason};
@@ -222,10 +224,9 @@ impl HostLifecycle {
     }
 
     pub fn complete_application_request(&mut self, accepted: AcceptedRequest) -> String {
-        let encoded = encode_success(&dispatch_health(
-            accepted.request.clone(),
-            current_build_identity(),
-        ));
+        let encoded = dispatch_health(accepted.request.clone(), current_build_identity())
+            .map(|response| encode_success(&response))
+            .unwrap_or_else(|| encode_error("unknown-request", ReasonCode::UnknownOperation));
         self.complete_with_encoded(accepted, encoded)
     }
 
@@ -257,6 +258,14 @@ impl HostLifecycle {
 
     fn complete_with_encoded(&mut self, accepted: AcceptedRequest, encoded: String) -> String {
         self.complete_with_acknowledgement(accepted, encoded).0
+    }
+
+    fn complete_foundation_request(
+        &mut self,
+        accepted: AcceptedRequest,
+        encoded: String,
+    ) -> String {
+        self.complete_with_encoded(accepted, encoded)
     }
 
     fn complete_with_acknowledgement(
@@ -337,10 +346,9 @@ impl HostLifecycle {
 
     #[cfg(test)]
     fn complete_unavailable(&mut self, accepted: AcceptedRequest) -> String {
-        let encoded = encode_success(&dispatch_health(
-            accepted.request.clone(),
-            current_build_identity(),
-        ));
+        let encoded = dispatch_health(accepted.request.clone(), current_build_identity())
+            .map(|response| encode_success(&response))
+            .unwrap_or_else(|| encode_error("unknown-request", ReasonCode::UnknownOperation));
         self.complete_with_availability(accepted, encoded, false).0
     }
 }

@@ -1,3 +1,5 @@
+import type { FoundationView, LinkDestination } from "./foundation";
+
 export interface HealthRequest {
   schemaVersion: 1;
   requestId: string;
@@ -24,6 +26,22 @@ export interface HealthResponse {
     };
   };
 }
+
+export interface FoundationResponse {
+  schemaVersion: 1;
+  requestId: string;
+  result: FoundationView;
+}
+
+type FoundationOperation =
+  | { kind: "foundation-load" }
+  | { kind: "dismiss-welcome" }
+  | { kind: "show-canvas" }
+  | { kind: "show-about" }
+  | { kind: "show-internal-update" }
+  | { kind: "commit-canvas-text"; committedText: string }
+  | { kind: "open-foundation-link"; destination: LinkDestination }
+  | { kind: "quit-application" };
 
 export type Invoke = (
   command: string,
@@ -130,7 +148,89 @@ export function createRendererPort(
     });
   }
 
-  return { health };
+  async function foundation(
+    operation: FoundationOperation,
+    signal?: AbortSignal,
+  ): Promise<FoundationResponse> {
+    if (signal?.aborted) throw new Error("foundation-request-cancelled");
+    const authority = await authorityProvider();
+    if (signal?.aborted) throw new Error("foundation-request-cancelled");
+    sequence += 1;
+    const request = {
+      schemaVersion: 1 as const,
+      requestId: canonicalRequestId(authority.generation, sequence),
+      sequence,
+      timeoutMs: 1000,
+      operation,
+    };
+    return new Promise((resolve, reject) => {
+      let terminal = false;
+      const finish = () => signal?.removeEventListener("abort", cancel);
+      const fail = (message: string) => {
+        if (terminal) return;
+        terminal = true;
+        finish();
+        reject(new Error(message));
+      };
+      const cancel = () => {
+        if (terminal) return;
+        const cancellation: CancelRequest = {
+          schemaVersion: 1,
+          requestId: request.requestId,
+        };
+        void invoke("application_cancel", {
+          generation: authority.generation,
+          documentNonce: authority.documentNonce,
+          request: JSON.stringify(cancellation),
+        }).catch(() => undefined);
+        fail("foundation-request-cancelled");
+      };
+      signal?.addEventListener("abort", cancel, { once: true });
+      void invoke("foundation_request", {
+        documentNonce: authority.documentNonce,
+        generation: authority.generation,
+        request: JSON.stringify(request),
+      }).then(
+        (encoded) => {
+          if (terminal) return;
+          let response: unknown;
+          try {
+            response = JSON.parse(encoded);
+          } catch {
+            fail("foundation-request-failed");
+            return;
+          }
+          if (
+            !isFoundationResponse(response, expectedSourceRevision) ||
+            response.requestId !== request.requestId
+          ) {
+            fail("foundation-request-failed");
+            return;
+          }
+          terminal = true;
+          finish();
+          resolve(response);
+        },
+        () => fail("foundation-request-failed"),
+      );
+      if (signal?.aborted) cancel();
+    });
+  }
+
+  return {
+    health,
+    loadFoundation: (signal?: AbortSignal) =>
+      foundation({ kind: "foundation-load" }, signal),
+    dismissWelcome: () => foundation({ kind: "dismiss-welcome" }),
+    showCanvas: () => foundation({ kind: "show-canvas" }),
+    showAbout: () => foundation({ kind: "show-about" }),
+    showUpdate: () => foundation({ kind: "show-internal-update" }),
+    commitCanvasText: (committedText: string) =>
+      foundation({ kind: "commit-canvas-text", committedText }),
+    openLink: (destination: LinkDestination) =>
+      foundation({ kind: "open-foundation-link", destination }),
+    quit: () => foundation({ kind: "quit-application" }),
+  };
 }
 
 export function canonicalRequestId(generation: number, sequence: number) {
@@ -180,6 +280,69 @@ export function isHealthResponse(
     build.sourceRevision === expectedRevision &&
     build.targetTriple === "aarch64-apple-darwin"
   );
+}
+
+export function isFoundationResponse(
+  value: unknown,
+  expectedRevision: string = expectedSourceRevision,
+): value is FoundationResponse {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["schemaVersion", "requestId", "result"]) ||
+    value.schemaVersion !== 1 ||
+    typeof value.requestId !== "string" ||
+    !isRecord(value.result)
+  ) {
+    return false;
+  }
+  const result = value.result;
+  switch (result.kind) {
+    case "welcome":
+      return (
+        hasExactKeys(result, ["kind", "title", "explanation"]) &&
+        typeof result.title === "string" &&
+        typeof result.explanation === "string"
+      );
+    case "canvas":
+      return (
+        hasExactKeys(result, ["kind", "committedText"]) &&
+        typeof result.committedText === "string" &&
+        new TextEncoder().encode(result.committedText).length <= 2048
+      );
+    case "about": {
+      if (
+        !hasExactKeys(result, [
+          "kind",
+          "productName",
+          "channel",
+          "version",
+          "sourceRevision",
+          "repositoryUrl",
+          "licenseUrl",
+          "statement",
+        ]) ||
+        result.productName !== "Keiko Native" ||
+        result.channel !== "internal" ||
+        typeof result.version !== "string" ||
+        result.sourceRevision !== expectedRevision ||
+        result.repositoryUrl !==
+          "https://github.com/oscharko-dev/Keiko-Native" ||
+        result.licenseUrl !==
+          `https://github.com/oscharko-dev/Keiko-Native/blob/${expectedRevision}/LICENSE` ||
+        typeof result.statement !== "string"
+      ) {
+        return false;
+      }
+      return true;
+    }
+    case "internal-update":
+      return (
+        hasExactKeys(result, ["kind", "message"]) &&
+        result.message === "Update-Prüfung für interne Builds nicht verfügbar."
+      );
+    default:
+      return false;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

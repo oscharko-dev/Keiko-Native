@@ -3,6 +3,7 @@ import {
   canonicalRequestId,
   createRendererPort,
   expectedSourceRevision,
+  isFoundationResponse,
   isHealthResponse,
   rendererAuthority,
   type HealthRequest,
@@ -304,5 +305,227 @@ describe("health response guard", () => {
         },
       }),
     ).toBe(false);
+  });
+});
+
+describe("closed Foundation port", () => {
+  const welcome = {
+    kind: "welcome",
+    title: "Willkommen bei Keiko Native v0.1.",
+    explanation: "Interne barrierefreie Grundlage.",
+  } as const;
+  const canvas = { kind: "canvas", committedText: "Grüße かな 😀" } as const;
+  const about = {
+    kind: "about",
+    productName: "Keiko Native",
+    channel: "internal",
+    version: "0.1.0",
+    sourceRevision: expectedSourceRevision,
+    repositoryUrl: "https://github.com/oscharko-dev/Keiko-Native",
+    licenseUrl: `https://github.com/oscharko-dev/Keiko-Native/blob/${expectedSourceRevision}/LICENSE`,
+    statement: "Interner Foundation-Build. Bewusst ohne produktive Features.",
+  } as const;
+  const update = {
+    kind: "internal-update",
+    message: "Update-Prüfung für interne Builds nicht verfügbar.",
+  } as const;
+
+  it("sends every accepted typed intent through only the Foundation command", async () => {
+    const operations: Array<Record<string, unknown>> = [];
+    const invoke = vi.fn(
+      async (
+        command: string,
+        arguments_: {
+          documentNonce: string;
+          generation: number;
+          request: string;
+        },
+      ) => {
+        const request = JSON.parse(arguments_.request) as {
+          requestId: string;
+          operation: Record<string, unknown>;
+        };
+        if (command === "application_cancel") return "cancelled";
+        operations.push(request.operation);
+        const result =
+          request.operation.kind === "foundation-load"
+            ? welcome
+            : request.operation.kind === "show-about" ||
+                request.operation.kind === "open-foundation-link"
+              ? about
+              : request.operation.kind === "show-internal-update"
+                ? update
+                : canvas;
+        return JSON.stringify({
+          schemaVersion: 1,
+          requestId: request.requestId,
+          result,
+        });
+      },
+    );
+    const port = createRendererPort(invoke, async () => authority);
+
+    await expect(port.loadFoundation()).resolves.toMatchObject({
+      result: welcome,
+    });
+    await port.dismissWelcome();
+    await port.showCanvas();
+    await expect(port.showAbout()).resolves.toMatchObject({ result: about });
+    await expect(port.showUpdate()).resolves.toMatchObject({ result: update });
+    await port.commitCanvasText(canvas.committedText);
+    await port.openLink("repository");
+    await port.openLink("license");
+    await port.quit();
+
+    expect(operations).toEqual([
+      { kind: "foundation-load" },
+      { kind: "dismiss-welcome" },
+      { kind: "show-canvas" },
+      { kind: "show-about" },
+      { kind: "show-internal-update" },
+      { kind: "commit-canvas-text", committedText: canvas.committedText },
+      { kind: "open-foundation-link", destination: "repository" },
+      { kind: "open-foundation-link", destination: "license" },
+      { kind: "quit-application" },
+    ]);
+    expect(
+      invoke.mock.calls.every(([command]) => command === "foundation_request"),
+    ).toBe(true);
+  });
+
+  it("cancels pre-authority, in-flight and raced Foundation work without accepting late success", async () => {
+    const preAborted = new AbortController();
+    preAborted.abort();
+    const unused = vi.fn(async () => "unused");
+    await expect(
+      createRendererPort(unused, async () => authority).loadFoundation(
+        preAborted.signal,
+      ),
+    ).rejects.toThrow("foundation-request-cancelled");
+    expect(unused).not.toHaveBeenCalled();
+
+    let provideAuthority: ((value: RendererAuthority) => void) | undefined;
+    const authorityAbort = new AbortController();
+    const pendingAuthority = createRendererPort(
+      unused,
+      () =>
+        new Promise<RendererAuthority>((resolve) => {
+          provideAuthority = resolve;
+        }),
+    ).loadFoundation(authorityAbort.signal);
+    authorityAbort.abort();
+    provideAuthority?.(authority);
+    await expect(pendingAuthority).rejects.toThrow(
+      "foundation-request-cancelled",
+    );
+
+    let resolveRequest: ((value: string) => void) | undefined;
+    const raced = vi.fn(
+      (command: string, arguments_: { request: string }): Promise<string> => {
+        if (command === "application_cancel")
+          return Promise.reject(new Error("redacted"));
+        const request = JSON.parse(arguments_.request) as { requestId: string };
+        return new Promise((resolve) => {
+          resolveRequest = () =>
+            resolve(
+              JSON.stringify({
+                schemaVersion: 1,
+                requestId: request.requestId,
+                result: welcome,
+              }),
+            );
+        });
+      },
+    );
+    const controller = new AbortController();
+    const pending = createRendererPort(
+      raced,
+      async () => authority,
+    ).loadFoundation(controller.signal);
+    await Promise.resolve();
+    await Promise.resolve();
+    controller.abort();
+    resolveRequest?.("");
+    await expect(pending).rejects.toThrow("foundation-request-cancelled");
+    expect(raced).toHaveBeenCalledWith(
+      "application_cancel",
+      expect.objectContaining({ generation: authority.generation }),
+    );
+  });
+
+  it("fails closed on transport, JSON, correlation, extra fields and a fifth state", async () => {
+    for (const reply of [
+      () => Promise.reject(new Error("transport")),
+      () => Promise.resolve("not-json"),
+      () =>
+        Promise.resolve(
+          JSON.stringify({
+            schemaVersion: 1,
+            requestId: "wrong",
+            result: welcome,
+          }),
+        ),
+      (_command: string, arguments_: { request: string }) => {
+        const request = JSON.parse(arguments_.request) as { requestId: string };
+        return Promise.resolve(
+          JSON.stringify({
+            schemaVersion: 1,
+            requestId: request.requestId,
+            result: { ...welcome, extra: true },
+          }),
+        );
+      },
+      (_command: string, arguments_: { request: string }) => {
+        const request = JSON.parse(arguments_.request) as { requestId: string };
+        return Promise.resolve(
+          JSON.stringify({
+            schemaVersion: 1,
+            requestId: request.requestId,
+            result: { kind: "productive-editor" },
+          }),
+        );
+      },
+    ]) {
+      await expect(
+        createRendererPort(
+          vi.fn(reply),
+          async () => authority,
+        ).loadFoundation(),
+      ).rejects.toThrow("foundation-request-failed");
+    }
+  });
+
+  it("guards every exact view shape and rejects hostile metadata", () => {
+    const response = (result: unknown) => ({
+      schemaVersion: 1,
+      requestId: "request-0000000000000001-0000000000000001",
+      result,
+    });
+    for (const result of [welcome, canvas, about, update]) {
+      expect(isFoundationResponse(response(result))).toBe(true);
+    }
+    for (const value of [
+      null,
+      [],
+      {},
+      { ...response(welcome), schemaVersion: 2 },
+      { ...response(welcome), requestId: 1 },
+      response(null),
+      response({ ...welcome, title: 1 }),
+      response({ ...welcome, explanation: 1 }),
+      response({ ...canvas, committedText: 1 }),
+      response({ ...canvas, committedText: "😀".repeat(600) }),
+      response({ ...about, productName: "Keiko" }),
+      response({ ...about, channel: "stable" }),
+      response({ ...about, version: 1 }),
+      response({ ...about, sourceRevision: "f".repeat(40) }),
+      response({ ...about, repositoryUrl: "https://example.com" }),
+      response({ ...about, licenseUrl: "https://example.com/LICENSE" }),
+      response({ ...about, statement: 1 }),
+      response({ ...update, message: "checking" }),
+      response({ kind: "fifth-state" }),
+    ]) {
+      expect(isFoundationResponse(value)).toBe(false);
+    }
   });
 });

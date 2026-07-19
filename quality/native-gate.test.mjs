@@ -105,6 +105,27 @@ test("architecture scans every source and rejects generic capabilities", () => {
       );
     }
   }
+  assert.deepEqual(
+    architectureFailures(
+      roots.map((entry, index) =>
+        index === roots.length - 1
+          ? { ...entry, text: 'invoke("foundation_request")' }
+          : entry,
+      ),
+      project,
+    ),
+    [],
+  );
+  assert.ok(
+    architectureFailures(
+      roots.map((entry, index) =>
+        index === roots.length - 1
+          ? { ...entry, text: 'invoke("foundation_shell")' }
+          : entry,
+      ),
+      project,
+    ).includes("forbidden-renderer-command:foundation_shell"),
+  );
 });
 
 test("desktop main remains thin declarative wiring", () => {
@@ -144,6 +165,8 @@ test("manifest policy closes dependency, CSP and build-path surfaces", () => {
             "keiko-application",
             "keiko-host-macos",
             "keiko-ui-port",
+            "objc2-app-kit",
+            "objc2-foundation",
             "serde",
             "serde_json",
             "tauri",
@@ -165,6 +188,9 @@ test("manifest policy closes dependency, CSP and build-path surfaces", () => {
           dependencies: {
             "keiko-application": true,
             "keiko-ui-port": true,
+            "objc2-app-kit": true,
+            "objc2-foundation": true,
+            serde: true,
             serde_json: true,
             tauri: true,
             wry: true,

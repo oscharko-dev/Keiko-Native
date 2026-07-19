@@ -60,6 +60,8 @@ export function manifestFailures({ cargo, crates, desktopConfig, frontend }) {
     "keiko-application",
     "keiko-host-macos",
     "keiko-ui-port",
+    "objc2-app-kit",
+    "objc2-foundation",
     "serde",
     "serde_json",
     "tauri",
@@ -74,6 +76,9 @@ export function manifestFailures({ cargo, crates, desktopConfig, frontend }) {
     "keiko-host-macos": [
       "keiko-application",
       "keiko-ui-port",
+      "objc2-app-kit",
+      "objc2-foundation",
+      "serde",
       "serde_json",
       "tauri",
       "wry",

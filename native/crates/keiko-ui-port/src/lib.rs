@@ -67,9 +67,35 @@ pub struct CancelRequest {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "kind", deny_unknown_fields)]
-enum Operation {
+pub enum Operation {
     #[serde(rename = "application-health")]
     ApplicationHealth,
+    #[serde(rename = "foundation-load")]
+    FoundationLoad,
+    #[serde(rename = "dismiss-welcome")]
+    DismissWelcome,
+    #[serde(rename = "show-canvas")]
+    ShowCanvas,
+    #[serde(rename = "show-about")]
+    ShowAbout,
+    #[serde(rename = "show-internal-update")]
+    ShowInternalUpdate,
+    #[serde(rename = "commit-canvas-text")]
+    CommitCanvasText {
+        #[serde(rename = "committedText")]
+        committed_text: String,
+    },
+    #[serde(rename = "open-foundation-link")]
+    OpenFoundationLink { destination: LinkDestination },
+    #[serde(rename = "quit-application")]
+    QuitApplication,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum LinkDestination {
+    Repository,
+    License,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -107,11 +133,22 @@ pub fn parse_request(bytes: &[u8]) -> Result<UiRequest, ReasonCode> {
     }
     let value: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|_| ReasonCode::InvalidRequest)?;
+    const OPERATIONS: &[&str] = &[
+        "application-health",
+        "foundation-load",
+        "dismiss-welcome",
+        "show-canvas",
+        "show-about",
+        "show-internal-update",
+        "commit-canvas-text",
+        "open-foundation-link",
+        "quit-application",
+    ];
     if value
         .get("operation")
         .and_then(|operation| operation.get("kind"))
         .and_then(serde_json::Value::as_str)
-        .is_some_and(|kind| kind != "application-health")
+        .is_some_and(|kind| !OPERATIONS.contains(&kind))
     {
         return Err(ReasonCode::UnknownOperation);
     }
@@ -134,6 +171,10 @@ pub fn parse_request(bytes: &[u8]) -> Result<UiRequest, ReasonCode> {
 
 pub fn request_metadata(request: &UiRequest) -> (&str, u64, u16) {
     (&request.request_id, request.sequence, request.timeout_ms)
+}
+
+pub fn request_operation(request: &UiRequest) -> &Operation {
+    &request.operation
 }
 
 pub fn parse_cancel(bytes: &[u8]) -> Result<CancelRequest, ReasonCode> {
@@ -166,14 +207,15 @@ pub fn request_id_matches(request_id: &str, generation: u64, sequence: u64) -> b
     canonical_request_id(generation, sequence).as_deref() == Some(request_id)
 }
 
-pub fn dispatch_health(request: UiRequest, build: BuildIdentity) -> ApplicationResponse {
+pub fn dispatch_health(request: UiRequest, build: BuildIdentity) -> Option<ApplicationResponse> {
     match request.operation {
-        Operation::ApplicationHealth => health_response(
+        Operation::ApplicationHealth => Some(health_response(
             HealthRequest {
                 request_id: request.request_id,
             },
             build,
-        ),
+        )),
+        _ => None,
     }
 }
 
@@ -227,6 +269,45 @@ mod tests {
             request_metadata(&request),
             ("request-0000000000000001-0000000000000001", 1, 1000)
         );
+    }
+
+    #[test]
+    fn accepts_only_the_issue_authorized_foundation_intents() {
+        let request = |sequence: u64, operation: &str| {
+            format!(
+                r#"{{"schemaVersion":1,"requestId":"{}","sequence":{sequence},"timeoutMs":1000,"operation":{operation}}}"#,
+                canonical_request_id(1, sequence).expect("request ID")
+            )
+        };
+        let accepted = [
+            r#"{"kind":"foundation-load"}"#,
+            r#"{"kind":"dismiss-welcome"}"#,
+            r#"{"kind":"show-canvas"}"#,
+            r#"{"kind":"show-about"}"#,
+            r#"{"kind":"show-internal-update"}"#,
+            r#"{"kind":"commit-canvas-text","committedText":"Grüße かな 😀"}"#,
+            r#"{"kind":"open-foundation-link","destination":"repository"}"#,
+            r#"{"kind":"open-foundation-link","destination":"license"}"#,
+            r#"{"kind":"quit-application"}"#,
+        ];
+        for (index, operation) in accepted.into_iter().enumerate() {
+            assert!(
+                parse_request(request(index as u64 + 1, operation).as_bytes()).is_ok(),
+                "{operation}"
+            );
+        }
+        for denied in [
+            r#"{"kind":"open-foundation-link","destination":"arbitrary"}"#,
+            r#"{"kind":"open-foundation-link","destination":"repository","url":"https://example.com"}"#,
+            r#"{"kind":"commit-canvas-text","committedText":"x","path":"/tmp/x"}"#,
+            r#"{"kind":"network-update"}"#,
+            r#"{"kind":"run-process"}"#,
+        ] {
+            assert!(
+                parse_request(request(1, denied).as_bytes()).is_err(),
+                "{denied}"
+            );
+        }
     }
 
     #[test]

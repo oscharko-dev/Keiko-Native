@@ -35,10 +35,9 @@ pub fn application_request(
             }
         }
     };
-    let encoded = encode_success(&dispatch_health(
-        accepted.request.clone(),
-        current_build_identity(),
-    ));
+    let encoded = dispatch_health(accepted.request.clone(), current_build_identity())
+        .map(|response| encode_success(&response))
+        .unwrap_or_else(|| encode_error("unknown-request", ReasonCode::UnknownOperation));
     let (encoded, acknowledged) = lifecycle.lock().map_or_else(
         |_| {
             (

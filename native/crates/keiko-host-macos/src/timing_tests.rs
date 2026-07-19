@@ -133,10 +133,10 @@ fn final_mutex_sample_host_unavailability_and_at_most_once_are_enforced() {
     lifecycle.set_test_now_ms(0);
     let crossing = accept(&mut lifecycle, &sender, 1, "request-00000001");
     lifecycle.set_test_now_ms(999);
-    let encoded = encode_success(&dispatch_health(
-        crossing.request.clone(),
-        current_build_identity(),
-    ));
+    let encoded = encode_success(
+        &dispatch_health(crossing.request.clone(), current_build_identity())
+            .expect("health request"),
+    );
     lifecycle.set_test_now_ms(1000);
     assert!(
         lifecycle
