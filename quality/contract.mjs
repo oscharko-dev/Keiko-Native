@@ -2,6 +2,7 @@ import { access, readFile, readdir } from "node:fs/promises";
 import { extname, join, relative, sep } from "node:path";
 
 import { canonicalCoverageCommand } from "./coverage-reporter.mjs";
+import { internalReleaseWorkflowFailures } from "./internal-release-workflow.mjs";
 import {
   canonicalLineEndings,
   workflowToolchainFailures,
@@ -34,6 +35,7 @@ const requiredFiles = [
   ".github/workflows/dependency-review.yml",
   ".github/workflows/issue-lifecycle.yml",
   ".github/workflows/issue-readiness.yml",
+  ".github/workflows/internal-release.yml",
   ".github/workflows/mutation-security.yml",
   ".github/workflows/osv-scanner.yml",
   ".github/workflows/pr-contract.yml",
@@ -62,6 +64,20 @@ const requiredFiles = [
   "quality/markdown-contract.mjs",
   "quality/pr-contract-action.mjs",
   "quality/pr-contract.mjs",
+  "quality/internal-release.mjs",
+  "quality/internal-release-workflow.mjs",
+  "quality/attestation-policy.mjs",
+  "quality/iso-normalization.mjs",
+  "quality/release-contract.mjs",
+  "quality/release-evidence.mjs",
+  "quality/release-inputs.mjs",
+  "quality/release-io.mjs",
+  "quality/release-mounted.mjs",
+  "quality/release-native-fs.mjs",
+  "quality/release-owned-fs.mjs",
+  "quality/release-system.mjs",
+  "quality/release-verify.mjs",
+  "quality/update-metadata.mjs",
   "socket.yml",
   "sonar-project.properties",
 ];
@@ -1490,6 +1506,9 @@ async function workflowFailures(root, manifest) {
     ),
     ...pullRequestContractWorkflowFailures(
       workflows.get("pr-contract.yml") ?? "",
+    ),
+    ...internalReleaseWorkflowFailures(
+      workflows.get("internal-release.yml") ?? "",
     ),
     ...(await productiveCommandFailures(root, ci, manifest)),
   ];

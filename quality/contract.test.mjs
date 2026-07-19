@@ -561,6 +561,7 @@ async function fixtureRepository() {
     ".github/workflows/dependency-review.yml",
     ".github/workflows/issue-lifecycle.yml",
     ".github/workflows/issue-readiness.yml",
+    ".github/workflows/internal-release.yml",
     ".github/workflows/mutation-security.yml",
     ".github/workflows/osv-scanner.yml",
     ".github/workflows/pr-contract.yml",
@@ -585,9 +586,23 @@ async function fixtureRepository() {
     "quality/issue-lifecycle.mjs",
     "quality/issue-lifecycle.test.mjs",
     "quality/issue-readiness-action.mjs",
+    "quality/internal-release.mjs",
+    "quality/internal-release-workflow.mjs",
+    "quality/attestation-policy.mjs",
+    "quality/iso-normalization.mjs",
     "quality/markdown-contract.mjs",
     "quality/pr-contract-action.mjs",
     "quality/pr-contract.mjs",
+    "quality/release-contract.mjs",
+    "quality/release-evidence.mjs",
+    "quality/release-inputs.mjs",
+    "quality/release-io.mjs",
+    "quality/release-mounted.mjs",
+    "quality/release-native-fs.mjs",
+    "quality/release-owned-fs.mjs",
+    "quality/release-system.mjs",
+    "quality/release-verify.mjs",
+    "quality/update-metadata.mjs",
     "socket.yml",
   ];
   for (const file of files) {
@@ -705,6 +720,13 @@ async function fixtureRepository() {
     ].join("\n"),
   );
   await writeFile(
+    join(root, ".github/workflows/internal-release.yml"),
+    await readFile(
+      join(import.meta.dirname, "../.github/workflows/internal-release.yml"),
+      "utf8",
+    ),
+  );
+  await writeFile(
     join(root, ".github/workflows/mutation-security.yml"),
     ["jobs:", governedWorkflowJobs["native-mutation-security"]].join("\n"),
   );
@@ -801,12 +823,12 @@ async function fixtureRepository() {
       "ref: dev",
       "statuses: read",
       "statuses: write",
-      "KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
+      "  KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
       "node quality/pr-contract-action.mjs",
       "uses: ./.github/workflows/issue-lifecycle.yml",
       "always() && needs.contract.outputs.issue-number != ''",
-      "issue_number: ${{ needs.contract.outputs.issue-number }}",
-      "pr_contract_result: ${{ needs.contract.result }}",
+      "  issue_number: ${{ needs.contract.outputs.issue-number }}",
+      "  pr_contract_result: ${{ needs.contract.result }}",
     ].join("\n"),
   );
   await writeFile(

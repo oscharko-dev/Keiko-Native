@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import {
   chmod,
-  cp,
   lstat,
   mkdir,
   mkdtemp,
@@ -11,23 +10,34 @@ import {
   readdir,
   rename,
   rm,
+  stat,
   symlink,
   unlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join, win32 } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import {
   compileNativeFsHelper,
   nativeFsTestSupport,
   NATIVE_FS_SOURCES,
 } from "./native-fs.mjs";
+import {
+  copyNativeFsSources as copySources,
+  nativeFsFixture as fixture,
+  startNativeFsBarrier as startBarrier,
+} from "./native-fs.test-fixture.mjs";
 
-const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const supported = process.platform === "darwin" || process.platform === "linux";
+
+test("Windows drive roots are decomposed without duplicating the drive", () => {
+  assert.deepEqual(
+    nativeFsTestSupport.boundRootPaths("D:\\work\\keiko-native", win32),
+    ["D:\\", "D:\\work", "D:\\work\\keiko-native"],
+  );
+});
 
 test(
   "native helper compiles exact sources and handles regular trees",
@@ -83,12 +93,24 @@ test(
         0o600,
       );
       fs.write(join(root, "destination"), "default-mode", Buffer.from("gamma"));
+      fs.remove(join(root, "destination"), "default-mode");
+      await assert.rejects(readFile(join(root, "destination/default-mode")), {
+        code: "ENOENT",
+      });
       fs.mkdir(join(root, "destination"), "directory/nested");
+      fs.chmod(join(root, "destination"), "created", 0o644);
+      fs.touch(join(root, "destination"), "created", 1_700_000_000);
       fs.symlink(join(root, "destination"), "directory/link", "../created");
       assert.ok(Buffer.isBuffer(fs.read(join(root, "destination"), "created")));
       assert.equal(
         (await lstat(join(root, "destination/created"))).mode & 0o777,
-        0o600,
+        0o644,
+      );
+      assert.equal(
+        Math.floor(
+          (await stat(join(root, "destination/created"))).mtimeMs / 1000,
+        ),
+        1_700_000_000,
       );
       assert.equal((await lstat(helper)).mode & 0o777, 0o700);
       assert.ok(
@@ -210,6 +232,66 @@ test(
       await assert.rejects(readFile(join(outside, "value")), {
         code: "ENOENT",
       });
+    });
+  },
+);
+
+test(
+  "native helper removal cannot cross a rebound parent",
+  { skip: !supported },
+  async () => {
+    await fixture(async ({ helper, root }) => {
+      const trusted = join(root, "trusted");
+      const outside = join(root, "outside");
+      await mkdir(join(trusted, "parent/generated"), { recursive: true });
+      await mkdir(outside);
+      await writeFile(join(trusted, "parent/generated/inside"), "inside");
+      await writeFile(join(outside, "secret"), "retain");
+      const race = startBarrier(helper, [
+        "remove",
+        trusted,
+        "parent/generated",
+      ]);
+      await race.ready;
+      await rename(join(trusted, "parent"), join(trusted, "saved-parent"));
+      await symlink(outside, join(trusted, "parent"));
+      assert.equal((await race.release()).status, 1);
+      assert.equal(await readFile(join(outside, "secret"), "utf8"), "retain");
+      assert.equal(
+        await readFile(join(trusted, "saved-parent/generated/inside"), "utf8"),
+        "inside",
+      );
+    });
+  },
+);
+
+test(
+  "native helper metadata mutation cannot cross a rebound parent",
+  { skip: !supported },
+  async () => {
+    await fixture(async ({ helper, root }) => {
+      for (const operation of ["chmod", "touch"]) {
+        const trusted = join(root, `trusted-${operation}`);
+        const outside = join(root, `outside-${operation}`);
+        await mkdir(join(trusted, "parent"), { recursive: true });
+        await mkdir(outside);
+        await writeFile(join(trusted, "parent/value"), "inside");
+        await writeFile(join(outside, "value"), "outside");
+        const outsideBefore = await stat(join(outside, "value"));
+        const race = startBarrier(helper, [
+          operation,
+          trusted,
+          "parent/value",
+          operation === "chmod" ? "600" : "1700000000",
+        ]);
+        await race.ready;
+        await rename(join(trusted, "parent"), join(trusted, "saved-parent"));
+        await symlink(outside, join(trusted, "parent"));
+        assert.equal((await race.release()).status, 1);
+        const outsideAfter = await stat(join(outside, "value"));
+        assert.equal(outsideAfter.mode, outsideBefore.mode);
+        assert.equal(outsideAfter.mtimeMs, outsideBefore.mtimeMs);
+      }
     });
   },
 );
@@ -337,61 +419,3 @@ test(
     }
   },
 );
-
-async function fixture(callback) {
-  const createdRoot = await mkdtemp(join(tmpdir(), "keiko-native-fs-"));
-  const root = await realpath(createdRoot);
-  try {
-    const records = await copySources(root);
-    const helper = join(root, "native-fs-helper");
-    const fs = compileNativeFsHelper({
-      expectedSources: records,
-      outputPath: helper,
-      snapshotRoot: root,
-      tree: "a".repeat(40),
-    });
-    await callback({ fs, helper, root });
-  } finally {
-    await rm(createdRoot, { force: true, recursive: true });
-  }
-}
-
-async function copySources(root) {
-  const records = [];
-  for (const path of NATIVE_FS_SOURCES) {
-    const source = join(repositoryRoot, path);
-    const destination = join(root, path);
-    await mkdir(dirname(destination), { recursive: true });
-    await cp(source, destination);
-    const bytes = await readFile(destination);
-    records.push({
-      blob: nativeFsTestSupport.gitBlob(bytes),
-      path,
-      sha256: nativeFsTestSupport.sha256(bytes),
-    });
-  }
-  return records;
-}
-
-function startBarrier(helper, args, input) {
-  const child = spawn(helper, args, {
-    env: { ...process.env, KEIKO_FS_HELPER_TEST_BARRIER: "1" },
-    stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
-  });
-  if (input !== undefined) child.stdin.end(input);
-  else child.stdin.end();
-  const ready = new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.stdio[3].once("data", resolve);
-  });
-  return {
-    ready,
-    async release() {
-      child.stdio[4].end("C");
-      return new Promise((resolve, reject) => {
-        child.once("error", reject);
-        child.once("close", (status) => resolve({ status }));
-      });
-    },
-  };
-}
