@@ -115,35 +115,54 @@ function recoveryFailure(recoveries) {
 }
 
 function sameIssue(left, right) {
-  return left.issue === right.issue && left.type === right.type;
+  return left.issue === right.issue;
 }
 
-function expectedGap(previous, current, quarantinedByPath) {
-  if (previous === undefined && current.version !== 1) {
-    return { failure: "unexplained_semantic_gap" };
+function semanticTransitionFailure(previous, current) {
+  if (previous === undefined) {
+    return current.version === 1 ? undefined : "unexplained_semantic_gap";
   }
-  if (previous !== undefined && current.version < previous.version) {
-    return { failure: "stale_predecessor" };
+  if (current.version < previous.version) return "stale_predecessor";
+  if (current.version > previous.version + 1) {
+    return "unexplained_semantic_gap";
   }
-  if (previous !== undefined && current.version > previous.version + 1) {
-    return { failure: "unexplained_semantic_gap" };
+  if (current.version === previous.version && current.type !== previous.type) {
+    return "type_change_requires_semantic_version";
   }
-  const firstRevision =
-    previous?.version === current.version ? previous.revision + 1 : 1;
-  const attempts = [...quarantinedByPath.values()]
+  return undefined;
+}
+
+function attemptInGap(identity, current, firstRevision) {
+  return (
+    identity.version === current.version &&
+    identity.type === current.type &&
+    identity.revision >= firstRevision &&
+    identity.revision < current.revision
+  );
+}
+
+function quarantineAttempts(current, firstRevision, quarantinedByPath) {
+  return [...quarantinedByPath.values()]
     .map((attempt) => ({
       attempt,
       identity: parseContractPath(attempt.path).contract,
     }))
-    .filter(
-      ({ identity }) =>
-        identity.version === current.version &&
-        identity.revision >= firstRevision &&
-        identity.revision < current.revision,
-    )
+    .filter(({ identity }) => attemptInGap(identity, current, firstRevision))
     .toSorted(
       (left, right) => left.identity.revision - right.identity.revision,
     );
+}
+
+function expectedGap(previous, current, quarantinedByPath) {
+  const transitionFailure = semanticTransitionFailure(previous, current);
+  if (transitionFailure !== undefined) return { failure: transitionFailure };
+  const firstRevision =
+    previous?.version === current.version ? previous.revision + 1 : 1;
+  const attempts = quarantineAttempts(
+    current,
+    firstRevision,
+    quarantinedByPath,
+  );
   if (attempts.length !== current.revision - firstRevision) {
     return { failure: "unexplained_revision_gap" };
   }
@@ -300,10 +319,15 @@ function pendingQuarantineFailure(context, topology, consumed) {
   if (!sameVersion && first.version !== terminal.version + 1) {
     return "orphan_quarantine";
   }
+  if (sameVersion && first.type !== terminal.type) {
+    return "orphan_quarantine";
+  }
   const firstRevision = sameVersion ? terminal.revision + 1 : 1;
   return pending.every(
     (item, index) =>
-      item.version === first.version && item.revision === firstRevision + index,
+      item.version === first.version &&
+      item.type === first.type &&
+      item.revision === firstRevision + index,
   )
     ? undefined
     : "orphan_quarantine";

@@ -44,6 +44,74 @@ test("selects the sole terminal across semantic and recovered revisions", () => 
   );
 });
 
+test("keeps semantic type reclassification in the issue-wide chain", () => {
+  const first = contract("docs/contracts/task-35-v1-r1.md", "1".repeat(64));
+  const terminal = contract(
+    "docs/contracts/defect-35-v2-r1.md",
+    "2".repeat(64),
+    reference(first),
+  );
+  assert.deepEqual(
+    validateContractChain({ contracts: [first, terminal], quarantined: [] }),
+    { ok: true, terminal },
+  );
+  const invalid = contract(
+    "docs/contracts/defect-35-v1-r2.md",
+    "3".repeat(64),
+    reference(first),
+  );
+  assert.equal(
+    rejectionCode([first, invalid]),
+    "type_change_requires_semantic_version",
+  );
+});
+
+test("binds quarantine attempts to their semantic version type", () => {
+  const first = contract("docs/contracts/task-35-v1-r1.md", "1".repeat(64));
+  const wrongRecovery = quarantine(
+    "docs/contracts/task-35-v2-r1.md",
+    "2".repeat(64),
+  );
+  const retry = contract(
+    "docs/contracts/defect-35-v2-r2.md",
+    "3".repeat(64),
+    reference(first),
+    [reference(wrongRecovery)],
+  );
+  assert.equal(
+    rejectionCode([first, retry], [wrongRecovery]),
+    "unexplained_revision_gap",
+  );
+  const wrongPending = quarantine(
+    "docs/contracts/defect-35-v1-r2.md",
+    "4".repeat(64),
+  );
+  assert.equal(rejectionCode([first], [wrongPending]), "orphan_quarantine");
+  const nextFirst = quarantine(
+    "docs/contracts/defect-35-v2-r1.md",
+    "5".repeat(64),
+  );
+  const nextWrong = quarantine(
+    "docs/contracts/task-35-v2-r2.md",
+    "6".repeat(64),
+  );
+  assert.equal(
+    rejectionCode([first], [nextFirst, nextWrong]),
+    "orphan_quarantine",
+  );
+  const nextValid = quarantine(
+    "docs/contracts/defect-35-v2-r2.md",
+    "7".repeat(64),
+  );
+  assert.equal(
+    validateContractChain({
+      contracts: [first],
+      quarantined: [nextValid, nextFirst],
+    }).ok,
+    true,
+  );
+});
+
 test("rejects forks, duplicate predecessors, cycles, and replayed contracts", () => {
   const first = contract("docs/contracts/task-35-v1-r1.md", "1".repeat(64));
   const second = contract(
@@ -136,7 +204,7 @@ test("requires the exact complete quarantine recovery set", () => {
   assert.equal(chain([reference(q1), null]), "invalid_recovery");
 });
 
-test("fails closed on malformed, empty, mixed, and non-monotonic chains", () => {
+test("fails closed on malformed, empty, mixed, and replayed chains", () => {
   const first = contract("docs/contracts/task-35-v1-r1.md", "1".repeat(64));
   assert.equal(validateContractChain().rejection.code, "invalid_chain_input");
   assert.equal(rejectionCode([]), "empty_chain");
@@ -162,11 +230,6 @@ test("fails closed on malformed, empty, mixed, and non-monotonic chains", () => 
     "2".repeat(64),
   );
   assert.equal(rejectionCode([first], [otherIssue]), "mixed_issue_chain");
-  const otherType = quarantine(
-    "docs/contracts/epic-35-v1-r1.md",
-    "9".repeat(64),
-  );
-  assert.equal(rejectionCode([first], [otherType]), "mixed_issue_chain");
   const q1 = quarantine("docs/contracts/task-35-v2-r1.md", "7".repeat(64));
   assert.equal(rejectionCode([first], [q1, q1]), "replayed_quarantine");
   assert.equal(
@@ -185,6 +248,10 @@ test("fails closed on malformed, empty, mixed, and non-monotonic chains", () => 
     first.digest,
   );
   assert.equal(rejectionCode([first, digestReplay]), "replayed_contract");
+});
+
+test("rejects non-monotonic semantic versions and stale predecessors", () => {
+  const first = contract("docs/contracts/task-35-v1-r1.md", "1".repeat(64));
   const skippedRoot = contract(
     "docs/contracts/task-35-v2-r1.md",
     "3".repeat(64),
