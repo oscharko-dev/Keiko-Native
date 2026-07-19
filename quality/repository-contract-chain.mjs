@@ -119,9 +119,7 @@ function sameIssue(left, right) {
 }
 
 function semanticTransitionFailure(previous, current) {
-  if (previous === undefined) {
-    return current.version === 1 ? undefined : "unexplained_semantic_gap";
-  }
+  if (previous === undefined) return undefined;
   if (current.version < previous.version) return "stale_predecessor";
   if (current.version > previous.version + 1) {
     return "unexplained_semantic_gap";
