@@ -1,24 +1,26 @@
 import { parseContractPath } from "./repository-contract.mjs";
 const keys = (value) => value.split(" ");
-const receiptKeys = keys(
-  "candidates observations pullRequest target terminalManifest",
-);
+const rootKeys =
+  "candidates observations pullRequest target terminalManifest".split(" ");
 const observationKeys = keys(
-  "candidatePath fingerprint lifecycleLabels number predecessor readiness " +
-    "recoveries revision state type version",
+  "candidatePath fingerprint lifecycleLabels linkedPullRequest number predecessor " +
+    "readiness readinessProducer recoveries revision state type version",
 );
-const candidateKeys = ["digest", "mode", "path"];
-const bindingKeys = ["digest", "path"];
+const candidateKeys = ["digest", "mode", "path"],
+  bindingKeys = ["digest", "path"];
+const linkedPullRequestKeys = ["head", "number", "target"];
 const readinessPattern =
-  /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/issues\/([1-9]\d*)#issuecomment-[1-9]\d*$/u;
+  /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/issues\/([1-9]\d*)#issuecomment-[1-9]\d*$/u;
+const readinessProducer = "issue-readiness.yml@protected-dev";
 const manifestPattern = /^docs\/qa\/[a-z0-9-]+-v[1-9]\d*\.md$/u;
 const actorPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u;
-function reject(code) {
-  return {
-    ok: false,
-    rejection: { code, message: "Snapshot receipt failed closed." },
-  };
-}
+const retainedLifecycle =
+  /^status: (?:ready|in progress|pr open|ready for human review|blocked|waiting for user)$/u;
+const prTrackedLifecycle = /^status: (?:pr open|ready for human review)$/u;
+const reject = (code) => ({
+  ok: false,
+  rejection: { code, message: "Snapshot receipt failed closed." },
+});
 const record = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const sha = (value) =>
@@ -147,14 +149,9 @@ export function publicationAncestryFailure(input) {
     ? "invalid_protected_dev_ancestry"
     : undefined;
 }
-function exactKeys(value, expected) {
-  if (!record(value)) return false;
-  const actual = Object.keys(value);
-  return (
-    actual.length === expected.length &&
-    actual.every((key, index) => key === expected[index])
-  );
-}
+const exactKeys = (value, expected) =>
+  record(value) &&
+  JSON.stringify(Object.keys(value)) === JSON.stringify(expected);
 const positiveInteger = (value) => Number.isSafeInteger(value) && value > 0;
 const digest = (value) =>
   typeof value === "string" && /^[0-9a-f]{64}$/u.test(value);
@@ -176,14 +173,12 @@ const manifestBinding = (value) =>
   digest(value.digest) &&
   manifestPattern.test(value.path);
 function candidateFailure(candidate) {
-  if (!exactKeys(candidate, candidateKeys)) return "invalid_candidate";
-  if (
-    !parseContractPath(candidate.path).ok ||
-    !digest(candidate.digest) ||
-    candidate.mode !== "100644"
-  )
-    return "invalid_candidate";
-  return undefined;
+  return exactKeys(candidate, candidateKeys) &&
+    parseContractPath(candidate.path).ok &&
+    digest(candidate.digest) &&
+    candidate.mode === "100644"
+    ? undefined
+    : "invalid_candidate";
 }
 function bindingSetFailure(bindings) {
   if (
@@ -196,14 +191,12 @@ function bindingSetFailure(bindings) {
     : "noncanonical_binding_set";
 }
 function lifecycleFailure(labels) {
-  if (
-    !Array.isArray(labels) ||
-    labels.length !== 1 ||
-    typeof labels[0] !== "string" ||
-    !labels[0].startsWith("status: ")
-  )
-    return "invalid_lifecycle_labels";
-  return undefined;
+  return Array.isArray(labels) &&
+    labels.length === 1 &&
+    typeof labels[0] === "string" &&
+    labels[0].startsWith("status: ")
+    ? undefined
+    : "invalid_lifecycle_labels";
 }
 function observationIdentityFailure(observation) {
   const parsed = parseContractPath(observation.candidatePath);
@@ -221,22 +214,36 @@ const validObservationCore = (observation) =>
   positiveInteger(observation.version) &&
   positiveInteger(observation.revision) &&
   digest(observation.fingerprint) &&
-  ["open", "closed"].includes(observation.state) &&
+  observation.state === "open" &&
   lifecycleFailure(observation.lifecycleLabels) === undefined;
-function readinessFailure(observation) {
-  if (observation.readiness === null) return undefined;
-  if (typeof observation.readiness !== "string")
-    return "invalid_readiness_identity";
-  const readiness = readinessPattern.exec(observation.readiness);
-  return readiness !== null && Number(readiness[1]) === observation.number
-    ? undefined
-    : "invalid_readiness_identity";
+const validLinkedPullRequest = (value) =>
+  value === null ||
+  (exactKeys(value, linkedPullRequestKeys) &&
+    sha(value.head) &&
+    positiveInteger(value.number) &&
+    typeof value.target === "string" &&
+    value.target.trim() !== "");
+function readinessFailure(observation, repository) {
+  const match =
+    typeof observation.readiness === "string"
+      ? readinessPattern.exec(observation.readiness)
+      : null;
+  const absent =
+    observation.readiness === null && observation.readinessProducer === null;
+  const present =
+    match !== null &&
+    match[1] === repository &&
+    Number(match[2]) === observation.number &&
+    observation.readinessProducer === readinessProducer;
+  return absent || present ? undefined : "invalid_readiness_identity";
 }
-function observationFailure(observation) {
+function observationFailure(observation, repository) {
   if (!exactKeys(observation, observationKeys)) return "invalid_observation";
   if (!validObservationCore(observation)) return "invalid_observation";
-  const readiness = readinessFailure(observation);
+  const readiness = readinessFailure(observation, repository);
   if (readiness !== undefined) return readiness;
+  if (!validLinkedPullRequest(observation.linkedPullRequest))
+    return "invalid_linked_pull_request";
   if (
     observation.predecessor !== null &&
     !contractBinding(observation.predecessor)
@@ -290,7 +297,7 @@ function historyFailure(observation, candidate) {
   return undefined;
 }
 function receiptShapeFailure(receipt) {
-  if (!exactKeys(receipt, receiptKeys)) return "invalid_receipt_schema";
+  if (!exactKeys(receipt, rootKeys)) return "invalid_receipt_schema";
   if (receipt.target !== "dev" || !positiveInteger(receipt.pullRequest))
     return "invalid_receipt_authority";
   if (
@@ -308,9 +315,9 @@ function receiptShapeFailure(receipt) {
     return "invalid_terminal_manifest";
   return undefined;
 }
-function observationSetFailure(observations) {
+function observationSetFailure(observations, repository) {
   for (const observation of observations) {
-    const failure = observationFailure(observation);
+    const failure = observationFailure(observation, repository);
     if (failure !== undefined) return failure;
   }
   return sortedUnique(observations, (item) =>
@@ -345,29 +352,29 @@ function candidateEqualityFailure(receipt) {
   return undefined;
 }
 function publicationSubmode(receipt) {
+  const terminal = receipt.terminalManifest;
   const ordinary = receipt.observations.every(
     (item) =>
-      item.state === "open" &&
       item.readiness === null &&
-      item.lifecycleLabels[0] === "status: new",
+      item.lifecycleLabels[0] === "status: new" &&
+      item.linkedPullRequest === null,
   );
-  if (ordinary && receipt.terminalManifest === null) return "ordinary";
+  if (ordinary && terminal === null) return "ordinary";
   const migration = receipt.observations.every(
     (item) =>
-      item.state === "open" &&
       item.readiness !== null &&
-      item.lifecycleLabels[0] === "status: ready",
+      retainedLifecycle.test(item.lifecycleLabels[0]) &&
+      prTrackedLifecycle.test(item.lifecycleLabels[0]) ===
+        (item.linkedPullRequest !== null),
   );
-  return migration && receipt.terminalManifest !== null
-    ? "migration"
-    : undefined;
+  return migration && terminal !== null ? "migration" : undefined;
 }
-export function validateSnapshotReceipt(receipt) {
+export function validateSnapshotReceipt(receipt, repository) {
   try {
     const shapeFailure = receiptShapeFailure(receipt);
     if (shapeFailure !== undefined) return reject(shapeFailure);
     const failure =
-      observationSetFailure(receipt.observations) ??
+      observationSetFailure(receipt.observations, repository) ??
       candidateSetFailure(receipt.candidates) ??
       candidateEqualityFailure(receipt);
     if (failure !== undefined) return reject(failure);

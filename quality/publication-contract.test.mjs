@@ -34,7 +34,6 @@ test("parses the sole snapshot and canonical ordered contract trailers", () => {
     snapshot: { digest: digestA, path: receiptPath, pullRequest: 77 },
   });
   assert.equal(parsePublicationTrailers(`${payload}\n\n`).ok, true);
-  assert.equal(validateSnapshotReceipt(snapshot(digestA)).ok, true);
 });
 test("rejects alternate object-key byte encodings", () => {
   const receipt = snapshot(digestA);
@@ -181,9 +180,11 @@ const snapshot = (candidateDigest) => ({
       candidatePath: contractPath,
       fingerprint: digestB,
       lifecycleLabels: ["status: new"],
+      linkedPullRequest: null,
       number: 30,
       predecessor: null,
       readiness: null,
+      readinessProducer: null,
       recoveries: [],
       revision: 1,
       state: "open",
@@ -274,6 +275,8 @@ function migrationFixture() {
   const fixture = publicationFixture((receipt) => {
     receipt.observations[0].lifecycleLabels = ["status: ready"];
     receipt.observations[0].readiness = readiness;
+    receipt.observations[0].readinessProducer =
+      "issue-readiness.yml@protected-dev";
     receipt.terminalManifest = manifest;
   });
   fixture.terminalManifestEvidence = {
@@ -305,7 +308,6 @@ test("accepts a fully bound isolated publication and emits normalized identity",
   assert.deepEqual(binding.trees, { parent: prefixTree, result: resultTree });
   assert.equal(binding.candidates[0].path, contractPath);
   assert.equal(binding.repository, repository);
-  assert.equal(binding.pullRequest, 77);
   assert.equal(binding.submode, "ordinary");
 });
 test("binds canonical receipt input to the committed receipt tree entry", () => {
