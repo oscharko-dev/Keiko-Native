@@ -1,6 +1,14 @@
 import { access, readFile, readdir } from "node:fs/promises";
 import { extname, join, relative, sep } from "node:path";
 
+import { canonicalCoverageCommand } from "./coverage-reporter.mjs";
+import {
+  canonicalLineEndings,
+  workflowToolchainFailures,
+} from "./toolchain.mjs";
+import { nativeMatrixCommandFailures } from "./workflow-structure.mjs";
+import { requiredGovernedWorkflowJobs } from "./workflow-job-contracts.mjs";
+
 const sourceSpecificationIdentity = {
   date: "2026-07-15",
   document: "Keiko-Native-Fachkonzept.md",
@@ -10,6 +18,7 @@ const sourceSpecificationIdentity = {
 };
 
 const requiredFiles = [
+  ".npmrc",
   ".gitar/review/00-governance-and-delivery.md",
   ".gitar/review/10-security-and-trust-boundaries.md",
   ".gitar/review/20-native-architecture-quality-and-evidence.md",
@@ -40,6 +49,8 @@ const requiredFiles = [
   "package.json",
   "quality/github-api.mjs",
   "quality/github-reference.mjs",
+  "quality/check-native-vulnerability-results.mjs",
+  "quality/generate-native-vulnerability-inventory.mjs",
   "quality/issue-contract.mjs",
   "quality/issue-readiness-action.mjs",
   "quality/markdown-contract.mjs",
@@ -73,6 +84,24 @@ const aggregateCiNeeds = [
   "core-quality",
   "coverage-sonar",
   "cross-platform-smoke",
+];
+
+const dependencyReviewLicenses = [
+  "0BSD",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BlueOak-1.0.0",
+  "CC-BY-4.0",
+  "CC0-1.0",
+  "ISC",
+  "MIT",
+  "MPL-2.0",
+  "Python-2.0",
+  "Unicode-3.0",
+  "Unlicense",
+  "WTFPL",
+  "Zlib",
 ];
 
 const epicPullRequestWorkflows = [
@@ -126,16 +155,107 @@ const productiveExtensions = new Set([
   ".tsx",
 ]);
 
-const ignoredDirectories = new Set([".git", "coverage", "node_modules"]);
+const ignoredDirectories = new Set([
+  ".git",
+  "coverage",
+  "dist",
+  "node_modules",
+  "target",
+]);
 const ignoredProductRoots = new Set([".github", "quality"]);
 const requiredTargetCommands = [
   "architecture",
   "build",
   "coverage",
+  "format",
+  "lint",
   "package",
+  "platform",
   "security",
+  "signing",
   "test",
 ];
+
+const nativeCiCommands = [
+  "native:dependencies",
+  "native:format",
+  "native:lint",
+  "native:architecture",
+  "native:build",
+  "native:coverage",
+  "native:package",
+  "native:platform",
+  "native:security",
+  "native:signing",
+  "native:test",
+  "acceptance:macos",
+];
+const qualityControlScript =
+  "npm run native:dependencies && npm run check:contract && npm run lint && npm run format:check && npm run coverage && npm run build";
+
+export function coverageCommandFailures(command) {
+  return command === canonicalCoverageCommand
+    ? []
+    : ["Coverage command must retain exact serial execution and reporter."];
+}
+
+const adr0004SourceRoots = [
+  "native/crates/keiko-application/src/",
+  "native/crates/keiko-ui-port/src/",
+  "native/crates/keiko-host-macos/src/",
+  "native/apps/keiko-desktop/src/",
+  "native/frontend/src/",
+];
+
+const adr0004TestRoots = ["native/tests/"];
+
+const adr0004SupportFiles = [
+  "native/Cargo.toml",
+  "native/Cargo.lock",
+  "native/rust-toolchain.toml",
+  "native/apps/keiko-desktop/Cargo.toml",
+  "native/apps/keiko-desktop/build.rs",
+  "native/apps/keiko-desktop/icons/icon.png",
+  "native/apps/keiko-desktop/tauri.conf.json",
+  "native/crates/keiko-application/Cargo.toml",
+  "native/crates/keiko-ui-port/Cargo.toml",
+  "native/crates/keiko-host-macos/Cargo.toml",
+  "native/frontend/index.html",
+  "native/frontend/package.json",
+  "native/frontend/package-lock.json",
+  "native/frontend/tsconfig.json",
+  "native/frontend/vite.config.ts",
+  "native/package-policy.json",
+  "native/third-party-notices.json",
+];
+
+const adr0004TargetCommands = {
+  architecture: "native:architecture",
+  build: "native:build",
+  coverage: "native:coverage",
+  format: "native:format",
+  lint: "native:lint",
+  package: "native:package",
+  platform: "native:platform",
+  security: "native:security",
+  signing: "native:signing",
+  test: "native:test",
+};
+
+function sameStringSet(actual, expected) {
+  return (
+    Array.isArray(actual) &&
+    actual.length === expected.length &&
+    expected.every((value) => actual.includes(value)) &&
+    new Set(actual).size === actual.length
+  );
+}
+
+function nativeTargetSourceRoots(target) {
+  if (Array.isArray(target?.sourceRoots)) return target.sourceRoots;
+  if (typeof target?.sourceRoot === "string") return [target.sourceRoot];
+  return [];
+}
 
 export function isSafeRepositoryPath(value) {
   return (
@@ -162,12 +282,18 @@ export function validateNativeTarget(target, productiveSourceRoots) {
     !/^[a-z][a-z0-9+-]{0,31}$/u.test(target.language)
   )
     failures.push("Native target language is invalid.");
+  const sourceRoots = nativeTargetSourceRoots(target);
   if (
-    !isSafeRepositoryPath(target?.sourceRoot) ||
-    !productiveSourceRoots.includes(target.sourceRoot)
+    sourceRoots.length === 0 ||
+    sourceRoots.some(
+      (sourceRoot) =>
+        !isSafeRepositoryPath(sourceRoot) ||
+        !productiveSourceRoots.includes(sourceRoot),
+    ) ||
+    new Set(sourceRoots).size !== sourceRoots.length
   )
     failures.push(
-      "Native target sourceRoot must name a declared repository source root.",
+      "Native target source roots must name declared repository source roots.",
     );
   if (
     !Array.isArray(target?.platforms) ||
@@ -185,6 +311,60 @@ export function validateNativeTarget(target, productiveSourceRoots) {
     if (!/^[a-z0-9][a-z0-9:_-]*$/u.test(target?.commands?.[command] ?? ""))
       failures.push(`Native target command is missing: ${command}.`);
   }
+  return failures;
+}
+
+function adr0004DeclarationFailures(manifest) {
+  if (manifest.phase !== "productive") return [];
+  const failures = [];
+  if (!sameStringSet(manifest.productiveSourceRoots, adr0004SourceRoots))
+    failures.push("Productive source roots must match ADR-0004 exactly.");
+  if (!sameStringSet(manifest.testSourceRoots, adr0004TestRoots))
+    failures.push("Test source roots must match ADR-0004 exactly.");
+  if (!sameStringSet(manifest.supportFiles, adr0004SupportFiles))
+    failures.push("Support files must match ADR-0004 exactly.");
+  if (
+    JSON.stringify(manifest.coverageToolchains) !==
+    JSON.stringify({
+      productiveRust: "1.92.0",
+      rustBranch: "nightly-2026-07-17",
+      cargoLlvmCov: "0.8.7",
+      frontend: "vitest-v8",
+    })
+  )
+    failures.push("Coverage toolchains must match the ADR-0004 amendment.");
+  if (
+    JSON.stringify(manifest.coverageExclusions) !==
+    JSON.stringify([
+      {
+        path: "native/apps/keiko-desktop/src/main.rs",
+        evidence: "acceptance:macos",
+      },
+    ])
+  ) {
+    failures.push(
+      "Coverage exclusions must bind only thin Tauri wiring to packaged acceptance.",
+    );
+  }
+  if (manifest.nativeTargets.length !== 1) {
+    failures.push("ADR-0004 declares exactly one native target.");
+    return failures;
+  }
+  const [target] = manifest.nativeTargets;
+  if (target?.name !== "keiko-native-desktop")
+    failures.push("ADR-0004 native target name must be keiko-native-desktop.");
+  if (target?.language !== "rust")
+    failures.push("ADR-0004 native target language must be rust.");
+  if (!sameStringSet(target?.platforms, ["macos"]))
+    failures.push("ADR-0004 native target platform must be macos only.");
+  if (!sameStringSet(target?.architectures, ["arm64"]))
+    failures.push("ADR-0004 native target architecture must be arm64.");
+  if (!sameStringSet(nativeTargetSourceRoots(target), adr0004SourceRoots))
+    failures.push("ADR-0004 native target roots must match its source roots.");
+  if (
+    JSON.stringify(target?.commands) !== JSON.stringify(adr0004TargetCommands)
+  )
+    failures.push("ADR-0004 native target commands must match the root gates.");
   return failures;
 }
 
@@ -207,11 +387,12 @@ function productiveManifestFailures(manifest) {
   failures.push(
     ...targets.flatMap((target) => validateNativeTarget(target, roots)),
   );
-  const targetedRoots = new Set(targets.map((target) => target?.sourceRoot));
+  const targetedRoots = new Set(targets.flatMap(nativeTargetSourceRoots));
   if (roots.some((root) => !targetedRoots.has(root)))
     failures.push(
       "Every productive source root must belong to a declared native target.",
     );
+  failures.push(...adr0004DeclarationFailures(manifest));
   return failures;
 }
 
@@ -228,8 +409,12 @@ export function validateManifest(manifest) {
   const failures = [];
   if (manifest?.schemaVersion !== 1)
     failures.push("Unsupported quality manifest schema.");
-  if (manifest?.qualityProfile !== "keiko-native-bootstrap-v1")
-    failures.push("The Keiko Native bootstrap quality profile is required.");
+  const expectedProfile =
+    manifest?.phase === "productive"
+      ? "keiko-native-productive-v1"
+      : "keiko-native-bootstrap-v1";
+  if (manifest?.qualityProfile !== expectedProfile)
+    failures.push(`The ${expectedProfile} quality profile is required.`);
   if (!new Set(["bootstrap", "productive"]).has(manifest?.phase))
     failures.push("Project phase must be bootstrap or productive.");
   if (manifest?.baseBranch !== "dev")
@@ -242,6 +427,16 @@ export function validateManifest(manifest) {
     failures.push("productiveSourceRoots must be an array.");
   if (!Array.isArray(manifest?.nativeTargets))
     failures.push("nativeTargets must be an array.");
+  if (
+    manifest?.phase === "productive" &&
+    !Array.isArray(manifest?.testSourceRoots)
+  )
+    failures.push("testSourceRoots must be an array in productive mode.");
+  if (
+    manifest?.phase === "productive" &&
+    !Array.isArray(manifest?.supportFiles)
+  )
+    failures.push("supportFiles must be an array in productive mode.");
   for (const metric of ["branches", "functions", "lines", "statements"]) {
     if (manifest?.minimumCoverage?.[metric] !== 85)
       failures.push(`Minimum ${metric} coverage must remain 85.`);
@@ -588,9 +783,15 @@ async function codeQualityStandardFailures(root, files) {
 }
 
 async function sourceRootFailures(root, manifest) {
-  const sourceRoots = Array.isArray(manifest?.productiveSourceRoots)
-    ? manifest.productiveSourceRoots
-    : [];
+  const sourceRoots = [
+    ...(Array.isArray(manifest?.productiveSourceRoots)
+      ? manifest.productiveSourceRoots
+      : []),
+    ...(Array.isArray(manifest?.testSourceRoots)
+      ? manifest.testSourceRoots
+      : []),
+    ...(Array.isArray(manifest?.supportFiles) ? manifest.supportFiles : []),
+  ];
   const results = await Promise.all(
     sourceRoots.map(async (sourceRoot) => ({
       exists: await exists(join(root, sourceRoot)),
@@ -600,6 +801,37 @@ async function sourceRootFailures(root, manifest) {
   return results
     .filter((result) => !result.exists)
     .map((result) => `Declared source root is missing: ${result.sourceRoot}.`);
+}
+
+async function npmConfigurationFailures(root, files) {
+  if (!files.includes(".npmrc")) return [];
+  return canonicalLineEndings(await readFile(join(root, ".npmrc"), "utf8")) ===
+    "engine-strict=true\n"
+    ? []
+    : ["Root npm configuration must contain only engine-strict=true."];
+}
+
+function nativeDeclarationFailures(files, manifest) {
+  if (manifest?.phase !== "productive") return [];
+  const roots = [
+    ...(Array.isArray(manifest.productiveSourceRoots)
+      ? manifest.productiveSourceRoots
+      : []),
+    ...(Array.isArray(manifest.testSourceRoots)
+      ? manifest.testSourceRoots
+      : []),
+  ];
+  const support = new Set(
+    Array.isArray(manifest.supportFiles) ? manifest.supportFiles : [],
+  );
+  return files
+    .filter((file) => file.startsWith("native/"))
+    .filter((file) => !file.startsWith("native/apps/keiko-desktop/gen/"))
+    .filter(
+      (file) =>
+        !support.has(file) && !roots.some((root) => file.startsWith(root)),
+    )
+    .map((file) => `Undeclared native source, test, or support file: ${file}.`);
 }
 
 async function contractFailures(root, files, manifest) {
@@ -618,7 +850,9 @@ async function contractFailures(root, files, manifest) {
     ...(await sourceBaselineFailures(root, files)),
     ...(await agentPlanningBaselineFailures(root, files)),
     ...(await codeQualityStandardFailures(root, files)),
+    ...(await npmConfigurationFailures(root, files)),
     ...bootstrapFailures,
+    ...nativeDeclarationFailures(files, manifest),
     ...(await sourceRootFailures(root, manifest)),
   ];
   return { failures, productiveSources };
@@ -635,30 +869,46 @@ async function productiveCommandFailures(root, ci, manifest) {
     typeof packageJson.scripts?.quality === "string"
       ? packageJson.scripts.quality
       : "";
-  return manifest.nativeTargets.flatMap((target) =>
-    Object.values(
-      target?.commands !== null &&
-        typeof target?.commands === "object" &&
-        !Array.isArray(target.commands)
-        ? target.commands
-        : {},
-    )
-      .filter((command) => typeof command === "string")
-      .flatMap((command) => {
-        const failures = [];
-        if (typeof packageJson.scripts?.[command] !== "string")
-          failures.push(`Native target package script is missing: ${command}.`);
-        if (!localQuality.includes(`npm run ${command}`))
-          failures.push(
-            `Local quality does not execute native target command: ${command}.`,
-          );
-        if (!ci.includes(`npm run ${command}`))
-          failures.push(
-            `CI does not execute native target command: ${command}.`,
-          );
-        return failures;
-      }),
+  const failures = [];
+  if (packageJson.scripts?.["quality:control"] !== qualityControlScript)
+    failures.push("Portable quality control composition must remain exact.");
+  if (!localQuality.includes("npm run quality:control"))
+    failures.push("Local quality must execute portable quality control.");
+  failures.push(...coverageCommandFailures(packageJson.scripts?.coverage));
+  failures.push(
+    ...manifest.nativeTargets.flatMap((target) =>
+      Object.values(
+        target?.commands !== null &&
+          typeof target?.commands === "object" &&
+          !Array.isArray(target.commands)
+          ? target.commands
+          : {},
+      )
+        .filter((command) => typeof command === "string")
+        .flatMap((command) => {
+          const failures = [];
+          if (typeof packageJson.scripts?.[command] !== "string")
+            failures.push(
+              `Native target package script is missing: ${command}.`,
+            );
+          if (!localQuality.includes(`npm run ${command}`))
+            failures.push(
+              `Local quality does not execute native target command: ${command}.`,
+            );
+          return failures;
+        }),
+    ),
   );
+  for (const command of ["acceptance:macos"]) {
+    if (typeof packageJson.scripts?.[command] !== "string")
+      failures.push(`Native acceptance package script is missing: ${command}.`);
+  }
+  failures.push(...nativeMatrixCommandFailures(ci, nativeCiCommands));
+  for (const marker of ["macos-14", "macos-26", 'test "$(uname -m)" = arm64']) {
+    if (!ci.includes(marker))
+      failures.push(`Native CI marker is missing: ${marker}.`);
+  }
+  return failures;
 }
 
 function unpinnedWorkflowFailures(workflows) {
@@ -669,7 +919,176 @@ function unpinnedWorkflowFailures(workflows) {
   );
 }
 
-function ciWorkflowFailures(ci) {
+export function nativeCiWorkflowFailures(ci) {
+  const lines = ci.split(/\r?\n/u);
+  const matrix = workflowSection(lines, "  native-matrix:");
+  const aggregate = workflowSection(lines, "  native:");
+  const failures = [];
+  if (matrix.length === 0) failures.push("Native CI matrix job id is missing.");
+  if (
+    !matrix.some(
+      (line) => line.trim() === "name: native (${{ matrix.runner }})",
+    )
+  )
+    failures.push("Native CI matrix check name is not runner-qualified.");
+  if (!matrix.some((line) => line.trim() === "runner: [macos-14, macos-26]"))
+    failures.push(
+      "Native CI matrix runners are not the exact authoritative set.",
+    );
+  if (aggregate.length === 0)
+    failures.push("Native CI aggregate job id is missing.");
+  if (!aggregate.some((line) => line.trim() === "name: native"))
+    failures.push("Native CI aggregate check name must be exactly native.");
+  if (normalizedStepCondition(jobPreamble(aggregate)) !== "always()")
+    failures.push("Native CI aggregate must always evaluate matrix results.");
+  const needs = workflowSection(jobPreamble(aggregate), "    needs:");
+  if (
+    needs.filter((line) => line.trim().startsWith("- ")).length !== 1 ||
+    !needs.some((line) => line.trim() === "- native-matrix")
+  )
+    failures.push("Native CI aggregate must depend only on native-matrix.");
+  if (!aggregate.some((line) => line.includes("needs.native-matrix.result")))
+    failures.push("Native CI aggregate must inspect the matrix result.");
+  return failures;
+}
+
+export function dependencyReviewWorkflowFailures(workflow) {
+  const lines = workflow.split(/\r?\n/u);
+  const severity = lines.filter(
+    (line) => line.trim() === "fail-on-severity: moderate",
+  );
+  const scopes = lines.filter(
+    (line) => line.trim() === "fail-on-scopes: development, runtime, unknown",
+  );
+  const delegatedVulnerabilityCheck = lines.filter(
+    (line) => line.trim() === "vulnerability-check: false",
+  );
+  const targetInventory = lines.filter(
+    (line) =>
+      line.trim() ===
+      "run: node quality/generate-native-vulnerability-inventory.mjs",
+  );
+  const targetScan = lines.filter((line) =>
+    line.includes(
+      "--lockfile=osv-scanner:native/target/osv/native-macos-arm64.osv-scanner.json",
+    ),
+  );
+  const targetPolicy = lines.filter(
+    (line) =>
+      line.trim() === "node quality/check-native-vulnerability-results.mjs",
+  );
+  const marker = lines.findIndex(
+    (line) => line.trim() === "allow-licenses: >-",
+  );
+  const licenseLines = [];
+  for (let index = marker + 1; index < lines.length; index += 1) {
+    if (!/^\s{12}\S/u.test(lines[index])) break;
+    licenseLines.push(lines[index].trim());
+  }
+  const licenses = licenseLines
+    .join(" ")
+    .split(",")
+    .map((license) => license.trim())
+    .filter(Boolean)
+    .toSorted();
+  const dependencyLicenseExceptions = lines.filter((line) =>
+    line.trim().startsWith("allow-dependencies-licenses:"),
+  );
+  const failures = [];
+  if (severity.length !== 1)
+    failures.push("Dependency Review severity must be exactly moderate.");
+  if (scopes.length !== 1)
+    failures.push(
+      "Dependency Review scopes must cover development, runtime, and unknown.",
+    );
+  if (delegatedVulnerabilityCheck.length !== 1)
+    failures.push(
+      "Dependency Review must delegate its platform-blind vulnerability check exactly once.",
+    );
+  if (
+    targetInventory.length !== 1 ||
+    targetScan.length !== 1 ||
+    targetPolicy.length !== 1
+  )
+    failures.push(
+      "Dependency Review must scan the exact declared macOS arm64 dependency inventory.",
+    );
+  if (
+    lines.some(
+      (line) =>
+        line.includes("--recursive") ||
+        line.includes("--lockfile=native/Cargo.lock"),
+    )
+  )
+    failures.push(
+      "Dependency Review vulnerability scanning must not consume the universal Cargo lock graph.",
+    );
+  if (
+    marker < 0 ||
+    JSON.stringify(licenses) !==
+      JSON.stringify(dependencyReviewLicenses.toSorted())
+  )
+    failures.push(
+      "Dependency Review license allowlist is not the exact accepted set.",
+    );
+  if (
+    JSON.stringify(dependencyLicenseExceptions.map((line) => line.trim())) !==
+    JSON.stringify([
+      "allow-dependencies-licenses: pkg:cargo/target-lexicon@0.12.16",
+    ])
+  )
+    failures.push(
+      "Dependency Review dependency license exception must be the exact accepted target-lexicon purl.",
+    );
+  return failures;
+}
+
+export function aggregateCiBindingFailures(ci) {
+  const aggregate = workflowSection(ci.split(/\r?\n/u), "  ci:");
+  const bindings = [
+    ["CORE_QUALITY_RESULT", "core-quality"],
+    ["COVERAGE_SONAR_RESULT", "coverage-sonar"],
+    ["CROSS_PLATFORM_RESULT", "cross-platform-smoke"],
+    ["NATIVE_RESULT", "native"],
+  ];
+  const failures = [];
+  for (const [variable, dependency] of bindings) {
+    const exact = `${variable}: \${{ needs.${dependency}.result }}`;
+    if (aggregate.filter((line) => line.trim() === exact).length !== 1)
+      failures.push(`CI aggregate binding must be exact: ${variable}.`);
+  }
+  const loop = `for result in ${bindings
+    .map(([variable]) => `"$${variable}"`)
+    .join(" ")}; do`;
+  if (aggregate.filter((line) => line.trim() === loop).length !== 1)
+    failures.push(
+      "CI aggregate loop must inspect every exact dependency result.",
+    );
+  return failures;
+}
+
+export function mutationWorkflowFailures(workflow) {
+  const lines = workflow
+    .split(/\r?\n/u)
+    .map((line) => line.trim().replace(/^-\s+run:\s*/u, ""));
+  const failures = [
+    "cargo +1.92.0 install cargo-mutants --version 27.1.0 --locked",
+    "cargo +1.92.0 mutants --manifest-path native/Cargo.toml",
+  ]
+    .filter((command) => lines.filter((line) => line === command).length !== 1)
+    .map((command) => `Mutation workflow command must be exact: ${command}.`);
+  if (
+    lines.some((line) =>
+      /^cargo (?:install cargo-mutants|mutants)\b/u.test(line),
+    )
+  )
+    failures.push(
+      "Mutation workflow must not invoke cargo-mutants outside Rust 1.92.",
+    );
+  return failures;
+}
+
+function ciWorkflowFailures(ci, productive) {
   const failures = expectedWorkflowChecks
     .filter((check) => !ci.includes(check))
     .map(
@@ -682,7 +1101,11 @@ function ciWorkflowFailures(ci) {
       failures.push(`CI must retain required job section: ${jobName}.`);
       continue;
     }
-    if (jobPreamble(job).some((line) => line.trimStart().startsWith("if:")))
+    const condition = normalizedStepCondition(jobPreamble(job));
+    if (
+      condition !== undefined &&
+      !(jobName === "native" && condition === "always()")
+    )
       failures.push(
         `CI job must remain applicable and unconditional on accepted events: ${jobName}.`,
       );
@@ -705,6 +1128,13 @@ function ciWorkflowFailures(ci) {
         `The aggregate ci job must depend on required job: ${dependency}.`,
       );
   }
+  if (productive && !needs.some((line) => line.trim() === "- native"))
+    failures.push("The aggregate ci job must depend on required job: native.");
+  if (productive)
+    failures.push(
+      ...nativeCiWorkflowFailures(ci),
+      ...aggregateCiBindingFailures(ci),
+    );
   return failures;
 }
 
@@ -792,9 +1222,25 @@ async function workflowFailures(root, manifest) {
   const ci = workflows.get("ci.yml") ?? "";
   return [
     ...unpinnedWorkflowFailures(workflows),
-    ...ciWorkflowFailures(ci),
+    ...[...workflows].flatMap(([name, workflow]) =>
+      workflowToolchainFailures(
+        workflow,
+        requiredGovernedWorkflowJobs[name] ?? [],
+      ).map(
+        (failure) => `Workflow ${name} rejected exact toolchain: ${failure}.`,
+      ),
+    ),
+    ...ciWorkflowFailures(ci, manifest?.phase === "productive"),
     ...sonarWorkflowFailures(ci),
     ...epicWorkflowFailures(workflows),
+    ...(manifest?.phase === "productive"
+      ? dependencyReviewWorkflowFailures(
+          workflows.get("dependency-review.yml") ?? "",
+        )
+      : []),
+    ...(manifest?.phase === "productive"
+      ? mutationWorkflowFailures(workflows.get("mutation-security.yml") ?? "")
+      : []),
     ...issueReadinessWorkflowFailures(
       workflows.get("issue-readiness.yml") ?? "",
     ),

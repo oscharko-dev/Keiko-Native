@@ -1,0 +1,28 @@
+{
+  "name": "@oscharko-dev/keiko-native-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "npm run typecheck && vite build --configLoader native",
+    "coverage": "vitest run --configLoader native --coverage",
+    "test": "npm run typecheck && vitest run --configLoader native",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.10.1",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "axe-core": "4.12.1",
+    "typescript": "5.9.3",
+    "vite": "7.3.6",
+    "@vitest/coverage-v8": "4.1.8",
+    "vitest": "4.1.8"
+  }
+}

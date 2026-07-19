@@ -147,6 +147,101 @@ Run `npm run quality` and `npm audit --audit-level=high` before the first push. 
 findings locally, add a prevention test or contract check, rerun the affected gate, and then rerun
 the complete local suite before another push. GitHub is remote-only validation, not the test loop.
 
+The quality control plane uses exactly Node.js 24.18.0 and npm 11.16.0. Root `engines`, npm
+`devEngines`, `packageManager`, and the sole `.npmrc` setting (`engine-strict=true`) fail closed on
+toolchain drift before installation or scripts. The direct `quality` and `native:dependencies`
+entry points also run the dependency-free exact-toolchain checker. Every workflow job that consumes
+npm first installs the exact Node distribution through the pinned setup action and verifies its
+bundled npm 11.16.0 before any npm command. Workflows do not replace the bundled executable with
+Corepack shims. Contract tests reject missing, conditional, reordered, or version-drifted
+verification.
+
+Packaged-shell acceptance uses a 30,000 ms functional-liveness watchdog while waiting for the
+two-request acknowledgement. This operational bound allows cold macOS/WebKit startup without
+turning the harness into a startup-performance assertion; performance-distribution evidence remains
+excluded. Once acknowledgement arrives, the independently accepted 5,000 ms normal-shutdown budget
+still applies exactly, and each application IPC request remains bounded to 1,000 ms.
+
+Cargo's committed lock is intentionally cross-target, while the declared native deliverable is
+only `aarch64-apple-darwin`. Vulnerability workflows therefore derive a transient inventory from
+the exact locked Cargo resolve graph filtered to that target, then scan it with the checksum-pinned
+OSV 2.3.8 binary together with both npm locks. A closed result validator enforces the repository's
+moderate threshold. Missing or unknown severity fails closed unless RustSec classifies every
+affected record only as `informational: unmaintained`, supplies no CVSS score or patched range, and
+matches the expected schema and source. Mixed, malformed, patched-informational, low, moderate,
+high, and critical records remain distinguishable; moderate and above block. GitHub Dependency
+Review retains its exact diff, scope, license, and OpenSSF checks; only its platform-blind
+vulnerability decision is disabled in favor of the target-aware OSV step in the same read-only job.
+No advisory exception, ignore list, warning mode, universal-Cargo-lock scan, or lowered threshold is
+permitted.
+
+Dependency Review's license parser cannot represent the SPDX expression
+`Apache-2.0 WITH LLVM-exception` even though that expression is already accepted by the
+repository-owned dependency policy. The workflow therefore carries one exact package-URL exception,
+`pkg:cargo/target-lexicon@0.12.16`, for that already-reviewed locked package. Contract checks reject
+removal, version drift, or any additional package exception; the general license allowlist, scope,
+OpenSSF, and target-aware vulnerability controls remain unchanged.
+
+Tauri 2.11.5 reaches `urlpattern` 0.3.0 through `tauri-utils` 2.9.3 on macOS arm64. That frozen stack
+currently retains five visible RustSec informational-unmaintained signals with no patched version:
+`unic-char-property` (RUSTSEC-2025-0081), `unic-char-range` (RUSTSEC-2025-0075), `unic-common`
+(RUSTSEC-2025-0080), `unic-ucd-ident` (RUSTSEC-2025-0100), and `unic-ucd-version`
+(RUSTSEC-2025-0098). They remain in the uploaded exact-head OSV results and are not advisory
+exceptions or claims of zero findings.
+
+The Linux `core-quality` job runs `quality:control`, the portable Node and repository-contract suite
+shared with root `quality`. The full root `quality` command then runs every native gate and is
+authoritative only on Apple Silicon macOS; `native:package` fails closed on other hosts instead of
+emitting or publishing package evidence. Both declared macOS runners execute the complete native
+command set, including packaging, with stable Rust, rustfmt, clippy, and the pinned coverage-only
+nightly installed by the native matrix.
+
+Root coverage runs exactly one test file at a time. Serial execution prevents native filesystem
+helper compilers and race fixtures from intermittently contending for shared runner resources. The
+custom reporter suppresses pass-event names and emits no arbitrary test identity or failure-message
+text. A failure contains only fixed rerun guidance plus failure type and error code selected from
+strict closed catalogs; every unknown metadata value becomes `unknown`. Stacks, causes, paths,
+payloads, and raw error objects are never emitted. LCOV source paths remain independently validated
+as repository-contained paths.
+
+Productive native quality begins with the exact standalone frontend `npm ci` command owned by
+`native:dependencies`; install scripts and npm workspace inference are disabled. Each native gate
+captures the exact Git tree into a private mode-0700 snapshot and compiles the repository-owned
+native filesystem quality helper from the eight expected Git blobs. The runner verifies the source
+set, Git-blob IDs, SHA-256 digests, and tree identity before compilation and verifies the sources
+again before publishing the private mode-0700 executable. Compiler inputs are inherited read-only
+descriptors, including descriptor-bound local headers; mutable source pathnames are never compiler
+inputs. Compiler failure, unexpected output, or detected source drift recursively cleans the private
+random build root and fails closed.
+
+Node and macOS do not expose descriptor-based process execution (`fexecve`) through the supported
+spawn interface. Helper execution therefore trusts the fresh same-user mode-0700 snapshot root,
+opens the expected helper without following links, binds its SHA-256 and full file identity, and
+checks descriptor-to-name identity immediately before and after pathname spawn. A changed owner,
+mode, name, byte digest, or identity fails closed. This boundary excludes a malicious process
+already running as the same local account, which can modify another same-user private directory;
+defending against that stronger host-compromise model would require a separately approved native
+launcher or privilege boundary and is outside the repository quality helper's authority.
+
+On macOS and Linux, that dependency-free POSIX C helper performs mutable dependency, generated
+package, evidence, and delivery operations through descriptor-relative traversal. It rejects
+symlinked components, non-regular files, replacements, concurrent changes, and root-identity drift.
+Writes use exclusive no-follow creation. Existing delivery directories are atomically exchanged
+with a fully staged tree (`renameatx_np` on macOS and `renameat2` on Linux); an unavailable atomic
+exchange fails closed instead of degrading to a non-atomic replacement. The runner accepts only the
+canonical `/var` to `/private/var` macOS system alias during private-root creation and does not
+resolve a caller-supplied final root symlink.
+
+The helper copies the installed frontend dependencies into the private snapshot before inventory.
+The snapshot requires the npm-ci hidden lock marker, binds it to the committed lock and exact
+installed package inventory (including empty or unexpected top-level entries), rejects unexpected
+or non-regular inputs, and retains a deterministic digest of every copied dependency byte. It
+becomes read-only before the native command starts, and the command never reads the original
+`node_modules` after capture. This proves reproducibility of the installed tree used by the gate;
+it does not independently reproduce npm registry tarball-integrity verification. That residual
+trust remains with the preceding exact npm-ci operation and npm's verification of the committed
+integrity records.
+
 The bootstrap quality control plane deliberately keeps third-party execution surface minimal:
 Prettier is the only npm development dependency. Markdown policy and LCOV generation are local,
 tested Node.js gates, and coverage uses the Node.js 24 test runner with the same 85% floors.

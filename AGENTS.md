@@ -106,8 +106,8 @@ and maintained by Keiko Native; do not create a shared core by default.
 
 ## Local green bar
 
-Use Node.js 24.18.x and npm 11.16.x for the repository quality control plane. Use npm only; the
-committed `package-lock.json` is authoritative.
+Use exactly Node.js 24.18.0 and npm 11.16.0 for the repository quality control plane. Use npm only;
+the committed `package-lock.json` is authoritative.
 
 ```bash
 npm ci --ignore-scripts

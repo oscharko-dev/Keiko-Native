@@ -119,7 +119,7 @@ CH-3 implements one operation, `application-health`, over one Tauri command name
 ```json
 {
   "schemaVersion": 1,
-  "requestId": "request-00000001",
+  "requestId": "request-0000000000000001-0000000000000001",
   "sequence": 1,
   "timeoutMs": 1000,
   "operation": { "kind": "application-health" }
@@ -127,12 +127,17 @@ CH-3 implements one operation, `application-health`, over one Tauri command name
 ```
 
 The encoded request is at most 4,096 bytes. Unknown and duplicate fields are rejected. `requestId`
-is 16 through 64 ASCII alphanumeric or hyphen bytes, is unique for the lifetime of the authenticated
-renderer session, and is retained in a bounded 64-entry replay window. `sequence` is an integer from
-1 through 9,007,199,254,740,991 and must be strictly greater than the last accepted sequence for
-that session. `timeoutMs` is an integer from 1 through 1,000. The operation has no caller-controlled
-payload. A renderer reload creates a new host-owned session and clears neither an in-flight request
-nor its cancellation state until the old session has been failed closed.
+is exactly `request-`, the authenticated renderer generation as 16 zero-padded decimal digits, `-`,
+and the request sequence as 16 zero-padded decimal digits. Both numeric components are integers from
+1 through 9,007,199,254,740,991. The bundled frontend derives this identifier rather than accepting
+an independent caller-selected value. The host recomputes it from the authenticated generation and
+parsed sequence before application dispatch and rejects any mismatch. Generation plus strictly
+increasing sequence makes the identifier unique for the renderer-session lifetime; the host retains
+the most recent 64 identifiers as a bounded replay accelerator. Reuse after eviction is still
+rejected by the sequence and canonical-identifier invariants. `timeoutMs` is an integer from 1
+through 1,000. The operation has no caller-controlled payload. A renderer reload creates a new
+host-owned session and clears neither an in-flight request nor its cancellation state until the old
+session has been failed closed.
 
 The host accepts the request only from the Tauri window labelled `main`, with the bundled
 `tauri://localhost` origin or Tauri's platform-equivalent `http://tauri.localhost` representation,
@@ -146,7 +151,7 @@ The successful canonical response is:
 ```json
 {
   "schemaVersion": 1,
-  "requestId": "request-00000001",
+  "requestId": "request-0000000000000001-0000000000000001",
   "result": {
     "kind": "application-health",
     "status": "healthy",
@@ -175,15 +180,53 @@ unavailable host, and shutdown are terminal for that request. CH-3 may inject cl
 and unavailable adapters in tests, but no mutation, delay, diagnostic, or evaluation command is
 compiled into the product package.
 
+#### CH-3 transport and evidence amendment
+
+Issue #12 contract v3 narrows the transport and evidence details without changing the selected
+host, renderer, versions, productive roots, platform scope, or trust boundary. The product retains
+one operation, `application-health`, through `application_request`, and adds one closed Tauri
+command, `application_cancel`. Its request contains exactly `schemaVersion` and the identifier of
+an accepted in-flight request; it carries no generic payload or privileged capability.
+
+Every `main` page-load start creates a monotonically increasing host-owned renderer generation.
+Replacing or destroying a renderer fails its previous generation closed, cancels its in-flight
+requests, and discards late completion. Cancellation is valid only from the authenticated current
+generation that owns the identifier. The bundled frontend uses a fresh identifier and increasing
+sequence for every request and invokes `application_cancel` when its local `AbortSignal` fires.
+
+The packaged renderer validates its first health response before sending a second request with a
+fresh identifier and sequence. Host acceptance of the second request emits one bounded body-free
+acknowledgement to the package process. The CH-3 harness observes that acknowledgement, requests a
+normal application quit, enforces the 5,000 ms shutdown budget, and requires zero owned descendants.
+Injected contract tests prove renderer loss and session replacement. Actual packaged renderer-kill
+and recovery acceptance remains assigned to CH-5.
+
+Stable Rust 1.92.0 remains authoritative for formatting, linting, productive build, test, and
+package commands. Rust branch instrumentation alone uses `nightly-2026-07-17` and
+`cargo-llvm-cov` 0.8.7; frontend branch instrumentation uses Vitest V8 coverage. Both enforce the
+repository's 85 percent line, branch, function, and statement floors. The productive declaration
+enumerates the test root and every support file, and package acceptance uses closed path,
+file-class, dependency, SPDX, notice, CSP, navigation, and production-hook policies.
+
+Issue #12 contract v4 closes the remaining request-identity ambiguity. The renderer composes each
+identifier only from its host-authenticated generation and strictly increasing local sequence using
+the exact fixed-width form above. The host independently recomputes that value before dispatch.
+Cancellation carries the same canonical identifier and remains owned by the authenticated current
+generation. The 64-entry recent replay window remains bounded and is not the lifetime-uniqueness
+authority.
+
+Rust unit instrumentation excludes only the thin Tauri `main.rs` framework wiring, whose real
+composition is instead mandatory in both packaged-shell acceptance runs. No application, port,
+host lifecycle, transport, origin, navigation, cancellation, or evidence policy is excluded.
+
 ### Repository-owned packaged-shell harness
 
 The root `acceptance:macos` command owns the stable harness. It builds and launches the exact
 `keiko-native-desktop` package from a clean workspace, obtains the package digest and immutable
-build identity, performs the health roundtrip through the actual bundled renderer, kills the
-renderer to observe unavailable/recovery behavior, requests normal application shutdown, escalates
-only after 5,000 ms, and proves zero owned descendant processes. Contract-mode tests additionally
-cover every request bound and reason code through dependency injection without adding a product
-command.
+build identity, observes the two-request health acknowledgement through the actual bundled
+renderer, requests normal application shutdown, escalates only after 5,000 ms, and proves zero
+owned descendant processes. Contract-mode tests cover renderer loss, session replacement, every
+request bound, and every reason code through dependency injection without adding a product command.
 
 The harness writes schema `keiko-native-packaged-shell-evidence/v1`, containing only source
 revision, readiness fingerprint, package and lock digests, runner image identifier, architecture,

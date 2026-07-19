@@ -4,9 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { canonicalCoverageCommand } from "./coverage-reporter.mjs";
 import {
+  aggregateCiBindingFailures,
+  coverageCommandFailures,
+  dependencyReviewWorkflowFailures,
   isProductiveSource,
   isSafeRepositoryPath,
+  mutationWorkflowFailures,
+  nativeCiWorkflowFailures,
   normalizeRepositoryPath,
   sonarRequiredForEvent,
   sonarWorkflowFailures,
@@ -16,6 +22,7 @@ import {
   validateRepository,
   workflowEventTargetsBranch,
 } from "./contract.mjs";
+import { governedWorkflowJobs } from "./workflow-job-contracts.mjs";
 
 const validManifest = {
   baseBranch: "dev",
@@ -39,8 +46,12 @@ const validTarget = {
     architecture: "native:architecture",
     build: "native:build",
     coverage: "native:coverage",
+    format: "native:format",
+    lint: "native:lint",
     package: "native:package",
+    platform: "native:platform",
     security: "native:security",
+    signing: "native:signing",
     test: "native:test",
   },
   language: "swift",
@@ -48,6 +59,100 @@ const validTarget = {
   platforms: ["macos"],
   sourceRoot: "Sources",
 };
+const qualityControlScript =
+  "npm run native:dependencies && npm run check:contract && npm run lint && npm run format:check && npm run coverage && npm run build";
+
+const adr0004SourceRoots = [
+  "native/crates/keiko-application/src/",
+  "native/crates/keiko-ui-port/src/",
+  "native/crates/keiko-host-macos/src/",
+  "native/apps/keiko-desktop/src/",
+  "native/frontend/src/",
+];
+
+const adr0004TestRoots = ["native/tests/"];
+
+const adr0004SupportFiles = [
+  "native/Cargo.toml",
+  "native/Cargo.lock",
+  "native/rust-toolchain.toml",
+  "native/apps/keiko-desktop/Cargo.toml",
+  "native/apps/keiko-desktop/build.rs",
+  "native/apps/keiko-desktop/icons/icon.png",
+  "native/apps/keiko-desktop/tauri.conf.json",
+  "native/crates/keiko-application/Cargo.toml",
+  "native/crates/keiko-ui-port/Cargo.toml",
+  "native/crates/keiko-host-macos/Cargo.toml",
+  "native/frontend/index.html",
+  "native/frontend/package.json",
+  "native/frontend/package-lock.json",
+  "native/frontend/tsconfig.json",
+  "native/frontend/vite.config.ts",
+  "native/package-policy.json",
+  "native/third-party-notices.json",
+];
+
+const coverageToolchains = {
+  productiveRust: "1.92.0",
+  rustBranch: "nightly-2026-07-17",
+  cargoLlvmCov: "0.8.7",
+  frontend: "vitest-v8",
+};
+
+const adr0004Target = {
+  architectures: ["arm64"],
+  commands: {
+    architecture: "native:architecture",
+    build: "native:build",
+    coverage: "native:coverage",
+    format: "native:format",
+    lint: "native:lint",
+    package: "native:package",
+    platform: "native:platform",
+    security: "native:security",
+    signing: "native:signing",
+    test: "native:test",
+  },
+  language: "rust",
+  name: "keiko-native-desktop",
+  platforms: ["macos"],
+  sourceRoots: adr0004SourceRoots,
+};
+
+const productiveCommands = [
+  ...Object.values(adr0004Target.commands),
+  "acceptance:macos",
+];
+
+function productiveManifest(overrides = {}) {
+  return {
+    ...validManifest,
+    coverageExclusions: [
+      {
+        path: "native/apps/keiko-desktop/src/main.rs",
+        evidence: "acceptance:macos",
+      },
+    ],
+    coverageToolchains,
+    nativeTargets: [adr0004Target],
+    phase: "productive",
+    productiveSourceRoots: adr0004SourceRoots,
+    qualityProfile: "keiko-native-productive-v1",
+    supportFiles: adr0004SupportFiles,
+    testSourceRoots: adr0004TestRoots,
+    ...overrides,
+  };
+}
+
+async function createDeclaredNativePaths(root) {
+  for (const sourceRoot of [...adr0004SourceRoots, ...adr0004TestRoots]) {
+    await mkdir(join(root, sourceRoot), { recursive: true });
+  }
+  for (const file of adr0004SupportFiles) {
+    await mkdir(join(root, file, ".."), { recursive: true });
+    await writeFile(join(root, file), "fixture\n");
+  }
+}
 
 test("accepts the governed bootstrap manifest", () => {
   assert.deepEqual(validateManifest(validManifest), []);
@@ -89,9 +194,22 @@ test("requires an immutable governed source Fachkonzept identity", () => {
 
 test("requires productive roots and targets together", () => {
   const failures = validateManifest({ ...validManifest, phase: "productive" });
-  assert.deepEqual(failures, [
-    "Productive projects must declare source roots and native targets.",
-  ]);
+  assert.ok(
+    failures.includes(
+      "The keiko-native-productive-v1 quality profile is required.",
+    ),
+  );
+  assert.ok(
+    failures.includes("testSourceRoots must be an array in productive mode."),
+  );
+  assert.ok(
+    failures.includes("supportFiles must be an array in productive mode."),
+  );
+  assert.ok(
+    failures.includes(
+      "Productive projects must declare source roots and native targets.",
+    ),
+  );
 });
 
 test("rejects malformed collection fields", () => {
@@ -120,7 +238,7 @@ test("validates contained source paths and complete native target gates", () => 
   assert.ok(
     validateNativeTarget({ ...validTarget, commands: {}, platforms: [] }, [
       "Other",
-    ]).length > 6,
+    ]).length > 8,
   );
 });
 
@@ -368,6 +486,7 @@ test("public governance records exact-target authenticated epic merge and sacred
 async function fixtureRepository() {
   const root = await mkdtemp(join(tmpdir(), "keiko-native-quality-"));
   const files = [
+    ".npmrc",
     ".gitar/review/00-governance-and-delivery.md",
     ".gitar/review/10-security-and-trust-boundaries.md",
     ".gitar/review/20-native-architecture-quality-and-evidence.md",
@@ -394,6 +513,8 @@ async function fixtureRepository() {
     "docs/product/source-baseline.md",
     "docs/qa/repository-activation.md",
     "package.json",
+    "quality/check-native-vulnerability-results.mjs",
+    "quality/generate-native-vulnerability-inventory.mjs",
     "quality/github-api.mjs",
     "quality/github-reference.mjs",
     "quality/issue-contract.mjs",
@@ -411,6 +532,7 @@ async function fixtureRepository() {
     join(root, "package.json"),
     JSON.stringify({ scripts: { quality: "fixture" } }),
   );
+  await writeFile(join(root, ".npmrc"), "engine-strict=true\n");
   await mkdir(join(root, "quality"), { recursive: true });
   await writeFile(
     join(root, "quality/project.json"),
@@ -474,75 +596,21 @@ async function fixtureRepository() {
       "    branches:",
       '      - "epic/**"',
       "jobs:",
-      "  core-quality:",
-      "    name: Core quality",
-      "    steps:",
-      "      - run: npm run quality",
-      "  coverage-sonar:",
-      "    name: Coverage and SonarCloud",
-      "    steps:",
-      "      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "        with:",
-      "          ref: ${{ github.event_name == 'workflow_dispatch' && 'dev' || github.ref }}",
-      "      - name: Verify manual analysis is bound to remote dev",
-      "        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev'",
-      "        run: |",
-      '          if [ "$(git rev-parse HEAD)" != "$(git rev-parse refs/remotes/origin/dev)" ]; then',
-      "            exit 1",
-      "          fi",
-      "      - run: npm run coverage",
-      "      - name: Download and verify Sonar Scanner CLI",
-      "        if: >-",
-      "          (github.event_name == 'pull_request' && github.base_ref == 'dev') ||",
-      "          (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||",
-      "          (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev')",
-      "        run: verify-scanner",
-      "      - name: SonarQube Cloud analysis",
-      "        if: >-",
-      "          (github.event_name == 'pull_request' && github.base_ref == 'dev') ||",
-      "          (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||",
-      "          (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev')",
-      "        env:",
-      "          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}",
-      "        run: |",
-      '          if [ -z "$SONAR_TOKEN" ]; then',
-      "            exit 1",
-      "          fi",
-      "          sonar-scanner -Dsonar.qualitygate.wait=true",
-      "  cross-platform-smoke:",
-      "    name: Cross-platform smoke",
-      "    steps:",
-      "      - run: npm test",
-      "  ci:",
-      "    name: ci",
-      "    if: ${{ always() }}",
-      "    needs:",
-      "      - core-quality",
-      "      - coverage-sonar",
-      "      - cross-platform-smoke",
-      "    steps:",
-      "      - run: verify-results",
-      "  actionlint:",
-      "    name: actionlint",
-      "    steps:",
-      "      - run: actionlint",
-      "  verify-pinned-shas:",
-      "    name: Verify pinned action SHAs",
-      "    steps:",
-      "      - run: verify-pinned-shas",
-      "  zizmor:",
-      "    name: zizmor",
-      "    steps:",
-      "      - run: zizmor",
-      "  build-scan-sbom-smoke:",
-      "    name: Build, scan, SBOM, smoke",
-      "    steps:",
-      "      - run: build-scan-sbom-smoke",
-      "  native:",
-      "    name: native",
-      "    steps:",
-      "      - run: native",
+      governedWorkflowJobs["core-quality"],
+      governedWorkflowJobs["coverage-sonar"],
+      governedWorkflowJobs["cross-platform-smoke"],
+      governedWorkflowJobs.ci,
+      governedWorkflowJobs.actionlint,
+      governedWorkflowJobs["verify-pinned-shas"],
+      governedWorkflowJobs.zizmor,
+      governedWorkflowJobs["build-scan-sbom-smoke"],
+      governedWorkflowJobs["native-matrix"],
+      governedWorkflowJobs.native,
     ].join("\n"),
+  );
+  await writeFile(
+    join(root, ".github/workflows/mutation-security.yml"),
+    ["jobs:", governedWorkflowJobs["native-mutation-security"]].join("\n"),
   );
   for (const name of [
     "codeql.yml",
@@ -556,8 +624,23 @@ async function fixtureRepository() {
       "    branches:",
       '      - "epic/**"',
     ];
-    if (name !== "dependency-review.yml")
+    if (name === "codeql.yml")
       lines.push("  push:", "    branches:", '      - "epic/**"');
+    else if (name === "dependency-review.yml") {
+      lines.push(
+        "permissions: {}",
+        "jobs:",
+        governedWorkflowJobs["dependency-review"],
+      );
+    } else
+      lines.push(
+        "  push:",
+        "    branches:",
+        '      - "epic/**"',
+        "permissions: {}",
+        "jobs:",
+        governedWorkflowJobs["osv-scan"],
+      );
     await writeFile(join(root, ".github/workflows", name), lines.join("\n"));
   }
   await writeFile(
@@ -635,6 +718,31 @@ test("rejects temporary experiment source during bootstrap", async () => {
       rejected.failures.join("\n"),
       /Productive source exists while the project is in bootstrap phase/u,
     );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("root npm configuration accepts only exact LF or CRLF content", async () => {
+  const root = await fixtureRepository();
+  try {
+    const npmConfig = join(root, ".npmrc");
+    await writeFile(npmConfig, "engine-strict=true\r\n");
+    assert.doesNotMatch(
+      (await validateRepository(root)).failures.join("\n"),
+      /Root npm configuration/u,
+    );
+    for (const invalid of [
+      "engine-strict=true\r",
+      "engine-strict=true \r\n",
+      "engine-strict=true\r\nextra=true\r\n",
+    ]) {
+      await writeFile(npmConfig, invalid);
+      assert.match(
+        (await validateRepository(root)).failures.join("\n"),
+        /Root npm configuration/u,
+      );
+    }
   } finally {
     await rm(root, { force: true, recursive: true });
   }
@@ -846,31 +954,26 @@ test("fails closed for missing declared productive roots", async () => {
   try {
     await writeFile(
       join(root, "quality/project.json"),
-      JSON.stringify({
-        ...validManifest,
-        nativeTargets: [validTarget],
-        phase: "productive",
-        productiveSourceRoots: ["Sources"],
-      }),
+      JSON.stringify(productiveManifest()),
     );
-    const commandNames = Object.values(validTarget.commands);
+    const commandNames = productiveCommands;
     await writeFile(
       join(root, "package.json"),
       JSON.stringify({
         scripts: Object.fromEntries([
           ...commandNames.map((command) => [command, "node --version"]),
+          ["coverage", canonicalCoverageCommand],
+          ["quality:control", qualityControlScript],
           [
             "quality",
-            commandNames.map((command) => `npm run ${command}`).join(" && "),
+            [
+              "node quality/check-toolchain.mjs",
+              "npm run quality:control",
+              ...commandNames.map((command) => `npm run ${command}`),
+            ].join(" && "),
           ],
         ]),
       }),
-    );
-    const ciPath = join(root, ".github/workflows/ci.yml");
-    const ci = await readFile(ciPath, "utf8");
-    await writeFile(
-      ciPath,
-      `${ci}\n${commandNames.map((command) => `npm run ${command}`).join("\n")}`,
     );
     const result = await validateRepository(root);
     assert.match(
@@ -885,63 +988,86 @@ test("fails closed for missing declared productive roots", async () => {
 test("accepts declared productive source roots and targets", async () => {
   const root = await fixtureRepository();
   try {
-    await mkdir(join(root, "Sources"));
-    await writeFile(join(root, "Sources/App.swift"), "struct App {}\n");
+    await createDeclaredNativePaths(root);
+    await writeFile(
+      join(root, "native/crates/keiko-application/src/lib.rs"),
+      'pub fn health() -> &\'static str { "healthy" }\n',
+    );
     await writeFile(
       join(root, "quality/project.json"),
-      JSON.stringify({
-        ...validManifest,
-        nativeTargets: [validTarget],
-        phase: "productive",
-        productiveSourceRoots: ["Sources"],
-      }),
+      JSON.stringify(productiveManifest()),
     );
-    const commandNames = Object.values(validTarget.commands);
+    const commandNames = productiveCommands;
     await writeFile(
       join(root, "package.json"),
       JSON.stringify({
         scripts: Object.fromEntries([
           ...commandNames.map((command) => [command, "node --version"]),
+          ["coverage", canonicalCoverageCommand],
+          ["quality:control", qualityControlScript],
           [
             "quality",
-            commandNames.map((command) => `npm run ${command}`).join(" && "),
+            [
+              "node quality/check-toolchain.mjs",
+              "npm run quality:control",
+              ...commandNames.map((command) => `npm run ${command}`),
+            ].join(" && "),
           ],
         ]),
       }),
     );
-    const ciPath = join(root, ".github/workflows/ci.yml");
-    const ci = await readFile(ciPath, "utf8");
-    await writeFile(
-      ciPath,
-      `${ci}\n${commandNames.map((command) => `npm run ${command}`).join("\n")}`,
-    );
     const result = await validateRepository(root);
     assert.deepEqual(result.failures, []);
-    assert.equal(result.productiveSourceCount, 1);
+    assert.equal(result.productiveSourceCount, 3);
+    const packagePath = join(root, "package.json");
+    const packageContract = JSON.parse(await readFile(packagePath, "utf8"));
+    packageContract.scripts["quality:control"] = "npm run build";
+    await writeFile(packagePath, JSON.stringify(packageContract));
+    assert.ok(
+      (await validateRepository(root)).failures.includes(
+        "Portable quality control composition must remain exact.",
+      ),
+    );
   } finally {
     await rm(root, { force: true, recursive: true });
   }
 });
 
+test("productive coverage exclusion stays bound to packaged acceptance", () => {
+  assert.ok(
+    validateManifest(productiveManifest({ coverageExclusions: [] })).includes(
+      "Coverage exclusions must bind only thin Tauri wiring to packaged acceptance.",
+    ),
+  );
+});
+
 test("fails closed when productive commands are not wired locally and in CI", async () => {
   const root = await fixtureRepository();
   try {
-    await mkdir(join(root, "Sources"));
-    await writeFile(join(root, "Sources/App.swift"), "struct App {}\n");
+    await createDeclaredNativePaths(root);
+    await writeFile(
+      join(root, "native/crates/keiko-application/src/lib.rs"),
+      'pub fn health() -> &\'static str { "healthy" }\n',
+    );
     await writeFile(
       join(root, "quality/project.json"),
-      JSON.stringify({
-        ...validManifest,
-        nativeTargets: [validTarget],
-        phase: "productive",
-        productiveSourceRoots: ["Sources"],
-      }),
+      JSON.stringify(productiveManifest()),
+    );
+    const ciPath = join(root, ".github/workflows/ci.yml");
+    const ci = await readFile(ciPath, "utf8");
+    await writeFile(
+      ciPath,
+      ci
+        .replace("  native-matrix:\n", "  native-matrix-removed:\n")
+        .replace('          test "$(uname -m)" = arm64', "          true"),
     );
     const result = await validateRepository(root);
     const failures = result.failures.join("\n");
     assert.match(failures, /Native target package script is missing/u);
     assert.match(failures, /Local quality does not execute/u);
-    assert.match(failures, /CI does not execute/u);
+    assert.match(failures, /Native CI command step/u);
+    assert.match(failures, /Native acceptance package script is missing/u);
+    assert.match(failures, /Native CI marker is missing/u);
   } finally {
     await rm(root, { force: true, recursive: true });
   }
@@ -951,18 +1077,14 @@ test("reports malformed productive manifests without throwing", async () => {
   const root = await fixtureRepository();
   try {
     const manifests = [
-      {
-        ...validManifest,
+      productiveManifest({
         nativeTargets: [{ ...validTarget, commands: undefined }],
-        phase: "productive",
         productiveSourceRoots: ["Sources"],
-      },
-      {
-        ...validManifest,
+      }),
+      productiveManifest({
         nativeTargets: "App",
-        phase: "productive",
         productiveSourceRoots: 42,
-      },
+      }),
     ];
     for (const manifest of manifests) {
       await writeFile(
@@ -1029,5 +1151,151 @@ test("rejects undeclared Gitar rules and configuration surfaces", async () => {
     );
   } finally {
     await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("native CI exposes one exact aggregate check over separate matrix legs", () => {
+  const valid = [
+    "jobs:",
+    "  native-matrix:",
+    "    name: native (${{ matrix.runner }})",
+    "    strategy:",
+    "      matrix:",
+    "        runner: [macos-14, macos-26]",
+    "  native:",
+    "    name: native",
+    "    if: ${{ always() }}",
+    "    needs:",
+    "      - native-matrix",
+    "    steps:",
+    "      - env:",
+    "          RESULT: ${{ needs.native-matrix.result }}",
+  ].join("\n");
+  assert.deepEqual(nativeCiWorkflowFailures(valid), []);
+  for (const mutation of [
+    valid.replace("native-matrix:", "native-other:"),
+    valid.replace("name: native (${{ matrix.runner }})", "name: native"),
+    valid.replace("macos-14, macos-26", "macos-14"),
+    valid.replace("name: native\n", "name: native result\n"),
+    valid.replace("if: ${{ always() }}", "if: ${{ success() }}"),
+    valid.replace("- native-matrix", "- native-other"),
+    valid.replace("needs.native-matrix.result", "needs.native-other.result"),
+  ]) {
+    assert.ok(nativeCiWorkflowFailures(mutation).length > 0);
+  }
+});
+
+test("productive CI aggregate binds and checks every exact dependency result", () => {
+  const valid = [
+    "jobs:",
+    "  ci:",
+    "    env:",
+    "      CORE_QUALITY_RESULT: ${{ needs.core-quality.result }}",
+    "      COVERAGE_SONAR_RESULT: ${{ needs.coverage-sonar.result }}",
+    "      CROSS_PLATFORM_RESULT: ${{ needs.cross-platform-smoke.result }}",
+    "      NATIVE_RESULT: ${{ needs.native.result }}",
+    "    run: |",
+    '      for result in "$CORE_QUALITY_RESULT" "$COVERAGE_SONAR_RESULT" "$CROSS_PLATFORM_RESULT" "$NATIVE_RESULT"; do',
+    "        true",
+    "      done",
+  ].join("\n");
+  assert.deepEqual(aggregateCiBindingFailures(valid), []);
+  for (const mutation of [
+    valid.replace("needs.core-quality.result", "needs.native.result"),
+    valid.replace("needs.coverage-sonar.result", "needs.core-quality.result"),
+    valid.replace("needs.cross-platform-smoke.result", "needs.native.result"),
+    valid.replace("needs.native.result", "needs.core-quality.result"),
+    valid.replace(' "$CORE_QUALITY_RESULT"', ""),
+    valid.replace(' "$COVERAGE_SONAR_RESULT"', ""),
+    valid.replace(' "$CROSS_PLATFORM_RESULT"', ""),
+    valid.replace(' "$NATIVE_RESULT"', ""),
+  ]) {
+    assert.ok(aggregateCiBindingFailures(mutation).length > 0);
+  }
+});
+
+test("mutation workflow pins cargo-mutants execution to Rust 1.92", () => {
+  const valid = [
+    "cargo +1.92.0 install cargo-mutants --version 27.1.0 --locked",
+    "cargo +1.92.0 mutants --manifest-path native/Cargo.toml",
+  ].join("\n");
+  assert.deepEqual(mutationWorkflowFailures(valid), []);
+  for (const mutation of [
+    valid.replace("+1.92.0 install", "install"),
+    valid.replace("+1.92.0 mutants", "mutants"),
+    `${valid}\ncargo mutants --manifest-path native/Cargo.toml`,
+  ]) {
+    assert.ok(mutationWorkflowFailures(mutation).length > 0);
+  }
+});
+
+test("dependency review closes target-aware vulnerability and license policy", () => {
+  const valid = [
+    "        run: node quality/generate-native-vulnerability-inventory.mjs",
+    "          scan-args: |-",
+    "            --lockfile=package-lock.json",
+    "            --lockfile=native/frontend/package-lock.json",
+    "            --lockfile=osv-scanner:native/target/osv/native-macos-arm64.osv-scanner.json",
+    "          node quality/check-native-vulnerability-results.mjs",
+    "        with:",
+    "          fail-on-severity: moderate",
+    "          fail-on-scopes: development, runtime, unknown",
+    "          vulnerability-check: false",
+    "          allow-licenses: >-",
+    "            0BSD, Apache-2.0, BSD-2-Clause, BSD-3-Clause, BlueOak-1.0.0, CC-BY-4.0,",
+    "            CC0-1.0, ISC, MIT, MPL-2.0, Python-2.0, Unicode-3.0, Unlicense, WTFPL, Zlib",
+    "          allow-dependencies-licenses: pkg:cargo/target-lexicon@0.12.16",
+    "          retry-on-snapshot-warnings: true",
+  ].join("\n");
+  assert.deepEqual(dependencyReviewWorkflowFailures(valid), []);
+  for (const mutation of [
+    valid.replace("moderate", "high"),
+    valid.replace("development, runtime, unknown", "runtime"),
+    valid.replace("vulnerability-check: false", "vulnerability-check: true"),
+    valid.replace(
+      "generate-native-vulnerability-inventory.mjs",
+      "native/Cargo.lock",
+    ),
+    valid.replace("check-native-vulnerability-results.mjs", "smoke.mjs"),
+    valid.replace(
+      "--lockfile=osv-scanner:native/target/osv/native-macos-arm64.osv-scanner.json",
+      "--lockfile=native/Cargo.lock",
+    ),
+    `${valid}\n            --recursive`,
+    valid.replace("MPL-2.0, ", ""),
+    valid.replace("Unicode-3.0, ", ""),
+    valid.replace(", Zlib", ""),
+    valid.replace("Zlib", "Zlib-plus"),
+    valid.replace(
+      "          allow-dependencies-licenses: pkg:cargo/target-lexicon@0.12.16\n",
+      "",
+    ),
+    valid.replace("target-lexicon@0.12.16", "target-lexicon@0.12.15"),
+    valid.replace(
+      "target-lexicon@0.12.16",
+      "target-lexicon@0.12.16,pkg:cargo/owned@1.0.0",
+    ),
+  ]) {
+    assert.ok(dependencyReviewWorkflowFailures(mutation).length > 0);
+  }
+});
+
+test("coverage command freezes deterministic serial execution", async () => {
+  const packageContract = JSON.parse(
+    await readFile(join(import.meta.dirname, "../package.json"), "utf8"),
+  );
+  const command = packageContract.scripts.coverage;
+  assert.deepEqual(coverageCommandFailures(command), []);
+  for (const mutation of [
+    command.replace(" --test-concurrency=1", ""),
+    command.replace("--test-concurrency=1", "--test-concurrency=2"),
+    command.replace("--test-concurrency=1", "--test-concurrency=4"),
+    `${command} --test-concurrency=1`,
+    command.replace(
+      "--test-reporter=./quality/coverage-reporter.mjs",
+      "--test-reporter=spec",
+    ),
+  ]) {
+    assert.ok(coverageCommandFailures(mutation).length > 0);
   }
 });
