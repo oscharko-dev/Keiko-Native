@@ -2,10 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { issueSchemaForLabels } from "./issue-contract.mjs";
 import { coalesceLifecycleInputGeneration } from "./lifecycle-handoff-generation.mjs";
-import {
-  evaluatePublicationLifecycleHandoff,
-  verifyPublicationLaneCandidate,
-} from "./lifecycle-handoff-publication.mjs";
+import { evaluatePublicationLifecycleHandoff } from "./lifecycle-handoff-publication.mjs";
 import { classifyLifecycleHandoffLane } from "./lifecycle-handoff.mjs";
 import { verifyPublicationCandidate } from "./publication-candidate.mjs";
 import { contractSha256 } from "./repository-contract.mjs";
