@@ -152,7 +152,7 @@ function header(bytes, state, boundary) {
   const tag = ascii(bytes, start, hash, "type tag");
   const lengthText = ascii(bytes, hash + 1, colon, "payload length");
   if (!TAGS.has(tag)) throw new TypeError("unknown type tag");
-  if (!/^(?:0|[1-9][0-9]*)$/u.test(lengthText))
+  if (!/^(?:0|[1-9]\d*)$/u.test(lengthText))
     throw new TypeError("invalid payload length");
   const length = Number(lengthText);
   if (!Number.isSafeInteger(length) || colon + 1 + length > boundary) {
@@ -182,7 +182,7 @@ function decodedScalar(tag, bytes, start, end) {
   }
   const payload = ascii(bytes, start, end, tag);
   if (tag === "uint") {
-    if (!/^(?:0|[1-9][0-9]*)$/u.test(payload))
+    if (!/^(?:0|[1-9]\d*)$/u.test(payload))
       throw new TypeError("invalid canonical uint");
     const value = Number(payload);
     if (!Number.isSafeInteger(value)) throw new TypeError("uint overflow");
