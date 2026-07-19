@@ -1,7 +1,5 @@
-import {
-  classifyPublicationLane,
-  publicationResultMatrix,
-} from "./publication-contract.mjs";
+// prettier-ignore
+import { classifyPublicationLane, publicationResultMatrix } from "./publication-contract.mjs";
 import { verifyPublicationLaneCandidate } from "./lifecycle-handoff-publication.mjs";
 export { evaluatePublicationLifecycleHandoff } from "./lifecycle-handoff-publication.mjs";
 import {
@@ -297,7 +295,9 @@ function normalDecision(input, classification, transition) {
     outputsCurrent = CONTEXTS.normal.every((context) =>
       same(results[context].output, exact),
     );
-  } catch {}
+  } catch {
+    return normalFailure("failure", true);
+  }
   if (!outputsCurrent) return normalFailure("failure", true);
   const matrix = publicationResultMatrix({
     classification,
