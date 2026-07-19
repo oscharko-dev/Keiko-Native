@@ -11,6 +11,7 @@ import {
   coalesceLifecycleInputGeneration,
 } from "./lifecycle-handoff.mjs";
 import { issueSchemaForLabels } from "./issue-contract.mjs";
+import { semanticIssueFingerprint } from "./issue-contract.mjs";
 import { verifyPublicationCandidate } from "./publication-candidate.mjs";
 import { contractSha256 } from "./repository-contract.mjs";
 
@@ -70,10 +71,11 @@ function normalMember(pullRequest = 32, memberHead = sha("3"), identity = {}) {
 // prettier-ignore
 function publicationCandidate(lifecycle = null, pullRequest = 33, memberHead = head) {
   const contractBytes = Buffer.from(contractBody);
+  const issueTitle = `Publication candidate ${pullRequest}`;
   const contract = { digest: contractSha256(contractBytes).digest, mode: "100644", path: `docs/contracts/task-${pullRequest}-v2-r1.md` };
   const migration = lifecycle !== null;
   const observation = {
-    candidatePath: contract.path, fingerprint: "f".repeat(64), lifecycleLabels: [lifecycle ?? "status: new"], linkedPullRequest: null, number: pullRequest, predecessor: null,
+    candidatePath: contract.path, fingerprint: semanticIssueFingerprint(contractBody, issueTitle), lifecycleLabels: [lifecycle ?? "status: new"], linkedPullRequest: null, number: pullRequest, predecessor: null,
     readiness: migration ? `https://github.com/oscharko-dev/Keiko-Native/issues/${pullRequest}#issuecomment-1` : null,
     readinessProducer: migration ? "issue-readiness.yml@protected-dev" : null,
     recoveries: [], revision: 1, state: "open", type: "task", version: 2,
@@ -87,7 +89,7 @@ function publicationCandidate(lifecycle = null, pullRequest = 33, memberHead = h
     diff: {
       base, complete: true, files: [{ mode: "100644", path: contract.path, status: "added" }, { mode: "100644", path: receiptPath, status: "added" }],
       head: memberHead, normalValidated: false, pullRequest, repository, truncated: false },
-    issueObservations: [observation],
+    issueObservations: [observation], issueTitles: [{ number: pullRequest, title: issueTitle }],
     newlyAdded: { base, entries: [{ bytes: receiptBytes, mode: "100644", path: receiptPath }, { bytes: contractBytes, mode: "100644", path: contract.path }], head: memberHead, pullRequest, repository },
     pullRequest: { base, baseRef: "dev", head: memberHead, merged: false, number: pullRequest, state: "open" },
     receipt: { bytes: receiptBytes, digest: contractSha256(receiptBytes).digest, path: receiptPath },
