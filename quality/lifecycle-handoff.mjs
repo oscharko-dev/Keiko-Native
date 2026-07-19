@@ -18,8 +18,7 @@ import {
   verifyStatusLabelReadback,
 } from "./issue-lifecycle.mjs";
 import { isDeepStrictEqual } from "node:util";
-const PR_OPEN = LIFECYCLE_STATES[4];
-const REVIEW = LIFECYCLE_STATES[5];
+const [PR_OPEN, REVIEW] = LIFECYCLE_STATES.slice(4, 6);
 const reject = (code, extra = {}) => ({ code, ok: false, ...extra });
 const text = (value) => typeof value === "string" && value.length > 0;
 const record = (value) =>
@@ -37,13 +36,8 @@ function manifest(value, submode) {
   return submode === "migration" && receipt(value);
 }
 function commonAuthorityFailure(authority, binding, target) {
-  if (
-    !record(authority) ||
-    !text(authority.id) ||
-    !text(authority.issueIdentity) ||
-    !text(target)
-  )
-    return "invalid_authority";
+  const identity = [authority?.id, authority?.issueIdentity, target];
+  if (!record(authority) || !identity.every(text)) return "invalid_authority";
   const keys = ["repository", "pullRequest", "head", "lane"];
   if (keys.some((key) => authority[key] !== binding[key]))
     return "authority_mismatch";
@@ -279,11 +273,9 @@ function readbackEligible(readback, binding, transition, revision) {
   ].every(Boolean);
 }
 function normalClassification(input) {
-  if (!record(input) || !record(input.classification)) return undefined;
-  if (input.classification.ok !== true) return undefined;
-  return input.classification.binding?.lane === "normal"
-    ? input.classification
-    : undefined;
+  const classification = input?.classification;
+  if (!record(classification) || classification.ok !== true) return undefined;
+  return classification.binding?.lane === "normal" ? classification : undefined;
 }
 function normalDecision(input, classification, transition) {
   const status = input.generation?.status;
@@ -299,6 +291,14 @@ function normalDecision(input, classification, transition) {
   )
     return normalFailure("failure", true);
   const results = input.generation.results;
+  const exact = { binding: classification.binding, ok: true };
+  let outputsCurrent = false;
+  try {
+    outputsCurrent = CONTEXTS.normal.every((context) =>
+      same(results[context].output, exact),
+    );
+  } catch {}
+  if (!outputsCurrent) return normalFailure("failure", true);
   const matrix = publicationResultMatrix({
     classification,
     normal: {
@@ -335,9 +335,9 @@ function stableReviewDecision(input, classification) {
 }
 function stableReviewEvidence(input, classification, readiness, observation) {
   const phase = input.phaseOne;
+  if (readiness.current !== true) return false;
   if (!record(phase) || observation === undefined) return false;
   return [
-    readiness.current === true,
     observation.lifecycle === REVIEW,
     observation.readiness === readinessIdentity(readiness),
     same(phase.inputs, input.generationRequest.inputs),

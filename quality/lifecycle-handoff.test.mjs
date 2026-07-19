@@ -7,12 +7,10 @@ import {
   evaluateNormalLifecycleHandoff,
 } from "./lifecycle-handoff.mjs";
 const repository = "oscharko-dev/Keiko-Native";
-const base = "1".repeat(40);
-const head = "2".repeat(40);
+const [base, head] = ["1".repeat(40), "2".repeat(40)];
 const target = "epic/29-repository-backed-contracts";
 const readinessFingerprint = "c".repeat(64);
-const PR_OPEN = LIFECYCLE_STATES[4];
-const REVIEW = LIFECYCLE_STATES[5];
+const [PR_OPEN, REVIEW] = LIFECYCLE_STATES.slice(4, 6);
 const contexts = ["Issue contract current", "PR contract"];
 const producers = {
   "Contract publication": "publication.yml@protected-dev",
@@ -245,7 +243,7 @@ test("accepts only the serialized normal two-phase exact-head handshake", () => 
   );
   const stable = stableInput();
   assert.equal(evaluateNormalLifecycleHandoff(stable).decision, "noop");
-  stable.phaseOne.reviewsCurrent = false;
+  stable.readiness.comments = [];
   assert.equal(evaluateNormalLifecycleHandoff(stable).target, PR_OPEN);
   for (const input of [
     normalInput({ readiness: readiness({ expectedCommentId: 11 }) }),
@@ -289,7 +287,7 @@ test("accepts only the serialized normal two-phase exact-head handshake", () => 
   assert.equal(evaluateNormalLifecycleHandoff(pending).status, "pending");
   assert.equal(evaluateNormalLifecycleHandoff(pending).target, PR_OPEN);
 });
-test("returns the exact validated lock and transition revisions", () => {
+test("returns exact validated transition and stable handoff identity", () => {
   const result = evaluateNormalLifecycleHandoff(normalInput());
   assert.deepEqual(
     {
@@ -305,8 +303,6 @@ test("returns the exact validated lock and transition revisions", () => {
       sourceRevision: "observation-1",
     },
   );
-});
-test("stable review output uses only the validated existing handoff", () => {
   const input = stableInput();
   input.transition = {
     eventIdentity: "unvalidated-event",
@@ -314,13 +310,13 @@ test("stable review output uses only the validated existing handoff", () => {
     resultRevision: "unvalidated-result",
     sourceRevision: "unvalidated-source",
   };
-  const result = evaluateNormalLifecycleHandoff(input);
+  const stableResult = evaluateNormalLifecycleHandoff(input);
   assert.deepEqual(
-    [result.binding.eventIdentity, result.binding.lockFence],
+    [stableResult.binding.eventIdentity, stableResult.binding.lockFence],
     ["handoff-32-1", "lifecycle-lock-32-1"],
   );
 });
-test("rejects an unknown prerequisite result context", () => {
+test("rejects surplus, substituted, stale, and replayed evidence", () => {
   const input = normalInput();
   input.generation.results.Injected = completion(
     { generation: input.generation },
@@ -329,38 +325,41 @@ test("rejects an unknown prerequisite result context", () => {
     { producer: "untrusted-producer" },
   );
   assert.equal(evaluateNormalLifecycleHandoff(input).ok, false);
-});
-test("rejects issue identity substitution", () => {
   const substitutedIssue = normalInput();
-  substitutedIssue.readback.actualIssueIdentity = "issue-999";
-  substitutedIssue.readback.expectedIssueIdentity = "issue-999";
   substitutedIssue.transition.issueIdentity = "issue-999";
   assert.equal(evaluateNormalLifecycleHandoff(substitutedIssue).ok, false);
-});
-test("rejects independently substituted read-back identity", () => {
-  const input = normalInput();
-  input.readback.actualIssueIdentity = "issue-999";
-  input.readback.expectedIssueIdentity = "issue-999";
-  assert.equal(evaluateNormalLifecycleHandoff(input).ok, false);
-});
-test("rejects a stale lifecycle lock", () => {
+  const staleOutput = normalInput();
+  const stale = { issueIdentity: "issue-999", target: "dev" };
+  for (const context of contexts) {
+    const output = staleOutput.generation.results[context].output;
+    output.binding = { ...output.binding, ...stale };
+  }
+  assert.equal(evaluateNormalLifecycleHandoff(staleOutput).ok, false);
+  const hostileOutput = normalInput();
+  hostileOutput.generation.results["PR contract"].output = new Proxy(
+    {},
+    {
+      ownKeys: () => assert.fail("hostile output"),
+    },
+  );
+  assert.equal(evaluateNormalLifecycleHandoff(hostileOutput).target, PR_OPEN);
+  const readback = normalInput();
+  readback.readback.actualIssueIdentity = "issue-999";
+  readback.readback.expectedIssueIdentity = "issue-999";
+  assert.equal(evaluateNormalLifecycleHandoff(readback).ok, false);
   const staleLock = normalInput();
   staleLock.transition.lockFence = "arbitrary-stale-lock";
   assert.equal(evaluateNormalLifecycleHandoff(staleLock).ok, false);
-});
-test("rejects stable review without transition and revision identity", () => {
-  const input = stableInput();
-  delete input.existingHandoff.eventIdentity;
-  delete input.existingHandoff.resultRevision;
-  delete input.readback.issueRevision;
-  delete input.readback.transitionIdentity;
-  assert.equal(evaluateNormalLifecycleHandoff(input).ok, false);
-});
-test("rejects stale transition revision replay at stable review", () => {
-  const input = stableInput();
-  input.existingHandoff.resultRevision = "stale-revision";
-  input.readback.issueRevision = "stale-revision";
-  assert.equal(evaluateNormalLifecycleHandoff(input).ok, false);
+  const missing = stableInput();
+  delete missing.existingHandoff.eventIdentity;
+  delete missing.existingHandoff.resultRevision;
+  delete missing.readback.issueRevision;
+  delete missing.readback.transitionIdentity;
+  assert.equal(evaluateNormalLifecycleHandoff(missing).ok, false);
+  const replay = stableInput();
+  replay.existingHandoff.resultRevision = "stale-revision";
+  replay.readback.issueRevision = "stale-revision";
+  assert.equal(evaluateNormalLifecycleHandoff(replay).ok, false);
 });
 test("fails closed when hostile provider-shaped input throws", () => {
   const hostile = new Proxy({}, { get: () => assert.fail("hostile getter") });
