@@ -10,6 +10,7 @@ import {
   classifyLifecycleHandoffLane,
   coalesceLifecycleInputGeneration,
 } from "./lifecycle-handoff.mjs";
+import { issueSchemaForLabels } from "./issue-contract.mjs";
 import { verifyPublicationCandidate } from "./publication-candidate.mjs";
 import { contractSha256 } from "./repository-contract.mjs";
 
@@ -17,6 +18,10 @@ const sha = (value) => value.repeat(40);
 const repository = "oscharko-dev/Keiko-Native";
 const target = "dev";
 const [base, head, fingerprint] = [sha("1"), sha("2"), "c".repeat(64)];
+const completeSection =
+  "- Contract version: `v2`\n- Applicability: Required\n- Actor: Developer\n- [x] Scope and verification are complete.\n\n```text\nnode --test quality/merge-group.test.mjs\n```";
+// prettier-ignore
+const contractBody = issueSchemaForLabels(["type: task"]).requiredHeadings.map((heading) => `## ${heading}\n\n${heading === "Acceptance criteria" ? "- [ ] AC1 — Candidate is accepted." : completeSection}`).join("\n\n");
 // prettier-ignore
 const producers = { "Contract publication": "publication.yml@protected-dev", "Issue contract current": "issue-current.yml@protected-dev", "Lifecycle handoff": "lifecycle-handoff.yml@protected-dev", "PR contract": "pr-contract.yml@protected-dev" };
 // prettier-ignore
@@ -64,7 +69,7 @@ function normalMember(pullRequest = 32, memberHead = sha("3"), identity = {}) {
 }
 // prettier-ignore
 function publicationCandidate(lifecycle = null, pullRequest = 33, memberHead = head) {
-  const contractBytes = Buffer.from("accepted contract\n");
+  const contractBytes = Buffer.from(contractBody);
   const contract = { digest: contractSha256(contractBytes).digest, mode: "100644", path: `docs/contracts/task-${pullRequest}-v2-r1.md` };
   const migration = lifecycle !== null;
   const observation = {
