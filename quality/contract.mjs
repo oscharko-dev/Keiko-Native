@@ -965,6 +965,27 @@ function workflowRunCommands(workflow) {
   return commands;
 }
 
+function unsupportedWorkflowYamlFailures(workflows) {
+  const patterns = [
+    /^\s*(?:-\s*)?(?:"(?:[^"\\]|\\.)*"|'(?:[^']|'')*')\s*:/u,
+    /[[{][^[\]{}\r\n]*:/u,
+    /(?:^\s*|[{,]\s*)\?\s+/u,
+    /(?:^\s*|[{,]\s*)<<\s*:/u,
+    /^\s*:\s*(?:\S.*)?$/u,
+    /(?:^|:\s+|-\s+|[[,{]\s*)[&*][^\s,\]}]+/u,
+    /(?:^|:\s+|-\s+|[[,{]\s*)!<[^>\r\n]+>/u,
+    /(?:^|:\s+|-\s+|[[,{]\s*)![^\s,\]}]+/u,
+  ];
+  return [...workflows]
+    .filter(([, workflow]) =>
+      workflow
+        .split(/\r?\n/u)
+        .map((line) => line.replace(/\$\{\{.*?\}\}/gu, ""))
+        .some((line) => patterns.some((pattern) => pattern.test(line))),
+    )
+    .map(([name]) => `Workflow uses unsupported YAML syntax: ${name}.`);
+}
+
 function issueLifecycleWorkflowFailures(workflow) {
   const failures = issueLifecycleMarkers
     .filter((marker) => !workflow.includes(marker))
@@ -1179,6 +1200,7 @@ async function workflowFailures(root, manifest) {
   );
   const ci = workflows.get("ci.yml") ?? "";
   return [
+    ...unsupportedWorkflowYamlFailures(workflows),
     ...unpinnedWorkflowFailures(workflows),
     ...ciWorkflowFailures(ci),
     ...epicWorkflowFailures(workflows),
