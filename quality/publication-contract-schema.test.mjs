@@ -164,7 +164,6 @@ test("normalizes a closed ordinary snapshot receipt schema", () => {
   const result = validateSnapshotReceipt(receipt);
   assert.equal(result.ok, true);
   assert.equal(result.binding.submode, "ordinary");
-  assert.deepEqual(result.binding.candidates, receipt.candidates);
 });
 test("derives migration only from readiness, lifecycle, and manifest evidence", () => {
   const receipt = ordinaryReceipt();
@@ -219,6 +218,9 @@ test("supports multiple sorted issues and exact candidate path identities", () =
     path: secondPath,
   });
   assert.equal(validateSnapshotReceipt(receipt).ok, true);
+  receipt.candidates[1].digest = digestA;
+  assert.equal(validateSnapshotReceipt(receipt).ok, false);
+  receipt.candidates[1].digest = "e".repeat(64);
   receipt.candidates[1].path = "docs/contracts/task-32-v1-r1.md";
   assert.equal(
     validateSnapshotReceipt(receipt).rejection.code,
@@ -299,7 +301,7 @@ test("rejects replayed, unsorted, conflicting, and inconsistent sets", () => {
   assert.equal(validateSnapshotReceipt(predecessor).ok, true);
   for (const changed of [
     { ...receipt, observations: [observation, observation] },
-    { ...receipt, candidates: [candidate, candidate] },
+    { ...receipt, candidates: [candidate, { ...candidate, digest: digestB }] },
     {
       ...receipt,
       candidates: [

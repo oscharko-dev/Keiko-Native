@@ -324,6 +324,8 @@ function candidateSetFailure(candidates) {
     const failure = candidateFailure(candidate);
     if (failure !== undefined) return failure;
   }
+  const digests = new Set(candidates.map((candidate) => candidate.digest));
+  if (digests.size !== candidates.length) return "duplicate_candidate_digest";
   return sortedUnique(candidates, (item) => item.path)
     ? undefined
     : "noncanonical_candidate_set";

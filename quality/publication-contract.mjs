@@ -18,9 +18,7 @@ const evidenceFailureMessage = "Publication evidence failed closed.";
 function reject(code, message) {
   return { ok: false, rejection: { code, message } };
 }
-function safeInteger(value) {
-  return Number.isSafeInteger(value) && value > 0;
-}
+const safeInteger = (value) => Number.isSafeInteger(value) && value > 0;
 function receiptIdentity(path) {
   const match = typeof path === "string" ? receiptPathPattern.exec(path) : null;
   const pullRequest = match === null ? Number.NaN : Number(match[1]);
@@ -90,32 +88,25 @@ export function parsePublicationTrailers(payload) {
   };
 }
 function publicationPath(path) {
+  if (typeof path !== "string") return "malformed";
   if (parseContractPath(path).ok) return "contract";
   if (receiptIdentity(path) !== undefined) return "receipt";
-  return typeof path === "string" && path.startsWith("docs/contracts/")
-    ? "malformed"
-    : "other";
+  return path.startsWith("docs/contracts/") ? "malformed" : "other";
 }
-function validDiffFile(file) {
-  return (
-    file !== null &&
-    typeof file === "object" &&
-    typeof file.path === "string" &&
-    typeof file.status === "string" &&
-    typeof file.mode === "string"
-  );
-}
-function validEnvelope(input) {
-  return (
-    input !== null &&
-    typeof input === "object" &&
-    /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(input.repository) &&
-    safeInteger(input.pullRequest) &&
-    /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(input.base) &&
-    /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(input.head) &&
-    input.base !== input.head
-  );
-}
+const validDiffFile = (file) =>
+  file !== null &&
+  typeof file === "object" &&
+  typeof file.path === "string" &&
+  typeof file.status === "string" &&
+  typeof file.mode === "string";
+const validEnvelope = (input) =>
+  input !== null &&
+  typeof input === "object" &&
+  /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(input.repository) &&
+  safeInteger(input.pullRequest) &&
+  /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(input.base) &&
+  /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(input.head) &&
+  input.base !== input.head;
 function validClassificationInput(input) {
   return (
     validEnvelope(input) &&
@@ -151,7 +142,13 @@ export function classifyPublicationLane(input) {
     );
   }
   const kinds = input.files.map((file) => publicationPath(file.path));
-  const failure = publicationDiffFailure(input.files, kinds);
+  const previousKinds = input.files
+    .filter((file) => ["renamed", "copied"].includes(file.status))
+    .map((file) => publicationPath(file.previous_filename));
+  const failure = publicationDiffFailure(input.files, [
+    ...kinds,
+    ...previousKinds,
+  ]);
   if (failure !== undefined) {
     return reject(failure, "Diff cannot select a publication lane.");
   }

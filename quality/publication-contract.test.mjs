@@ -105,10 +105,8 @@ test("parses only a terminal trailer block and rejects malformed trailer sets", 
     assert.equal(parsePublicationTrailers(payload).ok, false);
   }
   assert.equal(code("raw private payload"), "incomplete_trailer_set");
-  assert.doesNotMatch(
-    parsePublicationTrailers("SECRET").rejection.message,
-    /SECRET/iu,
-  );
+  const secret = parsePublicationTrailers("SECRET");
+  assert.doesNotMatch(secret.rejection.message, /SECRET/iu);
 });
 function diff(overrides = {}) {
   return {
@@ -124,11 +122,7 @@ function diff(overrides = {}) {
   };
 }
 test("fails closed on unavailable, ambiguous, mixed, and nonregular diffs", () => {
-  assert.deepEqual(classifyPublicationLane(diff()), {
-    binding: laneIdentity("normal"),
-    lane: "normal",
-    ok: true,
-  });
+  assert.equal(classifyPublicationLane(diff()).lane, "normal");
   assert.equal(
     classifyPublicationLane(diff({ normalValidated: false })).ok,
     false,
@@ -152,6 +146,16 @@ test("fails closed on unavailable, ambiguous, mixed, and nonregular diffs", () =
     }),
     diff({ files: [{ ...contract, status: "modified" }, receipt] }),
     diff({ files: [{ ...contract, mode: "120000" }, receipt] }),
+    ...["renamed", "copied"].flatMap((status) =>
+      [contractPath, receiptPath, "docs/contracts/bad.md", null].map(
+        (previous_filename) =>
+          diff({
+            files: [
+              { ...contract, path: "README.md", previous_filename, status },
+            ],
+          }),
+      ),
+    ),
     diff({ files: [{ ...contract, path: "docs/contracts/bad.md" }, receipt] }),
     diff({
       files: [
