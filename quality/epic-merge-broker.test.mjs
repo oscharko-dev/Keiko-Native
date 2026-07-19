@@ -281,18 +281,20 @@ test("rejects discontinuous broker pages and surplus accepted outcomes", () => {
   assert.equal(decideEpicMergeAuthorization(loop).action, "human_only");
   const current = prepared();
   const response = acceptedResponse(current.bound.snapshot, { surplus: true });
+  const submittedSnapshots = [current.bound.snapshot.id];
   assert.equal(
-    current.decide({ conditionalResponse: response }).action,
+    current.decide({ conditionalResponse: response, submittedSnapshots })
+      .action,
     "human_only",
   );
   delete response.surplus;
   delete response.parents;
   assert.equal(
-    current.decide({ conditionalResponse: response }).action,
+    current.decide({ conditionalResponse: response, submittedSnapshots })
+      .action,
     "human_only",
   );
 });
-
 test("serializes two children and requires fresh composition after target advance", () => {
   const first = prepared();
   const child = { head: sha("6"), issueIdentity: "issue-34", pullRequest: 34 };
@@ -301,6 +303,7 @@ test("serializes two children and requires fresh composition after target advanc
   const mergeCommit = sha("5");
   const accepted = first.decide({
     conditionalResponse: acceptedResponse(first.bound.snapshot),
+    submittedSnapshots: [first.bound.snapshot.id],
   });
   const stale = second.decide({
     preSubmitRead: { ...secondInput.preSubmitRead, targetTip: mergeCommit },
@@ -320,7 +323,6 @@ test("serializes two children and requires fresh composition after target advanc
   assert.equal(fresh.decide().action, "submit_once");
   assert.equal(fresh.decide().request.expectedTargetTip, mergeCommit);
 });
-
 test("fails human-only on unproven semantics and lost lock fences", () => {
   for (const key of Object.keys(brokerInput().semantics)) {
     const input = brokerInput();
@@ -337,7 +339,6 @@ test("fails human-only on unproven semantics and lost lock fences", () => {
     assert.equal(decideEpicMergeAuthorization(input).action, "human_only");
   }
 });
-
 test("never reuses a snapshot and rejects changed refs or fences", () => {
   const current = prepared();
   const submitted = current.decide({
@@ -357,32 +358,30 @@ test("never reuses a snapshot and rejects changed refs or fences", () => {
     assert.equal(result.retry, false);
   }
 });
-
 test("accepts an exact outcome and never retries ambiguous responses", () => {
   const current = prepared();
   const snapshot = current.bound.snapshot;
-  const mergeCommit = sha("5");
-  const accepted = current.decide({
-    conditionalResponse: acceptedResponse(snapshot, { mergeCommit }),
-  });
-  assert.equal(accepted.action, "accepted");
+  const decide = (conditionalResponse) =>
+    current.decide({ conditionalResponse, submittedSnapshots: [snapshot.id] });
+  assert.equal(
+    current.decide({ conditionalResponse: acceptedResponse(snapshot) }).code,
+    "conditional_response_without_submission",
+  );
+  assert.equal(
+    decide(acceptedResponse(snapshot, { mergeCommit: sha("5") })).action,
+    "accepted",
+  );
   for (const status of ["timeout", "partial", "forbidden"]) {
-    const result = current.decide({ conditionalResponse: { status } });
+    const result = decide({ status });
     assert.equal(result.action, "human_only");
     assert.equal(result.retry, false);
   }
+  assert.equal(decide({ status: "rejected" }).action, "none");
   assert.equal(
-    current.decide({ conditionalResponse: { status: "rejected" } }).action,
-    "none",
-  );
-  assert.equal(
-    current.decide({
-      conditionalResponse: { accepted: true, status: "rejected" },
-    }).action,
+    decide({ accepted: true, status: "rejected" }).action,
     "human_only",
   );
 });
-
 test("fails closed on hostile broker evidence without exposing content", () => {
   const hostile = new Proxy({}, { get: () => assert.fail("SECRET") });
   const result = decideEpicMergeAuthorization(hostile);
