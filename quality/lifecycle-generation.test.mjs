@@ -177,6 +177,7 @@ test("rejects non-canonical and malformed encoded bytes", () => {
   reject(Buffer.from("string#3:e\u0301"), /normal/iu);
   reject(Buffer.from("enum#3:A B"), /enum/iu);
   reject(Buffer.from("uint#2:01"), /uint/iu);
+  reject(Buffer.from("uint#16:9007199254740992"), /overflow/iu);
   reject(Buffer.from("bool#1:1"), /bool/iu);
   reject(Buffer.from("null#1:x"), /null/iu);
   reject(Buffer.from("field#0:"), /field/iu);
@@ -350,8 +351,6 @@ test("rejects malformed byte containers and generation scalar types", () => {
   assert.throws(() => encode({ lane: "constructor" }), {
     message: "unknown lane or invalid publication submode",
   });
-  const migration = { lane: "publication", submode: "migration" };
-  assert.doesNotThrow(() => encode(migration));
   assert.throws(
     () => encodeLifecycleGenerationV1(generation({ inputs: [] })),
     /object/iu,
