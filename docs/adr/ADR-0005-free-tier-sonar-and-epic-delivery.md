@@ -1,4 +1,4 @@
-# ADR-0003: Free-tier Sonar and authenticated epic delivery
+# ADR-0005: Free-tier Sonar and authenticated epic delivery
 
 ## Status
 

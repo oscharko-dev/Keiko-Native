@@ -4,6 +4,11 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  hardenedGitArguments,
+  noReplaceGitEnvironment,
+} from "./git-integrity.mjs";
+
+import {
   coverageFailures,
   manifestFailures,
   sourceDeclarationFailures,
@@ -64,15 +69,16 @@ const rustTestPlan = (revision) =>
   createRustTestPlan(revision, productiveRustEnv(revision), testTargetRoot);
 
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, {
+  const commandArgs = command === "git" ? hardenedGitArguments(args) : args;
+  const result = spawnSync(command, commandArgs, {
     cwd: options.cwd ?? repositoryRoot,
     encoding: "utf8",
-    env: { ...process.env, ...options.env },
+    env: noReplaceGitEnvironment({ ...process.env, ...options.env }),
     input: options.input,
     maxBuffer: 30 * 1024 * 1024,
   });
   if (result.status !== 0 || result.error)
-    throw commandFailure(command, args, result);
+    throw commandFailure(command, commandArgs, result);
   if (!options.capture) {
     if (result.stdout) process.stdout.write(sanitizeOutput(result.stdout));
     if (result.stderr) process.stderr.write(sanitizeOutput(result.stderr));

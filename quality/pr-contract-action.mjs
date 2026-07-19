@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { appendFile, readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 import { githubRequestFor } from "./github-api.mjs";
@@ -33,6 +33,34 @@ async function publishContractStatus(
   });
 }
 
+function terminalPullRequestSnapshotFailures(
+  eventPullRequest,
+  currentPullRequest,
+) {
+  const exactFieldsMatch =
+    currentPullRequest?.number === eventPullRequest?.number &&
+    currentPullRequest?.node_id === eventPullRequest?.node_id &&
+    currentPullRequest?.title === eventPullRequest?.title &&
+    currentPullRequest?.body === eventPullRequest?.body &&
+    currentPullRequest?.base?.ref === eventPullRequest?.base?.ref &&
+    currentPullRequest?.head?.ref === eventPullRequest?.head?.ref &&
+    currentPullRequest?.head?.sha === eventPullRequest?.head?.sha &&
+    currentPullRequest?.updated_at === eventPullRequest?.updated_at;
+  const closedMergedState =
+    currentPullRequest?.state === "closed" &&
+    currentPullRequest?.merged === true &&
+    eventPullRequest?.state === "closed" &&
+    eventPullRequest?.merged === true;
+  return Number.isInteger(eventPullRequest?.number) &&
+    typeof eventPullRequest?.node_id === "string" &&
+    eventPullRequest.node_id !== "" &&
+    Number.isFinite(Date.parse(eventPullRequest?.updated_at ?? "")) &&
+    exactFieldsMatch &&
+    closedMergedState
+    ? []
+    : ["The merged pull-request event does not match current provider state."];
+}
+
 export async function runPullRequestContractAction({ event }) {
   const repository = process.env.GITHUB_REPOSITORY;
   if (typeof repository !== "string" || !repository.includes("/"))
@@ -45,15 +73,23 @@ export async function runPullRequestContractAction({ event }) {
     throw new Error("The pull request has no valid head SHA.");
 
   const issueNumber = pullRequestIssueNumber(pullRequest.body);
+  const terminalDelivery =
+    event.action === "closed" && pullRequest.merged === true;
   let issue;
   let comments = [];
+  let currentPullRequest;
   try {
-    [issue, comments] =
+    [issue, comments, currentPullRequest] =
       issueNumber === undefined
-        ? [undefined, []]
+        ? [undefined, [], pullRequest]
         : await Promise.all([
             githubRequest(`/repos/${repository}/issues/${issueNumber}`),
             allIssueComments(repository, issueNumber),
+            terminalDelivery
+              ? githubRequest(
+                  `/repos/${repository}/pulls/${pullRequest.number}`,
+                )
+              : pullRequest,
           ]);
   } catch (error) {
     try {
@@ -72,9 +108,17 @@ export async function runPullRequestContractAction({ event }) {
   const result = validatePullRequestContract({
     comments,
     issue,
-    pullRequest,
+    lifecycleActivation:
+      process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION ?? "disabled",
+    pullRequest: currentPullRequest,
     repository,
+    terminalDelivery,
   });
+  if (terminalDelivery)
+    result.failures.push(
+      ...terminalPullRequestSnapshotFailures(pullRequest, currentPullRequest),
+    );
+  result.failures = [...new Set(result.failures)];
   for (const failure of result.failures)
     process.stdout.write(`::error title=PR contract::${failure}\n`);
   if (result.failures.length > 0) {
@@ -107,11 +151,28 @@ export async function runPullRequestContractAction({ event }) {
   return result;
 }
 
+export async function writePullRequestIssueOutput({ event, outputPath }) {
+  const issueNumber = pullRequestIssueNumber(event.pull_request?.body);
+  if (!Number.isInteger(issueNumber) || outputPath === undefined) return;
+  await appendFile(outputPath, `issue-number=${issueNumber}\n`, "utf8");
+}
+
+export async function runPullRequestContractActionWithOutput({
+  event,
+  outputPath,
+}) {
+  await writePullRequestIssueOutput({ event, outputPath });
+  return runPullRequestContractAction({ event });
+}
+
 async function main() {
   const eventPath = process.env.GITHUB_EVENT_PATH;
   if (eventPath === undefined) throw new Error("GITHUB_EVENT_PATH is missing.");
   const event = JSON.parse(await readFile(eventPath, "utf8"));
-  await runPullRequestContractAction({ event });
+  await runPullRequestContractActionWithOutput({
+    event,
+    outputPath: process.env.GITHUB_OUTPUT,
+  });
 }
 
 if (

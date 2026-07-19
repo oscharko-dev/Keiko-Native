@@ -12,7 +12,7 @@ import {
   renameSync,
   rmSync,
 } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, parse, relative, sep } from "node:path";
 
 export const NATIVE_FS_SOURCES = [
   "quality/native-fs-main.c",
@@ -140,7 +140,7 @@ export function createNativeFs(helperPath, expected) {
     operation,
     root,
     relativePath,
-    { encoding, fds = [], input, rest = [] } = {},
+    { encoding, fds = [], input, rest = [], terminal = false } = {},
   ) {
     assertPrivateExecutableRoot(dirname(helperPath));
     const executable = openSync(
@@ -174,9 +174,11 @@ export function createNativeFs(helperPath, expected) {
         );
       }
       if (
-        !sameIdentity(before, fstatSync(executable, { bigint: true })) ||
-        !sameIdentity(before, lstatSync(helperPath, { bigint: true })) ||
-        sha256(readDescriptor(executable, before.size)) !== helperDigest
+        (!terminal &&
+          !sameIdentity(before, fstatSync(executable, { bigint: true }))) ||
+        (!terminal &&
+          (!sameIdentity(before, lstatSync(helperPath, { bigint: true })) ||
+            sha256(readDescriptor(executable, before.size)) !== helperDigest))
       )
         throw new Error("Native filesystem helper rejected executable-changed");
       return result.stdout;
@@ -185,6 +187,9 @@ export function createNativeFs(helperPath, expected) {
     }
   }
   return {
+    chmod(root, path, mode) {
+      invoke("chmod", root, path, { rest: [mode.toString(8)] });
+    },
     copyTree(
       sourceRoot,
       sourcePath,
@@ -248,12 +253,21 @@ export function createNativeFs(helperPath, expected) {
         rest,
       });
     },
+    remove(root, path) {
+      invoke("remove", root, path);
+    },
+    destroy(root, path) {
+      invoke("remove", root, path, { terminal: true });
+    },
     read(root, path, encoding) {
       const value = invoke("read", root, path);
       return encoding ? value.toString(encoding) : value;
     },
     symlink(root, path, target) {
       invoke("symlink", root, path, { rest: [target] });
+    },
+    touch(root, path, sourceEpoch) {
+      invoke("touch", root, path, { rest: [String(sourceEpoch)] });
     },
     write(root, path, bytes, mode = 0o600) {
       invoke("write", root, path, {
@@ -332,14 +346,28 @@ function descriptorPath(fd) {
   return `${process.platform === "linux" ? "/proc/self/fd" : "/dev/fd"}/${fd}`;
 }
 
-function assertBoundRoot(root) {
-  if (!isAbsolute(root))
+const nativePath = { isAbsolute, join, parse, relative, sep };
+
+function boundRootPaths(root, path = nativePath) {
+  if (typeof root !== "string" || !path.isAbsolute(root))
     throw new Error("Native filesystem helper rejected root-not-absolute");
-  let current = "/";
-  for (const component of root.split("/").filter(Boolean)) {
+  const anchor = path.parse(root).root;
+  let current = anchor;
+  const paths = [anchor];
+  for (const component of path
+    .relative(anchor, root)
+    .split(path.sep)
+    .filter(Boolean)) {
     if (component === "." || component === "..")
       throw new Error("Native filesystem helper rejected root-component");
-    current = join(current, component);
+    current = path.join(current, component);
+    paths.push(current);
+  }
+  return paths;
+}
+
+function assertBoundRoot(root) {
+  for (const current of boundRootPaths(root)) {
     const metadata = lstatSync(current);
     if (!metadata.isDirectory() || metadata.isSymbolicLink())
       throw new Error("Native filesystem helper rejected root-symlink");
@@ -368,4 +396,4 @@ function sameIdentity(left, right) {
   );
 }
 
-export const nativeFsTestSupport = { gitBlob, sha256 };
+export const nativeFsTestSupport = { boundRootPaths, gitBlob, sha256 };

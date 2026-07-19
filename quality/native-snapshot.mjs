@@ -12,6 +12,11 @@ import {
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
+import {
+  hardenedGitArguments,
+  noReplaceGitEnvironment,
+} from "./git-integrity.mjs";
+
 import { captureDependencySnapshot } from "./native-dependencies.mjs";
 import { compileNativeFsHelper, NATIVE_FS_SOURCES } from "./native-fs.mjs";
 import { publishValidatedPackage } from "./native-package-publication.mjs";
@@ -185,10 +190,14 @@ function captureRepository(repositoryRoot) {
 function materialize(repositoryRoot, snapshotRoot, head, entries) {
   if (entries.length === 0)
     throw new Error("Immutable snapshot rejected empty-tree");
-  const archive = command("git", ["archive", "--format=tar", head], {
-    cwd: repositoryRoot,
-    encoding: null,
-  });
+  const archive = command(
+    "git",
+    hardenedGitArguments(["archive", "--format=tar", head]),
+    {
+      cwd: repositoryRoot,
+      encoding: null,
+    },
+  );
   if (archive.status !== 0 || archive.error)
     throw new Error("Immutable snapshot rejected archive");
   const extracted = command("tar", ["-xf", "-", "-C", snapshotRoot], {
@@ -238,7 +247,9 @@ function assertRepository(repositoryRoot, captured) {
 }
 
 function git(repositoryRoot, args) {
-  const result = command("git", args, { cwd: repositoryRoot });
+  const result = command("git", hardenedGitArguments(args), {
+    cwd: repositoryRoot,
+  });
   if (result.status !== 0 || result.error)
     throw new Error("Immutable snapshot rejected git-read");
   return String(result.stdout);
@@ -248,7 +259,7 @@ function command(commandName, args, options = {}) {
   return spawnSync(commandName, args, {
     cwd: options.cwd,
     encoding: options.encoding === null ? null : "utf8",
-    env: options.env ?? process.env,
+    env: noReplaceGitEnvironment(options.env ?? process.env),
     input: options.input,
     maxBuffer: 64 * 1024 * 1024,
     stdio: "pipe",

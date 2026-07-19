@@ -1,4 +1,4 @@
-# ADR-0004: Tauri macOS foundation stack
+# ADR-0006: Tauri macOS foundation stack
 
 ## Status
 

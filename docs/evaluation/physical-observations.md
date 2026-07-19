@@ -73,4 +73,4 @@ Tauri passes the physical VoiceOver, IME, appearance, scaling, and cleanup gates
 current digest-bound physical hard-gate pass from this file; its prior observations were consistent
 with the retained benchmark and source-backed concerns but are supplemental only. Slint's current
 replacement failure is controlled by the benchmark, source-backed candidate gates, and replacement
-formula in the decision report and ADR-0004.
+formula in the decision report and ADR-0006.

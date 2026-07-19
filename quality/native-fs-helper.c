@@ -187,6 +187,44 @@ static int open_dir_at_path(int root, const char *path, int create,
   return result;
 }
 
+static void mutate_entry(int root, const char *path, const char *value,
+                         int timestamp) {
+  chain_t chain = {0};
+  char leaf[NAME_MAX + 1];
+  int parent = open_parent(root, path, 0, &chain, leaf);
+  int entry = openat(parent, leaf, O_RDONLY | O_NOFOLLOW);
+  struct stat before;
+  if (entry < 0 || fstat(entry, &before) ||
+      (!S_ISREG(before.st_mode) && !S_ISDIR(before.st_mode)))
+    fail("metadata-open");
+  refresh_chain(&chain);
+  test_barrier();
+  verify_chain(&chain, 1);
+  char *end = NULL;
+  errno = 0;
+  long parsed = strtol(value, &end, timestamp ? 10 : 8);
+  if (errno || !value[0] || *end || parsed <= 0 ||
+      (!timestamp && parsed > 0777))
+    fail("metadata-value");
+  if (timestamp) {
+    struct timespec times[2] = {{.tv_sec = (time_t)parsed, .tv_nsec = 0},
+                               {.tv_sec = (time_t)parsed, .tv_nsec = 0}};
+    if (futimens(entry, times)) fail("metadata-time");
+  } else if (fchmod(entry, (mode_t)parsed))
+    fail("metadata-mode");
+  struct stat after, named;
+  if (fstat(entry, &after) ||
+      fstatat(parent, leaf, &named, AT_SYMLINK_NOFOLLOW) ||
+      after.st_dev != named.st_dev || after.st_ino != named.st_ino ||
+      ((after.st_mode & S_IFMT) != (named.st_mode & S_IFMT)))
+    fail("metadata-rebound");
+  refresh_chain_leaf(&chain);
+  test_barrier_at("metadata-complete");
+  verify_chain(&chain, 1);
+  close(entry);
+  close_chain(&chain, 1);
+}
+
 int native_fs_run(int argc, char **argv) {
   if (argc < 4) fail("usage");
   if (!strcmp(argv[1], "publish-bound")) return run_publish_bound(argc, argv);
@@ -224,6 +262,22 @@ int native_fs_run(int argc, char **argv) {
     refresh_chain(&chain);
     print_tree(directory, "", argc == 5 ? argv[4] : NULL, 0);
     close_chain(&chain, 1);
+  } else if (!strcmp(argv[1], "remove") && argc == 4) {
+    chain_t chain = {0};
+    char leaf[NAME_MAX + 1];
+    int parent = open_parent(root, argv[3], 0, &chain, leaf);
+    refresh_chain(&chain);
+    test_barrier();
+    verify_chain(&chain, 1);
+    remove_entry(parent, leaf);
+    if (sync_directory(parent, "remove-parent-sync")) fail("remove-sync");
+    refresh_chain_leaf(&chain);
+    test_barrier_at("remove-complete");
+    close_chain(&chain, 1);
+  } else if (!strcmp(argv[1], "chmod") && argc == 5) {
+    mutate_entry(root, argv[3], argv[4], 0);
+  } else if (!strcmp(argv[1], "touch") && argc == 5) {
+    mutate_entry(root, argv[3], argv[4], 1);
   } else if (!strcmp(argv[1], "symlink") && argc == 5) {
     chain_t chain = {0};
     char leaf[NAME_MAX + 1];

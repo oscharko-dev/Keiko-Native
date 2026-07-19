@@ -84,6 +84,44 @@ test("captured Git tree ignores final and parent workspace swaps", async () => {
   }
 });
 
+test("captured Git tree ignores local replacement objects", async () => {
+  const root = await mkdtemp(join(tmpdir(), "keiko-snapshot-replace-"));
+  const repository = join(root, "repository");
+  try {
+    await mkdir(join(repository, "native"), { recursive: true });
+    await writeFile(join(repository, "native/source.rs"), "authorized");
+    git(repository, ["init"]);
+    git(repository, ["config", "user.email", "fixture@invalid"]);
+    git(repository, ["config", "user.name", "Fixture"]);
+    git(repository, ["add", "."]);
+    git(repository, ["commit", "-m", "authorized"]);
+    const authorized = git(repository, ["rev-parse", "HEAD"], true);
+    const authorizedTree = git(
+      repository,
+      ["--no-replace-objects", "rev-parse", `${authorized}^{tree}`],
+      true,
+    );
+
+    await writeFile(join(repository, "native/source.rs"), "substituted");
+    git(repository, ["commit", "-am", "substituted"]);
+    const substituted = git(repository, ["rev-parse", "HEAD"], true);
+    git(repository, ["checkout", "--detach", authorized]);
+    git(repository, ["replace", authorized, substituted]);
+    git(repository, ["reset", "--hard", "HEAD"]);
+
+    assert.throws(
+      () => nativeSnapshotTestSupport.captureRepository(repository),
+      /Immutable snapshot rejected repository-state/u,
+    );
+    assert.notEqual(
+      git(repository, ["rev-parse", `${authorized}^{tree}`], true),
+      authorizedTree,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
 test("opened output rejects final and parent swaps before reading outside bytes", async () => {
   const root = await mkdtemp(join(tmpdir(), "keiko-snapshot-output-"));
   const packageRoot = join(root, "package");
@@ -232,10 +270,11 @@ test(
   },
 );
 
-function git(repository, args) {
+function git(repository, args, capture = false) {
   const result = spawnSync("git", args, {
     cwd: repository,
     encoding: "utf8",
   });
   assert.equal(result.status, 0, result.stderr);
+  return capture ? result.stdout.trim() : undefined;
 }

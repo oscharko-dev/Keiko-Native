@@ -104,6 +104,13 @@ compilation, unit/integration tests, architecture checks, 85% coverage with rese
 inventory, SBOM, sandbox/egress tests, package verification, and signing/notarization evidence.
 Missing target evidence fails closed.
 
+ADR-0007 closes the Foundation v0.1 internal macOS milestone with unsigned-package evidence, not
+public Apple trust. `native:signing` proves that the internal package contract is active and that
+Apple credentials are absent. `release:verify` adds exact-head deterministic image, inventory,
+SHA-256, SPDX 2.3, mounted copy-out, cleanup, and closed-redaction evidence. Developer ID signing,
+notarization, stapling, public delivery, production update signing, and physical Gatekeeper evidence
+remain mandatory for a later public release under issue #59; the internal lane does not waive them.
+
 ## Epic release acceptance
 
 Before an implementation epic can be handed to `dev`, its final integrated head must satisfy the
@@ -124,6 +131,13 @@ Manual usability, assistive-technology, visual, signing, notarization, and platf
 supplement machine evidence where automation cannot establish the complete claim. They must identify
 the tested build, platform, operator, procedure, and result and may not replace an available
 deterministic gate.
+
+For the internal macOS lane, `.github/workflows/internal-release.yml` is the authoritative remote
+artifact check. It builds on `macos-14`, verifies on `macos-26`, attests only after local
+verification, re-verifies attestation after download, and retains the exact-revision artifact for
+14 days. It has no tag, release, public upload, environment, Apple secret, or product updater
+authority. The complete artifact and failure contract is in
+[`internal-macos-release.md`](internal-macos-release.md).
 
 ## Advisory independent review
 

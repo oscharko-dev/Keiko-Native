@@ -6,6 +6,12 @@ labels: ["type: epic", "status: new"]
 assignees: ""
 ---
 
+Lifecycle contract: [docs/qa/issue-lifecycle.md](../../docs/qa/issue-lifecycle.md).
+
+Canonical lifecycle states: `status: new`, `status: triaged`, `status: ready`,
+`status: in progress`, `status: pr open`, `status: ready for human review`, `status: blocked`,
+`status: waiting for user`, and `status: done`.
+
 ## Outcome
 
 Describe the smallest useful product outcome, its user or enterprise value, and why it belongs in

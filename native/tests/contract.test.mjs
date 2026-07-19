@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const manifest = join(root, "Cargo.toml");
 
-test("workspace owns the ADR-0004 package and composition binary", () => {
+test("workspace owns the ADR-0006 package and composition binary", () => {
   const result = spawnSync(
     "cargo",
     [
@@ -36,7 +36,7 @@ test("workspace owns the ADR-0004 package and composition binary", () => {
   );
 });
 
-test("productive roots named by ADR-0004 exist", () => {
+test("productive roots named by ADR-0006 exist", () => {
   for (const rootPath of [
     "crates/keiko-application/src",
     "crates/keiko-ui-port/src",

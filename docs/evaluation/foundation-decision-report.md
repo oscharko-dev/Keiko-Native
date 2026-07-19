@@ -6,7 +6,7 @@ Accepted recommendation: use **Tauri 2 with the macOS system WebView and a bundl
 React/TypeScript frontend** for the macOS Foundation v0.1 stack.
 
 This report is scoped to issue #11 contract v2 and epic #9 contract v5. It does not close the
-Windows host decision. Windows remains a mandatory reopen under ADR-0004 before productive Windows
+Windows host decision. Windows remains a mandatory reopen under ADR-0006 before productive Windows
 foundation or release work.
 
 ## Evidence binding
@@ -120,12 +120,12 @@ licence, updater, payload, and input-latency failures affect release acceptance 
 The main Tauri residual risks are system-WebView variance, frontend supply-chain review, CSP and
 capability correctness, WebView accessibility regressions, update key custody, notarization, and
 rollback behavior. CH-3 must implement only the stable typed port and packaged-shell harness in
-ADR-0004; it must not retain any evaluation hook or infer Windows acceptance from this macOS
+ADR-0006; it must not retain any evaluation hook or infer Windows acceptance from this macOS
 decision.
 
 ## CH-3 handoff
 
-CH-3 may use ADR-0004's accepted macOS baseline: Tauri 2.11.5, WRY 0.55.1, Tauri CLI 2.11.4,
+CH-3 may use ADR-0006's accepted macOS baseline: Tauri 2.11.5, WRY 0.55.1, Tauri CLI 2.11.4,
 React/React DOM 19.2.7, TypeScript 5.9.3, Vite 7.3.6, Rust 1.92.0, the typed
 `application_request` port, the declared productive roots, and the repository-owned
 `acceptance:macos` packaged-shell harness contract.

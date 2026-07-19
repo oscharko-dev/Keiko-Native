@@ -26,69 +26,34 @@ const requiredHeadings = [
   "Residual risks and follow-ups",
 ];
 
-const requiredCheckboxesBySection = new Map([
-  [
-    "Product and architecture alignment",
-    [
-      "implemented contract version and fingerprint match",
-      "change follows the Decision Addendum",
-      "Existing Keiko material was used only after",
-      "greenfield change creates no mandatory build-time or runtime dependency",
-      "Product authority, policy, evidence, and privileged effects remain",
-      "durable architecture change is recorded in an ADR",
-    ],
-  ],
-  [
-    "Acceptance journey evidence",
-    [
-      "Automated checks exercise user-visible outcomes",
-      "Required failure, recovery, accessibility, visual, and platform observations",
-    ],
-  ],
-  [
-    "Quality Plan settlement",
-    [
-      "Applicable positive, negative, boundary, failure, cancellation, and recovery behavior",
-      "actually wired production composition was tested",
-      "Applicable security, accessibility, performance, resource, visual, and platform evidence",
-      "Excluded quality areas retain the rationale",
-      "Secrets, credentials, raw customer content, private endpoints, and PII are absent",
-    ],
-  ],
-  [
-    "Verification",
-    [
-      "`npm ci --ignore-scripts`",
-      "`npm run quality`",
-      "`npm audit --audit-level=high`",
-      "Every declared native target-specific gate passed",
-      "reviewed the complete diff against requirements",
-    ],
-  ],
-  [
-    "Independent audit and findings",
-    [
-      "Findings are evidence-cited",
-      "Every confirmed finding is resolved",
-      "Verification and audit were repeated",
-    ],
-  ],
-  [
-    "Delivery",
-    [
-      "target branch matches the delivery path",
-      "Commits are signed and every required check",
-      "Advisory tools are not treated as required merge authority",
-      "Documentation, ADRs, contracts, known limitations, and follow-ups are current",
-      "draft pull request was not promoted",
-    ],
-  ],
-]);
+const requiredCheckboxesBySection = new Map(
+  Object.entries({
+    "Acceptance journey evidence":
+      "Automated checks exercise user-visible outcomes|Required failure, recovery, accessibility, visual, and platform observations",
+    Delivery:
+      "target branch matches the delivery path|Commits are signed and every required check|Advisory tools are not treated as required merge authority|Documentation, ADRs, contracts, known limitations, and follow-ups are current|draft pull request was not promoted",
+    "Independent audit and findings":
+      "Findings are evidence-cited|Every confirmed finding is resolved|Verification and audit were repeated",
+    "Product and architecture alignment":
+      "implemented contract version and fingerprint match|change follows the Decision Addendum|Existing Keiko material was used only after|greenfield change creates no mandatory build-time or runtime dependency|Product authority, policy, evidence, and privileged effects remain|durable architecture change is recorded in an ADR",
+    "Quality Plan settlement":
+      "Applicable positive, negative, boundary, failure, cancellation, and recovery behavior|actually wired production composition was tested|Applicable security, accessibility, performance, resource, visual, and platform evidence|Excluded quality areas retain the rationale|Secrets, credentials, raw customer content, private endpoints, and PII are absent",
+    Verification:
+      "`npm ci --ignore-scripts`|`npm run quality`|`npm audit --audit-level=high`|Every declared native target-specific gate passed|reviewed the complete diff against requirements",
+  }).map(([section, checks]) => [section, checks.split("|")]),
+);
 
 const epicBranchCheckboxes = [
   "accepted issue authorizes this epic-branch target",
   "Acceptance and audit evidence is complete",
 ];
+const lifecycleActivationModes = new Set(["disabled", "enabled"]);
+const legacyDeliveryEligibleLifecycleStates = new Set(["status: ready"]);
+const activeDeliveryEligibleLifecycleStates = new Set([
+  "status: in progress",
+  "status: pr open",
+  "status: ready for human review",
+]);
 
 function labelsToNames(labels) {
   return (Array.isArray(labels) ? labels : []).map((label) =>
@@ -113,13 +78,37 @@ function tableRows(section) {
     .filter((cells) => !cells.every((cell) => /^:?-{3,}:?$/u.test(cell)));
 }
 
-function hasCompleteEvidenceRow(section, firstCell) {
-  return tableRows(section).some(
+function completeEvidenceRows(section, firstCell) {
+  return tableRows(section).filter(
     (cells) =>
       cells.length >= 4 &&
       firstCell.test(cells[0]) &&
       cells.slice(0, 4).every((cell) => cell.length > 0),
   );
+}
+
+function governedArtifactReference(value) {
+  const reference = optionValue(value ?? "");
+  return /^(?:sha256:[\da-f]{64}|sha512:[\da-f]{128})$/iu.test(reference);
+}
+
+function exactEvidenceReference(value, head) {
+  const reference = optionValue(value ?? "");
+  return reference === head || governedArtifactReference(reference);
+}
+
+function exactHeadEvidenceFailures(sections, pullRequest) {
+  const head = pullRequest?.head?.sha;
+  if (!/^[\da-f]{40}$/iu.test(head ?? ""))
+    return ["Pull-request head SHA is missing or malformed."];
+  return completeEvidenceRows(
+    sections.get("Acceptance criteria and evidence"),
+    /^AC[1-9]\d*\b/u,
+  ).some((cells) => !exactEvidenceReference(cells[2], head))
+    ? [
+        "Acceptance-criteria evidence must cite the pull-request head SHA or a governed artifact identifier.",
+      ]
+    : [];
 }
 
 function checkboxIsChecked(body, phrase) {
@@ -242,10 +231,10 @@ function scopeContractFailures(scope, pullRequest) {
 function evidenceFailures(sections) {
   const failures = [];
   if (
-    !hasCompleteEvidenceRow(
+    completeEvidenceRows(
       sections.get("Acceptance criteria and evidence"),
       /^AC[1-9]\d*\b/u,
-    )
+    ).length === 0
   )
     failures.push("Acceptance-criteria evidence has no complete result row.");
 
@@ -253,7 +242,7 @@ function evidenceFailures(sections) {
   failures.push(...applicabilityFailures(journey, "Acceptance Journey"));
   if (
     optionValue(fieldValue(journey, "Applicability")) === "Required" &&
-    !hasCompleteEvidenceRow(journey, /^J[1-9]\d*(?:\.[1-9]\d*)?\b/u)
+    completeEvidenceRows(journey, /^J[1-9]\d*(?:\.[1-9]\d*)?\b/u).length === 0
   )
     failures.push(
       "Required Acceptance Journey evidence has no complete result row.",
@@ -293,25 +282,53 @@ function attestationFailures(sections, acceptedTarget) {
   return [...requiredFailures, ...epicFailures];
 }
 
-function acceptedIssueFailures(issue, acceptedIssueNumber, acceptedVersion) {
+function acceptedIssueFailures(
+  issue,
+  acceptedIssueNumber,
+  acceptedVersion,
+  lifecycleActivation,
+  terminalDelivery,
+) {
   const failures = [];
   if (acceptedIssueNumber !== issue.number)
     failures.push(
       "The loaded issue does not match the accepted issue reference.",
     );
-  if (issue.state !== "open")
+  const completedDelivery =
+    terminalDelivery === true &&
+    issue.state === "closed" &&
+    issue.state_reason === "completed";
+  if (issue.state !== "open" && !completedDelivery)
     failures.push("The accepted issue must remain open.");
   const issueLabels = labelsToNames(issue.labels);
-  if (!issueLabels.includes("status: ready"))
-    failures.push("The accepted issue is not status: ready.");
-  if (
-    issueLabels.some(
-      (label) => label.startsWith("status: ") && label !== "status: ready",
-    )
-  )
+  const lifecycleLabels = issueLabels.filter((label) =>
+    label.startsWith("status: "),
+  );
+  if (lifecycleLabels.length !== 1)
     failures.push(
-      "The accepted issue has a conflicting lifecycle status label.",
+      "The accepted issue must have exactly one lifecycle status label.",
     );
+  const deliveryEligibleLifecycleStates =
+    lifecycleActivation === "enabled"
+      ? activeDeliveryEligibleLifecycleStates
+      : legacyDeliveryEligibleLifecycleStates;
+  const terminalDeliveryEligibleLifecycleStates = new Set([
+    ...(lifecycleActivation === "enabled"
+      ? ["status: ready for human review"]
+      : ["status: ready"]),
+    "status: done",
+  ]);
+  if (!lifecycleActivationModes.has(lifecycleActivation))
+    failures.push("Pull-request lifecycle activation mode is invalid.");
+  else if (
+    lifecycleLabels.length === 1 &&
+    !(
+      completedDelivery
+        ? terminalDeliveryEligibleLifecycleStates
+        : deliveryEligibleLifecycleStates
+    ).has(lifecycleLabels[0])
+  )
+    failures.push("The accepted issue lifecycle is not pull-request eligible.");
   const validation = validateIssueContract({
     body: issue.body,
     labels: issue.labels,
@@ -335,15 +352,38 @@ function readinessFailures({
   issueValidation,
   recordReference,
   repository,
+  terminalDelivery,
 }) {
   const failures = [];
-  const latestRecord = readinessRecordFromComments(
-    Array.isArray(comments) ? comments : [],
+  const availableComments = Array.isArray(comments) ? comments : [];
+  const latestRecord = readinessRecordFromComments(availableComments);
+  const referencedRecord = readinessRecordFromComments(
+    terminalDelivery === true && recordReference !== undefined
+      ? availableComments.filter(
+          (comment) => comment?.id === recordReference.commentId,
+        )
+      : availableComments,
   );
+  const latestComment = availableComments.find(
+    (comment) => comment?.id === latestRecord?.commentId,
+  );
+  const terminalClosureInvalidationIsCurrent =
+    terminalDelivery !== true ||
+    latestRecord?.commentId === referencedRecord?.commentId ||
+    (latestRecord?.status === "rejected" &&
+      latestRecord.version === referencedRecord?.version &&
+      latestRecord.fingerprint === referencedRecord?.fingerprint &&
+      latestComment?.body?.includes(
+        "- A closed issue cannot remain implementation ready.",
+      ) &&
+      latestComment.body.includes(
+        "Readiness is invalidated; the lifecycle workflow owns closed-state reconciliation.",
+      ));
   if (
-    latestRecord?.status !== "accepted" ||
-    latestRecord.version !== issueValidation.version ||
-    latestRecord.fingerprint !== issueValidation.fingerprint
+    referencedRecord?.status !== "accepted" ||
+    referencedRecord.version !== issueValidation.version ||
+    referencedRecord.fingerprint !== issueValidation.fingerprint ||
+    !terminalClosureInvalidationIsCurrent
   )
     failures.push(
       "The issue does not have a current matching accepted readiness record.",
@@ -352,7 +392,7 @@ function readinessFailures({
     recordReference !== undefined &&
     (recordReference.repository.toLowerCase() !== repository?.toLowerCase() ||
       recordReference.issueNumber !== issue.number ||
-      recordReference.commentId !== latestRecord?.commentId)
+      recordReference.commentId !== referencedRecord?.commentId)
   )
     failures.push(
       "The cited readiness URL is not the latest matching readiness record.",
@@ -367,11 +407,37 @@ export function pullRequestIssueNumber(body) {
   );
 }
 
+export function pullRequestAcceptedTarget(body) {
+  const sections = markdownSections(typeof body === "string" ? body : "");
+  return pullRequestScope(sections).acceptedTarget;
+}
+
+export function pullRequestDeliveryIdentityMatches({ issue, pullRequest }) {
+  const sections = markdownSections(
+    typeof pullRequest?.body === "string" ? pullRequest.body : "",
+  );
+  const scope = pullRequestScope(sections);
+  const issueKind = labelsToNames(issue?.labels).includes("type: epic")
+    ? "epic"
+    : "implementation";
+  const issueTarget = issueDeliveryTarget(issue?.body ?? "", issueKind);
+  return (
+    Number.isInteger(issue?.number) &&
+    scope.acceptedIssueNumber === issue.number &&
+    scope.acceptedTarget === pullRequest?.base?.ref &&
+    scope.acceptedTarget === issueTarget &&
+    scope.actualSource === pullRequest?.head?.ref &&
+    sourceContainsIssueNumber(scope.actualSource ?? "", issue.number)
+  );
+}
+
 export function validatePullRequestContract({
   comments,
   issue,
+  lifecycleActivation = "disabled",
   pullRequest,
   repository,
+  terminalDelivery = false,
 }) {
   const failures = [];
   const body = pullRequest?.body;
@@ -390,6 +456,7 @@ export function validatePullRequestContract({
     ...unresolvedPrFailures(body),
     ...scopeContractFailures(scope, pullRequest),
     ...evidenceFailures(sections),
+    ...exactHeadEvidenceFailures(sections, pullRequest),
     ...attestationFailures(sections, scope.acceptedTarget),
   );
 
@@ -401,6 +468,8 @@ export function validatePullRequestContract({
     issue,
     scope.acceptedIssueNumber,
     scope.acceptedVersion,
+    lifecycleActivation,
+    terminalDelivery,
   );
   failures.push(
     ...issueContract.failures,
@@ -410,6 +479,7 @@ export function validatePullRequestContract({
       issueValidation: issueContract.validation,
       recordReference: scope.recordReference,
       repository,
+      terminalDelivery,
     }),
   );
 

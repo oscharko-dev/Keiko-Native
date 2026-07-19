@@ -62,7 +62,7 @@ const validTarget = {
 const qualityControlScript =
   "npm run native:dependencies && npm run check:contract && npm run lint && npm run format:check && npm run coverage && npm run build";
 
-const adr0004SourceRoots = [
+const adr0006SourceRoots = [
   "native/crates/keiko-application/src/",
   "native/crates/keiko-ui-port/src/",
   "native/crates/keiko-host-macos/src/",
@@ -70,9 +70,9 @@ const adr0004SourceRoots = [
   "native/frontend/src/",
 ];
 
-const adr0004TestRoots = ["native/tests/"];
+const adr0006TestRoots = ["native/tests/"];
 
-const adr0004SupportFiles = [
+const adr0006SupportFiles = [
   "native/Cargo.toml",
   "native/Cargo.lock",
   "native/rust-toolchain.toml",
@@ -99,7 +99,7 @@ const coverageToolchains = {
   frontend: "vitest-v8",
 };
 
-const adr0004Target = {
+const adr0006Target = {
   architectures: ["arm64"],
   commands: {
     architecture: "native:architecture",
@@ -116,11 +116,11 @@ const adr0004Target = {
   language: "rust",
   name: "keiko-native-desktop",
   platforms: ["macos"],
-  sourceRoots: adr0004SourceRoots,
+  sourceRoots: adr0006SourceRoots,
 };
 
 const productiveCommands = [
-  ...Object.values(adr0004Target.commands),
+  ...Object.values(adr0006Target.commands),
   "acceptance:macos",
 ];
 
@@ -134,24 +134,84 @@ function productiveManifest(overrides = {}) {
       },
     ],
     coverageToolchains,
-    nativeTargets: [adr0004Target],
+    nativeTargets: [adr0006Target],
     phase: "productive",
-    productiveSourceRoots: adr0004SourceRoots,
+    productiveSourceRoots: adr0006SourceRoots,
     qualityProfile: "keiko-native-productive-v1",
-    supportFiles: adr0004SupportFiles,
-    testSourceRoots: adr0004TestRoots,
+    supportFiles: adr0006SupportFiles,
+    testSourceRoots: adr0006TestRoots,
     ...overrides,
   };
 }
 
 async function createDeclaredNativePaths(root) {
-  for (const sourceRoot of [...adr0004SourceRoots, ...adr0004TestRoots]) {
+  for (const sourceRoot of [...adr0006SourceRoots, ...adr0006TestRoots]) {
     await mkdir(join(root, sourceRoot), { recursive: true });
   }
-  for (const file of adr0004SupportFiles) {
+  for (const file of adr0006SupportFiles) {
     await mkdir(join(root, file, ".."), { recursive: true });
     await writeFile(join(root, file), "fixture\n");
   }
+}
+
+const lifecycleStates = Object.freeze([
+  "status: new",
+  "status: triaged",
+  "status: ready",
+  "status: in progress",
+  "status: pr open",
+  "status: ready for human review",
+  "status: blocked",
+  "status: waiting for user",
+  "status: done",
+]);
+
+const coverageScript = [
+  "node --test --experimental-test-coverage",
+  "--test-coverage-include=quality/issue-lifecycle.mjs",
+  "--test-coverage-include=quality/issue-lifecycle-readiness.mjs",
+  "--test-coverage-include=quality/issue-lifecycle-action.mjs",
+].join(" ");
+
+const issueTemplateFiles = [
+  ".github/ISSUE_TEMPLATE/decision_evaluation.md",
+  ".github/ISSUE_TEMPLATE/defect_finding.md",
+  ".github/ISSUE_TEMPLATE/epic.md",
+  ".github/ISSUE_TEMPLATE/feature_task.md",
+];
+
+function lifecycleList(states = lifecycleStates) {
+  return states.map((state) => `- \`${state}\``).join("\n");
+}
+
+function lifecycleProjectionText(states = lifecycleStates) {
+  return [
+    "Lifecycle contract: [docs/qa/issue-lifecycle.md](../../docs/qa/issue-lifecycle.md).",
+    "",
+    lifecycleList(states),
+  ].join("\n");
+}
+
+function lifecycleModuleSource(states = lifecycleStates) {
+  return [
+    "export const LIFECYCLE_STATES = Object.freeze([",
+    ...states.map((state) => `  \"${state}\",`),
+    "]);",
+  ].join("\n");
+}
+
+function lifecycleFixtureSource(states = lifecycleStates) {
+  return [
+    "const canonicalStates = Object.freeze([",
+    ...states.map((state) => `  \"${state}\",`),
+    "]);",
+  ].join("\n");
+}
+
+function packageJson(scripts = {}) {
+  return JSON.stringify({
+    scripts: { coverage: coverageScript, quality: "fixture", ...scripts },
+  });
 }
 
 test("accepts the governed bootstrap manifest", () => {
@@ -459,7 +519,7 @@ test("public governance records exact-target authenticated epic merge and sacred
     readFile(join(root, "docs/qa/quality-gates.md"), "utf8"),
     readFile(join(root, "docs/qa/repository-activation.md"), "utf8"),
     readFile(
-      join(root, "docs/adr/ADR-0003-free-tier-sonar-and-epic-delivery.md"),
+      join(root, "docs/adr/ADR-0005-free-tier-sonar-and-epic-delivery.md"),
       "utf8",
     ),
   ]);
@@ -499,7 +559,9 @@ async function fixtureRepository() {
     ".github/pull_request_template.md",
     ".github/workflows/codeql.yml",
     ".github/workflows/dependency-review.yml",
+    ".github/workflows/issue-lifecycle.yml",
     ".github/workflows/issue-readiness.yml",
+    ".github/workflows/internal-release.yml",
     ".github/workflows/mutation-security.yml",
     ".github/workflows/osv-scanner.yml",
     ".github/workflows/pr-contract.yml",
@@ -511,6 +573,7 @@ async function fixtureRepository() {
     "SECURITY.md",
     "docs/planning/agent-planning-baseline.md",
     "docs/product/source-baseline.md",
+    "docs/qa/issue-lifecycle.md",
     "docs/qa/repository-activation.md",
     "package.json",
     "quality/check-native-vulnerability-results.mjs",
@@ -518,20 +581,35 @@ async function fixtureRepository() {
     "quality/github-api.mjs",
     "quality/github-reference.mjs",
     "quality/issue-contract.mjs",
+    "quality/issue-lifecycle-action.mjs",
+    "quality/issue-lifecycle-readiness.mjs",
+    "quality/issue-lifecycle.mjs",
+    "quality/issue-lifecycle.test.mjs",
     "quality/issue-readiness-action.mjs",
+    "quality/internal-release.mjs",
+    "quality/internal-release-workflow.mjs",
+    "quality/attestation-policy.mjs",
+    "quality/iso-normalization.mjs",
     "quality/markdown-contract.mjs",
     "quality/pr-contract-action.mjs",
     "quality/pr-contract.mjs",
+    "quality/release-contract.mjs",
+    "quality/release-evidence.mjs",
+    "quality/release-inputs.mjs",
+    "quality/release-io.mjs",
+    "quality/release-mounted.mjs",
+    "quality/release-native-fs.mjs",
+    "quality/release-owned-fs.mjs",
+    "quality/release-system.mjs",
+    "quality/release-verify.mjs",
+    "quality/update-metadata.mjs",
     "socket.yml",
   ];
   for (const file of files) {
     await mkdir(join(root, file, ".."), { recursive: true });
     await writeFile(join(root, file), "fixture\n");
   }
-  await writeFile(
-    join(root, "package.json"),
-    JSON.stringify({ scripts: { quality: "fixture" } }),
-  );
+  await writeFile(join(root, "package.json"), packageJson());
   await writeFile(join(root, ".npmrc"), "engine-strict=true\n");
   await mkdir(join(root, "quality"), { recursive: true });
   await writeFile(
@@ -578,6 +656,39 @@ async function fixtureRepository() {
     ].join("\n"),
   );
   await writeFile(
+    join(root, "AGENTS.md"),
+    [
+      "Lifecycle reference: [docs/qa/issue-lifecycle.md](docs/qa/issue-lifecycle.md).",
+      lifecycleList(),
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, "docs/qa/issue-lifecycle.md"),
+    [
+      "# Issue Lifecycle",
+      "## Canonical States",
+      lifecycleList(),
+      "## Allowed Edge Graph",
+      lifecycleList(),
+      "## Permitted Label Requests",
+      lifecycleList(),
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, "docs/qa/repository-activation.md"),
+    ["# Repository activation checklist", lifecycleList()].join("\n"),
+  );
+  for (const file of issueTemplateFiles)
+    await writeFile(join(root, file), lifecycleProjectionText());
+  await writeFile(
+    join(root, "quality/issue-lifecycle.mjs"),
+    lifecycleModuleSource(),
+  );
+  await writeFile(
+    join(root, "quality/issue-lifecycle.test.mjs"),
+    lifecycleFixtureSource(),
+  );
+  await writeFile(
     join(root, ".markdown-quality.json"),
     JSON.stringify({
       allowedHtmlElements: ["div"],
@@ -607,6 +718,13 @@ async function fixtureRepository() {
       governedWorkflowJobs["native-matrix"],
       governedWorkflowJobs.native,
     ].join("\n"),
+  );
+  await writeFile(
+    join(root, ".github/workflows/internal-release.yml"),
+    await readFile(
+      join(import.meta.dirname, "../.github/workflows/internal-release.yml"),
+      "utf8",
+    ),
   );
   await writeFile(
     join(root, ".github/workflows/mutation-security.yml"),
@@ -656,6 +774,40 @@ async function fixtureRepository() {
     ].join("\n"),
   );
   await writeFile(
+    join(root, ".github/workflows/issue-lifecycle.yml"),
+    [
+      "name: Issue lifecycle",
+      "on:",
+      "  issues:",
+      "    types: [assigned, closed, edited, labeled, reopened, unassigned, unlabeled]",
+      "  workflow_call:",
+      "    inputs:",
+      "      issue_number:",
+      "      pr_contract_result:",
+      "permissions: {}",
+      "concurrency:",
+      "  group: issue-lifecycle-${{ inputs.issue_number || github.event.issue.number }}",
+      "  cancel-in-progress: false",
+      "jobs:",
+      "  classify:",
+      "    permissions:",
+      "      contents: read",
+      "      issues: read",
+      "      pull-requests: read",
+      "      statuses: read",
+      "    steps:",
+      "      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+      "        with:",
+      "          persist-credentials: false",
+      "          ref: dev",
+      "      - name: Compute the inert lifecycle decision",
+      "        env:",
+      "          KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
+      "          KEIKO_PR_CONTRACT_RESULT: ${{ inputs.pr_contract_result }}",
+      "        run: node quality/issue-lifecycle-action.mjs",
+    ].join("\n"),
+  );
+  await writeFile(
     join(root, ".github/workflows/pr-contract.yml"),
     [
       "name: Pull request contract",
@@ -664,11 +816,19 @@ async function fixtureRepository() {
       "    branches:",
       "      - dev",
       '      - "epic/**"',
-      "types: [opened, edited, reopened, synchronize, ready_for_review, converted_to_draft]",
+      "types: [opened, edited, reopened, synchronize, ready_for_review, converted_to_draft, closed]",
+      "cancel-in-progress: false",
       "name: Evaluate trusted PR metadata",
+      "issue-number: ${{ steps.contract.outputs.issue-number }}",
       "ref: dev",
+      "statuses: read",
       "statuses: write",
+      "  KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
       "node quality/pr-contract-action.mjs",
+      "uses: ./.github/workflows/issue-lifecycle.yml",
+      "always() && needs.contract.outputs.issue-number != ''",
+      "  issue_number: ${{ needs.contract.outputs.issue-number }}",
+      "  pr_contract_result: ${{ needs.contract.result }}",
     ].join("\n"),
   );
   await writeFile(
@@ -959,8 +1119,8 @@ test("fails closed for missing declared productive roots", async () => {
     const commandNames = productiveCommands;
     await writeFile(
       join(root, "package.json"),
-      JSON.stringify({
-        scripts: Object.fromEntries([
+      packageJson(
+        Object.fromEntries([
           ...commandNames.map((command) => [command, "node --version"]),
           ["coverage", canonicalCoverageCommand],
           ["quality:control", qualityControlScript],
@@ -973,7 +1133,7 @@ test("fails closed for missing declared productive roots", async () => {
             ].join(" && "),
           ],
         ]),
-      }),
+      ),
     );
     const result = await validateRepository(root);
     assert.match(
@@ -1000,8 +1160,8 @@ test("accepts declared productive source roots and targets", async () => {
     const commandNames = productiveCommands;
     await writeFile(
       join(root, "package.json"),
-      JSON.stringify({
-        scripts: Object.fromEntries([
+      packageJson(
+        Object.fromEntries([
           ...commandNames.map((command) => [command, "node --version"]),
           ["coverage", canonicalCoverageCommand],
           ["quality:control", qualityControlScript],
@@ -1014,7 +1174,7 @@ test("accepts declared productive source roots and targets", async () => {
             ].join(" && "),
           ],
         ]),
-      }),
+      ),
     );
     const result = await validateRepository(root);
     assert.deepEqual(result.failures, []);
@@ -1297,5 +1457,134 @@ test("coverage command freezes deterministic serial execution", async () => {
     ),
   ]) {
     assert.ok(coverageCommandFailures(mutation).length > 0);
+  }
+});
+
+test("fails closed when lifecycle governance links drift", async () => {
+  const root = await fixtureRepository();
+  try {
+    await writeFile(join(root, "AGENTS.md"), lifecycleList());
+    const result = await validateRepository(root);
+    assert.match(
+      result.failures.join("\n"),
+      /Governance lifecycle link missing from AGENTS.md/u,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("fails closed on lifecycle state projection drift", async () => {
+  const driftCases = [
+    {
+      path: "quality/issue-lifecycle.mjs",
+      text: lifecycleModuleSource([...lifecycleStates, "status: archived"]),
+    },
+    {
+      path: "quality/issue-lifecycle.test.mjs",
+      text: lifecycleFixtureSource(
+        lifecycleStates.map((state) =>
+          state === "status: done" ? "status: complete" : state,
+        ),
+      ),
+    },
+    {
+      path: "docs/qa/issue-lifecycle.md",
+      text: lifecycleProjectionText(lifecycleStates.slice(1)),
+    },
+    {
+      path: "docs/qa/repository-activation.md",
+      text: lifecycleProjectionText(
+        lifecycleStates.filter((state) => state !== "status: triaged"),
+      ),
+    },
+    {
+      path: ".github/ISSUE_TEMPLATE/feature_task.md",
+      text: lifecycleProjectionText(
+        lifecycleStates.map((state) =>
+          state === "status: ready" ? "status: prepared" : state,
+        ),
+      ),
+    },
+  ];
+
+  for (const { path, text } of driftCases) {
+    const root = await fixtureRepository();
+    try {
+      await writeFile(join(root, path), text);
+      const result = await validateRepository(root);
+      assert.match(result.failures.join("\n"), new RegExp(path, "u"));
+      assert.match(
+        result.failures.join("\n"),
+        /Lifecycle state projection drift/u,
+      );
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  }
+});
+
+test("fails closed when lifecycle workflow or coverage wiring drifts", async () => {
+  const root = await fixtureRepository();
+  try {
+    await writeFile(
+      join(root, ".github/workflows/issue-lifecycle.yml"),
+      "name: Issue lifecycle\ntypes: [closed, edited]\n",
+    );
+    await writeFile(
+      join(root, "package.json"),
+      packageJson({
+        coverage: coverageScript.replace(
+          " --test-coverage-include=quality/issue-lifecycle-action.mjs",
+          "",
+        ),
+      }),
+    );
+    const result = await validateRepository(root);
+    const failures = result.failures.join("\n");
+    assert.match(failures, /Issue lifecycle workflow trigger types drifted/u);
+    assert.match(failures, /Coverage command must include/u);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("fails closed when lifecycle workflow permissions drift", async () => {
+  const root = await fixtureRepository();
+  try {
+    const workflowPath = join(root, ".github/workflows/issue-lifecycle.yml");
+    const workflow = await readFile(workflowPath, "utf8");
+    await writeFile(
+      workflowPath,
+      workflow.replace("      issues: read", "      issues: write"),
+    );
+    const result = await validateRepository(root);
+    const failures = result.failures.join("\n");
+    assert.match(
+      failures,
+      /Issue lifecycle workflow permission drift, missing marker:       issues: read/u,
+    );
+    assert.match(
+      failures,
+      /Issue lifecycle must not request write permissions: issues/u,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("fails closed when the PR lifecycle caller loses status read access", async () => {
+  const root = await fixtureRepository();
+  try {
+    const workflowPath = join(root, ".github/workflows/pr-contract.yml");
+    const workflow = await readFile(workflowPath, "utf8");
+    await writeFile(workflowPath, workflow.replace("statuses: read\n", ""));
+    const result = await validateRepository(root);
+    assert.match(
+      result.failures.join("\n"),
+      /Pull-request contract workflow is missing marker: statuses: read/u,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
   }
 });

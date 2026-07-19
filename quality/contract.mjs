@@ -2,6 +2,7 @@ import { access, readFile, readdir } from "node:fs/promises";
 import { extname, join, relative, sep } from "node:path";
 
 import { canonicalCoverageCommand } from "./coverage-reporter.mjs";
+import { internalReleaseWorkflowFailures } from "./internal-release-workflow.mjs";
 import {
   canonicalLineEndings,
   workflowToolchainFailures,
@@ -32,7 +33,9 @@ const requiredFiles = [
   ".github/workflows/ci.yml",
   ".github/workflows/codeql.yml",
   ".github/workflows/dependency-review.yml",
+  ".github/workflows/issue-lifecycle.yml",
   ".github/workflows/issue-readiness.yml",
+  ".github/workflows/internal-release.yml",
   ".github/workflows/mutation-security.yml",
   ".github/workflows/osv-scanner.yml",
   ".github/workflows/pr-contract.yml",
@@ -45,6 +48,7 @@ const requiredFiles = [
   "docs/engineering/code-quality-standard.md",
   "docs/planning/agent-planning-baseline.md",
   "docs/product/source-baseline.md",
+  "docs/qa/issue-lifecycle.md",
   "docs/qa/repository-activation.md",
   "package.json",
   "quality/github-api.mjs",
@@ -52,10 +56,28 @@ const requiredFiles = [
   "quality/check-native-vulnerability-results.mjs",
   "quality/generate-native-vulnerability-inventory.mjs",
   "quality/issue-contract.mjs",
+  "quality/issue-lifecycle-action.mjs",
+  "quality/issue-lifecycle-readiness.mjs",
+  "quality/issue-lifecycle.mjs",
+  "quality/issue-lifecycle.test.mjs",
   "quality/issue-readiness-action.mjs",
   "quality/markdown-contract.mjs",
   "quality/pr-contract-action.mjs",
   "quality/pr-contract.mjs",
+  "quality/internal-release.mjs",
+  "quality/internal-release-workflow.mjs",
+  "quality/attestation-policy.mjs",
+  "quality/iso-normalization.mjs",
+  "quality/release-contract.mjs",
+  "quality/release-evidence.mjs",
+  "quality/release-inputs.mjs",
+  "quality/release-io.mjs",
+  "quality/release-mounted.mjs",
+  "quality/release-native-fs.mjs",
+  "quality/release-owned-fs.mjs",
+  "quality/release-system.mjs",
+  "quality/release-verify.mjs",
+  "quality/update-metadata.mjs",
   "socket.yml",
   "sonar-project.properties",
 ];
@@ -121,6 +143,37 @@ const issueReadinessMarkers = [
   "node quality/issue-readiness-action.mjs",
 ];
 
+const issueLifecycleTriggerTypes = [
+  "assigned",
+  "closed",
+  "edited",
+  "labeled",
+  "reopened",
+  "unassigned",
+  "unlabeled",
+];
+
+const issueLifecycleMarkers = [
+  "name: Issue lifecycle",
+  "workflow_call:",
+  "group: issue-lifecycle-${{ inputs.issue_number || github.event.issue.number }}",
+  "cancel-in-progress: false",
+  "ref: dev",
+  "persist-credentials: false",
+  "KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
+  "KEIKO_PR_CONTRACT_RESULT: ${{ inputs.pr_contract_result }}",
+  "node quality/issue-lifecycle-action.mjs",
+];
+
+const issueLifecyclePermissionMarkers = [
+  "permissions: {}",
+  "    permissions:",
+  "      contents: read",
+  "      issues: read",
+  "      pull-requests: read",
+  "      statuses: read",
+];
+
 const pullRequestContractMarkers = [
   "types:",
   "opened",
@@ -129,10 +182,44 @@ const pullRequestContractMarkers = [
   "synchronize",
   "ready_for_review",
   "converted_to_draft",
+  "closed",
+  "cancel-in-progress: false",
   "name: Evaluate trusted PR metadata",
+  "issue-number: ${{ steps.contract.outputs.issue-number }}",
   "ref: dev",
+  "statuses: read",
   "statuses: write",
+  "KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
   "node quality/pr-contract-action.mjs",
+  "uses: ./.github/workflows/issue-lifecycle.yml",
+  "always() && needs.contract.outputs.issue-number != ''",
+  "issue_number: ${{ needs.contract.outputs.issue-number }}",
+  "pr_contract_result: ${{ needs.contract.result }}",
+];
+
+const canonicalLifecycleStates = Object.freeze([
+  "status: new",
+  "status: triaged",
+  "status: ready",
+  "status: in progress",
+  "status: pr open",
+  "status: ready for human review",
+  "status: blocked",
+  "status: waiting for user",
+  "status: done",
+]);
+
+const issueTemplateFiles = [
+  ".github/ISSUE_TEMPLATE/decision_evaluation.md",
+  ".github/ISSUE_TEMPLATE/defect_finding.md",
+  ".github/ISSUE_TEMPLATE/epic.md",
+  ".github/ISSUE_TEMPLATE/feature_task.md",
+];
+
+const lifecycleCoverageIncludes = [
+  "quality/issue-lifecycle.mjs",
+  "quality/issue-lifecycle-readiness.mjs",
+  "quality/issue-lifecycle-action.mjs",
 ];
 
 const productiveExtensions = new Set([
@@ -199,7 +286,7 @@ export function coverageCommandFailures(command) {
     : ["Coverage command must retain exact serial execution and reporter."];
 }
 
-const adr0004SourceRoots = [
+const adr0006SourceRoots = [
   "native/crates/keiko-application/src/",
   "native/crates/keiko-ui-port/src/",
   "native/crates/keiko-host-macos/src/",
@@ -207,9 +294,9 @@ const adr0004SourceRoots = [
   "native/frontend/src/",
 ];
 
-const adr0004TestRoots = ["native/tests/"];
+const adr0006TestRoots = ["native/tests/"];
 
-const adr0004SupportFiles = [
+const adr0006SupportFiles = [
   "native/Cargo.toml",
   "native/Cargo.lock",
   "native/rust-toolchain.toml",
@@ -229,7 +316,7 @@ const adr0004SupportFiles = [
   "native/third-party-notices.json",
 ];
 
-const adr0004TargetCommands = {
+const adr0006TargetCommands = {
   architecture: "native:architecture",
   build: "native:build",
   coverage: "native:coverage",
@@ -314,15 +401,15 @@ export function validateNativeTarget(target, productiveSourceRoots) {
   return failures;
 }
 
-function adr0004DeclarationFailures(manifest) {
+function adr0006DeclarationFailures(manifest) {
   if (manifest.phase !== "productive") return [];
   const failures = [];
-  if (!sameStringSet(manifest.productiveSourceRoots, adr0004SourceRoots))
-    failures.push("Productive source roots must match ADR-0004 exactly.");
-  if (!sameStringSet(manifest.testSourceRoots, adr0004TestRoots))
-    failures.push("Test source roots must match ADR-0004 exactly.");
-  if (!sameStringSet(manifest.supportFiles, adr0004SupportFiles))
-    failures.push("Support files must match ADR-0004 exactly.");
+  if (!sameStringSet(manifest.productiveSourceRoots, adr0006SourceRoots))
+    failures.push("Productive source roots must match ADR-0006 exactly.");
+  if (!sameStringSet(manifest.testSourceRoots, adr0006TestRoots))
+    failures.push("Test source roots must match ADR-0006 exactly.");
+  if (!sameStringSet(manifest.supportFiles, adr0006SupportFiles))
+    failures.push("Support files must match ADR-0006 exactly.");
   if (
     JSON.stringify(manifest.coverageToolchains) !==
     JSON.stringify({
@@ -332,7 +419,7 @@ function adr0004DeclarationFailures(manifest) {
       frontend: "vitest-v8",
     })
   )
-    failures.push("Coverage toolchains must match the ADR-0004 amendment.");
+    failures.push("Coverage toolchains must match the ADR-0006 amendment.");
   if (
     JSON.stringify(manifest.coverageExclusions) !==
     JSON.stringify([
@@ -347,24 +434,24 @@ function adr0004DeclarationFailures(manifest) {
     );
   }
   if (manifest.nativeTargets.length !== 1) {
-    failures.push("ADR-0004 declares exactly one native target.");
+    failures.push("ADR-0006 declares exactly one native target.");
     return failures;
   }
   const [target] = manifest.nativeTargets;
   if (target?.name !== "keiko-native-desktop")
-    failures.push("ADR-0004 native target name must be keiko-native-desktop.");
+    failures.push("ADR-0006 native target name must be keiko-native-desktop.");
   if (target?.language !== "rust")
-    failures.push("ADR-0004 native target language must be rust.");
+    failures.push("ADR-0006 native target language must be rust.");
   if (!sameStringSet(target?.platforms, ["macos"]))
-    failures.push("ADR-0004 native target platform must be macos only.");
+    failures.push("ADR-0006 native target platform must be macos only.");
   if (!sameStringSet(target?.architectures, ["arm64"]))
-    failures.push("ADR-0004 native target architecture must be arm64.");
-  if (!sameStringSet(nativeTargetSourceRoots(target), adr0004SourceRoots))
-    failures.push("ADR-0004 native target roots must match its source roots.");
+    failures.push("ADR-0006 native target architecture must be arm64.");
+  if (!sameStringSet(nativeTargetSourceRoots(target), adr0006SourceRoots))
+    failures.push("ADR-0006 native target roots must match its source roots.");
   if (
-    JSON.stringify(target?.commands) !== JSON.stringify(adr0004TargetCommands)
+    JSON.stringify(target?.commands) !== JSON.stringify(adr0006TargetCommands)
   )
-    failures.push("ADR-0004 native target commands must match the root gates.");
+    failures.push("ADR-0006 native target commands must match the root gates.");
   return failures;
 }
 
@@ -392,7 +479,7 @@ function productiveManifestFailures(manifest) {
     failures.push(
       "Every productive source root must belong to a declared native target.",
     );
-  failures.push(...adr0004DeclarationFailures(manifest));
+  failures.push(...adr0006DeclarationFailures(manifest));
   return failures;
 }
 
@@ -688,6 +775,51 @@ async function readJson(path) {
   return JSON.parse(await readFile(path, "utf8"));
 }
 
+async function readText(root, files, path) {
+  return files.includes(path) ? readFile(join(root, path), "utf8") : "";
+}
+
+function unique(values) {
+  return [...new Set(values)];
+}
+
+function backtickStatusNames(text) {
+  return unique(
+    [...text.matchAll(/`(status: [^`]+)`/gu)].map((match) => match[1]),
+  );
+}
+
+function stringArrayConstant(source, name) {
+  const pattern = new RegExp(
+    String.raw`(?:export\s+)?const\s+${name}\s*=\s*(?:Object\.freeze\()?\s*\[([\s\S]*?)\]\s*\)?;`,
+    "u",
+  );
+  const body = pattern.exec(source)?.[1] ?? "";
+  return [...body.matchAll(/"([^"]+)"/gu)].map((match) => match[1]);
+}
+
+function lifecycleStateProjectionFailures(surface, states) {
+  const observed = new Set(states);
+  const expected = new Set(canonicalLifecycleStates);
+  const missing = canonicalLifecycleStates.filter(
+    (state) => !observed.has(state),
+  );
+  const unexpected = states.filter((state) => !expected.has(state));
+  return missing.length === 0 && unexpected.length === 0
+    ? []
+    : [
+        [
+          `Lifecycle state projection drift in ${surface}.`,
+          missing.length > 0 ? `Missing: ${missing.join(", ")}.` : "",
+          unexpected.length > 0
+            ? `Unexpected: ${unique(unexpected).join(", ")}.`
+            : "",
+        ]
+          .filter((part) => part !== "")
+          .join(" "),
+      ];
+}
+
 function requiredFileFailures(files) {
   return requiredFiles
     .filter((file) => !files.includes(file))
@@ -782,6 +914,77 @@ async function codeQualityStandardFailures(root, files) {
     );
 }
 
+async function lifecycleLinkFailures(root, files) {
+  const paths = ["AGENTS.md", ...issueTemplateFiles];
+  const results = await Promise.all(
+    paths.map(async (path) => ({
+      path,
+      text: await readText(root, files, path),
+    })),
+  );
+  return results
+    .filter((result) => !result.text.includes("docs/qa/issue-lifecycle.md"))
+    .map((result) => `Governance lifecycle link missing from ${result.path}.`);
+}
+
+async function lifecycleProjectionFailures(root, files) {
+  const surfaces = [
+    [
+      "quality/issue-lifecycle.mjs",
+      stringArrayConstant(
+        await readText(root, files, "quality/issue-lifecycle.mjs"),
+        "LIFECYCLE_STATES",
+      ),
+    ],
+    [
+      "quality/issue-lifecycle.test.mjs",
+      stringArrayConstant(
+        await readText(root, files, "quality/issue-lifecycle.test.mjs"),
+        "canonicalStates",
+      ),
+    ],
+    [
+      "docs/qa/issue-lifecycle.md",
+      backtickStatusNames(
+        await readText(root, files, "docs/qa/issue-lifecycle.md"),
+      ),
+    ],
+    [
+      "docs/qa/repository-activation.md",
+      backtickStatusNames(
+        await readText(root, files, "docs/qa/repository-activation.md"),
+      ),
+    ],
+    [
+      "AGENTS.md",
+      backtickStatusNames(await readText(root, files, "AGENTS.md")),
+    ],
+  ];
+  for (const path of issueTemplateFiles) {
+    surfaces.push([
+      path,
+      backtickStatusNames(await readText(root, files, path)),
+    ]);
+  }
+  return surfaces.flatMap(([surface, states]) =>
+    lifecycleStateProjectionFailures(surface, states),
+  );
+}
+
+async function coverageIncludeFailures(root, files) {
+  if (!files.includes("package.json")) return [];
+  const packageJson = await readJson(join(root, "package.json"));
+  const coverage = packageJson.scripts?.coverage ?? "";
+  return lifecycleCoverageIncludes
+    .filter(
+      (include) => !coverage.includes(`--test-coverage-include=${include}`),
+    )
+    .map(
+      (include) =>
+        `Coverage command must include lifecycle control-plane module: ${include}.`,
+    );
+}
+
 async function sourceRootFailures(root, manifest) {
   const sourceRoots = [
     ...(Array.isArray(manifest?.productiveSourceRoots)
@@ -851,6 +1054,9 @@ async function contractFailures(root, files, manifest) {
     ...(await agentPlanningBaselineFailures(root, files)),
     ...(await codeQualityStandardFailures(root, files)),
     ...(await npmConfigurationFailures(root, files)),
+    ...(await lifecycleLinkFailures(root, files)),
+    ...(await lifecycleProjectionFailures(root, files)),
+    ...(await coverageIncludeFailures(root, files)),
     ...bootstrapFailures,
     ...nativeDeclarationFailures(files, manifest),
     ...(await sourceRootFailures(root, manifest)),
@@ -1174,6 +1380,57 @@ function issueReadinessWorkflowFailures(workflow) {
   return failures;
 }
 
+function bracketList(marker, text) {
+  return (
+    new RegExp(String.raw`${marker}:\s*\[([^\]]*)\]`, "u")
+      .exec(text)?.[1]
+      ?.split(",")
+      .map((value) => value.trim())
+      .filter((value) => value !== "") ?? []
+  );
+}
+
+function workflowWritePermissions(workflow) {
+  return workflow
+    .split(/\r?\n/u)
+    .map(
+      (line) =>
+        /^\s*([A-Za-z][A-Za-z-]*):\s*(?:write|write-all)\s*(?:#.*)?$/u.exec(
+          line,
+        )?.[1],
+    )
+    .filter((name) => name !== undefined);
+}
+
+function issueLifecycleWorkflowFailures(workflow) {
+  const failures = issueLifecycleMarkers
+    .filter((marker) => !workflow.includes(marker))
+    .map((marker) => `Issue lifecycle workflow is missing marker: ${marker}.`);
+  failures.push(
+    ...issueLifecyclePermissionMarkers
+      .filter((marker) => !workflow.includes(marker))
+      .map(
+        (marker) =>
+          `Issue lifecycle workflow permission drift, missing marker: ${marker}.`,
+      ),
+  );
+  const triggerTypes = bracketList("types", workflow);
+  if (
+    JSON.stringify(triggerTypes) !== JSON.stringify(issueLifecycleTriggerTypes)
+  )
+    failures.push(
+      `Issue lifecycle workflow trigger types drifted: ${triggerTypes.join(", ")}.`,
+    );
+  if (workflow.includes("pull_request_target"))
+    failures.push("Issue lifecycle must not use pull_request_target.");
+  const writePermissions = [...new Set(workflowWritePermissions(workflow))];
+  if (writePermissions.length > 0)
+    failures.push(
+      `Issue lifecycle must not request write permissions: ${writePermissions.join(", ")}.`,
+    );
+  return failures;
+}
+
 function pullRequestContractWorkflowFailures(workflow) {
   const markerFailures = pullRequestContractMarkers
     .filter((marker) => !workflow.includes(marker))
@@ -1244,8 +1501,14 @@ async function workflowFailures(root, manifest) {
     ...issueReadinessWorkflowFailures(
       workflows.get("issue-readiness.yml") ?? "",
     ),
+    ...issueLifecycleWorkflowFailures(
+      workflows.get("issue-lifecycle.yml") ?? "",
+    ),
     ...pullRequestContractWorkflowFailures(
       workflows.get("pr-contract.yml") ?? "",
+    ),
+    ...internalReleaseWorkflowFailures(
+      workflows.get("internal-release.yml") ?? "",
     ),
     ...(await productiveCommandFailures(root, ci, manifest)),
   ];
