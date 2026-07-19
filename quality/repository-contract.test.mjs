@@ -81,7 +81,7 @@ test("parses an optional exact supersession binding", () => {
     `Supersedes: ${digestA} ${path}\nSupersedes: ${digestA} ${path}`,
     `Supersedes: ${digestA.toUpperCase()} ${path}`,
     `Supersedes: ${digestA} docs/contracts/task-035-v1-r1.md`,
-    ` Supersedes: ${digestA} ${path} SECRET-CONTENT`,
+    `Supersedes: ${digestA} ${path} SECRET-CONTENT`,
     undefined,
   ]) {
     const result = parseSupersessionDeclaration(body);
@@ -89,6 +89,31 @@ test("parses an optional exact supersession binding", () => {
     assert.match(result.rejection.code, /supersession|body/u);
     assert.doesNotMatch(result.rejection.message, /SECRET|aaaa/u);
   }
+});
+
+test("ignores declaration marker text embedded in prose", () => {
+  const path = "docs/contracts/task-35-v1-r1.md";
+  assert.deepEqual(
+    parseSupersessionDeclaration(
+      `The field Supersedes: ${digestA} ${path} is documented here.`,
+    ),
+    { ok: true, supersedes: null },
+  );
+  assert.deepEqual(
+    parseQuarantineRecoveryDeclarations(
+      `The field Recovers-Publication: ${digestA} ${path} is documented here.`,
+    ),
+    { ok: true, recoveries: [] },
+  );
+  assert.equal(
+    parseSupersessionDeclaration("Supersedes: malformed").rejection.code,
+    "malformed_supersession",
+  );
+  assert.equal(
+    parseQuarantineRecoveryDeclarations("Recovers-Publication: malformed")
+      .rejection.code,
+    "malformed_recovery",
+  );
 });
 
 test("requires unique quarantine recoveries in lexical path order", () => {

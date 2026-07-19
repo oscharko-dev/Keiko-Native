@@ -45,7 +45,7 @@ export function parseSupersessionDeclaration(body) {
   if (lines === undefined) {
     return reject("invalid_contract_body", "Contract body must be text.");
   }
-  const declarations = lines.filter((line) => line.includes("Supersedes:"));
+  const declarations = lines.filter((line) => line.startsWith("Supersedes:"));
   if (declarations.length === 0) return { ok: true, supersedes: null };
   if (declarations.length !== 1) {
     return reject(
@@ -68,7 +68,7 @@ export function parseQuarantineRecoveryDeclarations(body) {
     return reject("invalid_contract_body", "Contract body must be text.");
   }
   const declarations = lines.filter((line) =>
-    line.includes("Recovers-Publication:"),
+    line.startsWith("Recovers-Publication:"),
   );
   const recoveries = declarations.map((line) =>
     parseDeclarationLine(line, "Recovers-Publication"),
