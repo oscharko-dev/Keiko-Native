@@ -342,6 +342,7 @@ test("fails human-only on unproven semantics and lost lock fences", () => {
 test("never reuses a snapshot and rejects changed refs or fences", () => {
   const current = prepared();
   const submitted = current.decide({
+    preSubmitRead: { ...brokerInput().preSubmitRead, targetTip: sha("4") },
     submittedSnapshots: [current.bound.snapshot.id],
   });
   assert.equal(submitted.action, "human_only");

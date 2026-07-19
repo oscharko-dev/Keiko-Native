@@ -389,9 +389,9 @@ export function decideEpicMergeAuthorization(input) {
     if (!same(input.snapshotReadback, snapshot))
       return noAction("broker_snapshot_readback_mismatch");
     const submitted = input.submittedSnapshots.includes(snapshot.id);
-    if (!preSubmitCurrent(input.preSubmitRead))
+    if (!submitted && !preSubmitCurrent(input.preSubmitRead))
       return humanOnly("pre_submit_read_unproven");
-    if (!same(input.preSubmitRead, snapshot.preSubmit))
+    if (!submitted && !same(input.preSubmitRead, snapshot.preSubmit))
       return noAction("pre_submit_identity_changed");
     return responseDecision(input.conditionalResponse, snapshot, submitted);
   } catch {
