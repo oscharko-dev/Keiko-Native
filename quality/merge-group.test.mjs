@@ -108,10 +108,9 @@ function publicationMember(lifecycle = null, pullRequest = 33, memberHead = head
   generationRequest.inputs.fields[3].value.value = "dev";
   let state = coalesceLifecycleInputGeneration(generationRequest);
   for (const context of ["Contract publication", "Issue contract current", "PR contract"]) {
-    const output = context === "Contract publication" ? structuredClone(accepted) : { context, ok: true };
     state = coalesceLifecycleInputGeneration({
       ...generationRequest,
-      completion: { conclusion: "success", context, generation: state.generation.digest, head: memberHead, output, producer: b4Producers[context], result: `${context}-result`, workflowRun: `${context}-run` },
+      completion: { conclusion: "success", context, generation: state.generation.digest, head: memberHead, output: structuredClone(accepted), producer: b4Producers[context], result: `${context}-result`, workflowRun: `${context}-run` },
       prior: state.generation,
     });
   }

@@ -365,10 +365,13 @@ function validLedger(value) {
   if (!Array.isArray(value)) return false;
   return value.every(digest) && new Set(value).size === value.length;
 }
-function responseDecision(response, snapshot) {
+function responseDecision(response, snapshot, submitted) {
   if (response === undefined) {
-    return automated("submit_once", { request: conditionalRequest(snapshot) });
+    return submitted
+      ? humanOnly("snapshot_already_submitted")
+      : automated("submit_once", { request: conditionalRequest(snapshot) });
   }
+  if (!submitted) return humanOnly("conditional_response_without_submission");
   if (acceptedOutcome(response, snapshot)) return automated("accepted");
   return exactKeys(response, ["status"]) && response.status === "rejected"
     ? noAction("conditional_rejected")
@@ -385,13 +388,12 @@ export function decideEpicMergeAuthorization(input) {
       return humanOnly("broker_snapshot_readback_unproven");
     if (!same(input.snapshotReadback, snapshot))
       return noAction("broker_snapshot_readback_mismatch");
-    if (input.submittedSnapshots.includes(snapshot.id))
-      return humanOnly("snapshot_already_submitted");
+    const submitted = input.submittedSnapshots.includes(snapshot.id);
     if (!preSubmitCurrent(input.preSubmitRead))
       return humanOnly("pre_submit_read_unproven");
     if (!same(input.preSubmitRead, snapshot.preSubmit))
       return noAction("pre_submit_identity_changed");
-    return responseDecision(input.conditionalResponse, snapshot);
+    return responseDecision(input.conditionalResponse, snapshot, submitted);
   } catch {
     return humanOnly("invalid_broker_decision");
   }
