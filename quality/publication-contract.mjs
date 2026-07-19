@@ -23,7 +23,7 @@ function safeInteger(value) {
 }
 function receiptIdentity(path) {
   const match = typeof path === "string" ? receiptPathPattern.exec(path) : null;
-  const pullRequest = match === null ? NaN : Number(match[1]);
+  const pullRequest = match === null ? Number.NaN : Number(match[1]);
   return safeInteger(pullRequest) ? { path, pullRequest } : undefined;
 }
 function trailerLines(payload) {
@@ -47,7 +47,7 @@ function parsedTrailer(line) {
     : { digest: snapshot[1], kind: "snapshot", ...identity };
 }
 function trailerSetFailure(trailers) {
-  if (trailers.some((item) => item === undefined)) return "malformed_trailer";
+  if (trailers.includes(undefined)) return "malformed_trailer";
   const paths = new Set();
   const digests = new Set();
   for (let index = 0; index < trailers.length; index += 1) {
