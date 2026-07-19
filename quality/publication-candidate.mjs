@@ -17,6 +17,7 @@ import {
 const inputKeys = [
   "diff",
   "issueObservations",
+  "issueTitles",
   "newlyAdded",
   "pullRequest",
   "receipt",
@@ -44,6 +45,7 @@ const pullRequestKeys = [
 ];
 const evidenceKeys = ["base", "entries", "head", "pullRequest", "repository"];
 const entryKeys = ["bytes", "mode", "path"];
+const issueTitleKeys = ["number", "title"];
 const receiptKeys = ["bytes", "digest", "path"];
 const manifestKeys = [
   "base",
@@ -55,7 +57,6 @@ const manifestKeys = [
   "repository",
 ];
 const rejectionMessage = "Publication candidate evidence failed closed.";
-const candidateContractTitle = "Repository publication candidate contract";
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
 
 function reject(code) {
@@ -68,7 +69,7 @@ function exactKeys(value, expected) {
   const actual = Object.keys(value);
   return (
     actual.length === expected.length &&
-    actual.every((key, index) => key === expected[index])
+    expected.every((key) => Object.hasOwn(value, key))
   );
 }
 const positiveInteger = (value) => Number.isSafeInteger(value) && value > 0;
@@ -170,7 +171,7 @@ function receiptContext(input, classification, entries) {
     return { failure: "receipt_pull_request_mismatch" };
   return { validation };
 }
-function candidateContentFailure(entry, observation) {
+function candidateContentFailure(entry, observation, title) {
   const parsed = parseContractPath(entry.path);
   if (parsed.ok !== true || observation === undefined)
     return "invalid_candidate_contract_identity";
@@ -183,7 +184,7 @@ function candidateContentFailure(entry, observation) {
   const validation = validateIssueContract({
     body,
     labels: [`type: ${parsed.contract.type}`],
-    title: candidateContractTitle,
+    title,
   });
   if (
     validation.failures.length !== 0 ||
@@ -196,12 +197,42 @@ function candidateContentFailure(entry, observation) {
   const recoveries = parseQuarantineRecoveryDeclarations(body);
   if (supersession.ok !== true || recoveries.ok !== true)
     return "invalid_candidate_contract_declarations";
-  return same(supersession.supersedes, observation.predecessor) &&
-    same(recoveries.recoveries, observation.recoveries)
+  if (
+    !same(supersession.supersedes, observation.predecessor) ||
+    !same(recoveries.recoveries, observation.recoveries)
+  )
+    return "candidate_contract_declaration_mismatch";
+  return validation.fingerprint === observation.fingerprint
     ? undefined
-    : "candidate_contract_declaration_mismatch";
+    : "candidate_contract_fingerprint_mismatch";
 }
-function candidateSetFailure(input, classification, validation, entries) {
+function issueTitleContext(input, observations) {
+  if (!Array.isArray(input.issueTitles))
+    return { failure: "invalid_candidate_issue_titles" };
+  const titles = new Map();
+  for (const item of input.issueTitles) {
+    if (
+      !exactKeys(item, issueTitleKeys) ||
+      !positiveInteger(item.number) ||
+      typeof item.title !== "string" ||
+      item.title.trim().length < 8 ||
+      titles.has(item.number)
+    )
+      return { failure: "invalid_candidate_issue_titles" };
+    titles.set(item.number, item.title);
+  }
+  return titles.size === observations.length &&
+    observations.every((observation) => titles.has(observation.number))
+    ? { titles }
+    : { failure: "candidate_issue_title_set_mismatch" };
+}
+function candidateSetFailure(
+  input,
+  classification,
+  validation,
+  entries,
+  titles,
+) {
   const candidates = validation.binding.candidates;
   const observations = new Map(
     validation.binding.observations.map((observation) => [
@@ -237,6 +268,7 @@ function candidateSetFailure(input, classification, validation, entries) {
     const content = candidateContentFailure(
       entry,
       observations.get(candidate.path),
+      titles.get(observations.get(candidate.path)?.number),
     );
     if (content !== undefined) return content;
   }
@@ -315,11 +347,17 @@ export function verifyPublicationCandidate(input) {
     if (receipt.failure !== undefined) return reject(receipt.failure);
     if (!same(input.issueObservations, receipt.validation.binding.observations))
       return reject("issue_observation_mismatch");
+    const issueTitles = issueTitleContext(
+      input,
+      receipt.validation.binding.observations,
+    );
+    if (issueTitles.failure !== undefined) return reject(issueTitles.failure);
     const candidates = candidateSetFailure(
       input,
       diff.classification,
       receipt.validation,
       added.entries,
+      issueTitles.titles,
     );
     if (candidates !== undefined) return reject(candidates);
     const manifest = manifestFailure(input, receipt.validation);

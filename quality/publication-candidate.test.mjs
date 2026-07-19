@@ -1,24 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { issueSchemaForLabels } from "./issue-contract.mjs";
+import { semanticIssueFingerprint } from "./issue-contract.mjs";
 import { verifyPublicationCandidate } from "./publication-candidate.mjs";
-import {
-  classifyPublicationLane,
-  publicationResultMatrix,
-} from "./publication-contract.mjs";
+// prettier-ignore
+import { classifyPublicationLane, publicationResultMatrix } from "./publication-contract.mjs";
 import { contractSha256 } from "./repository-contract.mjs";
 const repository = "oscharko-dev/Keiko-Native";
-const base = "1".repeat(40);
-const head = "2".repeat(40);
+const base = "1".repeat(40),
+  head = "2".repeat(40);
 const contractPath = "docs/contracts/task-30-v3-r1.md";
 const historyPath = "docs/contracts/task-30-v3-r3.md";
 const receiptPath = "docs/contracts/publications/pr-77.md";
-const fingerprint = "f".repeat(64);
+const issueTitle = "Publication candidate contract";
 // prettier-ignore
 const predecessor = { digest: "a".repeat(64), path: "docs/contracts/task-30-v3-r1.md" };
 // prettier-ignore
 const recovery = { digest: "b".repeat(64), path: "docs/contracts/task-30-v3-r2.md" };
 const taskHeadings = issueSchemaForLabels(["type: task"]).requiredHeadings;
+const fingerprint = (body = contractBody()) =>
+  semanticIssueFingerprint(body, issueTitle);
 function contractBody({
   predecessor = null,
   recoveries = [],
@@ -47,17 +48,14 @@ function contractBody({
   ];
   return [...sections, ...declarations].join("\n\n");
 }
-
 function ordinaryCandidate() {
-  const contractBytes = Buffer.from(contractBody());
-  const candidate = {
-    digest: contractSha256(contractBytes).digest,
-    mode: "100644",
-    path: contractPath,
-  };
+  const body = contractBody();
+  const contractBytes = Buffer.from(body);
+  // prettier-ignore
+  const candidate = { digest: contractSha256(contractBytes).digest, mode: "100644", path: contractPath };
   const observation = {
     candidatePath: contractPath,
-    fingerprint,
+    fingerprint: fingerprint(body),
     lifecycleLabels: ["status: new"],
     linkedPullRequest: null,
     number: 30,
@@ -70,13 +68,8 @@ function ordinaryCandidate() {
     type: "task",
     version: 3,
   };
-  const receiptValue = {
-    candidates: [candidate],
-    observations: [observation],
-    pullRequest: 77,
-    target: "dev",
-    terminalManifest: null,
-  };
+  // prettier-ignore
+  const receiptValue = { candidates: [candidate], observations: [observation], pullRequest: 77, target: "dev", terminalManifest: null };
   const receiptBytes = Buffer.from(`${JSON.stringify(receiptValue)}\n`);
   const receiptDigest = contractSha256(receiptBytes).digest;
   const files = [
@@ -99,6 +92,7 @@ function ordinaryCandidate() {
       truncated: false,
     },
     issueObservations: [observation],
+    issueTitles: [{ number: 30, title: issueTitle }],
     newlyAdded: { base, entries, head, pullRequest: 77, repository },
     pullRequest: {
       base,
@@ -114,7 +108,6 @@ function ordinaryCandidate() {
     terminalManifest: null,
   };
 }
-
 function rewriteReceipt(input, mutate) {
   const value = JSON.parse(Buffer.from(input.receipt.bytes).toString("utf8"));
   mutate(value);
@@ -129,7 +122,6 @@ function rewriteReceipt(input, mutate) {
   input.issueObservations = structuredClone(value.observations);
   return value;
 }
-
 function rewriteContract(
   input,
   { body, observation = {}, path = contractPath },
@@ -152,13 +144,11 @@ function rewriteContract(
     });
   });
 }
-
 function mutated(mutate, create = ordinaryCandidate) {
   const input = create();
   mutate(input);
   return input;
 }
-
 function migrationCandidate(lifecycle) {
   const input = ordinaryCandidate();
   const readiness =
@@ -177,10 +167,8 @@ function migrationCandidate(lifecycle) {
   });
   const entries = structuredClone(input.issueObservations);
   const bytes = Buffer.from("# Terminal migration manifest\n");
-  const binding = {
-    digest: contractSha256(bytes).digest,
-    path: "docs/qa/repository-migration-manifest-v1.md",
-  };
+  // prettier-ignore
+  const binding = { digest: contractSha256(bytes).digest, path: "docs/qa/repository-migration-manifest-v1.md" };
   rewriteReceipt(input, (receipt) => (receipt.terminalManifest = binding));
   input.terminalManifest = {
     base,
@@ -202,13 +190,23 @@ test("accepts an exact ordinary pre-merge publication candidate", () => {
   assert.deepEqual(result.binding.observations[0].linkedPullRequest, null);
   input.diff.files.reverse();
   assert.deepEqual(verifyPublicationCandidate(input), result);
+  const permuted = Object.fromEntries(Object.entries(input).reverse());
+  permuted.pullRequest = Object.fromEntries(
+    Object.entries(input.pullRequest).reverse(),
+  );
+  assert.deepEqual(verifyPublicationCandidate(permuted), result);
 });
 test("binds an exact predecessor and quarantine-recovery identity", () => {
   const input = ordinaryCandidate();
   const recoveries = [recovery];
   rewriteContract(input, {
     body: contractBody({ predecessor, recoveries }),
-    observation: { predecessor, recoveries, revision: 3 },
+    observation: {
+      fingerprint: fingerprint(contractBody({ predecessor, recoveries })),
+      predecessor,
+      recoveries,
+      revision: 3,
+    },
     path: historyPath,
   });
   const result = verifyPublicationCandidate(input);
@@ -228,6 +226,7 @@ test("rejects invalid body schemas, path versions, and history declarations", ()
     [changed(contractBody(), { predecessor, revision: 2 }, recovery.path), "candidate_contract_declaration_mismatch"],
     [changed(contractBody({ predecessor }).replace("a".repeat(64), "A".repeat(64))), "invalid_candidate_contract_declarations"],
     [changed(contractBody({ predecessor, recoveries: [recovery] }), { predecessor, recoveries: [{ ...recovery, digest: "c".repeat(64) }], revision: 3 }, historyPath), "candidate_contract_declaration_mismatch"],
+    [changed(contractBody().replace("Complete governed content for Scope.", "Changed governed content for Scope.")), "candidate_contract_fingerprint_mismatch"],
     [changed(Buffer.from([0xc3, 0x28])), "invalid_candidate_contract_encoding"],
   ];
   for (const [input, code] of invalid) {
@@ -309,6 +308,9 @@ test("rejects ordinary readiness, linked-PR, closed-state, and authority smuggli
     altered((input) => (input.pullRequest.state = "closed")),
     altered((input) => (input.pullRequest.merged = true)),
     altered((input) => (input.pullRequest = {})),
+    altered((input) => (input.issueTitles = [])),
+    altered((input) => (input.issueTitles[0].title = "Changed publication title")),
+    altered((input) => input.issueTitles.push({ ...input.issueTitles[0] })),
     altered((input) => (input.terminalManifest = { digest: "c".repeat(64), entries: [], path: "docs/qa/repository-migration-manifest-v1.md" })),
     { ...ordinaryCandidate(), unexpected: true },
   ]) {
@@ -337,7 +339,6 @@ test("binds exact diff, added paths, modes, bytes, digests, and head", () => {
     assert.equal(verifyPublicationCandidate(input).ok, false, `${index}`);
   }
 });
-
 test("feeds the complete binding to the non-circular result matrix", () => {
   const input = ordinaryCandidate();
   const accepted = verifyPublicationCandidate(input);
@@ -361,7 +362,6 @@ test("feeds the complete binding to the non-circular result matrix", () => {
     "failure",
   );
 });
-
 test("fails the result matrix closed on hostile bindings", () => {
   const input = ordinaryCandidate();
   const accepted = verifyPublicationCandidate(input);
@@ -382,7 +382,6 @@ test("fails the result matrix closed on hostile bindings", () => {
     assert.equal(result.contexts["Contract publication"], "failure");
   }
 });
-
 test("fails closed and deterministically recovers when complete evidence returns", () => {
   const input = ordinaryCandidate();
   const unavailable = {

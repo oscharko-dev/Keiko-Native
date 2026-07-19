@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { issueSchemaForLabels } from "./issue-contract.mjs";
+import { semanticIssueFingerprint } from "./issue-contract.mjs";
 import { coalesceLifecycleInputGeneration } from "./lifecycle-handoff-generation.mjs";
 import { evaluatePublicationLifecycleHandoff } from "./lifecycle-handoff-publication.mjs";
 import { classifyLifecycleHandoffLane } from "./lifecycle-handoff.mjs";
@@ -11,15 +12,11 @@ const base = "1".repeat(40);
 const head = "2".repeat(40);
 const contractPath = "docs/contracts/task-30-v3-r1.md";
 const receiptPath = "docs/contracts/publications/pr-77.md";
-const fingerprint = "f".repeat(64);
+const issueTitle = "Publication candidate contract";
 const contexts =
   "Contract publication|Issue contract current|PR contract".split("|");
-const producers = {
-  "Contract publication": "publication.yml@protected-dev",
-  "Issue contract current": "issue-current.yml@protected-dev",
-  "Lifecycle handoff": "lifecycle-handoff.yml@protected-dev",
-  "PR contract": "pr-contract.yml@protected-dev",
-};
+// prettier-ignore
+const producers = { "Contract publication": "publication.yml@protected-dev", "Issue contract current": "issue-current.yml@protected-dev", "Lifecycle handoff": "lifecycle-handoff.yml@protected-dev", "PR contract": "pr-contract.yml@protected-dev" };
 const text = (value) => ({ type: "string", value });
 const taskHeadings = issueSchemaForLabels(["type: task"]).requiredHeadings;
 const completeSection =
@@ -28,6 +25,7 @@ const completeSection =
 const contractBody = taskHeadings.map((heading) => `## ${heading}\n\n${heading === "Acceptance criteria" ? "- [ ] AC1 — Candidate is accepted." : completeSection}`).join("\n\n");
 function ordinaryCandidate() {
   const contractBytes = Buffer.from(contractBody);
+  const fingerprint = semanticIssueFingerprint(contractBody, issueTitle);
   const candidate = {
     digest: contractSha256(contractBytes).digest,
     mode: "100644",
@@ -76,6 +74,7 @@ function ordinaryCandidate() {
       truncated: false,
     },
     issueObservations: [observation],
+    issueTitles: [{ number: 30, title: issueTitle }],
     newlyAdded: { base, entries, head, pullRequest: 77, repository },
     pullRequest: {
       base,
@@ -107,6 +106,7 @@ function rewriteReceipt(input, mutate) {
 function reversedMultiCandidate() {
   const input = ordinaryCandidate();
   const path = "docs/contracts/task-31-v3-r1.md";
+  const title = "Second publication candidate contract";
   // prettier-ignore
   const bytes = Buffer.from(contractBody.replace("Candidate", "Second candidate"));
   const digest = contractSha256(bytes).digest;
@@ -114,8 +114,10 @@ function reversedMultiCandidate() {
   input.newlyAdded.entries.push({ bytes, mode: "100644", path });
   rewriteReceipt(input, ({ candidates, observations }) => {
     candidates.push({ digest, mode: "100644", path });
-    observations.push({ ...observations[0], candidatePath: path, number: 31 });
+    // prettier-ignore
+    observations.push({ ...observations[0], candidatePath: path, fingerprint: semanticIssueFingerprint(bytes.toString(), title), number: 31 });
   });
+  input.issueTitles.push({ number: 31, title });
   return input;
 }
 function migrationCandidate(lifecycle) {
