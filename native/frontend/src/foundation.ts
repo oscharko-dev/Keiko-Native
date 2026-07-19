@@ -208,8 +208,10 @@ function canvasSurface(
 ): ReactElement {
   const model = new ImeHarnessState(view.committedText);
   let composing = false;
+  let compositionGeneration = 0;
 
   const onCompositionStart = (): void => {
+    compositionGeneration += 1;
     composing = true;
     model.compositionStart();
   };
@@ -221,12 +223,19 @@ function canvasSurface(
   const onCompositionEnd = (
     event: CompositionEvent<HTMLTextAreaElement>,
   ): void => {
-    composing = false;
-    model.compositionCommit(event.data);
-    event.currentTarget.value = model.committed;
-    void controller.commitCanvasText(model.committed);
+    const generation = compositionGeneration;
+    const target = event.currentTarget;
+    const committedText = event.data;
+    void Promise.resolve().then(() => {
+      if (!composing || generation !== compositionGeneration) return;
+      composing = false;
+      model.compositionCommit(committedText);
+      target.value = model.committed;
+      void controller.commitCanvasText(model.committed);
+    });
   };
   const onBlur = (event: FocusEvent<HTMLTextAreaElement>): void => {
+    compositionGeneration += 1;
     model.focusLost();
     composing = false;
     event.currentTarget.value = model.committed;

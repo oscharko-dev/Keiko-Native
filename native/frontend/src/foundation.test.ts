@@ -200,13 +200,19 @@ describe("closed Foundation presentation", () => {
     textarea.onCompositionStart();
     textarea.onCompositionUpdate({ data: "かな", currentTarget: target });
     textarea.onCompositionEnd({ data: "かな", currentTarget: target });
+    await Promise.resolve();
     expect(target.value).toBe("bereitかな");
     expect(commit).toHaveBeenLastCalledWith("bereitかな");
 
     textarea.onCompositionStart();
     textarea.onCompositionUpdate({ data: "discard", currentTarget: target });
+    target.value = "bereitかなdiscard";
+    textarea.onCompositionEnd({ data: "discard", currentTarget: target });
+    textarea.onChange({ currentTarget: target });
     textarea.onBlur({ currentTarget: target });
+    await Promise.resolve();
     expect(target.value).toBe("bereitかな");
+    expect(commit).toHaveBeenCalledTimes(1);
 
     target.value = "x".repeat(3000);
     textarea.onChange({ currentTarget: target });
