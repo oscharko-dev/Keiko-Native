@@ -1138,6 +1138,45 @@ test("fails closed on unsafe or pull-request-authored inert workflow input", asy
   }
 });
 
+test("rejects ambiguous YAML constructs that conceal unsafe workflow shape", async () => {
+  const hidden = [
+    '"hidden":\n  "permissions":\n    "contents": write\n  "steps":\n    - "run": echo unsafe',
+    'hidden: {"contents": write}',
+    "defaults: &unsafe\n  contents: write\nhidden: *unsafe",
+    "hidden: !unsafe value",
+    "<<: *unsafe",
+    "? hidden\n: unsafe",
+    '- { ? "run" : echo unsafe }',
+    "hidden: {<<: {contents: write}}",
+    "hidden: !<tag:example.com,2026:foo> value",
+    "hidden: !!str value",
+    'steps: [ "run": echo unsafe ]',
+    'steps: [ ? "run" : echo unsafe ]',
+    "steps: [run: echo unsafe]",
+    "on:\n  workflow_dispatch:\n  <<:\n    pull_request_target:",
+    'on:\n  workflow_dispatch:\n  ? "pull_request_target"\n  :',
+  ];
+  for (const syntax of hidden) {
+    const root = await fixtureRepository();
+    try {
+      const workflowPath = join(
+        root,
+        ".github/workflows/contract-publication.yml",
+      );
+      const workflow = await readFile(workflowPath, "utf8");
+      await writeFile(workflowPath, `${workflow}\n${syntax}\n`);
+      const result = await validateRepository(root);
+      assert.match(
+        result.failures.join("\n"),
+        /unsupported YAML syntax: contract-publication\.yml/u,
+        syntax,
+      );
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  }
+});
+
 test("binds each inert workflow to its exact activation-variable guard", async () => {
   const root = await fixtureRepository();
   try {
