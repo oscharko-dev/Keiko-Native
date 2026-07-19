@@ -200,10 +200,15 @@ function validReceiptBinding(input, trailers, validation, identity, hash) {
     validation.binding.pullRequest === input.pullRequest.number
   );
 }
-function receiptFailure(input, trailers, validation) {
+function receiptFailure(input, trailers, validation, added) {
   const receipt = input.receipt;
   const identity = receiptIdentity(receipt?.path);
   const hash = contractSha256(receipt?.bytes);
+  const entry = added.get(receipt?.path);
+  if (entry === undefined) return "invalid_receipt_binding";
+  const same = samePublicationBytes(receipt?.bytes, entry.bytes);
+  const digest = same ? contractSha256(entry.bytes).digest : undefined;
+  if (digest !== trailers.snapshot.digest) return "invalid_receipt_binding";
   return validReceiptBinding(input, trailers, validation, identity, hash)
     ? undefined
     : "invalid_receipt_binding";
@@ -247,17 +252,15 @@ function treeEqualityFailure(expected, publishing, current) {
   }
   return undefined;
 }
-function manifestEntry(item) {
-  return {
-    candidatePath: item.candidatePath,
-    fingerprint: item.fingerprint,
-    number: item.number,
-    readiness: item.readiness,
-    revision: item.revision,
-    type: item.type,
-    version: item.version,
-  };
-}
+const manifestEntry = (item) => ({
+  candidatePath: item.candidatePath,
+  fingerprint: item.fingerprint,
+  number: item.number,
+  readiness: item.readiness,
+  revision: item.revision,
+  type: item.type,
+  version: item.version,
+});
 function manifestEvidenceFailure(binding, evidence) {
   if (binding.submode === "ordinary") {
     return evidence === null ? undefined : "unexpected_manifest_evidence";
@@ -315,7 +318,7 @@ function verificationContext(input) {
 function boundPublicationFailure(input, context) {
   const { maps, trailers, validation } = context;
   const failure =
-    receiptFailure(input, trailers, validation) ??
+    receiptFailure(input, trailers, validation, maps.added) ??
     exactCandidateFailure(validation.binding.candidates, trailers, maps.added);
   if (failure !== undefined) return failure;
   if (
