@@ -7,7 +7,7 @@ permissions: {}
 
 jobs:
   validate:
-    if: ${{ false }}
+    if: ${{ vars.KEIKO_CONTRACT_PUBLICATION_ACTIVATION == 'enabled' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

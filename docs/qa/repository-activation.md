@@ -96,9 +96,9 @@ negative case and a successful current-head case. Retain the probe links as the 
 ## Pending contract-publication controls
 
 Contract publication remains disabled. The inert workflow checks out only protected `dev` with
-non-persistent credentials, requests read-only contents access, and cannot run its job. It does not
-check out or execute pull-request content. The `Contract publication` context is not enrolled as
-required.
+non-persistent credentials and requests read-only contents access. Its activation variable remains
+unset, and its only permitted commands are syntax checks. It does not check out or execute
+pull-request content. The `Contract publication` context is not enrolled as required.
 
 Before a human activates publication, complete ADR-0003's negative and positive lane probes,
 authenticate the expected producer, prove exact-head and merge-group emission, and verify the
@@ -109,7 +109,8 @@ a separate accepted change; do not turn the inert job on or add its context from
 
 The merge queue remains disabled until its human liveness and ordering probe passes. The inert
 merge-group workflow checks out only protected `dev` with non-persistent credentials, requests
-read-only contents access, and cannot run its job. It never executes constituent content.
+read-only contents access, is gated by an unset activation variable, and permits only syntax-check
+commands. It never executes constituent content.
 
 Automated epic-branch merge remains disabled until complete pagination, stable ordering, lock
 fences, dual-ref conditional rejection, and exact parent and outcome evidence are proven live. An

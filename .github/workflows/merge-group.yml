@@ -9,7 +9,7 @@ permissions: {}
 
 jobs:
   evaluate:
-    if: ${{ false }}
+    if: ${{ vars.KEIKO_MERGE_GROUP_ACTIVATION == 'enabled' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

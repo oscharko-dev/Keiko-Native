@@ -201,7 +201,6 @@ const coverageArgumentPatterns = Object.freeze([
 
 const inertWorkflowMarkers = [
   "permissions: {}",
-  "if: ${{ false }}",
   "contents: read",
   "ref: dev",
   "persist-credentials: false",
@@ -212,6 +211,7 @@ const inertWorkflowMarkers = [
 const contractPublicationWorkflowMarkers = [
   "name: Contract publication (inert)",
   "workflow_dispatch:",
+  "if: ${{ vars.KEIKO_CONTRACT_PUBLICATION_ACTIVATION == 'enabled' }}",
   "KEIKO_CONTRACT_PUBLICATION_ACTIVATION: disabled",
   "node --check quality/publication-contract.mjs",
   "node --check quality/lifecycle-handoff-publication.mjs",
@@ -222,6 +222,7 @@ const mergeGroupWorkflowMarkers = [
   "merge_group:",
   "types: [checks_requested]",
   "workflow_dispatch:",
+  "if: ${{ vars.KEIKO_MERGE_GROUP_ACTIVATION == 'enabled' }}",
   "KEIKO_EPIC_MERGE_AUTOMATION: disabled",
   "KEIKO_MERGE_GROUP_ACTIVATION: disabled",
   "node --check quality/merge-group.mjs",
@@ -1016,6 +1017,7 @@ function inertControlWorkflowFailures(
   markers,
   expectedEvents,
   expectedJob,
+  expectedGuard,
   expectedCommands,
 ) {
   const markerFailures = [...inertWorkflowMarkers, ...markers]
@@ -1040,7 +1042,7 @@ function inertControlWorkflowFailures(
         .split(/\r?\n/u)
         .map((line) => line.trim())
         .filter((line) => line.startsWith("if:")),
-      ["if: ${{ false }}"],
+      [expectedGuard],
       "job guard",
     ],
     [
@@ -1084,7 +1086,9 @@ function inertControlWorkflowFailures(
           `${name} workflow has unexpected ${surface}; inert shape must remain exact.`,
       ),
   );
-  if (!workflow.includes("    permissions:\n      contents: read\n    steps:"))
+  if (
+    !/    permissions:\r?\n      contents: read\r?\n    steps:/u.test(workflow)
+  )
     markerFailures.push(
       `${name} workflow is missing the exact job permission block.`,
     );
@@ -1124,6 +1128,7 @@ function contractPublicationWorkflowFailures(workflow) {
     contractPublicationWorkflowMarkers,
     ["workflow_dispatch"],
     "validate",
+    "if: ${{ vars.KEIKO_CONTRACT_PUBLICATION_ACTIVATION == 'enabled' }}",
     [
       "node --check quality/publication-contract.mjs",
       "node --check quality/lifecycle-handoff-publication.mjs",
@@ -1138,6 +1143,7 @@ function mergeGroupWorkflowFailures(workflow) {
     mergeGroupWorkflowMarkers,
     ["merge_group", "workflow_dispatch"],
     "evaluate",
+    "if: ${{ vars.KEIKO_MERGE_GROUP_ACTIVATION == 'enabled' }}",
     [
       "node --check quality/merge-group.mjs",
       "node --check quality/epic-merge-broker.mjs",

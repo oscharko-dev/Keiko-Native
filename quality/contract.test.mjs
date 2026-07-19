@@ -515,7 +515,7 @@ async function fixtureRepository() {
       "permissions: {}",
       "jobs:",
       "  validate:",
-      "    if: ${{ false }}",
+      "    if: ${{ vars.KEIKO_CONTRACT_PUBLICATION_ACTIVATION == 'enabled' }}",
       "    permissions:",
       "      contents: read",
       "    steps:",
@@ -546,7 +546,7 @@ async function fixtureRepository() {
       "permissions: {}",
       "jobs:",
       "  evaluate:",
-      "    if: ${{ false }}",
+      "    if: ${{ vars.KEIKO_MERGE_GROUP_ACTIVATION == 'enabled' }}",
       "    permissions:",
       "      contents: read",
       "    steps:",
@@ -1133,6 +1133,45 @@ test("fails closed on unsafe or pull-request-authored inert workflow input", asy
     assert.match(failures, /unexpected checkout ref/u);
     assert.match(failures, /unexpected action set/u);
     assert.match(failures, /unexpected command set/u);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("binds each inert workflow to its exact activation-variable guard", async () => {
+  const root = await fixtureRepository();
+  try {
+    const workflowPath = join(root, ".github/workflows/merge-group.yml");
+    const workflow = await readFile(workflowPath, "utf8");
+    await writeFile(
+      workflowPath,
+      workflow.replace(
+        "if: ${{ vars.KEIKO_MERGE_GROUP_ACTIVATION == 'enabled' }}",
+        "if: ${{ false }}",
+      ),
+    );
+    const result = await validateRepository(root);
+    const failures = result.failures.join("\n");
+    assert.match(failures, /missing marker: if:/u);
+    assert.match(failures, /unexpected job guard/u);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("accepts inert workflow permission blocks with Windows line endings", async () => {
+  const root = await fixtureRepository();
+  try {
+    for (const path of [
+      ".github/workflows/contract-publication.yml",
+      ".github/workflows/merge-group.yml",
+    ]) {
+      const workflowPath = join(root, path);
+      const workflow = await readFile(workflowPath, "utf8");
+      await writeFile(workflowPath, workflow.replaceAll("\n", "\r\n"));
+    }
+    const result = await validateRepository(root);
+    assert.deepEqual(result.failures, []);
   } finally {
     await rm(root, { force: true, recursive: true });
   }
