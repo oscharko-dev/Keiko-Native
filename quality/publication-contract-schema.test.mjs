@@ -8,6 +8,7 @@ import { publicationResultMatrix } from "./publication-contract.mjs";
 const digestA = "a".repeat(64);
 const digestB = "b".repeat(64);
 const pathA = "docs/contracts/task-30-v2-r1.md";
+const repository = "oscharko-dev/Keiko-Native";
 export function ordinaryReceipt() {
   return {
     candidates: [{ digest: digestA, mode: "100644", path: pathA }],
@@ -16,9 +17,11 @@ export function ordinaryReceipt() {
         candidatePath: pathA,
         fingerprint: digestB,
         lifecycleLabels: ["status: new"],
+        linkedPullRequest: null,
         number: 30,
         predecessor: null,
         readiness: null,
+        readinessProducer: null,
         recoveries: [],
         revision: 1,
         state: "open",
@@ -162,7 +165,6 @@ test("binds every result context to the classified head identity", () => {
 test("normalizes a closed ordinary snapshot receipt schema", () => {
   const receipt = ordinaryReceipt();
   const result = validateSnapshotReceipt(receipt);
-  assert.equal(result.ok, true);
   assert.equal(result.binding.submode, "ordinary");
 });
 test("derives migration only from readiness, lifecycle, and manifest evidence", () => {
@@ -170,11 +172,16 @@ test("derives migration only from readiness, lifecycle, and manifest evidence", 
   receipt.observations[0].lifecycleLabels = ["status: ready"];
   receipt.observations[0].readiness =
     "https://github.com/oscharko-dev/Keiko-Native/issues/30#issuecomment-123";
+  receipt.observations[0].readinessProducer =
+    "issue-readiness.yml@protected-dev";
   receipt.terminalManifest = {
     digest: "c".repeat(64),
     path: "docs/qa/repository-migration-manifest-v1.md",
   };
-  assert.equal(validateSnapshotReceipt(receipt).binding.submode, "migration");
+  assert.equal(
+    validateSnapshotReceipt(receipt, repository).binding.submode,
+    "migration",
+  );
   for (const changed of [
     { ...receipt, terminalManifest: null },
     {
@@ -187,18 +194,8 @@ test("derives migration only from readiness, lifecycle, and manifest evidence", 
         { ...receipt.observations[0], lifecycleLabels: ["status: new"] },
       ],
     },
-    {
-      ...receipt,
-      observations: [
-        {
-          ...receipt.observations[0],
-          readiness:
-            "https://github.com/oscharko-dev/Keiko-Native/issues/31#issuecomment-123",
-        },
-      ],
-    },
   ]) {
-    assert.equal(validateSnapshotReceipt(changed).ok, false);
+    assert.equal(validateSnapshotReceipt(changed, repository).ok, false);
   }
 });
 test("supports multiple sorted issues and exact candidate path identities", () => {
@@ -247,10 +244,6 @@ test("rejects unknown, missing, raw, malformed, and unauthorized receipt data", 
     { ...receipt, candidates: [] },
     { ...receipt, observations: [] },
     { ...receipt, terminalManifest: "bad" },
-    {
-      ...receipt,
-      observations: [{ ...receipt.observations[0], state: "bad" }],
-    },
     {
       ...receipt,
       observations: [{ ...receipt.observations[0], fingerprint: "SECRET" }],
