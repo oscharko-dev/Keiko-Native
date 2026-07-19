@@ -360,6 +360,7 @@ mod tests {
             "",
             "{",
             r#"{"schemaVersion":2,"dismissed":true}"#,
+            r#"{"schemaVersion":1,"dismissed":false}"#,
             r#"{"schemaVersion":1,"dismissed":true,"extra":true}"#,
             r#"{"schemaVersion":1}"#,
         ] {
@@ -374,6 +375,11 @@ mod tests {
             serde_json::from_slice(&fs::read(&path).expect("state bytes")).expect("JSON");
         assert_eq!(parsed.as_object().expect("object").len(), 2);
         let _ = fs::remove_file(path);
+
+        let directory = temporary_state();
+        fs::create_dir(&directory).expect("directory fixture");
+        assert!(!read_welcome_state(&directory));
+        fs::remove_dir(directory).expect("remove fixture");
     }
 
     #[test]
@@ -397,6 +403,26 @@ mod tests {
         fs::write(&path, "x".repeat(MAX_IME_STATE_BYTES as usize + 1)).expect("fixture");
         assert_eq!(read_ime_state(&path), None);
         let _ = fs::remove_file(path);
+
+        let directory = temporary_state();
+        fs::create_dir(&directory).expect("directory fixture");
+        assert_eq!(read_ime_state(&directory), None);
+        fs::remove_dir(directory).expect("remove fixture");
+
+        let state_path = temporary_state();
+        let mut host = FoundationHost::new(state_path.clone());
+        write_ime_state(&host.ime_state_path, "wiederhergestellt").expect("IME state");
+        assert!(matches!(
+            host.application().view(&current_build_identity()),
+            Ok(keiko_application::ApplicationResult::Welcome { .. })
+        ));
+        assert!(matches!(
+            host.application()
+                .apply(FoundationIntent::ShowCanvas, &current_build_identity()),
+            Ok(keiko_application::ApplicationResult::Canvas { committed_text })
+                if committed_text == "wiederhergestellt"
+        ));
+        let _ = fs::remove_file(host.ime_state_path);
     }
 
     #[test]
@@ -420,6 +446,8 @@ mod tests {
             assert!(!is_exact_allowed_url(denied, &revision), "{denied}");
         }
         assert!(!is_exact_allowed_url(REPOSITORY_URL, "bad"));
+        assert!(!is_exact_allowed_url(REPOSITORY_URL, &"g".repeat(40)));
+        assert!(!is_exact_allowed_url(REPOSITORY_URL, &"A".repeat(40)));
     }
 
     #[test]
@@ -489,7 +517,74 @@ mod tests {
                 .encoded
                 .contains("internal-update")
         );
-        assert!(call(8, r#"{"kind":"quit-application"}"#, true).quit);
+        assert!(
+            call(8, r#"{"kind":"show-canvas"}"#, true)
+                .encoded
+                .contains("canvas")
+        );
+        assert!(
+            call(
+                9,
+                r#"{"kind":"commit-canvas-text","committedText":"Grüße かな 😀"}"#,
+                true
+            )
+            .encoded
+            .contains("Grüße かな 😀")
+        );
+        let oversized = format!(
+            r#"{{"kind":"commit-canvas-text","committedText":"{}"}}"#,
+            "x".repeat(keiko_application::MAX_COMMITTED_TEXT_BYTES + 1)
+        );
+        assert!(
+            call(10, &oversized, true)
+                .encoded
+                .contains("payload-too-large")
+        );
+        assert!(
+            call(11, r#"{"kind":"application-health"}"#, true)
+                .encoded
+                .contains("unknown-operation")
+        );
+        assert!(call(12, r#"{"kind":"quit-application"}"#, true).quit);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn persistence_failures_are_bounded_and_do_not_publish_partial_state() {
+        let blocking_parent = temporary_state();
+        fs::write(&blocking_parent, "blocking file").expect("fixture");
+        let foundation = Mutex::new(FoundationHost::new(blocking_parent.join("state.json")));
+        let (lifecycle, generation, nonce) = session();
+        let sender = SenderContext {
+            window_label: "main".to_owned(),
+            origin: "tauri://localhost".to_owned(),
+            generation,
+            document_nonce: nonce,
+        };
+        let dismiss = foundation_request(
+            &lifecycle,
+            &foundation,
+            &sender,
+            &request(generation, 1, r#"{"kind":"dismiss-welcome"}"#),
+            |_| true,
+        );
+        assert!(dismiss.encoded.contains("internal-failure"));
+        let commit = foundation_request(
+            &lifecycle,
+            &foundation,
+            &sender,
+            &request(
+                generation,
+                2,
+                r#"{"kind":"commit-canvas-text","committedText":"safe"}"#,
+            ),
+            |_| true,
+        );
+        assert!(commit.encoded.contains("internal-failure"));
+        assert_eq!(
+            reason_for(FoundationError::InvalidBuildIdentity),
+            ReasonCode::InternalFailure
+        );
+        let _ = fs::remove_file(blocking_parent);
     }
 }
