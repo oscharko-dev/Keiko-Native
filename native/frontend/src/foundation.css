@@ -1,0 +1,264 @@
+:root {
+  color-scheme: light dark;
+  font-family:
+    Inter,
+    ui-sans-serif,
+    -apple-system,
+    BlinkMacSystemFont,
+    "SF Pro Display",
+    sans-serif;
+  background: #0b1020;
+  color: #f6f7fb;
+  font-synthesis: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 800px;
+  min-height: 500px;
+  background:
+    radial-gradient(circle at 82% 14%, rgb(100 104 255 / 24%), transparent 34%),
+    radial-gradient(circle at 14% 86%, rgb(40 205 163 / 14%), transparent 32%),
+    #0b1020;
+}
+
+button,
+textarea {
+  font: inherit;
+}
+
+button {
+  min-height: 44px;
+  border: 1px solid rgb(255 255 255 / 18%);
+  border-radius: 12px;
+  padding: 0.65rem 1rem;
+  background: #766cff;
+  color: #fff;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #887fff;
+}
+
+button:focus-visible,
+textarea:focus-visible {
+  outline: 3px solid #61e8c6;
+  outline-offset: 3px;
+}
+
+.foundation-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  padding: clamp(1.1rem, 2.5vw, 2rem);
+  gap: 1.5rem;
+}
+
+.foundation-header,
+footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-weight: 720;
+  letter-spacing: -0.02em;
+}
+
+.brand-mark {
+  display: grid;
+  width: 2.3rem;
+  height: 2.3rem;
+  place-items: center;
+  border-radius: 11px;
+  background: linear-gradient(145deg, #9b94ff, #6155ff 62%, #36d4ad);
+  box-shadow: 0 8px 30px rgb(99 91 255 / 35%);
+}
+
+nav,
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.nav-button,
+.quiet {
+  background: rgb(255 255 255 / 6%);
+  color: inherit;
+}
+
+.surface {
+  display: grid;
+  place-items: center;
+}
+
+.welcome-card,
+.content-card,
+.canvas-card {
+  width: min(760px, 100%);
+  padding: clamp(2rem, 5vw, 4.5rem);
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 28px;
+  background: rgb(18 24 45 / 88%);
+  box-shadow: 0 24px 80px rgb(0 0 0 / 36%);
+  backdrop-filter: blur(18px);
+}
+
+.eyebrow {
+  margin: 0 0 1rem;
+  color: #8cebd2;
+  font-size: 0.75rem;
+  font-weight: 750;
+  letter-spacing: 0.16em;
+}
+
+h1 {
+  margin: 0;
+  max-width: 18ch;
+  font-size: clamp(2.2rem, 5vw, 4.4rem);
+  line-height: 0.98;
+  letter-spacing: -0.055em;
+}
+
+.lede {
+  max-width: 60ch;
+  margin: 1.5rem 0 2rem;
+  color: #ccd2e4;
+  font-size: clamp(1rem, 1.6vw, 1.25rem);
+  line-height: 1.65;
+}
+
+.metadata-list {
+  display: grid;
+  margin: 1.5rem 0;
+  gap: 0.65rem;
+}
+
+.metadata-row {
+  display: grid;
+  grid-template-columns: minmax(7rem, 0.35fr) 1fr;
+  gap: 1rem;
+  padding-bottom: 0.65rem;
+  border-bottom: 1px solid rgb(255 255 255 / 9%);
+}
+
+dt {
+  color: #aeb6cc;
+}
+
+dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+}
+
+label {
+  display: block;
+  margin-bottom: 0.65rem;
+  font-weight: 700;
+}
+
+textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid rgb(255 255 255 / 22%);
+  border-radius: 14px;
+  padding: 1rem;
+  background: rgb(0 0 0 / 24%);
+  color: inherit;
+  line-height: 1.55;
+}
+
+.hint,
+footer {
+  color: #aeb6cc;
+  font-size: 0.88rem;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    background: #eef0f8;
+    color: #13182a;
+  }
+
+  body {
+    background:
+      radial-gradient(
+        circle at 82% 14%,
+        rgb(100 104 255 / 18%),
+        transparent 34%
+      ),
+      radial-gradient(
+        circle at 14% 86%,
+        rgb(40 205 163 / 16%),
+        transparent 32%
+      ),
+      #eef0f8;
+  }
+
+  .welcome-card,
+  .content-card,
+  .canvas-card {
+    border-color: rgb(25 32 55 / 12%);
+    background: rgb(255 255 255 / 88%);
+    box-shadow: 0 24px 80px rgb(40 48 80 / 16%);
+  }
+
+  .lede,
+  .hint,
+  footer,
+  dt {
+    color: #4e5872;
+  }
+
+  .nav-button,
+  .quiet {
+    border-color: rgb(25 32 55 / 16%);
+    background: rgb(255 255 255 / 62%);
+    color: #13182a;
+  }
+
+  .eyebrow {
+    color: #08785e;
+  }
+
+  textarea {
+    border-color: rgb(25 32 55 / 18%);
+    background: #fff;
+    color: #13182a;
+  }
+}
+
+@media (max-width: 900px) {
+  .foundation-header,
+  footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .welcome-card,
+  .content-card,
+  .canvas-card {
+    padding: 2rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

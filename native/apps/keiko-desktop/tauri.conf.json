@@ -1,0 +1,37 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Keiko Native",
+  "version": "0.1.0",
+  "identifier": "dev.oscharko.keiko-native",
+  "build": {
+    "beforeBuildCommand": "npm --prefix ../frontend run build",
+    "frontendDist": "../../frontend/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Keiko Native",
+        "width": 1280,
+        "height": 800,
+        "url": "index.html",
+        "minWidth": 800,
+        "minHeight": 500
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost; script-src 'self'; style-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "icon": [],
+    "resources": {
+      "../../third-party-notices.json": "THIRD-PARTY-NOTICES.json"
+    },
+    "targets": ["app"],
+    "macOS": {
+      "minimumSystemVersion": "14.0"
+    }
+  }
+}

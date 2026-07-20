@@ -105,3 +105,6 @@ Before the first user-facing epic that adopts or adapts Existing Keiko design ma
 implementation ready, create the affected Design Adoption Ledger entries. Ratify the component,
 accessibility, and visual-acceptance governance after the Native UI technology is selected and
 before its first productive UI slice.
+
+Foundation v0.1 dispositions are recorded in
+[`design-adoption-ledger.md`](design-adoption-ledger.md).
