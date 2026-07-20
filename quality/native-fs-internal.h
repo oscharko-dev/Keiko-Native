@@ -24,6 +24,8 @@ _Noreturn void fail(const char *category);
 void copy_bounded(char *destination, size_t capacity, const char *source,
                   const char *category);
 int same_stat(const struct stat *a, const struct stat *b);
+void set_created_mode(int descriptor, int parent, const char *name,
+                      mode_t mode, const char *category);
 int valid_component(const char *value);
 void close_chain(chain_t *chain, int verify);
 void refresh_chain(chain_t *chain);

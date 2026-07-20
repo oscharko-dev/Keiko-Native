@@ -45,6 +45,20 @@ int same_stat(const struct stat *a, const struct stat *b) {
          CTIME(a).tv_nsec == CTIME(b).tv_nsec;
 }
 
+void set_created_mode(int descriptor, int parent, const char *name,
+                      mode_t mode, const char *category) {
+  struct stat opened;
+  struct stat named;
+  if (fstat(descriptor, &opened) ||
+      fstatat(parent, name, &named, AT_SYMLINK_NOFOLLOW) ||
+      !same_stat(&opened, &named))
+    fail(category);
+  if (fchmod(descriptor, mode) || fstat(descriptor, &opened) ||
+      fstatat(parent, name, &named, AT_SYMLINK_NOFOLLOW) ||
+      !same_stat(&opened, &named) || (opened.st_mode & 0777) != mode)
+    fail(category);
+}
+
 int valid_component(const char *value) {
   return value[0] && strcmp(value, ".") && strcmp(value, "..") &&
          strchr(value, '/') == NULL;
@@ -151,6 +165,7 @@ static int create_file(int root, const char *path, mode_t mode,
   if (file < 0) fail("exclusive-create");
   struct stat entry;
   if (fstat(file, &entry) || !S_ISREG(entry.st_mode)) fail("created-type");
+  set_created_mode(file, parent, leaf, mode, "created-mode");
   return file;
 }
 
@@ -191,11 +206,7 @@ static int open_dir_at_path(int root, const char *path, int create,
       descriptor.st_ino != named.st_ino || descriptor.st_mode != named.st_mode)
     fail("directory-open");
   if (created) {
-    if (fchmod(result, create_mode) || fstat(result, &descriptor) ||
-        fstatat(parent, leaf, &named, AT_SYMLINK_NOFOLLOW) ||
-        !same_stat(&descriptor, &named) ||
-        (descriptor.st_mode & 0777) != create_mode)
-      fail("directory-mode");
+    set_created_mode(result, parent, leaf, create_mode, "directory-mode");
   }
   if (created && sync_directory(parent, "directory-parent-sync"))
     fail("directory-parent-sync");

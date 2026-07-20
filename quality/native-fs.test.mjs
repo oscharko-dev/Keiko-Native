@@ -140,17 +140,19 @@ test(
 );
 
 test(
-  "native helper creates a closed package root under a restrictive umask",
+  "native helper preserves requested creation modes under a restrictive umask",
   { skip: !supported },
   async () => {
     await fixture(async ({ helper, root }) => {
       const source = join(root, "source");
       const destination = join(root, "destination");
-      await mkdir(source);
+      await mkdir(join(source, "nested"), { recursive: true });
       await mkdir(destination);
       await writeFile(join(source, "value"), "trusted");
+      await writeFile(join(source, "nested/executable"), "#!/bin/sh\n");
+      await chmod(join(source, "nested/executable"), 0o755);
 
-      const result = spawnSync(
+      let result = spawnSync(
         "/bin/sh",
         [
           "-c",
@@ -170,6 +172,39 @@ test(
       assert.equal(
         (await lstat(join(destination, "copy"))).mode & 0o777,
         0o755,
+      );
+      assert.equal(
+        (await lstat(join(destination, "copy/value"))).mode & 0o777,
+        0o644,
+      );
+      assert.equal(
+        (await lstat(join(destination, "copy/nested"))).mode & 0o777,
+        0o755,
+      );
+      assert.equal(
+        (await lstat(join(destination, "copy/nested/executable"))).mode & 0o777,
+        0o755,
+      );
+
+      result = spawnSync(
+        "/bin/sh",
+        [
+          "-c",
+          'umask 077; exec "$@"',
+          "keiko-native-umask",
+          helper,
+          "write",
+          destination,
+          "direct",
+          "644",
+        ],
+        { encoding: "utf8", input: "direct" },
+      );
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(
+        (await lstat(join(destination, "direct"))).mode & 0o777,
+        0o644,
       );
     });
   },

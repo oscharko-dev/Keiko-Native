@@ -72,6 +72,7 @@ static void copy_regular(int source_parent, const char *name, int dest_parent) {
   int dest = openat(dest_parent, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,
                     destination_mode);
   if (dest < 0) fail("copy-create");
+  set_created_mode(dest, dest_parent, name, destination_mode, "copy-mode");
   char buffer[65536];
   ssize_t size;
   while ((size = read(source, buffer, sizeof(buffer))) > 0) {
@@ -127,6 +128,8 @@ void copy_directory(int source, int destination, const char *exclude,
       int child_dest = openat(destination, entry->d_name,
                               O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
       if (child_source < 0 || child_dest < 0) fail("copy-directory-open");
+      set_created_mode(child_dest, destination, entry->d_name, 0755,
+                       "copy-directory-mode");
       copy_directory(child_source, child_dest, NULL, depth + 1);
       struct stat child_before, child_after, named, parent_before, parent_after;
       if (fstat(child_dest, &child_before) ||
