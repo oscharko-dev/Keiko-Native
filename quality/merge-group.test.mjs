@@ -14,7 +14,7 @@ const sha = (value) => value.repeat(40);
 // prettier-ignore
 function gitObject(bytes, algorithm = "sha1") { const header = Buffer.from(`commit ${bytes.byteLength}\0`); return { bytes, sha: createHash(algorithm).update(header).update(bytes).digest("hex") }; }
 // prettier-ignore
-function gitCommit(tree, algorithm = "sha1") { return gitObject(new TextEncoder().encode(`tree ${tree}\n\nmerge group\n`), algorithm); }
+function gitCommit(tree, parents = [], algorithm = "sha1") { return gitObject(new TextEncoder().encode(`tree ${tree}\n${parents.map((parent) => `parent ${parent}\n`).join("")}\nmerge group\n`), algorithm); }
 const repository = "oscharko-dev/Keiko-Native";
 const target = "dev";
 const [base, head, fingerprint] = [sha("1"), sha("2"), "c".repeat(64)];
@@ -130,7 +130,8 @@ function groupRead(members = [normalMember()], groupTarget = target) {
   // prettier-ignore
   const composed = members.map((member, order) => ({ ...member, inputTree: sha(String.fromCharCode(97 + order)), order, outputTree: sha(String.fromCharCode(98 + order)) }));
   const groupTree = composed.at(-1).outputTree;
-  const groupCommit = gitCommit(groupTree);
+  // prettier-ignore
+  const groupCommit = gitCommit(groupTree, [base, ...composed.map(({ head }) => head)]);
   return {
     baseTip: base,
     baseTree: sha("a"),
@@ -368,11 +369,10 @@ test("rejects malformed, empty, broken, and unexplained tree composition", () =>
   ])
     assert.equal(verifyCombinedGroupTree(input).ok, false);
 });
-
 // prettier-ignore
 test("rejects a composed tree that is not bound to the group commit", () => { const read = groupRead(); read.groupTree = sha("f"); read.members.at(-1).outputTree = read.groupTree; assert.equal(bindGroup(read).ok, false); });
 // prettier-ignore
-test("verifies SHA-1 and SHA-256 group commit objects and rejects bad evidence", () => { const tree = "a".repeat(64); const object = gitCommit(tree, "sha256"); assert.equal(verifyGroupCommitTree({ groupCommit: object.bytes, groupSha: object.sha, groupTree: tree }).ok, true); const noLine = gitObject(new TextEncoder().encode("parent")); const noTree = gitObject(new TextEncoder().encode(`parent ${sha("1")}\n`)); for (const input of [null, {}, { groupCommit: new Uint8Array(), groupSha: sha("1"), groupTree: sha("2") }, { groupCommit: object.bytes, groupSha: "a".repeat(48), groupTree: "b".repeat(48) }, { groupCommit: object.bytes, groupSha: object.sha, groupTree: sha("2") }, { groupCommit: noLine.bytes, groupSha: noLine.sha, groupTree: sha("2") }, { groupCommit: noTree.bytes, groupSha: noTree.sha, groupTree: sha("2") }]) assert.equal(verifyGroupCommitTree(input).ok, false); });
+test("verifies SHA-1 and SHA-256 group commit objects and rejects bad evidence", () => { const [tree, root, member, wrong] = ["a", "b", "c", "d"].map((value) => value.repeat(64)); const make = (parents, overrides = {}) => { const object = gitCommit(tree, parents, "sha256"); return { baseTip: root, groupCommit: object.bytes, groupSha: object.sha, groupTree: tree, members: [{ head: member }], ...overrides }; }; assert.equal(verifyGroupCommitTree(make([root, member])).ok, true); const noLine = gitObject(new TextEncoder().encode("parent")); const noTree = gitObject(new TextEncoder().encode(`parent ${sha("1")}\n`)); for (const input of [null, {}, make([]), make([root]), make([member, root]), make([root, member, member]), make([root, root]), make([root, member], { baseTip: wrong }), make([root, member], { members: [{ head: wrong }] }), { ...make([root, member]), groupSha: "a".repeat(48), groupTree: "b".repeat(48) }, { ...make([root, member]), groupTree: wrong }, { baseTip: sha("1"), groupCommit: noLine.bytes, groupSha: noLine.sha, groupTree: sha("2"), members: [{ head: sha("3") }] }, { baseTip: sha("1"), groupCommit: noTree.bytes, groupSha: noTree.sha, groupTree: sha("2"), members: [{ head: sha("3") }] }]) assert.equal(verifyGroupCommitTree(input).ok, false); });
 
 test("fails closed on hostile constituent, tree, snapshot, and readback evidence", () => {
   const hostile = new Proxy({}, { get: () => assert.fail("SECRET") });

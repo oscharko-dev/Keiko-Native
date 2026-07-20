@@ -315,7 +315,6 @@ export function bindMergeGroupSnapshot(input) {
     return reject("invalid_group_evidence");
   }
 }
-
 // prettier-ignore
 export function verifyGroupCommitTree(input) {
   try {
@@ -325,16 +324,19 @@ export function verifyGroupCommitTree(input) {
     if (!algorithm || input.groupTree?.length !== input.groupSha.length) return reject("unsupported_group_object_id");
     const header = Buffer.from(`commit ${bytes.byteLength}\0`);
     if (createHash(algorithm).update(header).update(bytes).digest("hex") !== input.groupSha) return reject("group_commit_hash_mismatch");
-    const end = bytes.indexOf(10);
+    const commitBytes = Buffer.from(bytes); const end = commitBytes.indexOf("\n\n");
     if (end < 0) return reject("invalid_group_commit");
-    const tree = Buffer.from(bytes.subarray(0, end)).toString("ascii").match(/^tree ([0-9a-f]{40}|[0-9a-f]{64})$/u)?.[1];
-    if (tree !== input.groupTree) return reject("group_commit_tree_mismatch");
+    const lines = commitBytes.subarray(0, end).toString("utf8").split("\n");
+    if (lines[0] !== `tree ${input.groupTree}`) return reject("group_commit_tree_mismatch");
+    const parents = [input.baseTip, ...input.members.map(({ head }) => head)];
+    if (parents.length < 2 || !parents.every((parent) => commit(parent) && parent.length === input.groupSha.length)) return reject("unsupported_group_object_id");
+    const expected = parents.map((parent) => `parent ${parent}`);
+    if (!same(lines.slice(1, expected.length + 1), expected) || lines.slice(expected.length + 1).some((line) => line.startsWith("parent "))) return reject("group_commit_parent_mismatch");
     return { ok: true };
   } catch {
     return reject("invalid_group_commit");
   }
 }
-
 export function evaluateMergeGroup(input) {
   try {
     const invalidated = input.invalidatedSnapshots;
@@ -365,7 +367,6 @@ export function evaluateMergeGroup(input) {
     return reject("invalid_group_evaluation");
   }
 }
-
 function nextTree(member, tree) {
   if (!record(member)) return reject("invalid_tree_member");
   if (![commit(member.inputTree), commit(member.outputTree)].every(Boolean))
@@ -374,7 +375,6 @@ function nextTree(member, tree) {
     ? { ok: true, tree: member.outputTree }
     : reject("tree_chain_mismatch");
 }
-
 export function verifyCombinedGroupTree(input) {
   try {
     const valid = record(input)
