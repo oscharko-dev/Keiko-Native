@@ -396,7 +396,7 @@ const governedJobPreambles = Object.freeze({
     "      matrix:",
     "        runner: [macos-14, macos-26]",
     "    runs-on: ${{ matrix.runner }}",
-    "    timeout-minutes: 30",
+    "    timeout-minutes: 45",
     "    permissions:",
     "      contents: read",
   ],

@@ -208,7 +208,9 @@ shared with root `quality`. The full root `quality` command then runs every nati
 authoritative only on Apple Silicon macOS; `native:package` fails closed on other hosts instead of
 emitting or publishing package evidence. Both declared macOS runners execute the complete native
 command set, including packaging, with stable Rust, rustfmt, clippy, and the pinned coverage-only
-nightly installed by the native matrix.
+nightly installed by the native matrix. The matrix has a 45-minute job ceiling so the complete
+fail-closed chain can finish on either runner; the packaged journey and shutdown operations retain
+their independently enforced functional timeouts.
 
 Root coverage runs exactly one test file at a time. Serial execution prevents native filesystem
 helper compilers and race fixtures from intermittently contending for shared runner resources. The
