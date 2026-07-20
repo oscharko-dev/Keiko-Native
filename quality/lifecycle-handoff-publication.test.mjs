@@ -1,17 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { issueSchemaForLabels } from "./issue-contract.mjs";
-import { semanticIssueFingerprint } from "./issue-contract.mjs";
+// prettier-ignore
+import { issueSchemaForLabels, semanticIssueFingerprint } from "./issue-contract.mjs";
 import { coalesceLifecycleInputGeneration } from "./lifecycle-handoff-generation.mjs";
 import { evaluatePublicationLifecycleHandoff } from "./lifecycle-handoff-publication.mjs";
 import { classifyLifecycleHandoffLane } from "./lifecycle-handoff.mjs";
 import { verifyPublicationCandidate } from "./publication-candidate.mjs";
 import { contractSha256 } from "./repository-contract.mjs";
 const repository = "oscharko-dev/Keiko-Native";
-const base = "1".repeat(40);
-const head = "2".repeat(40);
-const contractPath = "docs/contracts/task-30-v3-r1.md";
-const receiptPath = "docs/contracts/publications/pr-77.md";
+const [base, head] = ["1".repeat(40), "2".repeat(40)];
+// prettier-ignore
+const [contractPath, receiptPath] = ["docs/contracts/task-30-v3-r1.md", "docs/contracts/publications/pr-77.md"];
 const issueTitle = "Publication candidate contract";
 const contexts =
   "Contract publication|Issue contract current|PR contract".split("|");
@@ -31,28 +30,14 @@ function ordinaryCandidate() {
     mode: "100644",
     path: contractPath,
   };
+  // prettier-ignore
   const observation = {
-    candidatePath: contractPath,
-    fingerprint,
-    lifecycleLabels: ["status: new"],
-    linkedPullRequest: null,
-    number: 30,
-    predecessor: null,
-    readiness: null,
-    readinessProducer: null,
-    recoveries: [],
-    revision: 1,
-    state: "open",
-    type: "task",
-    version: 3,
+    candidatePath: contractPath, fingerprint, lifecycleLabels: ["status: new"],
+    linkedPullRequest: null, number: 30, predecessor: null, readiness: null,
+    readinessProducer: null, recoveries: [], revision: 1, state: "open", type: "task", version: 3,
   };
-  const receiptValue = {
-    candidates: [candidate],
-    observations: [observation],
-    pullRequest: 77,
-    target: "dev",
-    terminalManifest: null,
-  };
+  // prettier-ignore
+  const receiptValue = { candidates: [candidate], observations: [observation], pullRequest: 77, target: "dev", terminalManifest: null };
   const receiptBytes = Buffer.from(`${JSON.stringify(receiptValue)}\n`);
   const files = [
     { mode: "100644", path: contractPath, status: "added" },
@@ -62,46 +47,23 @@ function ordinaryCandidate() {
     { bytes: receiptBytes, mode: "100644", path: receiptPath },
     { bytes: contractBytes, mode: "100644", path: contractPath },
   ];
+  // prettier-ignore
   return {
-    diff: {
-      base,
-      complete: true,
-      files,
-      head,
-      normalValidated: false,
-      pullRequest: 77,
-      repository,
-      truncated: false,
-    },
+    diff: { base, complete: true, files, head, normalValidated: false,
+      pullRequest: 77, repository, truncated: false },
     issueObservations: [observation],
     issueTitles: [{ number: 30, title: issueTitle }],
     newlyAdded: { base, entries, head, pullRequest: 77, repository },
-    pullRequest: {
-      base,
-      baseRef: "dev",
-      head,
-      merged: false,
-      number: 77,
-      state: "open",
-    },
-    receipt: {
-      bytes: receiptBytes,
-      digest: contractSha256(receiptBytes).digest,
-      path: receiptPath,
-    },
-    repository,
-    target: "dev",
-    terminalManifest: null,
+    pullRequest: { base, baseRef: "dev", head, merged: false, number: 77, state: "open" },
+    receipt: { bytes: receiptBytes, digest: contractSha256(receiptBytes).digest, path: receiptPath },
+    repository, target: "dev", terminalManifest: null,
   };
 }
+// prettier-ignore
 function rewriteReceipt(input, mutate) {
-  const value = JSON.parse(Buffer.from(input.receipt.bytes).toString("utf8"));
-  mutate(value);
-  const bytes = Buffer.from(`${JSON.stringify(value)}\n`);
-  input.receipt.bytes = bytes;
-  input.receipt.digest = contractSha256(bytes).digest;
-  input.newlyAdded.entries[0].bytes = bytes;
-  input.issueObservations = structuredClone(value.observations);
+  const value = JSON.parse(Buffer.from(input.receipt.bytes).toString("utf8")); mutate(value); const bytes = Buffer.from(`${JSON.stringify(value)}\n`);
+  input.receipt.bytes = bytes; input.receipt.digest = contractSha256(bytes).digest;
+  input.newlyAdded.entries[0].bytes = bytes; input.issueObservations = structuredClone(value.observations);
 }
 function reversedMultiCandidate() {
   const input = ordinaryCandidate();
@@ -158,26 +120,20 @@ function lifecycleInputs(accepted) {
   const identity = contractSha256(
     Buffer.from(JSON.stringify(accepted.binding)),
   ).digest;
+  // prettier-ignore
   return {
     fields: [
-      ["issueRevision", "publication-1"],
-      ["readiness", "publication-snapshot"],
-      ["lifecycle", `publication:${accepted.binding.submode}`],
-      ["target", accepted.binding.target],
-      ["reviews", "reviews-1"],
-      ["conversations", "conversations-1"],
-      ["audit", "audit-1"],
-      ["journey", "journey-1"],
-      ["manual", "manual-1"],
-      ["external", "external-1"],
-      ["platform", "platform-1"],
-      ["upstream", identity],
+      ["issueRevision", "publication-1"], ["readiness", "publication-snapshot"],
+      ["lifecycle", `publication:${accepted.binding.submode}`], ["target", accepted.binding.target],
+      ["reviews", "reviews-1"], ["conversations", "conversations-1"], ["audit", "audit-1"],
+      ["journey", "journey-1"], ["manual", "manual-1"], ["external", "external-1"],
+      ["platform", "platform-1"], ["upstream", identity],
     ].map(([name, value]) => ({ name, value: text(value) })),
     type: "record",
   };
 }
-function classification(input, accepted, authorityOverrides = {}, ok = true) {
-  const lane = classifyLifecycleHandoffLane({
+function publicationLaneInput(input, accepted, authorityOverrides = {}) {
+  return {
     authority: {
       evidence: "publication-observation-1",
       head: input.pullRequest.head,
@@ -196,7 +152,12 @@ function classification(input, accepted, authorityOverrides = {}, ok = true) {
     candidate: input,
     diff: input.diff,
     target: input.target,
-  });
+  };
+}
+function classification(input, accepted, authorityOverrides = {}, ok = true) {
+  const lane = classifyLifecycleHandoffLane(
+    publicationLaneInput(input, accepted, authorityOverrides),
+  );
   assert.equal(lane.ok, ok);
   return lane;
 }
@@ -237,6 +198,7 @@ function handoffInput(candidate) {
     classification: lane,
     generation: state.generation,
     generationRequest: request,
+    laneInput: publicationLaneInput(candidate, accepted),
   };
 }
 test("re-evaluates and accepts the exact ordinary B2 candidate and matrix", () => {
@@ -257,6 +219,44 @@ test("re-evaluates and accepts the exact ordinary B2 candidate and matrix", () =
   assert.equal(result.ok, true);
   assert.equal(result.readinessClaim, false);
   assert.deepEqual(result.lifecycleMutations, []);
+});
+function replacePublicationClassification(input, changes) {
+  const accepted = verifyPublicationCandidate(input.candidate);
+  const forged = structuredClone(input.classification);
+  Object.assign(forged.binding, changes);
+  const request = { ...input.generationRequest, classification: forged };
+  let state = coalesceLifecycleInputGeneration(request);
+  for (const context of contexts)
+    state = coalesceLifecycleInputGeneration({
+      ...request,
+      completion: completion(state, context, structuredClone(accepted)),
+      prior: state.generation,
+    });
+  // prettier-ignore
+  return Object.assign(input, { classification: forged, generation: state.generation, generationRequest: request });
+}
+test("recomputes every publication classification field from raw input", () => {
+  // prettier-ignore
+  const forgeries = {
+    authority: { authority: "forged-authority" },
+    diff: { diff: [{ mode: "100644", path: "forged.txt", status: "modified" }] },
+    evidence: { evidence: "forged-evidence" },
+    issueIdentity: { issueIdentity: "issue-forged" },
+    scope: { scope: "forged/**" },
+  };
+  for (const [name, changes] of Object.entries(forgeries)) {
+    // prettier-ignore
+    const input = replacePublicationClassification(handoffInput(ordinaryCandidate()), changes);
+    assert.equal(evaluatePublicationLifecycleHandoff(input).ok, false, name);
+  }
+});
+test("rejects missing and hostile publication raw lane input", () => {
+  const hostile = new Proxy({}, { get: () => assert.fail("SECRET") });
+  for (const laneInput of [undefined, hostile]) {
+    const input = handoffInput(ordinaryCandidate());
+    input.laneInput = laneInput;
+    assert.equal(evaluatePublicationLifecycleHandoff(input).ok, false);
+  }
 });
 test("accepts all six retained migration lifecycles through real B2", () => {
   for (const lifecycle of [
