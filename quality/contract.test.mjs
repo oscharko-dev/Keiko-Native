@@ -59,11 +59,33 @@ const lifecycleStates = Object.freeze([
   "status: done",
 ]);
 
+const repositoryControlPlaneModules = Object.freeze([
+  "quality/publication-contract-schema.mjs",
+  "quality/repository-contract-chain.mjs",
+  "quality/repository-contract.mjs",
+  "quality/publication-candidate.mjs",
+  "quality/publication-contract.mjs",
+  "quality/lifecycle-generation.mjs",
+  "quality/lifecycle-handoff-generation.mjs",
+  "quality/lifecycle-handoff-publication.mjs",
+  "quality/lifecycle-handoff.mjs",
+  "quality/merge-group.mjs",
+  "quality/epic-merge-broker.mjs",
+]);
+
 const coverageScript = [
   "node --test --experimental-test-coverage",
   "--test-coverage-include=quality/issue-lifecycle.mjs",
   "--test-coverage-include=quality/issue-lifecycle-readiness.mjs",
   "--test-coverage-include=quality/issue-lifecycle-action.mjs",
+  ...repositoryControlPlaneModules.map(
+    (module) => `--test-coverage-include=${module}`,
+  ),
+  "--test-coverage-branches=85",
+  "--test-coverage-functions=85",
+  "--test-coverage-lines=85",
+  "--test-reporter=./quality/coverage-reporter.mjs",
+  "quality/*.test.mjs",
 ].join(" ");
 
 const issueTemplateFiles = [
@@ -300,9 +322,11 @@ async function fixtureRepository() {
     ".github/ISSUE_TEMPLATE/feature_task.md",
     ".github/pull_request_template.md",
     ".github/workflows/codeql.yml",
+    ".github/workflows/contract-publication.yml",
     ".github/workflows/dependency-review.yml",
     ".github/workflows/issue-lifecycle.yml",
     ".github/workflows/issue-readiness.yml",
+    ".github/workflows/merge-group.yml",
     ".github/workflows/mutation-security.yml",
     ".github/workflows/osv-scanner.yml",
     ".github/workflows/pr-contract.yml",
@@ -328,6 +352,7 @@ async function fixtureRepository() {
     "quality/markdown-contract.mjs",
     "quality/pr-contract-action.mjs",
     "quality/pr-contract.mjs",
+    ...repositoryControlPlaneModules,
     "socket.yml",
   ];
   for (const file of files) {
@@ -400,7 +425,16 @@ async function fixtureRepository() {
   );
   await writeFile(
     join(root, "docs/qa/repository-activation.md"),
-    ["# Repository activation checklist", lifecycleList()].join("\n"),
+    [
+      "# Repository activation checklist",
+      lifecycleList(),
+      "## Pending contract-publication controls",
+      "Contract publication remains disabled until the human activation probes pass.",
+      "The `Contract publication` context is not enrolled as required.",
+      "## Pending merge-queue and epic-merge controls",
+      "The merge queue remains disabled until its human liveness and ordering probe passes.",
+      "Automated epic-branch merge remains disabled until provider semantics are proven.",
+    ].join("\n"),
   );
   for (const file of issueTemplateFiles)
     await writeFile(join(root, file), lifecycleProjectionText());
@@ -470,6 +504,67 @@ async function fixtureRepository() {
       "pull-requests: read",
       "statuses: write",
       "node quality/issue-readiness-action.mjs",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, ".github/workflows/contract-publication.yml"),
+    [
+      "name: Contract publication (inert)",
+      "on:",
+      "  workflow_dispatch:",
+      "permissions: {}",
+      "jobs:",
+      "  validate:",
+      "    if: ${{ vars.KEIKO_CONTRACT_PUBLICATION_ACTIVATION == 'enabled' }}",
+      "    permissions:",
+      "      contents: read",
+      "    steps:",
+      "      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+      "        with:",
+      "          persist-credentials: false",
+      "          ref: dev",
+      "      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
+      "        with:",
+      '          node-version: "24.18.0"',
+      "          package-manager-cache: false",
+      "      - name: Validate protected publication policy",
+      "        env:",
+      "          KEIKO_CONTRACT_PUBLICATION_ACTIVATION: disabled",
+      "        run: |",
+      "          node --check quality/publication-contract.mjs",
+      "          node --check quality/lifecycle-handoff-publication.mjs",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, ".github/workflows/merge-group.yml"),
+    [
+      "name: Merge group policy (inert)",
+      "on:",
+      "  merge_group:",
+      "    types: [checks_requested]",
+      "  workflow_dispatch:",
+      "permissions: {}",
+      "jobs:",
+      "  evaluate:",
+      "    if: ${{ vars.KEIKO_MERGE_GROUP_ACTIVATION == 'enabled' }}",
+      "    permissions:",
+      "      contents: read",
+      "    steps:",
+      "      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+      "        with:",
+      "          persist-credentials: false",
+      "          ref: dev",
+      "      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
+      "        with:",
+      '          node-version: "24.18.0"',
+      "          package-manager-cache: false",
+      "      - name: Validate protected merge policy",
+      "        env:",
+      "          KEIKO_EPIC_MERGE_AUTOMATION: disabled",
+      "          KEIKO_MERGE_GROUP_ACTIVATION: disabled",
+      "        run: |",
+      "          node --check quality/merge-group.mjs",
+      "          node --check quality/epic-merge-broker.mjs",
     ].join("\n"),
   );
   await writeFile(
@@ -973,6 +1068,260 @@ test("fails closed when the PR lifecycle caller loses status read access", async
       result.failures.join("\n"),
       /Pull-request contract workflow is missing marker: statuses: read/u,
     );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("requires every repository control-plane module and inert workflow", async () => {
+  for (const path of [
+    ...repositoryControlPlaneModules,
+    ".github/workflows/contract-publication.yml",
+    ".github/workflows/merge-group.yml",
+  ]) {
+    const root = await fixtureRepository();
+    try {
+      await rm(join(root, path));
+      const result = await validateRepository(root);
+      assert.match(
+        result.failures.join("\n"),
+        new RegExp(
+          `Missing required quality file: ${path.replaceAll(".", "\\.")}`,
+          "u",
+        ),
+      );
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  }
+});
+
+test("fails closed on unsafe or pull-request-authored inert workflow input", async () => {
+  const root = await fixtureRepository();
+  try {
+    const publicationPath = join(
+      root,
+      ".github/workflows/contract-publication.yml",
+    );
+    const publication = await readFile(publicationPath, "utf8");
+    await writeFile(
+      publicationPath,
+      [
+        publication.replace("contents: read", "contents: write"),
+        "  active:",
+        "    runs-on: ubuntu-latest",
+        "    steps:",
+        "      - uses: ./local-action",
+        "      - run: node quality/publication-contract.mjs",
+        "      - run: echo ${{ github.event.pull_request.head.sha }}",
+      ].join("\n"),
+    );
+    const mergePath = join(root, ".github/workflows/merge-group.yml");
+    const merge = await readFile(mergePath, "utf8");
+    await writeFile(
+      mergePath,
+      merge
+        .replace("persist-credentials: false", "persist-credentials: true")
+        .replace("ref: dev", "ref: main"),
+    );
+    const result = await validateRepository(root);
+    const failures = result.failures.join("\n");
+    assert.match(failures, /must not request write permissions: contents/u);
+    assert.match(failures, /contains unsafe marker/u);
+    assert.match(failures, /persist-credentials: false/u);
+    assert.match(failures, /unexpected job set/u);
+    assert.match(failures, /unexpected checkout ref/u);
+    assert.match(failures, /unexpected action set/u);
+    assert.match(failures, /unexpected command set/u);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("rejects ambiguous YAML constructs that conceal unsafe workflow shape", async () => {
+  const hidden = [
+    '"hidden":\n  "permissions":\n    "contents": write\n  "steps":\n    - "run": echo unsafe',
+    'hidden: {"contents": write}',
+    "defaults: &unsafe\n  contents: write\nhidden: *unsafe",
+    "hidden: !unsafe value",
+    "<<: *unsafe",
+    "? hidden\n: unsafe",
+    '- { ? "run" : echo unsafe }',
+    "hidden: {<<: {contents: write}}",
+    "hidden: !<tag:example.com,2026:foo> value",
+    "hidden: !!str value",
+    'steps: [ "run": echo unsafe ]',
+    'steps: [ ? "run" : echo unsafe ]',
+    "steps: [run: echo unsafe]",
+    "on:\n  workflow_dispatch:\n  <<:\n    pull_request_target:",
+    'on:\n  workflow_dispatch:\n  ? "pull_request_target"\n  :',
+  ];
+  for (const syntax of hidden) {
+    const root = await fixtureRepository();
+    try {
+      const workflowPath = join(
+        root,
+        ".github/workflows/contract-publication.yml",
+      );
+      const workflow = await readFile(workflowPath, "utf8");
+      await writeFile(workflowPath, `${workflow}\n${syntax}\n`);
+      const result = await validateRepository(root);
+      assert.match(
+        result.failures.join("\n"),
+        /unsupported YAML syntax: contract-publication\.yml/u,
+        syntax,
+      );
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  }
+});
+
+test("binds each inert workflow to its exact activation-variable guard", async () => {
+  const root = await fixtureRepository();
+  try {
+    const workflowPath = join(root, ".github/workflows/merge-group.yml");
+    const workflow = await readFile(workflowPath, "utf8");
+    await writeFile(
+      workflowPath,
+      workflow.replace(
+        "if: ${{ vars.KEIKO_MERGE_GROUP_ACTIVATION == 'enabled' }}",
+        "if: ${{ false }}",
+      ),
+    );
+    const result = await validateRepository(root);
+    const failures = result.failures.join("\n");
+    assert.match(failures, /missing marker: if:/u);
+    assert.match(failures, /unexpected job guard/u);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("accepts inert workflow permission blocks with Windows line endings", async () => {
+  const root = await fixtureRepository();
+  try {
+    for (const path of [
+      ".github/workflows/contract-publication.yml",
+      ".github/workflows/merge-group.yml",
+    ]) {
+      const workflowPath = join(root, path);
+      const workflow = await readFile(workflowPath, "utf8");
+      await writeFile(workflowPath, workflow.replaceAll("\n", "\r\n"));
+    }
+    const result = await validateRepository(root);
+    assert.deepEqual(result.failures, []);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("requires complete control-plane coverage inclusion", async () => {
+  const root = await fixtureRepository();
+  try {
+    await writeFile(
+      join(root, "package.json"),
+      packageJson({
+        coverage: coverageScript.replace(
+          "--test-coverage-include=quality/epic-merge-broker.mjs",
+          "--test-coverage-include=quality/epic-merge-broker.mjs.disabled",
+        ),
+      }),
+    );
+    const result = await validateRepository(root);
+    assert.match(
+      result.failures.join("\n"),
+      /Coverage command must include repository control-plane module: quality\/epic-merge-broker\.mjs/u,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("rejects scalar and misplaced inert workflow permissions", async () => {
+  const root = await fixtureRepository();
+  try {
+    const workflowPath = join(
+      root,
+      ".github/workflows/contract-publication.yml",
+    );
+    const workflow = await readFile(workflowPath, "utf8");
+    await writeFile(
+      workflowPath,
+      workflow.replace(
+        "    permissions:\n      contents: read\n    steps:",
+        "    permissions: read-all\n    env:\n      contents: read\n    steps:",
+      ),
+    );
+    const result = await validateRepository(root);
+    const failures = result.failures.join("\n");
+    assert.match(failures, /unexpected permission declarations/u);
+    assert.match(failures, /exact job permission block/u);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("binds coverage includes to the direct Node test invocation", async () => {
+  const root = await fixtureRepository();
+  try {
+    const option = "--test-coverage-include=quality/epic-merge-broker.mjs";
+    await writeFile(
+      join(root, "package.json"),
+      packageJson({
+        coverage: `true ${option} && ${coverageScript.replace(` ${option}`, "")}`,
+      }),
+    );
+    const result = await validateRepository(root);
+    const failures = result.failures.join("\n");
+    assert.match(failures, /one direct Node test invocation/u);
+    assert.match(
+      failures,
+      /Coverage command must include repository control-plane module: quality\/epic-merge-broker\.mjs/u,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("rejects shell-comment coverage token smuggling", async () => {
+  const root = await fixtureRepository();
+  try {
+    await writeFile(
+      join(root, "package.json"),
+      packageJson({
+        coverage: coverageScript.replace(
+          "--test-coverage-include=quality/epic-merge-broker.mjs",
+          "# --test-coverage-include=quality/epic-merge-broker.mjs",
+        ),
+      }),
+    );
+    const result = await validateRepository(root);
+    const failures = result.failures.join("\n");
+    assert.match(failures, /one direct Node test invocation/u);
+    assert.match(
+      failures,
+      /Coverage command must include repository control-plane module: quality\/epic-merge-broker\.mjs/u,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("requires pending activation controls without external orchestration", async () => {
+  const root = await fixtureRepository();
+  try {
+    await writeFile(
+      join(root, "docs/qa/repository-activation.md"),
+      ["# Repository activation checklist", lifecycleList()].join("\n"),
+    );
+    const workflowPath = join(root, ".github/workflows/merge-group.yml");
+    const workflow = await readFile(workflowPath, "utf8");
+    await writeFile(workflowPath, `${workflow}\nAgent-Workflow-Setup\n`);
+    const result = await validateRepository(root);
+    const failures = result.failures.join("\n");
+    assert.match(failures, /Activation runbook is missing pending control/u);
+    assert.match(failures, /must not consult external orchestration/u);
   } finally {
     await rm(root, { force: true, recursive: true });
   }

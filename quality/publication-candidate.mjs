@@ -1,0 +1,366 @@
+import { TextDecoder } from "node:util";
+
+import { validateIssueContract } from "./issue-contract.mjs";
+import { classifyPublicationLane } from "./publication-contract.mjs";
+import {
+  decodeSnapshotReceipt,
+  decodeTerminalManifest,
+  samePublicationBytes,
+  validateSnapshotReceipt,
+} from "./publication-contract-schema.mjs";
+import {
+  contractSha256,
+  parseContractPath,
+  parseQuarantineRecoveryDeclarations,
+  parseSupersessionDeclaration,
+} from "./repository-contract.mjs";
+
+const inputKeys = [
+  "diff",
+  "issueObservations",
+  "issueTitles",
+  "newlyAdded",
+  "pullRequest",
+  "receipt",
+  "repository",
+  "target",
+  "terminalManifest",
+];
+const diffKeys = [
+  "base",
+  "complete",
+  "files",
+  "head",
+  "normalValidated",
+  "pullRequest",
+  "repository",
+  "truncated",
+];
+const pullRequestKeys = [
+  "base",
+  "baseRef",
+  "head",
+  "merged",
+  "number",
+  "state",
+];
+const evidenceKeys = ["base", "entries", "head", "pullRequest", "repository"];
+const entryKeys = ["bytes", "mode", "path"];
+const issueTitleKeys = ["number", "title"];
+const receiptKeys = ["bytes", "digest", "path"];
+const manifestKeys = ["base", "bytes", "digest", "mode", "path", "repository"];
+const rejectionMessage = "Publication candidate evidence failed closed.";
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
+
+function reject(code) {
+  return { ok: false, rejection: { code, message: rejectionMessage } };
+}
+const record = (value) =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+function exactKeys(value, expected) {
+  if (!record(value)) return false;
+  const actual = Object.keys(value);
+  return (
+    actual.length === expected.length &&
+    expected.every((key) => Object.hasOwn(value, key))
+  );
+}
+const positiveInteger = (value) => Number.isSafeInteger(value) && value > 0;
+const sha = (value) =>
+  typeof value === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(value);
+const digest = (value) =>
+  typeof value === "string" && /^[0-9a-f]{64}$/u.test(value);
+const repositoryIdentity = (value) =>
+  typeof value === "string" &&
+  /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(value);
+const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+const comparePaths = (left, right) => left.localeCompare(right);
+
+function pullRequestFailure(pullRequest) {
+  if (!exactKeys(pullRequest, pullRequestKeys)) return "invalid_pull_request";
+  return positiveInteger(pullRequest.number) &&
+    sha(pullRequest.base) &&
+    sha(pullRequest.head) &&
+    pullRequest.base !== pullRequest.head &&
+    pullRequest.baseRef === "dev" &&
+    pullRequest.state === "open" &&
+    pullRequest.merged === false
+    ? undefined
+    : "invalid_pull_request";
+}
+function inputIdentityFailure(input) {
+  if (!exactKeys(input, inputKeys)) return "invalid_candidate_input";
+  if (!repositoryIdentity(input.repository) || input.target !== "dev")
+    return "invalid_candidate_authority";
+  return pullRequestFailure(input.pullRequest);
+}
+function diffContext(input) {
+  const diff = input.diff;
+  const pullRequest = input.pullRequest;
+  if (!exactKeys(diff, diffKeys)) return { failure: "invalid_candidate_diff" };
+  if (
+    diff.repository !== input.repository ||
+    diff.pullRequest !== pullRequest.number ||
+    diff.base !== pullRequest.base ||
+    diff.head !== pullRequest.head
+  )
+    return { failure: "candidate_diff_identity_mismatch" };
+  const classification = classifyPublicationLane(diff);
+  return classification.ok === true && classification.lane === "publication"
+    ? { classification }
+    : { failure: "candidate_diff_rejected" };
+}
+function validEntry(entry) {
+  return (
+    exactKeys(entry, entryKeys) &&
+    entry.mode === "100644" &&
+    entry.bytes instanceof Uint8Array &&
+    typeof entry.path === "string"
+  );
+}
+function addedEntries(input) {
+  const evidence = input.newlyAdded;
+  const pullRequest = input.pullRequest;
+  if (!exactKeys(evidence, evidenceKeys) || !Array.isArray(evidence.entries))
+    return { failure: "invalid_added_evidence" };
+  if (
+    evidence.repository !== input.repository ||
+    evidence.pullRequest !== pullRequest.number ||
+    evidence.base !== pullRequest.base ||
+    evidence.head !== pullRequest.head ||
+    evidence.entries.some((entry) => !validEntry(entry))
+  )
+    return { failure: "invalid_added_evidence" };
+  const paths = evidence.entries.map((entry) => entry.path);
+  const lexical = paths.every(
+    (path, index) => index === 0 || paths[index - 1] < path,
+  );
+  return lexical && new Set(paths).size === paths.length
+    ? { entries: new Map(evidence.entries.map((entry) => [entry.path, entry])) }
+    : { failure: "noncanonical_added_evidence" };
+}
+function receiptContext(input, classification, entries) {
+  const receipt = input.receipt;
+  if (!exactKeys(receipt, receiptKeys))
+    return { failure: "invalid_candidate_receipt" };
+  const entry = entries.get(receipt.path);
+  const hash = contractSha256(receipt.bytes);
+  if (
+    receipt.path !== classification.receiptPath ||
+    !digest(receipt.digest) ||
+    hash.ok !== true ||
+    hash.digest !== receipt.digest ||
+    entry === undefined ||
+    !samePublicationBytes(receipt.bytes, entry.bytes)
+  )
+    return { failure: "invalid_candidate_receipt" };
+  const validation = validateSnapshotReceipt(
+    decodeSnapshotReceipt(receipt),
+    input.repository,
+  );
+  if (validation.ok !== true)
+    return { failure: "invalid_candidate_receipt_schema" };
+  if (validation.binding.pullRequest !== input.pullRequest.number)
+    return { failure: "receipt_pull_request_mismatch" };
+  return { validation };
+}
+function candidateContentFailure(entry, observation, title) {
+  const parsed = parseContractPath(entry.path);
+  if (parsed.ok !== true || observation === undefined)
+    return "invalid_candidate_contract_identity";
+  let body;
+  try {
+    body = strictUtf8.decode(entry.bytes);
+  } catch {
+    return "invalid_candidate_contract_encoding";
+  }
+  const validation = validateIssueContract({
+    body,
+    labels: [`type: ${parsed.contract.type}`],
+    title,
+  });
+  if (
+    validation.failures.length !== 0 ||
+    validation.kind !== parsed.contract.type
+  )
+    return "invalid_candidate_contract_schema";
+  if (validation.version !== `v${parsed.contract.version}`)
+    return "candidate_contract_version_mismatch";
+  const supersession = parseSupersessionDeclaration(body);
+  const recoveries = parseQuarantineRecoveryDeclarations(body);
+  if (supersession.ok !== true || recoveries.ok !== true)
+    return "invalid_candidate_contract_declarations";
+  if (
+    !same(supersession.supersedes, observation.predecessor) ||
+    !same(recoveries.recoveries, observation.recoveries)
+  )
+    return "candidate_contract_declaration_mismatch";
+  return validation.fingerprint === observation.fingerprint
+    ? undefined
+    : "candidate_contract_fingerprint_mismatch";
+}
+function issueTitleContext(input, observations) {
+  if (!Array.isArray(input.issueTitles))
+    return { failure: "invalid_candidate_issue_titles" };
+  const titles = new Map();
+  for (const item of input.issueTitles) {
+    if (
+      !exactKeys(item, issueTitleKeys) ||
+      !positiveInteger(item.number) ||
+      typeof item.title !== "string" ||
+      item.title.trim().length < 8 ||
+      titles.has(item.number)
+    )
+      return { failure: "invalid_candidate_issue_titles" };
+    titles.set(item.number, item.title);
+  }
+  return titles.size === observations.length &&
+    observations.every((observation) => titles.has(observation.number))
+    ? { titles }
+    : { failure: "candidate_issue_title_set_mismatch" };
+}
+function candidateSetFailure(
+  input,
+  classification,
+  validation,
+  entries,
+  titles,
+) {
+  const candidates = validation.binding.candidates;
+  const observations = new Map(
+    validation.binding.observations.map((observation) => [
+      observation.candidatePath,
+      observation,
+    ]),
+  );
+  const expectedPaths = [
+    ...candidates.map((candidate) => candidate.path),
+    input.receipt.path,
+  ].sort(comparePaths);
+  const diffPaths = input.diff.files
+    .map((file) => file.path)
+    .sort(comparePaths);
+  if (
+    entries.size !== candidates.length + 1 ||
+    !same([...entries.keys()], expectedPaths) ||
+    !same(diffPaths, expectedPaths) ||
+    !same(
+      [...classification.contractPaths].sort(comparePaths),
+      candidates.map((candidate) => candidate.path),
+    )
+  )
+    return "candidate_set_mismatch";
+  for (const candidate of candidates) {
+    const entry = entries.get(candidate.path);
+    if (
+      entry === undefined ||
+      entry.mode !== candidate.mode ||
+      contractSha256(entry.bytes).digest !== candidate.digest
+    )
+      return "candidate_bytes_mismatch";
+    const content = candidateContentFailure(
+      entry,
+      observations.get(candidate.path),
+      titles.get(observations.get(candidate.path)?.number),
+    );
+    if (content !== undefined) return content;
+  }
+  return undefined;
+}
+function validManifestIdentity(manifest, input, binding) {
+  return (
+    exactKeys(manifest, manifestKeys) &&
+    manifest.base === input.pullRequest.base &&
+    manifest.repository === input.repository &&
+    manifest.mode === "100644" &&
+    manifest.path === binding.terminalManifest.path &&
+    manifest.digest === binding.terminalManifest.digest
+  );
+}
+function manifestFailure(input, validation) {
+  const binding = validation.binding;
+  if (binding.submode === "ordinary")
+    return input.terminalManifest === null
+      ? undefined
+      : "unexpected_terminal_manifest";
+  const manifest = input.terminalManifest;
+  const decoded = decodeTerminalManifest(manifest);
+  return validManifestIdentity(manifest, input, binding) &&
+    contractSha256(manifest.bytes).digest === manifest.digest &&
+    same(decoded?.entries, binding.observations)
+    ? undefined
+    : "terminal_manifest_mismatch";
+}
+function cloneObservation(observation) {
+  return {
+    ...observation,
+    lifecycleLabels: [...observation.lifecycleLabels],
+    linkedPullRequest:
+      observation.linkedPullRequest === null
+        ? null
+        : { ...observation.linkedPullRequest },
+    predecessor:
+      observation.predecessor === null ? null : { ...observation.predecessor },
+    recoveries: observation.recoveries.map((recovery) => ({ ...recovery })),
+  };
+}
+function normalizedBinding(input, validation) {
+  const binding = validation.binding;
+  return {
+    base: input.pullRequest.base,
+    candidates: binding.candidates.map((candidate) => ({ ...candidate })),
+    diff: {
+      ...input.diff,
+      files: input.diff.files
+        .map((file) => ({ ...file }))
+        .sort((left, right) => comparePaths(left.path, right.path)),
+    },
+    head: input.pullRequest.head,
+    lane: "publication",
+    observations: binding.observations.map(cloneObservation),
+    pullRequest: input.pullRequest.number,
+    receipt: { digest: input.receipt.digest, path: input.receipt.path },
+    repository: input.repository,
+    submode: binding.submode,
+    target: input.target,
+    terminalManifest:
+      binding.terminalManifest === null
+        ? null
+        : { ...binding.terminalManifest },
+  };
+}
+export function verifyPublicationCandidate(input) {
+  try {
+    const identity = inputIdentityFailure(input);
+    if (identity !== undefined) return reject(identity);
+    const diff = diffContext(input);
+    if (diff.failure !== undefined) return reject(diff.failure);
+    const added = addedEntries(input);
+    if (added.failure !== undefined) return reject(added.failure);
+    const receipt = receiptContext(input, diff.classification, added.entries);
+    if (receipt.failure !== undefined) return reject(receipt.failure);
+    if (!same(input.issueObservations, receipt.validation.binding.observations))
+      return reject("issue_observation_mismatch");
+    const issueTitles = issueTitleContext(
+      input,
+      receipt.validation.binding.observations,
+    );
+    if (issueTitles.failure !== undefined) return reject(issueTitles.failure);
+    const candidates = candidateSetFailure(
+      input,
+      diff.classification,
+      receipt.validation,
+      added.entries,
+      issueTitles.titles,
+    );
+    if (candidates !== undefined) return reject(candidates);
+    const manifest = manifestFailure(input, receipt.validation);
+    if (manifest !== undefined) return reject(manifest);
+    return {
+      binding: normalizedBinding(input, receipt.validation),
+      ok: true,
+    };
+  } catch {
+    return reject("invalid_publication_candidate_evidence");
+  }
+}
