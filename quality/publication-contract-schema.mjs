@@ -1,26 +1,16 @@
 import { parseContractPath } from "./repository-contract.mjs";
 const keys = (value) => value.split(" ");
-const rootKeys =
-  "candidates observations pullRequest target terminalManifest".split(" ");
+// prettier-ignore
+const rootKeys = "candidates observations pullRequest target terminalManifest".split(" "), candidateKeys = ["digest", "mode", "path"], bindingKeys = ["digest", "path"], linkedPullRequestKeys = ["head", "number", "target"];
 const observationKeys = keys(
   "candidatePath fingerprint lifecycleLabels linkedPullRequest number predecessor " +
     "readiness readinessProducer recoveries revision state type version",
 );
-const candidateKeys = ["digest", "mode", "path"],
-  bindingKeys = ["digest", "path"];
-const linkedPullRequestKeys = ["head", "number", "target"];
-const readinessPattern =
-  /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/issues\/([1-9]\d*)#issuecomment-[1-9]\d*$/u;
 const readinessProducer = "issue-readiness.yml@protected-dev";
-const manifestPattern = /^docs\/qa\/[a-z0-9-]+-v[1-9]\d*\.md$/u;
-const actorPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u;
-const retainedLifecycle =
-  /^status: (?:ready|in progress|pr open|ready for human review|blocked|waiting for user)$/u;
-const prTrackedLifecycle = /^status: (?:pr open|ready for human review)$/u;
-const reject = (code) => ({
-  ok: false,
-  rejection: { code, message: "Snapshot receipt failed closed." },
-});
+// prettier-ignore
+const readinessPattern = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/issues\/([1-9]\d*)#issuecomment-[1-9]\d*$/u, manifestPattern = /^docs\/qa\/[a-z0-9-]+-v[1-9]\d*\.md$/u, actorPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u, retainedLifecycle = /^status: (?:ready|in progress|pr open|ready for human review|blocked|waiting for user)$/u, prTrackedLifecycle = /^status: (?:pr open|ready for human review)$/u;
+// prettier-ignore
+const reject = (code) => ({ ok: false, rejection: { code, message: "Snapshot receipt failed closed." } });
 const record = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const sha = (value) =>
@@ -43,13 +33,24 @@ export function decodeSnapshotReceipt(receipt) {
     return undefined;
   }
 }
+function completeEvidence(evidence, repository) {
+  try {
+    return [
+      record(evidence),
+      evidence.repository === repository,
+      Array.isArray(evidence.entries),
+      evidence.complete === true,
+      evidence.truncated === false,
+      Number.isSafeInteger(evidence.totalCount),
+      evidence.totalCount >= 0,
+      evidence.totalCount === evidence.entries.length,
+    ].every(Boolean);
+  } catch {
+    return false;
+  }
+}
 export function publicationEntryMap(evidence, repository) {
-  if (
-    !record(evidence) ||
-    evidence.repository !== repository ||
-    !Array.isArray(evidence.entries)
-  )
-    return undefined;
+  if (!completeEvidence(evidence, repository)) return undefined;
   const entries = new Map();
   for (const entry of evidence.entries) {
     if (

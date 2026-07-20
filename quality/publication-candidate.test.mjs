@@ -53,21 +53,8 @@ function ordinaryCandidate() {
   const contractBytes = Buffer.from(body);
   // prettier-ignore
   const candidate = { digest: contractSha256(contractBytes).digest, mode: "100644", path: contractPath };
-  const observation = {
-    candidatePath: contractPath,
-    fingerprint: fingerprint(body),
-    lifecycleLabels: ["status: new"],
-    linkedPullRequest: null,
-    number: 30,
-    predecessor: null,
-    readiness: null,
-    readinessProducer: null,
-    recoveries: [],
-    revision: 1,
-    state: "open",
-    type: "task",
-    version: 3,
-  };
+  // prettier-ignore
+  const observation = { candidatePath: contractPath, fingerprint: fingerprint(body), lifecycleLabels: ["status: new"], linkedPullRequest: null, number: 30, predecessor: null, readiness: null, readinessProducer: null, recoveries: [], revision: 1, state: "open", type: "task", version: 3 };
   // prettier-ignore
   const receiptValue = { candidates: [candidate], observations: [observation], pullRequest: 77, target: "dev", terminalManifest: null };
   const receiptBytes = Buffer.from(`${JSON.stringify(receiptValue)}\n`);
@@ -94,14 +81,8 @@ function ordinaryCandidate() {
     issueObservations: [observation],
     issueTitles: [{ number: 30, title: issueTitle }],
     newlyAdded: { base, entries, head, pullRequest: 77, repository },
-    pullRequest: {
-      base,
-      baseRef: "dev",
-      head,
-      merged: false,
-      number: 77,
-      state: "open",
-    },
+    // prettier-ignore
+    pullRequest: { base, baseRef: "dev", head, merged: false, number: 77, state: "open" },
     receipt: { bytes: receiptBytes, digest: receiptDigest, path: receiptPath },
     repository,
     target: "dev",
@@ -339,10 +320,26 @@ test("binds exact diff, added paths, modes, bytes, digests, and head", () => {
     assert.equal(verifyPublicationCandidate(input).ok, false, `${index}`);
   }
 });
+function resultClassification(input, accepted) {
+  const classification = classifyPublicationLane(input.diff);
+  const candidate = accepted.binding;
+  return {
+    ...classification,
+    binding: {
+      ...classification.binding,
+      candidate,
+      contractPaths: candidate.candidates.map(({ path }) => path),
+      manifest: candidate.terminalManifest,
+      receipt: candidate.receipt,
+      submode: candidate.submode,
+      target: candidate.target,
+    },
+  };
+}
 test("feeds the complete binding to the non-circular result matrix", () => {
   const input = ordinaryCandidate();
   const accepted = verifyPublicationCandidate(input);
-  const classification = classifyPublicationLane(input.diff);
+  const classification = resultClassification(input, accepted);
   const matrix = publicationResultMatrix({
     classification,
     publication: accepted,
@@ -365,21 +362,25 @@ test("feeds the complete binding to the non-circular result matrix", () => {
 test("fails the result matrix closed on hostile bindings", () => {
   const input = ordinaryCandidate();
   const accepted = verifyPublicationCandidate(input);
-  const classification = classifyPublicationLane(input.diff);
+  const classification = resultClassification(input, accepted);
   const hostile = new Proxy({}, { get: () => assert.fail("SECRET") });
-  for (const input of [
-    {
-      classification,
-      publication: { binding: hostile, ok: true },
-    },
-    { classification: hostile, publication: accepted },
-    {
-      classification: { binding: hostile, lane: "publication", ok: true },
-      publication: accepted,
-    },
+  // prettier-ignore
+  const normal = { binding: { base, head, lane: "normal", pullRequest: 77, repository }, lane: "normal", ok: true };
+  // prettier-ignore
+  const failed = (lane) => ({ contexts: { "Contract publication": "failure", "Issue contract current": "failure", "PR contract": "failure" }, lane, ok: true, readinessClaim: false });
+  for (const [value, lane] of [
+    [hostile, "invalid"],
+    [{ classification: hostile, publication: accepted }, "invalid"],
+    [{ classification: normal, normal: hostile }, "invalid"],
+    [{ classification, publication: hostile }, "publication"],
+    // prettier-ignore
+    [{ classification, publication: { binding: hostile, ok: true } }, "publication"],
+    // prettier-ignore
+    [{ classification: { binding: hostile, lane: "publication", ok: true }, publication: accepted }, "invalid"],
   ]) {
-    const result = publicationResultMatrix(input);
-    assert.equal(result.contexts["Contract publication"], "failure");
+    const result = publicationResultMatrix(value);
+    assert.deepEqual(result, failed(lane));
+    assert.doesNotMatch(JSON.stringify(result), /SECRET/u);
   }
 });
 test("fails closed and deterministically recovers when complete evidence returns", () => {
