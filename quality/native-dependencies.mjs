@@ -521,7 +521,7 @@ export async function captureDependencySnapshot({
   const roots = validateInventory(lock, marker, relativePaths);
   await validateTopLevel(sourceRoot, roots, listTopLevel);
   const contents = [];
-  for (const [index, source] of paths.entries())
+  for (const source of paths)
     contents.push(
       source === markerSource
         ? markerBytes
@@ -530,7 +530,7 @@ export async function captureDependencySnapshot({
   validatePackageIdentities(marker, relativePaths, contents);
 
   const files = [];
-  for (const [index, source] of paths.entries()) {
+  for (const [index] of paths.entries()) {
     const bytes = contents[index];
     const path = relativePaths[index];
     if (writeFile) {
