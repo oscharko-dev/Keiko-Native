@@ -1,23 +1,12 @@
+import { isDeepStrictEqual as same } from "node:util";
 import { contractSha256, parseContractPath } from "./repository-contract.mjs";
-import {
-  decodeSnapshotReceipt,
-  publicationAncestryFailure,
-  publicationEvidenceMaps,
-  publicationIdentityFailure,
-  samePublicationBytes,
-  validateSnapshotReceipt,
-} from "./publication-contract-schema.mjs";
+// prettier-ignore
+import { decodeSnapshotReceipt, publicationAncestryFailure, publicationEvidenceMaps, publicationIdentityFailure, samePublicationBytes, validateSnapshotReceipt } from "./publication-contract-schema.mjs";
 export { validateSnapshotReceipt } from "./publication-contract-schema.mjs";
-const contractTrailer =
-  /^Keiko-Contract-SHA256: ([0-9a-f]{64}) (docs\/contracts\/[A-Za-z0-9./-]+\.md)$/u;
-const snapshotTrailer =
-  /^Keiko-Publication-Snapshot-SHA256: ([0-9a-f]{64}) (docs\/contracts\/publications\/pr-([1-9]\d*)\.md)$/u;
-const receiptPathPattern =
-  /^docs\/contracts\/publications\/pr-([1-9]\d*)\.md$/u;
+// prettier-ignore
+const contractTrailer = /^Keiko-Contract-SHA256: ([0-9a-f]{64}) (docs\/contracts\/[A-Za-z0-9./-]+\.md)$/u, snapshotTrailer = /^Keiko-Publication-Snapshot-SHA256: ([0-9a-f]{64}) (docs\/contracts\/publications\/pr-([1-9]\d*)\.md)$/u, receiptPathPattern = /^docs\/contracts\/publications\/pr-([1-9]\d*)\.md$/u;
 const evidenceFailureMessage = "Publication evidence failed closed.";
-function reject(code, message) {
-  return { ok: false, rejection: { code, message } };
-}
+const reject = (code, message) => ({ ok: false, rejection: { code, message } });
 const safeInteger = (value) => Number.isSafeInteger(value) && value > 0;
 function receiptIdentity(path) {
   const match = typeof path === "string" ? receiptPathPattern.exec(path) : null;
@@ -34,9 +23,8 @@ function trailerLines(payload) {
 }
 function parsedTrailer(line) {
   const contract = contractTrailer.exec(line);
-  if (contract !== null && parseContractPath(contract[2]).ok) {
+  if (contract !== null && parseContractPath(contract[2]).ok)
     return { digest: contract[1], kind: "contract", path: contract[2] };
-  }
   const snapshot = snapshotTrailer.exec(line);
   const identity = snapshot === null ? undefined : receiptIdentity(snapshot[2]);
   return identity === undefined
@@ -49,12 +37,10 @@ function trailerSetFailure(trailers) {
   const digests = new Set();
   for (let index = 0; index < trailers.length; index += 1) {
     const trailer = trailers[index];
-    if (paths.has(trailer.path) || digests.has(trailer.digest)) {
+    if (paths.has(trailer.path) || digests.has(trailer.digest))
       return "duplicate_trailer_identity";
-    }
-    if (index > 0 && trailers[index - 1].path >= trailer.path) {
+    if (index > 0 && trailers[index - 1].path >= trailer.path)
       return "unsorted_trailers";
-    }
     paths.add(trailer.path);
     digests.add(trailer.digest);
   }
@@ -62,22 +48,19 @@ function trailerSetFailure(trailers) {
 }
 export function parsePublicationTrailers(payload) {
   const lines = trailerLines(payload);
-  if (lines === undefined) {
+  if (lines === undefined)
     return reject("invalid_signed_payload", "Signed payload must be text.");
-  }
   const trailers = lines.map(parsedTrailer);
   const failure = trailerSetFailure(trailers);
-  if (failure !== undefined) {
+  if (failure !== undefined)
     return reject(failure, "Publication trailers failed canonical validation.");
-  }
   const contracts = trailers.filter((item) => item.kind === "contract");
   const snapshots = trailers.filter((item) => item.kind === "snapshot");
-  if (contracts.length === 0 || snapshots.length !== 1) {
+  if (contracts.length === 0 || snapshots.length !== 1)
     return reject(
       "incomplete_trailer_set",
       "Publication requires contracts and one snapshot trailer.",
     );
-  }
   const snapshot = { ...snapshots[0] };
   delete snapshot.kind;
   return {
@@ -124,22 +107,18 @@ function publicationDiffFailure(files, kinds) {
   );
   if (!hasPublication) return undefined;
   if (kinds.includes("other")) return "mixed_publication_scope";
-  if (files.some((file) => file.status !== "added" || file.mode !== "100644")) {
+  if (files.some((file) => file.status !== "added" || file.mode !== "100644"))
     return "non_add_only_publication";
-  }
   return undefined;
 }
-function laneBinding(input, lane) {
-  const { base, head, pullRequest, repository } = input;
-  return { base, head, lane, pullRequest, repository };
-}
+// prettier-ignore
+const laneBinding = ({ base, head, pullRequest, repository }, lane) => ({ base, head, lane, pullRequest, repository });
 export function classifyPublicationLane(input) {
-  if (!validClassificationInput(input)) {
+  if (!validClassificationInput(input))
     return reject(
       "unavailable_diff",
       "Complete trusted diff metadata is required.",
     );
-  }
   const kinds = input.files.map((file) => publicationPath(file.path));
   const previousKinds = input.files
     .filter((file) => ["renamed", "copied"].includes(file.status))
@@ -148,9 +127,8 @@ export function classifyPublicationLane(input) {
     ...kinds,
     ...previousKinds,
   ]);
-  if (failure !== undefined) {
+  if (failure !== undefined)
     return reject(failure, "Diff cannot select a publication lane.");
-  }
   const contractPaths = input.files
     .filter((_, index) => kinds[index] === "contract")
     .map((file) => file.path);
@@ -163,18 +141,16 @@ export function classifyPublicationLane(input) {
           "Normal lane requires trusted validation.",
         );
   }
-  if (contractPaths.length === 0 || receipts.length !== 1) {
+  if (contractPaths.length === 0 || receipts.length !== 1)
     return reject(
       "incomplete_publication_diff",
       "Publication diff is incomplete.",
     );
-  }
-  if (receiptIdentity(receipts[0].path).pullRequest !== input.pullRequest) {
+  if (receiptIdentity(receipts[0].path).pullRequest !== input.pullRequest)
     return reject(
       "receipt_pull_request_mismatch",
       "Receipt identity is stale.",
     );
-  }
   return {
     binding: laneBinding(input, "publication"),
     contractPaths,
@@ -183,9 +159,8 @@ export function classifyPublicationLane(input) {
     receiptPath: receipts[0].path,
   };
 }
-function record(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
+const record = (value) =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
 function validReceiptBinding(input, trailers, validation, identity, hash) {
   const receipt = input.receipt;
   return (
@@ -225,16 +200,14 @@ function exactCandidateFailure(candidates, trailers, added) {
       entry === undefined ||
       contractSha256(entry.bytes).digest !== candidate.digest ||
       entry.mode !== candidate.mode
-    ) {
+    )
       return "candidate_set_mismatch";
-    }
   }
   return undefined;
 }
 function treeEqualityFailure(expected, publishing, current) {
-  if (expected.size !== publishing.size || expected.size !== current.size) {
+  if (expected.size !== publishing.size || expected.size !== current.size)
     return "tree_set_mismatch";
-  }
   for (const [path, entry] of expected) {
     const published = publishing.get(path);
     const present = current.get(path);
@@ -245,9 +218,8 @@ function treeEqualityFailure(expected, publishing, current) {
       entry.mode !== present.mode ||
       !samePublicationBytes(entry.bytes, published.bytes) ||
       !samePublicationBytes(entry.bytes, present.bytes)
-    ) {
+    )
       return "tree_entry_mismatch";
-    }
   }
   return undefined;
 }
@@ -260,9 +232,8 @@ function manifestEvidenceFailure(binding, evidence) {
     evidence.digest !== binding.terminalManifest.digest ||
     !Array.isArray(evidence.entries) ||
     evidence.entries.length !== binding.observations.length
-  ) {
+  )
     return "invalid_manifest_evidence";
-  }
   return JSON.stringify(evidence.entries) ===
     JSON.stringify(binding.observations)
     ? undefined
@@ -335,17 +306,55 @@ export function verifyPublication(input) {
     return reject("invalid_publication_evidence", evidenceFailureMessage);
   }
 }
-const failedContexts = Object.freeze({
-  "Contract publication": "failure",
-  "Issue contract current": "failure",
-  "PR contract": "failure",
-});
-const sharedKeys = ["repository", "pullRequest", "base", "head", "lane"];
+// prettier-ignore
+const failedContexts = Object.freeze({ "Contract publication": "failure", "Issue contract current": "failure", "PR contract": "failure" });
+// prettier-ignore
+const sharedKeys = ["repository", "pullRequest", "base", "head", "lane"], candidateKeys = "base candidates diff head lane observations pullRequest receipt repository submode target terminalManifest".split(" "), candidateDiffKeys = "base complete files head normalValidated pullRequest repository truncated".split(" ");
+const exactKeys = (value, expected) =>
+  record(value) &&
+  Object.keys(value).length === expected.length &&
+  expected.every((key) => Object.hasOwn(value, key));
+function normalizedCandidate(binding, outer) {
+  try {
+    if (!exactKeys(binding, candidateKeys)) return false;
+    const { candidates, observations, pullRequest, target, terminalManifest } =
+      binding;
+    const snapshot = validateSnapshotReceipt(
+      { candidates, observations, pullRequest, target, terminalManifest },
+      binding.repository,
+    );
+    const classified = classifyPublicationLane(binding.diff);
+    const paths = binding.candidates.map(({ path }) => path);
+    return [
+      exactKeys(binding.diff, candidateDiffKeys) &&
+        exactKeys(binding.receipt, ["digest", "path"]) &&
+        binding.diff.files.every((file) =>
+          exactKeys(file, ["mode", "path", "status"]),
+        ),
+      /^[0-9a-f]{64}$/u.test(binding.receipt.digest),
+      snapshot.ok === true && snapshot.binding.submode === binding.submode,
+      classified.ok === true &&
+        classified.lane === "publication" &&
+        classified.receiptPath === binding.receipt.path,
+      same(classified.contractPaths, paths),
+      same(classified.binding, laneBinding(binding, binding.lane)),
+      same(outer.contractPaths, paths),
+      sharedKeys.every((key) => binding[key] === outer[key]),
+      binding.target === outer.target,
+      binding.submode === outer.submode,
+      same(binding.receipt, outer.receipt),
+      same(binding.terminalManifest, outer.manifest),
+    ].every(Boolean);
+  } catch {
+    return false;
+  }
+}
 function classifiedBinding(classification) {
   try {
     const binding = classification?.binding;
     return classification?.ok === true &&
       validEnvelope(binding) &&
+      ["normal", "publication"].includes(binding.lane) &&
       binding.lane === classification.lane
       ? binding
       : undefined;
@@ -353,43 +362,39 @@ function classifiedBinding(classification) {
     return undefined;
   }
 }
-function matchingResult(result, binding) {
+function matchingResult(result, binding, exact = false) {
   try {
-    return (
-      result?.ok === true &&
-      sharedKeys.every((key) => result.binding?.[key] === binding[key])
-    );
+    const matches = exact
+      ? same(result.binding, binding.candidate)
+      : sharedKeys.every((key) => result.binding?.[key] === binding[key]);
+    return result?.ok === true && matches;
   } catch {
     return false;
   }
 }
+function successfulContexts(input, binding, lane) {
+  const normal =
+    lane === "normal" &&
+    matchingResult(input.normal?.prContract, binding) &&
+    matchingResult(input.normal?.issueContractCurrent, binding);
+  const publication =
+    lane === "publication" &&
+    normalizedCandidate(binding.candidate, binding) &&
+    matchingResult(input.publication, binding, true);
+  if (!normal && !publication) return failedContexts;
+  // prettier-ignore
+  return { "Contract publication": publication ? "success" : "not_applicable", "Issue contract current": "success", "PR contract": "success" };
+}
 export function publicationResultMatrix(input) {
-  input = Object(input);
-  const classification = input.classification;
-  const binding = classifiedBinding(classification);
-  let contexts = failedContexts;
-  let lane = "invalid";
-  if (binding !== undefined && classification.lane === "normal") {
-    lane = "normal";
-    if (
-      matchingResult(input.normal?.prContract, binding) &&
-      matchingResult(input.normal?.issueContractCurrent, binding)
-    ) {
-      contexts = {
-        "Contract publication": "not_applicable",
-        "Issue contract current": "success",
-        "PR contract": "success",
-      };
-    }
-  } else if (binding !== undefined && classification.lane === "publication") {
-    lane = "publication";
-    if (matchingResult(input.publication, binding)) {
-      contexts = {
-        "Contract publication": "success",
-        "Issue contract current": "success",
-        "PR contract": "success",
-      };
-    }
+  let [contexts, lane] = [failedContexts, "invalid"];
+  try {
+    input = Object(input);
+    const binding = classifiedBinding(input.classification);
+    const nextLane = binding?.lane ?? "invalid";
+    const nextContexts = successfulContexts(input, binding, nextLane);
+    [contexts, lane] = [nextContexts, nextLane];
+  } catch {
+    lane = "invalid";
   }
   return { contexts: { ...contexts }, lane, ok: true, readinessClaim: false };
 }

@@ -126,6 +126,11 @@ test("fails closed on unavailable, ambiguous, mixed, and nonregular diffs", () =
   );
   const contract = { mode: "100644", path: contractPath, status: "added" };
   const receipt = { mode: "100644", path: receiptPath, status: "added" };
+  const extra = { mode: "100644", path: "README.md", status: "added" };
+  const receipt78 = {
+    ...receipt,
+    path: "docs/contracts/publications/pr-78.md",
+  };
   for (const input of [
     undefined,
     diff({ complete: false }),
@@ -134,13 +139,7 @@ test("fails closed on unavailable, ambiguous, mixed, and nonregular diffs", () =
     diff({ files: [contract] }),
     diff({ files: [receipt] }),
     diff({ files: [contract, receipt, { ...contract }] }),
-    diff({
-      files: [
-        contract,
-        receipt,
-        { mode: "100644", path: "README.md", status: "added" },
-      ],
-    }),
+    diff({ files: [contract, receipt, extra] }),
     diff({ files: [{ ...contract, status: "modified" }, receipt] }),
     diff({ files: [{ ...contract, mode: "120000" }, receipt] }),
     ...["renamed", "copied"].flatMap((status) =>
@@ -154,12 +153,7 @@ test("fails closed on unavailable, ambiguous, mixed, and nonregular diffs", () =
       ),
     ),
     diff({ files: [{ ...contract, path: "docs/contracts/bad.md" }, receipt] }),
-    diff({
-      files: [
-        contract,
-        { ...receipt, path: "docs/contracts/publications/pr-78.md" },
-      ],
-    }),
+    diff({ files: [contract, receipt78] }),
   ]) {
     assert.equal(classifyPublicationLane(input).ok, false);
   }
@@ -173,29 +167,14 @@ test("fails closed on unavailable, ambiguous, mixed, and nonregular diffs", () =
     "normal",
   );
 });
-const snapshot = (candidateDigest) => ({
-  candidates: [{ digest: candidateDigest, mode: "100644", path: contractPath }],
-  observations: [
-    {
-      candidatePath: contractPath,
-      fingerprint: digestB,
-      lifecycleLabels: ["status: new"],
-      linkedPullRequest: null,
-      number: 30,
-      predecessor: null,
-      readiness: null,
-      readinessProducer: null,
-      recoveries: [],
-      revision: 1,
-      state: "open",
-      type: "task",
-      version: 2,
-    },
-  ],
-  pullRequest: 77,
-  target: "dev",
-  terminalManifest: null,
-});
+// prettier-ignore
+const snapshot = (candidateDigest) => ({ candidates: [{ digest: candidateDigest, mode: "100644", path: contractPath }], observations: [{ candidatePath: contractPath, fingerprint: digestB, lifecycleLabels: ["status: new"], linkedPullRequest: null, number: 30, predecessor: null, readiness: null, readinessProducer: null, recoveries: [], revision: 1, state: "open", type: "task", version: 2 }], pullRequest: 77, target: "dev", terminalManifest: null });
+// prettier-ignore
+const fixtureCommit = (signedPayload) => ({ parents: [{ sha: base, tree: prefixTree }], sha: mergeSha, signedPayload, tree: resultTree, verification: { payload: signedPayload, reason: "valid", signer: "github-web-flow", verified: true } });
+// prettier-ignore
+const fixturePullRequest = () => ({ base, baseRef: "dev", head, merged: true, mergedBy: "Niko", mergeSha, number: 77, state: "closed" });
+// prettier-ignore
+const fixtureProtectedDev = () => ({ ancestor: mergeSha, reachable: true, repository, tip: devTip });
 function publicationFixture(changeReceipt = () => {}) {
   const contractBytes = Buffer.from("canonical contract bytes\n");
   const candidateDigest = contractSha256(contractBytes).digest;
@@ -215,45 +194,24 @@ function publicationFixture(changeReceipt = () => {}) {
   ];
   const copyEntries = () =>
     entries.map((entry) => ({ ...entry, bytes: Buffer.from(entry.bytes) }));
+  const evidenceEntries = () => {
+    const copied = copyEntries();
+    return { complete: true, entries: copied, totalCount: 2, truncated: false };
+  };
   return {
     allowlistedMergers: ["Niko"],
-    commit: {
-      parents: [{ sha: base, tree: prefixTree }],
-      sha: mergeSha,
-      signedPayload,
-      tree: resultTree,
-      verification: {
-        payload: signedPayload,
-        reason: "valid",
-        signer: "github-web-flow",
-        verified: true,
-      },
-    },
-    currentTree: { commit: devTip, entries: copyEntries(), repository },
+    commit: fixtureCommit(signedPayload),
+    currentTree: { commit: devTip, ...evidenceEntries(), repository },
     newlyAdded: {
       base,
-      entries: copyEntries(),
+      ...evidenceEntries(),
       head,
       pullRequest: 77,
       repository,
     },
-    protectedDev: {
-      ancestor: mergeSha,
-      reachable: true,
-      repository,
-      tip: devTip,
-    },
-    publishingTree: { commit: mergeSha, entries: copyEntries(), repository },
-    pullRequest: {
-      base,
-      baseRef: "dev",
-      head,
-      merged: true,
-      mergedBy: "Niko",
-      mergeSha,
-      number: 77,
-      state: "closed",
-    },
+    protectedDev: fixtureProtectedDev(),
+    publishingTree: { commit: mergeSha, ...evidenceEntries(), repository },
+    pullRequest: fixturePullRequest(),
     receipt: {
       bytes: receiptBytes,
       path: receiptPath,
@@ -307,6 +265,34 @@ test("binds canonical receipt input to the committed receipt tree entry", () => 
     x[t].entries[0].bytes = Buffer.from(p.receipt.bytes);
   assert.equal(verifyPublication(x).ok, false);
 });
+test("requires complete, untruncated, counted tree evidence", () => {
+  const mutations = [
+    (x) => delete x.complete,
+    (x) => (x.complete = false),
+    (x) => delete x.truncated,
+    (x) => (x.truncated = true),
+    (x) => delete x.totalCount,
+    (x) => (x.totalCount = -1),
+    (x) => (x.totalCount = 1),
+    (x) => (x.totalCount = 1.5),
+    (x) => (x.totalCount = Number.MAX_SAFE_INTEGER + 1),
+    (x) =>
+      Object.defineProperty(x, "totalCount", {
+        get() {
+          throw new Error("SECRET");
+        },
+      }),
+  ];
+  for (const tree of ["newlyAdded", "publishingTree", "currentTree"]) {
+    for (const mutate of mutations) {
+      const fixture = publicationFixture();
+      mutate(fixture[tree]);
+      const result = verifyPublication(fixture);
+      assert.equal(result.ok, false, `${tree} accepted incomplete evidence`);
+      assert.doesNotMatch(result.rejection.message, /SECRET/iu);
+    }
+  }
+});
 test("binds migration publication to exact terminal manifest evidence", () => {
   assert.equal(
     verifyPublication(migrationFixture()).binding.submode,
@@ -329,12 +315,22 @@ test("binds migration publication to exact terminal manifest evidence", () => {
     assert.equal(verifyPublication(fixture).ok, false);
   }
 });
+const signFixture = (fixture, payload) => {
+  fixture.commit.signedPayload = payload;
+  fixture.commit.verification.payload = payload;
+};
+function assertInvalidEvidence(invalid) {
+  for (const [index, input] of invalid.entries()) {
+    const result = verifyPublication(input);
+    assert.equal(result.ok, false, `invalid fixture ${index}`);
+    assert.doesNotMatch(
+      result.rejection.message,
+      /changed|not json|Mallory|SECRET/iu,
+    );
+  }
+}
 test("rejects unavailable, unauthorized, replayed, stale, or contradictory acceptance evidence", () => {
   const invalid = [];
-  const signed = (fixture, payload) => {
-    fixture.commit.signedPayload = payload;
-    fixture.commit.verification.payload = payload;
-  };
   const changed = (mutate) => {
     const fixture = publicationFixture();
     mutate(fixture);
@@ -362,9 +358,9 @@ test("rejects unavailable, unauthorized, replayed, stale, or contradictory accep
   changed((x) => (x.newlyAdded.entries[1].bytes = Buffer.from("changed")));
   changed((x) => (x.publishingTree.entries[1].mode = "120000"));
   changed((x) => (x.currentTree.entries[1].bytes = Buffer.from("changed")));
-  changed((x) => signed(x, `${x.commit.signedPayload}\nextra`));
+  changed((x) => signFixture(x, `${x.commit.signedPayload}\nextra`));
   changed((x) =>
-    signed(
+    signFixture(
       x,
       `${x.commit.signedPayload}\nKeiko-Contract-SHA256: ${digestA} docs/contracts/task-31-v1-r1.md`,
     ),
@@ -381,12 +377,5 @@ test("rejects unavailable, unauthorized, replayed, stale, or contradictory accep
       },
     }),
   );
-  for (const [index, input] of invalid.entries()) {
-    const result = verifyPublication(input);
-    assert.equal(result.ok, false, `invalid fixture ${index}`);
-    assert.doesNotMatch(
-      result.rejection.message,
-      /changed|not json|Mallory|SECRET/iu,
-    );
-  }
+  assertInvalidEvidence(invalid);
 });
