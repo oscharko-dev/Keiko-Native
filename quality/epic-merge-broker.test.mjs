@@ -8,7 +8,6 @@ import {
   classifyLifecycleHandoffLane,
   coalesceLifecycleInputGeneration,
 } from "./lifecycle-handoff.mjs";
-
 const sha = (value) => value.repeat(40);
 // prettier-ignore
 const [repository, target] = ["oscharko-dev/Keiko-Native", "epic/29-repository-backed-contracts"];
@@ -21,18 +20,18 @@ const observed = (revision, lifecycle) => ({
   type: "record",
 });
 // prettier-ignore
+const normalLaneInput = (currentBase, currentHead, issueIdentity, pullRequest) => ({ authority: { evidence: "normal-observation-1", head: currentHead, id: `${issueIdentity}-v2`, issueIdentity, lane: "normal", pullRequest, repository, scope: "quality/merge-group*", target }, diff: { base: currentBase, complete: true, files: [], head: currentHead, normalValidated: true, pullRequest, repository, truncated: false }, target });
+// prettier-ignore
 function handoffInput(identity = {}) {
   const currentBase = identity.base ?? base;
   const currentHead = identity.head ?? head;
   const issueIdentity = identity.issueIdentity ?? "issue-33";
   const pullRequest = identity.pullRequest ?? 33;
   const b4Producers = { ...producers, ...identity.b4Producers };
-  const laneInput = {
-    authority: { head: currentHead, id: `${issueIdentity}-v2`, issueIdentity, lane: "normal", pullRequest, repository, scope: "quality/merge-group*", target },
-    diff: { base: currentBase, complete: true, files: [], head: currentHead, normalValidated: true, pullRequest, repository, truncated: false },
-    target,
-  };
+  const laneInput = normalLaneInput(currentBase, currentHead, issueIdentity, pullRequest);
   const classification = classifyLifecycleHandoffLane(laneInput);
+  identity.forge?.(classification.binding);
+  const binding = classification.binding;
   const generationRequest = {
     attemptSequence: 0, classification, expectedProducers: b4Producers,
     inputs: observed("observation-2", "status: ready for human review"),
@@ -50,19 +49,19 @@ function handoffInput(identity = {}) {
       prior: state.generation,
     });
   }
-  const eventIdentity = identity.eventIdentity ?? `handoff-${pullRequest}`;
+  const eventIdentity = identity.eventIdentity ?? `handoff-${binding.pullRequest}`;
   const transition = {
-    actorRole: "implementer", applied: true, authority: `${issueIdentity}-v2`, eventIdentity, head: currentHead,
-    issueIdentity, lockFence: `issue-fence-${pullRequest}`, producer: b4Producers["Lifecycle handoff"],
-    pullRequest, repository, result: "handoff-result", resultRevision: "observation-2",
+    actorRole: "implementer", applied: true, authority: binding.authority, eventIdentity, head: binding.head,
+    issueIdentity: binding.issueIdentity, lockFence: `issue-fence-${binding.pullRequest}`, producer: b4Producers["Lifecycle handoff"],
+    pullRequest: binding.pullRequest, repository: binding.repository, result: "handoff-result", resultRevision: "observation-2",
     source: "status: pr open", sourceRevision: "observation-1", target: "status: ready for human review",
-    targetRef: target, workflowRun: "handoff-run",
+    targetRef: binding.target, workflowRun: "handoff-run",
   };
   return {
     classification, generation: state.generation, generationRequest,
     phaseOne: { conversationsCurrent: true, evidenceCurrent: true, excludedContexts: ["Lifecycle handoff"], head: currentHead, inputs: observed("observation-1", "status: pr open"), lockFence: `issue-fence-${pullRequest}`, ok: true, reviewsCurrent: true, sourceState: "status: pr open", target },
     readiness: { comments: [{ body: `<!-- keiko-native-readiness -->\n- Status: \`accepted\`\n- Contract version: \`v2\`\n- Fingerprint: \`${fingerprint}\``, id: 10, user: { id: 41898282, login: "github-actions[bot]", type: "Bot" } }], currentFingerprint: fingerprint, currentVersion: "v2", expectedCommentId: 10 },
-    readback: { actualIssueIdentity: issueIdentity, expectedIssueIdentity: issueIdentity, head: currentHead, issueRevision: "observation-2", labels: ["status: ready for human review"], transitionIdentity: eventIdentity },
+    readback: { actualIssueIdentity: binding.issueIdentity, expectedIssueIdentity: binding.issueIdentity, head: binding.head, issueRevision: "observation-2", labels: ["status: ready for human review"], transitionIdentity: eventIdentity },
     transition,
   };
 }
@@ -76,18 +75,20 @@ function brokerInput(identity = {}) {
   const pullRequest = identity.pullRequest ?? 33;
   const evidenceNames = ["audit", "conversations", "external", "journey", "manual", "platform", "reviews"];
   const expectedProducers = { ...Object.fromEntries([...evidenceNames, "composition"].map((name) => [name, `${name}.yml@protected-dev`])), ...producers, ...identity.policyProducers };
+  const handoff = handoffInput(identity);
+  const binding = handoff.classification.binding;
   const read = {
     composition: { base: currentBase, complete: true, head: currentHead, producer: expectedProducers.composition, result: identity.compositionResult ?? "composition-result", workflowRun: identity.compositionRun ?? "composition-run" },
     contractFingerprint: fingerprint, cursor: "issue-cursor-1", draft: false,
     evidence: Object.fromEntries(evidenceNames.map((name) => [name, resultIdentity(name)])),
-    handoffInput: handoffInput(identity), head: currentHead, issueIdentity, issueUpdated: "observation-2",
+    handoffInput: handoff, head: binding.head, issueIdentity: binding.issueIdentity, issueUpdated: "observation-2", laneInput: normalLaneInput(currentBase, currentHead, issueIdentity, pullRequest),
     lifecycle: "status: ready for human review", mergeable: true,
     pagination: { complete: true, cursor: "issue-cursor-1", pages: [{ count: 7, end: "page-end-1", index: 0, start: "issue-cursor-1" }], truncated: false },
-    pullRequest, readiness: `10:v2:${fingerprint}`, repository,
+    pullRequest: binding.pullRequest, readiness: `10:v2:${fingerprint}`, repository: binding.repository,
     source: `codex/issue-${pullRequest}-merge-group-broker`, target, targetTip: currentBase,
   };
   const locks = {
-    issue: { acquired: true, current: true, fence: `issue-fence-${pullRequest}`, issueIdentity, repository }, order: ["issue", "target"],
+    issue: { acquired: true, current: true, fence: `issue-fence-${binding.pullRequest}`, issueIdentity: binding.issueIdentity, repository: binding.repository }, order: ["issue", "target"],
     target: { acquired: true, current: true, fence: identity.targetFence ?? "target-fence-1", repository, target },
   };
   const semantics = Object.fromEntries([
@@ -95,7 +96,7 @@ function brokerInput(identity = {}) {
     "fencing", "liveProbe", "stableReads",
   ].map((name) => [name, true]));
   const preSubmitRead = {
-    head: currentHead, issueFence: locks.issue.fence, pullRequest, repository, target,
+    head: binding.head, issueFence: locks.issue.fence, pullRequest: binding.pullRequest, repository: binding.repository, target,
     targetFence: locks.target.fence, targetTip: currentBase,
   };
   return { expectedProducers, firstRead: read, locks, preSubmitRead, secondRead: structuredClone(read), semantics, submittedSnapshots: [] };
@@ -132,7 +133,7 @@ function assertMutations(mutations, action, select = (input) => input) {
     );
 }
 // prettier-ignore
-const staleReadMutations = [(read) => (read.issueUpdated = "semantic-edit"), (read) => (read.readiness = "lost"), (read) => (read.lifecycle = "status: pr open"), (read) => (read.head = sha("3")), (read) => (read.targetTip = sha("4")), (read) => (read.target = "dev"), (read) => (read.source = ""), (read) => (read.pullRequest = Number.NaN), (read) => (read.contractFingerprint = "bad"), (read) => (read.evidence.conversations.current = false), (read) => (read.evidence.audit.current = false), (read) => (read.evidence.audit.producer = ""), (read) => (read.evidence.Injected = resultIdentity("injected")), (read) => (read.pagination.complete = false), (read) => (read.pagination.truncated = true), (read) => (read.pagination.pages = []), (read) => (read.pagination.pages[0].count = -1), (read) => (read.pagination.pages[0].end = ""), (read) => (read.pagination.pages[0].index = 1), (read) => (read.composition.complete = false), (read) => (read.composition.result = ""), (read) => (read.draft = true), (read) => (read.mergeable = false), (read) => (read.handoffInput.generation.digest = "f".repeat(64)), (read) => (read.issueIdentity = "issue-34")];
+const staleReadMutations = [(read) => (read.issueUpdated = "semantic-edit"), (read) => (read.readiness = "lost"), (read) => (read.lifecycle = "status: pr open"), (read) => (read.head = sha("3")), (read) => (read.targetTip = sha("4")), (read) => (read.target = "dev"), (read) => (read.source = ""), (read) => (read.pullRequest = Number.NaN), (read) => (read.contractFingerprint = "bad"), (read) => (read.evidence.conversations.current = false), (read) => (read.evidence.audit.current = false), (read) => (read.evidence.audit.producer = ""), (read) => (read.evidence.Injected = resultIdentity("injected")), (read) => (read.pagination.complete = false), (read) => (read.pagination.truncated = true), (read) => (read.pagination.pages = []), (read) => (read.pagination.pages[0].count = -1), (read) => (read.pagination.pages[0].end = ""), (read) => (read.pagination.pages[0].index = 1), (read) => (read.composition.complete = false), (read) => (read.composition.result = ""), (read) => (read.draft = true), (read) => (read.mergeable = false), (read) => (read.handoffInput.generation.digest = "f".repeat(64)), (read) => (read.issueIdentity = "issue-34"), (read) => delete read.laneInput, (read) => (read.laneInput = null), (read) => (read.laneInput.authority.scope = "stale")];
 // prettier-ignore
 const unavailableMutations = [(input) => (input.firstRead = undefined), (input) => (input.firstRead.pagination.truncated = true), (input) => (input.firstRead.target = "dev")];
 // prettier-ignore
@@ -147,12 +148,10 @@ function acceptedResponse(snapshot, overrides = {}) {
   // prettier-ignore
   return { head: proof.head, mergeCommit, parents: [proof.targetTip, proof.head], pullRequest: proof.pullRequest, repository: proof.repository, snapshotId: snapshot.id, status: "accepted", target: proof.target, targetTip: mergeCommit, ...overrides };
 }
-
 test("keeps automated merge disabled without proven provider semantics", () => {
   // prettier-ignore
   assert.deepEqual(decideEpicMergeAuthorization({}), { action: "human_only", automation: false, code: "automation_not_proven", ok: false, retry: false });
 });
-
 test("binds all stable facts and emits one dual-ref conditional request", () => {
   const input = brokerInput();
   const { bound, decide } = prepared(input);
@@ -164,7 +163,6 @@ test("binds all stable facts and emits one dual-ref conditional request", () => 
   assert.equal(decision.request.expectedTargetTip, base);
   assert.equal(decision.retry, false);
 });
-
 test("binds eligibility, pagination boundaries, and composition into identity", () => {
   const input = brokerInput();
   const original = bindEpicMergeAuthorizationSnapshot(input);
@@ -177,7 +175,6 @@ test("binds eligibility, pagination boundaries, and composition into identity", 
   const rebound = bindEpicMergeAuthorizationSnapshot(changed);
   assert.notEqual(rebound.snapshot.id, original.snapshot.id);
 });
-
 test("binds every authenticated handoff result and transition identity", () => {
   const original = bindEpicMergeAuthorizationSnapshot(brokerInput());
   const changedResult = bindEpicMergeAuthorizationSnapshot(
@@ -192,27 +189,23 @@ test("binds every authenticated handoff result and transition identity", () => {
   assert.notEqual(changedResult.snapshot.id, original.snapshot.id);
   assert.notEqual(changedTransition.snapshot.id, original.snapshot.id);
 });
-
 test("makes no submission decision after stale or incomplete stable reads", () => {
   for (const result of staleReadMutations.map(changedBinding)) {
     assert.equal(result.ok, false);
     assert.notEqual(result.action, "submit_once");
   }
   const race = brokerInput();
-  race.secondRead.cursor = "hidden-pre-boundary-mutation";
+  race.secondRead.laneInput.authority.scope = "hidden-pre-boundary-mutation";
   assert.equal(bindEpicMergeAuthorizationSnapshot(race).ok, false);
 });
-
 test("selects human-only for unavailable observations and dev authority", () => {
   assertMutations(unavailableMutations, "human_only");
 });
-
 test("distinguishes malformed eligibility facts from proven ineligibility", () => {
   const read = (input) => input.firstRead;
   assertMutations(malformedEligibility, "human_only", read);
   assertMutations(ineligibleMutations, "none", read);
 });
-
 test("distinguishes malformed post-bind proofs from valid changed identities", () => {
   const current = prepared();
   // prettier-ignore
@@ -232,11 +225,9 @@ test("distinguishes malformed post-bind proofs from valid changed identities", (
     "none",
   );
 });
-
 test("requires exact ledgers, producers, lock scopes, and readiness fingerprint", () => {
   assertMutations(unprovenMutations, "human_only");
 });
-
 test("accepts and binds an alternate exact protected producer policy", () => {
   const original = bindEpicMergeAuthorizationSnapshot(brokerInput());
   // prettier-ignore
@@ -257,14 +248,21 @@ test("accepts and binds an alternate exact protected producer policy", () => {
   assert.equal(alternate.ok, true);
   assert.notEqual(alternate.snapshot.id, original.snapshot.id);
 });
-
 test("rejects a self-consistent forged normal handoff producer policy", () => {
   const input = brokerInput({
     b4Producers: { "Issue contract current": "forged" },
   });
   assert.equal(decideEpicMergeAuthorization(input).action, "human_only");
 });
-
+test("rejects self-consistent handoff classification provenance forgeries", () => {
+  // prettier-ignore
+  const forgeries = [(binding) => (binding.authority = "forged-authority"), (binding) => (binding.issueIdentity = "issue-forged"), (binding) => (binding.evidence = "forged-evidence"), (binding) => (binding.scope = "forged-scope"), (binding) => binding.diff.push({ mode: "100644", path: "forged", previous: null, status: "added" })];
+  for (const forge of forgeries)
+    assert.equal(
+      bindEpicMergeAuthorizationSnapshot(brokerInput({ forge })).ok,
+      false,
+    );
+});
 test("rejects discontinuous broker pages and surplus accepted outcomes", () => {
   const paged = brokerInput();
   // prettier-ignore
@@ -390,6 +388,8 @@ test("fails closed on hostile broker evidence without exposing content", () => {
   assert.equal(result.retry, false);
   assert.doesNotMatch(result.code, /SECRET/iu);
   const input = brokerInput();
+  input.firstRead.laneInput = input.secondRead.laneInput = hostile;
+  assert.equal(decideEpicMergeAuthorization(input).ok, false);
   const readback = new Proxy(input, {
     get: (value, key) =>
       key === "snapshotReadback"

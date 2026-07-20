@@ -87,9 +87,10 @@ function classifyConstituent(input) {
   if (!publicationCurrent(input, classification))
     return reject("constituent_publication_invalid");
   const publication = classification.binding.lane === "publication";
+  const handoffInput = { ...input.handoffInput, laneInput: input.laneInput };
   const decision = publication
-    ? evaluatePublicationLifecycleHandoff(input.handoffInput)
-    : evaluateNormalLifecycleHandoff(input.handoffInput);
+    ? evaluatePublicationLifecycleHandoff(handoffInput)
+    : evaluateNormalLifecycleHandoff(handoffInput);
   const binding = classification.binding;
   if (!decision.ok) return reject("constituent_handoff_invalid");
   if (!constituentIdentityMatches(binding, input))
