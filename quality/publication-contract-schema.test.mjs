@@ -168,7 +168,8 @@ test("binds normal results to the classified head identity", () => {
       prContract: matrixSuccess("normal"),
     },
   });
-  assert.equal(normal.contexts["Contract publication"], "not_applicable");
+  // prettier-ignore
+  assert.deepEqual(normal, { contexts: { "Contract publication": "not_applicable", "Issue contract current": "success", "PR contract": "success" }, lane: "normal", ok: true, readinessClaim: false });
 });
 test("binds publication results to the exact accepted candidate", () => {
   const candidate = matrixCandidate();
@@ -178,8 +179,8 @@ test("binds publication results to the exact accepted candidate", () => {
     classification,
     publication: success(),
   });
-  assert.equal(publication.contexts["Contract publication"], "success");
-  assert.equal(publication.readinessClaim, false);
+  // prettier-ignore
+  assert.deepEqual(publication, { contexts: { "Contract publication": "success", "Issue contract current": "success", "PR contract": "success" }, lane: "publication", ok: true, readinessClaim: false });
   const context = (result) =>
     publicationResultMatrix({
       classification,
