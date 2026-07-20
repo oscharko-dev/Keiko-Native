@@ -202,14 +202,12 @@ function resultMatches(result, context, generation, accepted) {
   ].every(Boolean);
 }
 
-function uniqueResultIdentities(generation) {
+function uniqueRunAndResultIdentities(generation) {
   const results = contexts.map((context) => generation.results[context]);
   const unique = (select) =>
     new Set(results.map((result) => select(result))).size === contexts.length;
   return (
-    unique((result) => result.producer) &&
-    unique((result) => result.workflowRun) &&
-    unique((result) => result.result)
+    unique((result) => result.workflowRun) && unique((result) => result.result)
   );
 }
 
@@ -229,7 +227,7 @@ function authenticatedResults(input, accepted) {
     )
   )
     return false;
-  return uniqueResultIdentities(generation);
+  return uniqueRunAndResultIdentities(generation);
 }
 
 function successfulMatrix(classification, accepted) {
