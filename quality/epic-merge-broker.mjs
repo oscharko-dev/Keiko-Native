@@ -3,10 +3,10 @@ import {
   compareLifecycleGenerationDigestV1,
   digestLifecycleGenerationV1,
 } from "./lifecycle-generation.mjs";
-import { evaluateNormalLifecycleHandoff } from "./lifecycle-handoff.mjs";
+// prettier-ignore
+import { classifyLifecycleHandoffLane, evaluateNormalLifecycleHandoff } from "./lifecycle-handoff.mjs";
 import { lifecycleObservation } from "./lifecycle-handoff-generation.mjs";
 import { LIFECYCLE_STATES } from "./issue-lifecycle.mjs";
-
 const same = isDeepStrictEqual;
 const record = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -68,7 +68,7 @@ const snapshotKeys = Object.freeze(["id", "issueIdentity", "issueLock", "preSubm
 // prettier-ignore
 const preSubmitKeys = Object.freeze(["head", "issueFence", "pullRequest", "repository", "target", "targetFence", "targetTip"]);
 // prettier-ignore
-const brokerReadKeys = Object.freeze(["composition", "contractFingerprint", "cursor", "draft", "evidence", "handoffInput", "head", "issueIdentity", "issueUpdated", "lifecycle", "mergeable", "pagination", "pullRequest", "readiness", "repository", "source", "target", "targetTip"]);
+const brokerReadKeys = Object.freeze(["composition", "contractFingerprint", "cursor", "draft", "evidence", "handoffInput", "head", "issueIdentity", "issueUpdated", "laneInput", "lifecycle", "mergeable", "pagination", "pullRequest", "readiness", "repository", "source", "target", "targetTip"]);
 const exactKeys = (value, keys) =>
   record(value) &&
   same(Object.keys(value).toSorted(compareText), keys.toSorted(compareText));
@@ -122,23 +122,24 @@ function evidenceCurrent(evidence, expected) {
   );
 }
 function brokerHandoff(read) {
+  const classification = classifyLifecycleHandoffLane(read.laneInput);
+  if (
+    classification.binding?.lane !== "normal" ||
+    !same(classification, read.handoffInput?.classification)
+  )
+    return undefined;
   if (!generationCurrent(read.handoffInput)) return undefined;
-  const decision = evaluateNormalLifecycleHandoff(read.handoffInput);
+  // prettier-ignore
+  const decision = evaluateNormalLifecycleHandoff({ ...read.handoffInput, laneInput: read.laneInput });
   if (!decision.ok) return undefined;
   const request = read.handoffInput.generationRequest;
   const observation = lifecycleObservation(request?.inputs);
   if (observation === undefined) return undefined;
-  if (
-    !observationKeys.every(
-      ([observationKey, readKey]) =>
-        observation[observationKey] === read[readKey],
-    )
-  )
-    return undefined;
-  const binding = read.handoffInput.classification.binding;
-  return handoffIdentityKeys.every((key) => binding[key] === read[key])
-    ? decision
-    : undefined;
+  // prettier-ignore
+  if (!observationKeys.every(([observationKey, readKey]) => observation[observationKey] === read[readKey])) return undefined;
+  const binding = classification.binding;
+  // prettier-ignore
+  return handoffIdentityKeys.every((key) => binding[key] === read[key]) ? decision : undefined;
 }
 function paginationCurrent(pagination, cursor) {
   const keys = ["complete", "cursor", "pages", "truncated"];
@@ -356,9 +357,8 @@ function preSubmitCurrent(read) {
     exactKeys(read, preSubmitKeys),
     [read.head, read.targetTip].every(commit),
     Number.isSafeInteger(read.pullRequest),
-    [read.repository, read.target, read.issueFence, read.targetFence].every(
-      text,
-    ),
+    // prettier-ignore
+    [read.repository, read.target, read.issueFence, read.targetFence].every(text),
   ].every(Boolean);
 }
 function validLedger(value) {

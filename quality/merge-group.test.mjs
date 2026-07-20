@@ -38,22 +38,23 @@ function normalMember(pullRequest = 32, memberHead = sha("3"), identity = {}) {
   const memberTarget = identity.target ?? target;
   const b4Producers = { ...normalProducers, ...identity.b4Producers };
   const laneInput = {
-    authority: { head: memberHead, id: `${issueIdentity}-v2`, issueIdentity, lane: "normal", pullRequest, repository, scope: "quality/merge-group*", target: memberTarget },
+    authority: { evidence: "normal-observation-1", head: memberHead, id: `${issueIdentity}-v2`, issueIdentity, lane: "normal", pullRequest, repository, scope: "quality/merge-group*", target: memberTarget },
     diff: { base, complete: true, files: [], head: memberHead, normalValidated: true, pullRequest, repository, truncated: false },
     target: memberTarget,
   };
   const classification = classifyLifecycleHandoffLane(laneInput);
+  const binding = (identity.forge?.(classification.binding), classification.binding);
   const generationRequest = { attemptSequence: 0, classification, expectedProducers: b4Producers, inputs: observed("observation-2", "status: ready for human review", memberTarget) };
   let state = coalesceLifecycleInputGeneration(generationRequest);
   for (const context of ["Issue contract current", "PR contract"]) {
     state = coalesceLifecycleInputGeneration({
       ...generationRequest,
-      completion: { conclusion: "success", context, generation: state.generation.digest, head: memberHead, output: { binding: classification.binding, ok: true }, producer: b4Producers[context], result: `${context}-result${identity.resultSuffix ?? ""}`, workflowRun: `${context}-run${identity.resultSuffix ?? ""}` },
+      completion: { conclusion: "success", context, generation: state.generation.digest, head: memberHead, output: { binding, ok: true }, producer: b4Producers[context], result: `${context}-result${identity.resultSuffix ?? ""}`, workflowRun: `${context}-run${identity.resultSuffix ?? ""}` },
       prior: state.generation,
     });
   }
   const eventIdentity = identity.eventIdentity ?? `handoff-${pullRequest}`;
-  const transition = { actorRole: "implementer", applied: true, authority: `${issueIdentity}-v2`, eventIdentity, head: memberHead, issueIdentity, lockFence: "issue-fence-1", producer: b4Producers["Lifecycle handoff"], pullRequest, repository, result: "handoff-result", resultRevision: "observation-2", source: "status: pr open", sourceRevision: "observation-1", target: "status: ready for human review", targetRef: memberTarget, workflowRun: "handoff-run" };
+  const transition = { actorRole: "implementer", applied: true, authority: binding.authority, eventIdentity, head: binding.head, issueIdentity: binding.issueIdentity, lockFence: "issue-fence-1", producer: b4Producers["Lifecycle handoff"], pullRequest: binding.pullRequest, repository: binding.repository, result: "handoff-result", resultRevision: "observation-2", source: "status: pr open", sourceRevision: "observation-1", target: "status: ready for human review", targetRef: binding.target, workflowRun: "handoff-run" };
   return {
     handoffInput: {
       classification, generation: state.generation, generationRequest,
@@ -62,7 +63,7 @@ function normalMember(pullRequest = 32, memberHead = sha("3"), identity = {}) {
         comments: [{ body: `<!-- keiko-native-readiness -->\n- Status: \`accepted\`\n- Contract version: \`v2\`\n- Fingerprint: \`${fingerprint}\``, id: 10, user: { id: 41898282, login: "github-actions[bot]", type: "Bot" } }],
         currentFingerprint: fingerprint, currentVersion: "v2", expectedCommentId: 10,
       },
-      readback: { actualIssueIdentity: issueIdentity, expectedIssueIdentity: issueIdentity, head: memberHead, issueRevision: "observation-2", labels: ["status: ready for human review"], transitionIdentity: eventIdentity },
+      readback: { actualIssueIdentity: binding.issueIdentity, expectedIssueIdentity: binding.issueIdentity, head: binding.head, issueRevision: "observation-2", labels: ["status: ready for human review"], transitionIdentity: eventIdentity },
       transition,
     },
     head: memberHead, laneInput, pullRequest,
@@ -183,7 +184,6 @@ function groupEvaluation(input, snapshot, overrides = {}) {
     ...overrides,
   });
 }
-
 test("binds a stable group snapshot and publishes only after exact readback", () => {
   const read = groupRead();
   const input = groupInput(read, producers, {
@@ -201,7 +201,6 @@ test("binds a stable group snapshot and publishes only after exact readback", ()
   const rebound = bindGroup(changed);
   assert.notEqual(rebound.snapshot.id, bound.snapshot.id);
 });
-
 test("accepts all-normal, all-publication, and mixed ordered groups", () => {
   const migration = publicationMember("status: blocked", 34, sha("4"));
   const migrated = classifyMergeGroupConstituent(migration);
@@ -218,7 +217,6 @@ test("accepts all-normal, all-publication, and mixed ordered groups", () => {
     assert.equal(result.ok, true, result.code);
   }
 });
-
 test("binds every constituent result and transition identity", () => {
   const bind = (member) => bindGroup(groupRead([member]));
   const original = bind(normalMember());
@@ -234,7 +232,6 @@ test("binds every constituent result and transition identity", () => {
   assert.notEqual(changedResult.snapshot.id, original.snapshot.id);
   assert.notEqual(changedTransition.snapshot.id, original.snapshot.id);
 });
-
 test("rejects incomplete, truncated, malformed, and unstable pagination", () => {
   const valid = groupRead([normalMember(), publicationMember()]);
   const changed = (mutate) => changedGroup(valid, mutate);
@@ -245,7 +242,6 @@ test("rejects incomplete, truncated, malformed, and unstable pagination", () => 
   ])
     assert.equal(result.ok, false);
 });
-
 test("rejects reordered, duplicated, stale, and invalidated members", () => {
   const valid = groupRead([normalMember(), publicationMember()]);
   const changed = (mutate) => changedGroup(valid, mutate);
@@ -279,7 +275,6 @@ test("rejects reordered, duplicated, stale, and invalidated members", () => {
   ])
     assert.equal(result.ok, false);
 });
-
 test("rejects discontinuous, duplicated, and cursor-detached group pages", () => {
   const valid = groupRead([normalMember(), publicationMember()]);
   valid.pagination.pages = [
@@ -329,7 +324,12 @@ test("rejects invalid lane, generation, publication, handoff, and member identit
     mutate(member);
     return classifyMergeGroupConstituent(member);
   };
+  // prettier-ignore
+  const forgeries = [(binding) => (binding.authority = "forged-authority"), (binding) => (binding.issueIdentity = "issue-forged"), (binding) => (binding.evidence = "forged-evidence"), (binding) => (binding.scope = "forged-scope"), (binding) => binding.diff.push({ mode: "100644", path: "forged", previous: null, status: "added" })];
   for (const result of [
+    ...forgeries.map((forge) =>
+      classifyMergeGroupConstituent(normalMember(32, sha("3"), { forge })),
+    ),
     changed(normalMember, (member) => (member.laneInput.diff.complete = false)),
     changed(
       normalMember,
