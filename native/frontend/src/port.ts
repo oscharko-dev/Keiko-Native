@@ -109,6 +109,8 @@ export function createRendererPort(
           schemaVersion: 1,
           requestId: request.requestId,
         };
+        // Best-effort fire-and-forget: the abort outcome is surfaced to the
+        // caller by fail() below, so a failed cancel dispatch must not reject.
         void invoke("application_cancel", {
           generation: authority.generation,
           documentNonce: authority.documentNonce,
@@ -178,6 +180,8 @@ export function createRendererPort(
           schemaVersion: 1,
           requestId: request.requestId,
         };
+        // Best-effort fire-and-forget: the abort outcome is surfaced to the
+        // caller by fail() below, so a failed cancel dispatch must not reject.
         void invoke("application_cancel", {
           generation: authority.generation,
           documentNonce: authority.documentNonce,
