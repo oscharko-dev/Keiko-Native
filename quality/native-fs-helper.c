@@ -167,7 +167,7 @@ static void verify_file_path(int root, const char *path,
 }
 
 static int open_dir_at_path(int root, const char *path, int create,
-                            chain_t *chain) {
+                            mode_t create_mode, chain_t *chain) {
   if (!strcmp(path, ".")) {
     int result = dup(root);
     if (result < 0) fail("root-dup");
@@ -177,7 +177,7 @@ static int open_dir_at_path(int root, const char *path, int create,
   char leaf[NAME_MAX + 1];
   int parent = open_parent(root, path, create, chain, leaf);
   int created = 0;
-  if (create && mkdirat(parent, leaf, 0700)) {
+  if (create && mkdirat(parent, leaf, create_mode)) {
     if (errno != EEXIST) fail("mkdir");
   } else if (create)
     created = 1;
@@ -185,7 +185,9 @@ static int open_dir_at_path(int root, const char *path, int create,
   struct stat descriptor, named;
   if (result < 0 || fstat(result, &descriptor) ||
       fstatat(parent, leaf, &named, AT_SYMLINK_NOFOLLOW) ||
-      !S_ISDIR(descriptor.st_mode) || descriptor.st_dev != named.st_dev ||
+      !S_ISDIR(descriptor.st_mode) ||
+      (created && (descriptor.st_mode & 0777) != create_mode) ||
+      descriptor.st_dev != named.st_dev ||
       descriptor.st_ino != named.st_ino || descriptor.st_mode != named.st_mode)
     fail("directory-open");
   if (created && sync_directory(parent, "directory-parent-sync"))
@@ -257,7 +259,7 @@ int native_fs_run(int argc, char **argv) {
     close_chain(&chain, 1);
   } else if (!strcmp(argv[1], "mkdir") && argc == 4) {
     chain_t chain = {0};
-    int directory = open_dir_at_path(root, argv[3], 1, &chain);
+    int directory = open_dir_at_path(root, argv[3], 1, 0700, &chain);
     (void)directory;
     refresh_chain(&chain);
     test_barrier();
@@ -265,7 +267,7 @@ int native_fs_run(int argc, char **argv) {
     close_chain(&chain, 1);
   } else if (!strcmp(argv[1], "list") && (argc == 4 || argc == 5)) {
     chain_t chain = {0};
-    int directory = open_dir_at_path(root, argv[3], 0, &chain);
+    int directory = open_dir_at_path(root, argv[3], 0, 0700, &chain);
     refresh_chain(&chain);
     print_tree(directory, "", argc == 5 ? argv[4] : NULL, 0);
     close_chain(&chain, 1);
@@ -307,14 +309,11 @@ int native_fs_run(int argc, char **argv) {
     close_chain(&chain, 1);
   } else if (!strcmp(argv[1], "copy-tree") && (argc == 6 || argc == 7)) {
     chain_t source_chain = {0}, destination_chain = {0};
-    int source = open_dir_at_path(root, argv[3], 0, &source_chain);
+    int source = open_dir_at_path(root, argv[3], 0, 0700, &source_chain);
     int destination_root = open_absolute(argv[4], 0, &destination_chain);
     int destination =
-        open_dir_at_path(destination_root, argv[5], 1, &destination_chain);
-    const mode_t packaged_directory_mode =
-        S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH;
-    if (strcmp(argv[5], ".") && fchmod(destination, packaged_directory_mode))
-      fail("copy-directory-mode");
+        open_dir_at_path(destination_root, argv[5], 1, 0755,
+                         &destination_chain);
     refresh_chain(&source_chain);
     refresh_chain(&destination_chain);
     test_barrier();
@@ -327,7 +326,7 @@ int native_fs_run(int argc, char **argv) {
     close_chain(&destination_chain, 1);
   } else if (!strcmp(argv[1], "publish") && argc == 6) {
     chain_t source_chain = {0}, destination_chain = {0};
-    int source = open_dir_at_path(root, argv[3], 0, &source_chain);
+    int source = open_dir_at_path(root, argv[3], 0, 0700, &source_chain);
     int destination_root = open_absolute(argv[4], 1, &destination_chain);
     refresh_chain(&destination_chain);
     refresh_chain(&source_chain);

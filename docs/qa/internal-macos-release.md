@@ -24,7 +24,10 @@ sizes, and digests, no extras or privilege modes, an executable application bina
 write-open attempts for every file. ISO 9660/Joliet projects regular-file modes as `0755`, including
 package files recorded as `0644`; copied modes are therefore restored only from the validated
 package manifest before the copied path, mode, size, and digest inventory is checked exactly. The
-target directory is generated evidence and is not committed.
+target directory is generated evidence and is not committed. Private workspace directories remain
+owner-only (`0700`). A copied application bundle root is created directly with its closed package
+inventory mode (`0755`) inside that private workspace; the helper does not widen an existing
+directory's permissions. The separate disk-image projection remains read-only.
 
 The directory must contain exactly:
 

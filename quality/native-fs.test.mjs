@@ -98,6 +98,14 @@ test(
         code: "ENOENT",
       });
       fs.mkdir(join(root, "destination"), "directory/nested");
+      assert.equal(
+        (await lstat(join(root, "destination/directory"))).mode & 0o777,
+        0o700,
+      );
+      assert.equal(
+        (await lstat(join(root, "destination/directory/nested"))).mode & 0o777,
+        0o700,
+      );
       fs.chmod(join(root, "destination"), "created", 0o644);
       fs.touch(join(root, "destination"), "created", 1_700_000_000);
       fs.symlink(join(root, "destination"), "directory/link", "../created");
