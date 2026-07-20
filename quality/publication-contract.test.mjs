@@ -223,23 +223,25 @@ function publicationFixture(changeReceipt = () => {}) {
     validatedGroup: { base, head, prefixTree, resultTree },
   };
 }
-function migrationFixture() {
+function migrationFixture(changeEntries = () => {}) {
   const readiness =
     "https://github.com/oscharko-dev/Keiko-Native/issues/30#issuecomment-123";
-  const manifest = {
-    digest: "c".repeat(64),
-    path: "docs/qa/repository-migration-manifest-v1.md",
-  };
-  let entries;
+  let bytes, entries, manifest;
   const fixture = publicationFixture((receipt) => {
     receipt.observations[0].lifecycleLabels = ["status: ready"];
     receipt.observations[0].readiness = readiness;
     receipt.observations[0].readinessProducer =
       "issue-readiness.yml@protected-dev";
-    receipt.terminalManifest = manifest;
     entries = structuredClone(receipt.observations);
+    changeEntries(entries);
+    bytes = Buffer.from(`${JSON.stringify({ entries })}\n`);
+    manifest = {
+      digest: contractSha256(bytes).digest,
+      path: "docs/qa/repository-migration-manifest-v1.md",
+    };
+    receipt.terminalManifest = manifest;
   });
-  fixture.terminalManifestEvidence = { ...manifest, entries };
+  fixture.terminalManifestEvidence = { ...manifest, bytes };
   return fixture;
 }
 const decoyEntry = () => ({
@@ -302,18 +304,23 @@ test("binds migration publication to exact terminal manifest evidence", () => {
     (x) => (x.terminalManifestEvidence = null),
     (x) => (x.terminalManifestEvidence.path = "docs/qa/stale-v1.md"),
     (x) => (x.terminalManifestEvidence.digest = digestA),
-    (x) => x.terminalManifestEvidence.entries.push({ number: 31 }),
-    (x) =>
-      x.terminalManifestEvidence.entries.push(
-        x.terminalManifestEvidence.entries[0],
-      ),
-    (x) => (x.terminalManifestEvidence.entries[0].fingerprint = digestA),
+    (x) => (x.terminalManifestEvidence.bytes = Buffer.from('{"entries":[]}\n')),
+    (x) => (x.terminalManifestEvidence.bytes = Buffer.from("{}\n")),
+    (x) => (x.terminalManifestEvidence.entries = []),
+    // prettier-ignore
+    (x) => Object.defineProperty(x.terminalManifestEvidence, "bytes", { get() { throw new Error("SECRET"); } }),
   ];
   for (const mutate of mutations) {
     const fixture = migrationFixture();
     mutate(fixture);
     assert.equal(verifyPublication(fixture).ok, false);
   }
+  assert.equal(
+    verifyPublication(
+      migrationFixture((entries) => (entries[0].fingerprint = digestA)),
+    ).ok,
+    false,
+  );
 });
 const signFixture = (fixture, payload) => {
   fixture.commit.signedPayload = payload;

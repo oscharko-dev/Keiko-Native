@@ -82,7 +82,7 @@ function publicationCandidate(lifecycle = null, pullRequest = 33, memberHead = h
     recoveries: [], revision: 1, state: "open", type: "task", version: 2,
   };
   const receiptPath = `docs/contracts/publications/pr-${pullRequest}.md`;
-  const manifestBytes = Buffer.from("# Terminal migration manifest\n");
+  const manifestBytes = Buffer.from(`${JSON.stringify({ entries: [observation] })}\n`);
   const manifest = migration ? { digest: contractSha256(manifestBytes).digest, path: "docs/qa/repository-migration-manifest-v1.md" } : null;
   const receiptValue = { candidates: [contract], observations: [observation], pullRequest, target: "dev", terminalManifest: manifest };
   const receiptBytes = Buffer.from(`${JSON.stringify(receiptValue)}\n`);
@@ -95,7 +95,7 @@ function publicationCandidate(lifecycle = null, pullRequest = 33, memberHead = h
     pullRequest: { base, baseRef: "dev", head: memberHead, merged: false, number: pullRequest, state: "open" },
     receipt: { bytes: receiptBytes, digest: contractSha256(receiptBytes).digest, path: receiptPath },
     repository, target: "dev",
-    terminalManifest: migration ? { base, bytes: manifestBytes, digest: manifest.digest, entries: [observation], mode: "100644", path: manifest.path, repository } : null,
+    terminalManifest: migration ? { base, bytes: manifestBytes, digest: manifest.digest, mode: "100644", path: manifest.path, repository } : null,
   };
 }
 // prettier-ignore

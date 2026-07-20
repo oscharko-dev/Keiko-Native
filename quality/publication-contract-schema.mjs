@@ -11,27 +11,28 @@ const readinessProducer = "issue-readiness.yml@protected-dev";
 const readinessPattern = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/issues\/([1-9]\d*)#issuecomment-[1-9]\d*$/u, manifestPattern = /^docs\/qa\/[a-z0-9-]+-v[1-9]\d*\.md$/u, actorPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u, retainedLifecycle = /^status: (?:ready|in progress|pr open|ready for human review|blocked|waiting for user)$/u, prTrackedLifecycle = /^status: (?:pr open|ready for human review)$/u;
 // prettier-ignore
 const reject = (code) => ({ ok: false, rejection: { code, message: "Snapshot receipt failed closed." } });
-const record = (value) =>
-  value !== null && typeof value === "object" && !Array.isArray(value);
-const sha = (value) =>
-  typeof value === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(value);
-export const samePublicationBytes = (left, right) =>
-  left instanceof Uint8Array &&
-  right instanceof Uint8Array &&
-  Buffer.from(left).equals(Buffer.from(right));
-export function decodeSnapshotReceipt(receipt) {
-  if (!record(receipt) || !(receipt.bytes instanceof Uint8Array))
-    return undefined;
+// prettier-ignore
+const record = (value) => value !== null && typeof value === "object" && !Array.isArray(value), sha = (value) => typeof value === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(value);
+// prettier-ignore
+export const samePublicationBytes = (left, right) => left instanceof Uint8Array && right instanceof Uint8Array && Buffer.from(left).equals(Buffer.from(right));
+function decodeCanonicalJson(bytes) {
+  if (!(bytes instanceof Uint8Array)) return undefined;
   try {
-    const text = new TextDecoder("utf-8", { fatal: true }).decode(
-      receipt.bytes,
-    );
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     if (!text.endsWith("\n")) return undefined;
     const value = JSON.parse(text);
     return text === `${JSON.stringify(value)}\n` ? value : undefined;
   } catch {
     return undefined;
   }
+}
+export const decodeSnapshotReceipt = (receipt) =>
+  record(receipt) ? decodeCanonicalJson(receipt.bytes) : undefined;
+export function decodeTerminalManifest(manifest) {
+  const value = record(manifest)
+    ? decodeCanonicalJson(manifest.bytes)
+    : undefined;
+  return record(value) && Array.isArray(value.entries) ? value : undefined;
 }
 function completeEvidence(evidence, repository) {
   try {
