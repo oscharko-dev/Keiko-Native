@@ -9,47 +9,17 @@ import {
 
 const head = "2".repeat(40);
 const contexts = ["Issue contract current", "PR contract"];
-const producers = {
-  "Contract publication": "publication.yml@protected-dev",
-  "Issue contract current": "issue-current.yml@protected-dev",
-  "Lifecycle handoff": "lifecycle-handoff.yml@protected-dev",
-  "PR contract": "pr-contract.yml@protected-dev",
-};
-const classification = {
-  binding: {
-    authority: "issue-32-v2",
-    base: "1".repeat(40),
-    contractPaths: [],
-    diff: [],
-    head,
-    issueIdentity: "issue-32",
-    lane: "normal",
-    pullRequest: 32,
-    repository: "oscharko-dev/Keiko-Native",
-    scope: "quality/lifecycle-handoff*",
-    target: "epic/29-repository-backed-contracts",
-  },
-  lane: "normal",
-  ok: true,
-};
+// prettier-ignore
+const producers = { "Contract publication": "publication.yml@protected-dev", "Issue contract current": "issue-current.yml@protected-dev", "Lifecycle handoff": "lifecycle-handoff.yml@protected-dev", "PR contract": "pr-contract.yml@protected-dev" };
+// prettier-ignore
+const classification = { binding: { authority: "issue-32-v2", base: "1".repeat(40), contractPaths: [], diff: [], head, issueIdentity: "issue-32", lane: "normal", pullRequest: 32, repository: "oscharko-dev/Keiko-Native", scope: "quality/lifecycle-handoff*", target: "epic/29-repository-backed-contracts" }, lane: "normal", ok: true };
+// prettier-ignore
+const observationPairs = (value, lifecycle) => [["issueRevision", value], ["readiness", "readiness-1"], ["lifecycle", lifecycle], ["target", classification.binding.target], ["reviews", "reviews-1"], ["conversations", "conversations-1"], ["audit", "audit-1"], ["journey", "journey-1"], ["manual", "manual-1"], ["external", "external-1"], ["platform", "platform-1"], ["upstream", "upstream-1"]];
 const inputs = (
   value = "observation-1",
   lifecycle = "status: ready for human review",
 ) => ({
-  fields: [
-    ["issueRevision", value],
-    ["readiness", "readiness-1"],
-    ["lifecycle", lifecycle],
-    ["target", classification.binding.target],
-    ["reviews", "reviews-1"],
-    ["conversations", "conversations-1"],
-    ["audit", "audit-1"],
-    ["journey", "journey-1"],
-    ["manual", "manual-1"],
-    ["external", "external-1"],
-    ["platform", "platform-1"],
-    ["upstream", "upstream-1"],
-  ].map(([name, item]) => ({
+  fields: observationPairs(value, lifecycle).map(([name, item]) => ({
     name,
     value: { type: "string", value: item },
   })),
@@ -62,30 +32,18 @@ const request = (overrides = {}) => ({
   inputs: inputs(),
   ...overrides,
 });
-const completion = (state, conclusion = "success", overrides = {}) => ({
-  conclusion,
-  context: contexts[0],
-  generation: state.generation.digest,
-  head,
-  producer: producers[contexts[0]],
-  result: "result-1",
-  workflowRun: "run-1",
-  ...overrides,
-});
-function assertInvalidRecovery(failed, recovery) {
-  for (const change of [
-    {},
-    { recovery: { authorized: true } },
-    { attemptSequence: 2, recovery },
-  ]) {
-    const result = coalesceLifecycleInputGeneration({
-      ...request({ attemptSequence: 1, prior: failed.generation }),
-      ...change,
-    });
-    assert.equal(result.ok, false);
-  }
+// prettier-ignore
+const completion = (state, conclusion = "success", overrides = {}) => ({ conclusion, context: contexts[0], generation: state.generation.digest, head, producer: producers[contexts[0]], result: "result-1", workflowRun: "run-1", ...overrides });
+function terminalGeneration(conclusion) {
+  const initial = coalesceLifecycleInputGeneration(request());
+  return coalesceLifecycleInputGeneration({
+    ...request(),
+    completion: completion(initial, conclusion),
+    prior: initial.generation,
+  });
 }
-
+// prettier-ignore
+const recoveryFor = (terminal) => ({ authorized: true, generation: terminal.generation.digest, head: terminal.generation.head, producer: producers["Lifecycle handoff"], result: "recovery-1", workflowRun: "recovery-run-1" });
 test("coalesces one generation and accepts a validated input change", () => {
   const initial = coalesceLifecycleInputGeneration(request());
   assert.equal(initial.ok, true);
@@ -228,23 +186,23 @@ test("settles pending completion without accepting replacement identity", () => 
     );
   }
 });
-
 test("requires authenticated single-step recovery from a terminal generation", () => {
-  const initial = coalesceLifecycleInputGeneration(request());
-  const failed = coalesceLifecycleInputGeneration({
-    ...request(),
-    completion: completion(initial, "failure"),
-    prior: initial.generation,
-  });
-  const recovery = {
-    workflowRun: "recovery-run-1",
-    authorized: true,
-    generation: failed.generation.digest,
-    head: failed.generation.head,
-    producer: producers["Lifecycle handoff"],
-    result: "recovery-1",
-  };
-  assertInvalidRecovery(failed, recovery);
+  const failed = terminalGeneration("failure");
+  const recovery = recoveryFor(failed);
+  // prettier-ignore
+  assert.equal(coalesceLifecycleInputGeneration({ ...request(), prior: failed.generation }).decision, "terminal");
+  for (const change of [
+    {},
+    { recovery: { authorized: true } },
+    { attemptSequence: 2, recovery },
+  ]) {
+    const denied = coalesceLifecycleInputGeneration({
+      ...request({ attemptSequence: 1, prior: failed.generation }),
+      ...change,
+    });
+    assert.equal(denied.ok, false);
+    assert.deepEqual(denied.starts, []);
+  }
   const recovered = coalesceLifecycleInputGeneration(
     request({ attemptSequence: 1, prior: failed.generation, recovery }),
   );
@@ -270,9 +228,52 @@ test("requires authenticated single-step recovery from a terminal generation", (
   }
 });
 
+test("requires exact next-attempt recovery for every terminal input drift", () => {
+  const changedClassification = structuredClone(classification);
+  changedClassification.binding.scope = "quality/changed-scope";
+  // prettier-ignore
+  const changedProducers = { ...producers, "Issue contract current": "issue-current-v2.yml@protected-dev" };
+  const drifts = [
+    { inputs: inputs("observation-2") },
+    { classification: changedClassification },
+    { expectedProducers: changedProducers },
+  ];
+  for (const conclusion of ["failure", "abandoned"]) {
+    const terminal = terminalGeneration(conclusion);
+    const recovery = recoveryFor(terminal);
+    for (const drift of drifts) {
+      const changed = request({ ...drift, prior: terminal.generation });
+      for (const attempt of [
+        {},
+        { recovery: { ...recovery, result: "forged" } },
+        { attemptSequence: 2, recovery },
+      ]) {
+        const denied = coalesceLifecycleInputGeneration({
+          ...changed,
+          ...attempt,
+        });
+        assert.equal(denied.ok, false);
+        assert.deepEqual(denied.starts, []);
+      }
+      const recovered = coalesceLifecycleInputGeneration({
+        ...changed,
+        attemptSequence: 1,
+        recovery,
+      });
+      assert.equal(recovered.decision, "start");
+      assert.equal(recovered.generation.attemptSequence, 1);
+    }
+  }
+});
+
 test("rejects hostile generation evidence", () => {
   const hostile = new Proxy({}, { get: () => assert.fail("hostile getter") });
   assert.equal(matchesCurrentLifecycleGeneration(hostile, hostile), false);
+  const terminal = terminalGeneration("failure");
+  // prettier-ignore
+  const result = coalesceLifecycleInputGeneration(request({ attemptSequence: 1, prior: terminal.generation, recovery: hostile }));
+  assert.equal(result.code, "invalid_generation_evidence");
+  assert.doesNotMatch(JSON.stringify(result), /hostile/iu);
 });
 
 test("binds recovery authorization to one terminal generation and head", () => {
