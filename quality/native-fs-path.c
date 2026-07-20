@@ -31,11 +31,13 @@ static int same_object(const struct stat *left, const struct stat *right) {
 }
 
 void remember_chain(chain_t *chain, int fd, const char *name) {
-  if (chain->count == MAX_DEPTH || fstat(fd, &chain->before[chain->count]))
-    fail("depth-or-stat");
-  if (name && strlen(name) > NAME_MAX) fail("component-too-long");
-  chain->fd[chain->count++] = fd;
-  strcpy(chain->name[chain->count - 1], name ? name : "");
+  if (chain->count >= MAX_DEPTH) fail("depth-or-stat");
+  size_t index = chain->count;
+  if (fstat(fd, &chain->before[index])) fail("depth-or-stat");
+  copy_bounded(chain->name[index], sizeof(chain->name[index]), name ? name : "",
+               "component-too-long");
+  chain->fd[index] = fd;
+  chain->count = index + 1;
 }
 
 void verify_chain(chain_t *chain, int metadata) {
@@ -99,8 +101,7 @@ int open_absolute(const char *path, int create, chain_t *chain) {
   if (current < 0) fail("root-open");
   remember_chain(chain, current, NULL);
   char copy[PATH_MAX];
-  if (strlen(path) >= sizeof(copy)) fail("path-too-long");
-  strcpy(copy, path);
+  copy_bounded(copy, sizeof(copy), path, "path-too-long");
   char *save = NULL;
   for (char *part = strtok_r(copy, "/", &save); part;
        part = strtok_r(NULL, "/", &save)) {
@@ -131,8 +132,7 @@ int open_parent(int root, const char *path, int create, chain_t *chain,
                 char leaf[NAME_MAX + 1]) {
   if (!path[0] || path[0] == '/') fail("invalid-relative-path");
   char copy[PATH_MAX];
-  if (strlen(path) >= sizeof(copy)) fail("path-too-long");
-  strcpy(copy, path);
+  copy_bounded(copy, sizeof(copy), path, "path-too-long");
   char *last = strrchr(copy, '/');
   const char *name = copy;
   char *parents = NULL;
@@ -141,8 +141,8 @@ int open_parent(int root, const char *path, int create, chain_t *chain,
     parents = copy;
     name = last + 1;
   }
-  if (!valid_component(name) || strlen(name) > NAME_MAX) fail("invalid-leaf");
-  strcpy(leaf, name);
+  if (!valid_component(name)) fail("invalid-leaf");
+  copy_bounded(leaf, NAME_MAX + 1, name, "invalid-leaf");
   int current = dup(root);
   if (current < 0) fail("root-dup");
   remember_chain(chain, current, NULL);

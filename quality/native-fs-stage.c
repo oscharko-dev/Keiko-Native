@@ -58,7 +58,7 @@ void arm_stage_cleanup(int parent, const char *name, int stage) {
   cleanup.armed = 1;
   cleanup.parent = retained;
   cleanup.identity = descriptor;
-  strcpy(cleanup.name, name);
+  copy_bounded(cleanup.name, sizeof(cleanup.name), name, "stage-rebound");
 }
 
 void disarm_stage_cleanup(void) {

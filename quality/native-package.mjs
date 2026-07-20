@@ -190,7 +190,7 @@ export function createNativePackageGate({
       (await filesBelow(inventoryRoot)).map(async (path) => ({
         bytes: await readOutputFile(path, inventoryRoot),
         mode: String(await fileMode(path, inventoryRoot)).padStart(4, "0"),
-        path: relative(inventoryRoot, path).split("\\").join("/"),
+        path: relative(inventoryRoot, path).replaceAll("\\", "/"),
         sha256: "",
       })),
     );

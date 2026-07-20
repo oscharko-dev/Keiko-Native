@@ -10,7 +10,7 @@ export function requireReleaseFilesystem(filesystem) {
 }
 
 export function ownedRelative(repositoryRoot, path) {
-  const contained = relative(repositoryRoot, path).split("\\").join("/");
+  const contained = relative(repositoryRoot, path).replaceAll("\\", "/");
   if (!contained || contained.startsWith("../") || contained === "..")
     throw new Error("release-owned-path-rejected");
   return contained;

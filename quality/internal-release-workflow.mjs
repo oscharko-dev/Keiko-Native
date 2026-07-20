@@ -129,12 +129,23 @@ function parseStepEnvironment(step) {
   const [index] = indexes;
   const entries = {};
   for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
-    const match = /^          ([A-Z][A-Z0-9_]*):\s*(.+)$/u.exec(lines[cursor]);
-    if (!match) break;
-    if (entries[match[1]] !== undefined) return [{ invalid: "duplicate" }];
-    entries[match[1]] = match[2];
+    const entry = indentedEnvironmentEntry(lines[cursor]);
+    if (!entry) break;
+    if (entries[entry.key] !== undefined) return [{ invalid: "duplicate" }];
+    entries[entry.key] = entry.value;
   }
   return [entries];
+}
+
+function indentedEnvironmentEntry(line) {
+  if (!line.startsWith("          ") || line[10] === " ") return undefined;
+  const content = line.slice(10);
+  const separator = content.indexOf(":");
+  if (separator < 1) return undefined;
+  const key = content.slice(0, separator);
+  const value = content.slice(separator + 1).trimStart();
+  if (!/^[A-Z][A-Z0-9_]*$/u.test(key) || !value) return undefined;
+  return { key, value };
 }
 
 function stepControlFailures(workflow) {
@@ -178,8 +189,9 @@ function permissionMapping(source, indentation) {
   const prefix = " ".repeat(indentation);
   const matches = lines.flatMap((line, index) => {
     if (!line.startsWith(prefix) || line[indentation] === " ") return [];
-    const match = /^permissions:\s*(.*)$/u.exec(line.slice(indentation));
-    return match ? [{ index, value: match[1].trim() }] : [];
+    const content = line.slice(indentation);
+    if (!content.startsWith("permissions:")) return [];
+    return [{ index, value: content.slice("permissions:".length).trim() }];
   });
   if (matches.length !== 1) return { entries: {}, valid: false };
   const [{ index, value }] = matches;

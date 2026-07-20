@@ -1,3 +1,4 @@
+import { compareCodeUnits } from "./deterministic-order.mjs";
 import * as closed from "./native-package-policy.mjs";
 import { FUNCTIONAL_ACKNOWLEDGEMENT_WATCHDOG_MS } from "./native-lifecycle.mjs";
 
@@ -55,7 +56,9 @@ export function manifestFailures({ cargo, crates, desktopConfig, frontend }) {
   const failures = [];
   if (cargo.workspace?.members?.length !== 4)
     failures.push("cargo-workspace-members");
-  const dependencies = Object.keys(cargo.workspace?.dependencies ?? {}).sort();
+  const dependencies = Object.keys(cargo.workspace?.dependencies ?? {}).sort(
+    compareCodeUnits,
+  );
   const expectedDependencies = [
     "keiko-application",
     "keiko-host-macos",
@@ -87,18 +90,21 @@ export function manifestFailures({ cargo, crates, desktopConfig, frontend }) {
     "keiko-ui-port": ["keiko-application", "serde", "serde_json"],
   };
   for (const crate of crates) {
-    const actual = Object.keys(crate.manifest.dependencies ?? {}).sort();
+    const actual = Object.keys(crate.manifest.dependencies ?? {}).sort(
+      compareCodeUnits,
+    );
     const expected = allowedCrateDependencies[crate.name];
     if (
       expected === undefined ||
-      JSON.stringify(actual) !== JSON.stringify(expected.sort())
+      JSON.stringify(actual) !== JSON.stringify(expected.sort(compareCodeUnits))
     ) {
       failures.push(`crate-dependencies:${crate.name}`);
     }
   }
   if (
-    JSON.stringify(Object.keys(frontend.dependencies ?? {}).sort()) !==
-    JSON.stringify(["@tauri-apps/api", "react", "react-dom"])
+    JSON.stringify(
+      Object.keys(frontend.dependencies ?? {}).sort(compareCodeUnits),
+    ) !== JSON.stringify(["@tauri-apps/api", "react", "react-dom"])
   ) {
     failures.push("frontend-production-dependencies");
   }
@@ -182,7 +188,7 @@ export function packagePolicyFailures({
     "target",
   ];
   if (
-    JSON.stringify(Object.keys(policy).sort()) !==
+    JSON.stringify(Object.keys(policy).sort(compareCodeUnits)) !==
     JSON.stringify(expectedPolicyKeys)
   ) {
     failures.push("package-policy-fields");
@@ -194,15 +200,18 @@ export function packagePolicyFailures({
   if (policy.bundleIdentifier !== "dev.oscharko.keiko-native")
     failures.push("package-policy-bundle-identifier");
   if (
-    JSON.stringify(Object.keys(policy.expectedLocks ?? {}).sort()) !==
-      JSON.stringify(["cargoSha256", "npmSha256"]) ||
+    JSON.stringify(
+      Object.keys(policy.expectedLocks ?? {}).sort(compareCodeUnits),
+    ) !== JSON.stringify(["cargoSha256", "npmSha256"]) ||
     !/^[0-9a-f]{64}$/u.test(policy.expectedLocks?.cargoSha256 ?? "") ||
     !/^[0-9a-f]{64}$/u.test(policy.expectedLocks?.npmSha256 ?? "")
   ) {
     failures.push("package-policy-locks");
   }
   if (
-    JSON.stringify(Object.keys(policy.security ?? {}).sort()) !==
+    JSON.stringify(
+      Object.keys(policy.security ?? {}).sort(compareCodeUnits),
+    ) !==
       JSON.stringify([
         "allowedBundledOrigins",
         "csp",
@@ -243,9 +252,10 @@ export function packagePolicyFailures({
   );
   if (JSON.stringify(fileModes) !== JSON.stringify(closed.CLOSED_FILE_MODES))
     failures.push("package-observed-file-modes");
-  const actualPaths = files.map(({ path }) => path).sort();
+  const actualPaths = files.map(({ path }) => path).sort(compareCodeUnits);
   if (
-    JSON.stringify(actualPaths) !== JSON.stringify([...allowedPaths].sort())
+    JSON.stringify(actualPaths) !==
+    JSON.stringify([...allowedPaths].sort(compareCodeUnits))
   ) {
     failures.push("package-path-inventory");
   }
@@ -261,7 +271,7 @@ export function packagePolicyFailures({
   }
   const licenses = [
     ...new Set([...cargo, ...npm].map(({ license }) => license)),
-  ].sort();
+  ].sort(compareCodeUnits);
   if (JSON.stringify(licenses) !== JSON.stringify(acceptedSpdx)) {
     failures.push("spdx-inventory");
   }
@@ -303,10 +313,10 @@ export function evidenceFailures(evidence, expected) {
     "schema",
     "shutdownMs",
     "sourceRevision",
-  ].toSorted();
+  ].toSorted(compareCodeUnits);
   const failures = [];
   if (
-    JSON.stringify(Object.keys(evidence).sort()) !==
+    JSON.stringify(Object.keys(evidence).sort(compareCodeUnits)) !==
     JSON.stringify(expectedKeys)
   ) {
     failures.push("evidence-fields");

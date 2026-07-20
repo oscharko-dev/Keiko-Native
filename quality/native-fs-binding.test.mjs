@@ -105,7 +105,6 @@ async function fixture(callback) {
       await cp(join(repositoryRoot, path), destination);
       const bytes = await readFile(destination);
       records.push({
-        blob: nativeFsTestSupport.gitBlob(bytes),
         path,
         sha256: nativeFsTestSupport.sha256(bytes),
       });

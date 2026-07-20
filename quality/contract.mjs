@@ -2,6 +2,7 @@ import { access, readFile, readdir } from "node:fs/promises";
 import { extname, join, relative, sep } from "node:path";
 
 import { canonicalCoverageCommand } from "./coverage-reporter.mjs";
+import { compareCodeUnits } from "./deterministic-order.mjs";
 import { internalReleaseWorkflowFailures } from "./internal-release-workflow.mjs";
 import {
   canonicalLineEndings,
@@ -1326,7 +1327,7 @@ export function dependencyReviewWorkflowFailures(workflow) {
     .split(",")
     .map((license) => license.trim())
     .filter(Boolean)
-    .toSorted();
+    .toSorted(compareCodeUnits);
   const dependencyLicenseExceptions = lines.filter((line) =>
     line.trim().startsWith("allow-dependencies-licenses:"),
   );
@@ -1362,7 +1363,7 @@ export function dependencyReviewWorkflowFailures(workflow) {
   if (
     marker < 0 ||
     JSON.stringify(licenses) !==
-      JSON.stringify(dependencyReviewLicenses.toSorted())
+      JSON.stringify(dependencyReviewLicenses.toSorted(compareCodeUnits))
   )
     failures.push(
       "Dependency Review license allowlist is not the exact accepted set.",

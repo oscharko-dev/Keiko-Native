@@ -1,5 +1,7 @@
 import { verify } from "node:crypto";
 
+import { compareCodeUnits } from "./deterministic-order.mjs";
+
 const PAYLOAD_FIELDS = [
   "schema",
   "version",
@@ -14,7 +16,9 @@ const PAYLOAD_FIELDS = [
   "sequence",
   "keyId",
 ];
-const DOCUMENT_FIELDS = [...PAYLOAD_FIELDS, "signature"].toSorted();
+const DOCUMENT_FIELDS = [...PAYLOAD_FIELDS, "signature"].toSorted(
+  compareCodeUnits,
+);
 const MAX_DOCUMENT_BYTES = 16 * 1024;
 const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024 * 1024;
 const MAX_VALIDITY_MS = 14 * 24 * 60 * 60 * 1000;
@@ -151,7 +155,7 @@ function compareVersions(left, right) {
 function validatePayload(metadata, signatureRequired) {
   const expected = signatureRequired
     ? DOCUMENT_FIELDS
-    : PAYLOAD_FIELDS.toSorted();
+    : PAYLOAD_FIELDS.toSorted(compareCodeUnits);
   if (!hasExactFields(metadata, expected))
     throw rejected("UPDATE_METADATA_FIELD_INVALID");
   const issued = exactTimestamp(metadata.issuedAt);
@@ -184,7 +188,8 @@ function hasExactFields(value, expected) {
   )
     return false;
   return (
-    JSON.stringify(Object.keys(value).toSorted()) === JSON.stringify(expected)
+    JSON.stringify(Object.keys(value).toSorted(compareCodeUnits)) ===
+    JSON.stringify(expected)
   );
 }
 
@@ -249,7 +254,8 @@ function parseEnvelope(bytes) {
 function duplicateTopLevelKey(text) {
   const keys = new Set();
   let depth = 0;
-  for (let index = 0; index < text.length; index += 1) {
+  let index = 0;
+  while (index < text.length) {
     if (text[index] === "{") depth += 1;
     else if (text[index] === "}") depth -= 1;
     else if (text[index] === '"') {
@@ -263,6 +269,7 @@ function duplicateTopLevelKey(text) {
       }
       index = end;
     }
+    index += 1;
   }
   return false;
 }

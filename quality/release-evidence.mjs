@@ -1,3 +1,4 @@
+import { compareCodeUnits } from "./deterministic-order.mjs";
 import { decodeReleaseText, parseReleaseJson } from "./release-io.mjs";
 
 export const artifactName = "Keiko-Native-0.1.0-internal-arm64.dmg";
@@ -37,8 +38,11 @@ export function assertPublishedInventory(directory, filesystem) {
   const names = inventory
     .filter(({ type }) => type === "F")
     .map(({ path }) => path)
-    .toSorted();
-  if (JSON.stringify(names) !== JSON.stringify([...bundleFiles].toSorted()))
+    .toSorted(compareCodeUnits);
+  if (
+    JSON.stringify(names) !==
+    JSON.stringify([...bundleFiles].toSorted(compareCodeUnits))
+  )
     throw new Error("release-bundle-files-rejected");
   if (inventory.length !== names.length)
     throw new Error("release-bundle-files-rejected");
@@ -60,8 +64,8 @@ export function assertVerificationReceipt(receipt, manifest, expectedRevision) {
     "redaction-closed",
   ];
   if (
-    JSON.stringify(Object.keys(receipt).toSorted()) !==
-      JSON.stringify(keys.toSorted()) ||
+    JSON.stringify(Object.keys(receipt).toSorted(compareCodeUnits)) !==
+      JSON.stringify(keys.toSorted(compareCodeUnits)) ||
     receipt.schema !== "keiko-native-release-verification/v1" ||
     receipt.sourceRevision !== expectedRevision ||
     receipt.artifactSha256 !== manifest?.artifact?.sha256 ||

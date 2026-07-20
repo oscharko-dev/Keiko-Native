@@ -61,7 +61,7 @@ static int canonical_path(const char *path, char type) {
   if (!strcmp(path, ".")) return type == 'D';
   if (!path[0] || path[0] == '/' || strlen(path) >= PATH_MAX) return 0;
   char copy[PATH_MAX];
-  strcpy(copy, path);
+  memcpy(copy, path, strlen(path) + 1);
   char *save = NULL;
   for (char *part = strtok_r(copy, "/", &save); part;
        part = strtok_r(NULL, "/", &save))
@@ -90,8 +90,7 @@ static void parse_entries(int argc, char **argv, bound_entry_t *entries,
     entries[i] = (bound_entry_t){
         .fd = 3 + (int)i, .type = *type, .mode = (mode_t)mode, .path = path};
     char token[256];
-    if (strlen(metadata) >= sizeof(token)) fail("bound-metadata");
-    strcpy(token, metadata);
+    copy_bounded(token, sizeof(token), metadata, "bound-metadata");
     char *cursor = token;
     entries[i].before.st_dev = (dev_t)parse_value(&cursor, 0);
     entries[i].before.st_ino = (ino_t)parse_value(&cursor, 0);

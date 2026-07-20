@@ -31,7 +31,7 @@ export function createNativePackageIo({
     fileMode(path, root) {
       const inventory = listSnapshotOutput(root);
       const entry = inventory?.find(
-        (item) => item.path === relative(root, path).split("\\").join("/"),
+        (item) => item.path === relative(root, path).replaceAll("\\", "/"),
       );
       if (entry?.type !== "F") throw rejected("output-mode");
       return entry.mode;
@@ -47,7 +47,7 @@ export function createNativePackageIo({
       if (
         !writeSnapshotOutput(
           packageRoot,
-          relative(packageRoot, path).split("\\").join("/"),
+          relative(packageRoot, path).replaceAll("\\", "/"),
           bytes,
           mode,
         )

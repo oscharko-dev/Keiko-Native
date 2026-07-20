@@ -20,7 +20,7 @@ export async function inventoryTree(
       );
       return {
         mode: (status.mode & 0o777n).toString(8).padStart(4, "0"),
-        path: relative(root, path).split("\\").join("/"),
+        path: relative(root, path).replaceAll("\\", "/"),
         sha256: createHash("sha256").update(bytes).digest("hex"),
         size: bytes.length,
       };
@@ -152,7 +152,7 @@ export function mountedInventoryFailures(mounted, expected) {
     JSON.stringify(content(mounted)) !== JSON.stringify(content(expected)) ||
     mounted.some(invalidMountedMode) ||
     executable === undefined ||
-    (parseInt(executable.mode, 8) & 0o111) === 0
+    (Number.parseInt(executable.mode, 8) & 0o111) === 0
   )
     return ["release-mounted-inventory"];
   return [];
@@ -178,12 +178,12 @@ export async function assertReadOnlyInventory(root, inventory) {
 
 export function normalizeInventoryModes(root, inventory, filesystem) {
   for (const entry of inventory) {
-    filesystem.chmod(root, entry.path, parseInt(entry.mode, 8));
+    filesystem.chmod(root, entry.path, Number.parseInt(entry.mode, 8));
   }
 }
 
 function invalidMountedMode({ mode }) {
-  return !/^[0-7]{4}$/u.test(mode) || (parseInt(mode, 8) & 0o6000) !== 0;
+  return !/^[0-7]{4}$/u.test(mode) || (Number.parseInt(mode, 8) & 0o6000) !== 0;
 }
 
 async function movePriorOutput({ backup, outputRoot, renameEntry }) {
@@ -295,23 +295,19 @@ function sameFileIdentity(left, right) {
 
 function hasDuplicateObjectKey(text) {
   const stack = [];
-  for (let index = 0; index < text.length; index += 1) {
+  let index = 0;
+  while (index < text.length) {
     const character = text[index];
     if (character === '"') {
       const start = index;
-      let escaped = false;
-      for (index += 1; index < text.length; index += 1) {
-        const current = text[index];
-        if (!escaped && current === '"') break;
-        escaped = !escaped && current === "\\";
-        if (current !== "\\") escaped = false;
-      }
+      index = jsonStringEnd(text, index);
       const context = stack.at(-1);
       if (context?.kind === "object" && context.expectKey) {
         let key;
         try {
           key = JSON.parse(text.slice(start, index + 1));
         } catch {
+          index += 1;
           continue;
         }
         if (context.keys.has(key)) return true;
@@ -330,6 +326,18 @@ function hasDuplicateObjectKey(text) {
       const context = stack.at(-1);
       if (context?.kind === "object") context.expectKey = true;
     }
+    index += 1;
   }
   return false;
+}
+
+function jsonStringEnd(text, start) {
+  let escaped = false;
+  for (let index = start + 1; index < text.length; index += 1) {
+    const current = text[index];
+    if (!escaped && current === '"') return index;
+    escaped = !escaped && current === "\\";
+    if (current !== "\\") escaped = false;
+  }
+  return text.length;
 }

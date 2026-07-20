@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative } from "node:path";
 
+import { compareCodeUnits } from "./deterministic-order.mjs";
 import {
   governedWorkflowJobFailures,
   inheritedWorkflowControlFailures,
@@ -48,7 +49,7 @@ export function exactToolchainFailures({
       exactToolchain.node,
     ) ||
     Object.keys(packageContract?.devEngines ?? {})
-      .toSorted()
+      .toSorted(compareCodeUnits)
       .join(",") !== "packageManager,runtime"
   )
     failures.push("package-dev-engines");
@@ -69,7 +70,8 @@ function exactDevEngine(value, name, version) {
     value?.name === name &&
     value?.version === version &&
     value?.onFail === "error" &&
-    Object.keys(value).toSorted().join(",") === "name,onFail,version"
+    Object.keys(value).toSorted(compareCodeUnits).join(",") ===
+      "name,onFail,version"
   );
 }
 
@@ -82,11 +84,11 @@ export function workflowToolchainFailures(workflow, requiredJobs = []) {
   for (const { source: job, steps } of workflowJobs(workflow)) {
     if (npmStepHasDirectControl(steps))
       failures.push("workflow-npm-step-control");
-    const firstNpm = runCommands(job)
+    const npmCommandIndexes = runCommands(job)
       .filter(({ command }) => containsNpmExecutable(command))
-      .map(({ index }) => index)
-      .toSorted((left, right) => left - right)[0];
-    if (firstNpm === undefined) continue;
+      .map(({ index }) => index);
+    if (npmCommandIndexes.length === 0) continue;
+    const firstNpm = Math.min(...npmCommandIndexes);
     const activationName = job.indexOf("- name: Verify exact npm 11.16.0");
     const activationEnd =
       activationName < 0 ? -1 : job.indexOf("\n      - ", activationName + 1);
@@ -139,13 +141,13 @@ function runCommands(job) {
   const commands = [];
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
-    const match = /^(\s*)(?:-\s+)?run:\s*(.*)$/u.exec(line);
-    if (!match) continue;
+    const parsed = runLine(line);
+    if (!parsed) continue;
     const start = offsets[index];
-    const style = match[2].trim();
+    const style = parsed.value.trim();
     if (/^[|>][+-]?$/u.test(style)) {
       const body = [];
-      const indentation = match[1].length;
+      const indentation = parsed.indentation;
       while (index + 1 < lines.length) {
         const next = lines[index + 1];
         const nextIndent = /^\s*/u.exec(next)[0].length;
@@ -155,10 +157,21 @@ function runCommands(job) {
       }
       commands.push({ command: body.join("\n"), index: start });
     } else {
-      commands.push({ command: unwrapYamlScalar(match[2]), index: start });
+      commands.push({ command: unwrapYamlScalar(parsed.value), index: start });
     }
   }
   return commands;
+}
+
+function runLine(line) {
+  const indentation = line.length - line.trimStart().length;
+  let content = line.slice(indentation);
+  if (content.startsWith("-")) {
+    if (!/^\s/u.test(content[1] ?? "")) return undefined;
+    content = content.slice(1).trimStart();
+  }
+  if (!content.startsWith("run:")) return undefined;
+  return { indentation, value: content.slice("run:".length).trimStart() };
 }
 
 function unwrapYamlScalar(value) {

@@ -206,12 +206,12 @@ function literalStepEnvironment(step) {
     const line = lines[cursor];
     if (!line.trim()) continue;
     if (/^        \S/u.test(line)) break;
-    const match = /^          ([A-Za-z_][A-Za-z0-9_]*):\s*(.+)$/u.exec(line);
-    if (!match || entries[match[1]] !== undefined)
+    const parsed = indentedEnvironmentField(line);
+    if (!parsed || entries[parsed.key] !== undefined)
       return { entries, valid: false };
-    const literal = literalValue(match[2]);
+    const literal = literalValue(parsed.value);
     if (literal === undefined) return { entries, valid: false };
-    entries[match[1]] = literal;
+    entries[parsed.key] = literal;
     count += 1;
   }
   return { entries, valid: count > 0 };
@@ -224,14 +224,33 @@ function literalFlowEnvironment(value) {
   if (!body) return { entries: {}, valid: false };
   const entries = {};
   for (const field of body.split(",")) {
-    const match = /^\s*([A-Za-z_][A-Za-z0-9_]*):\s*(.+?)\s*$/u.exec(field);
-    if (!match || entries[match[1]] !== undefined)
+    const parsed = flowEnvironmentField(field);
+    if (!parsed || entries[parsed.key] !== undefined)
       return { entries, valid: false };
-    const literal = literalValue(match[2]);
+    const literal = literalValue(parsed.value);
     if (literal === undefined) return { entries, valid: false };
-    entries[match[1]] = literal;
+    entries[parsed.key] = literal;
   }
   return { entries, valid: true };
+}
+
+function indentedEnvironmentField(line) {
+  if (!line.startsWith("          ") || line[10] === " ") return undefined;
+  return environmentField(line.slice(10), false);
+}
+
+function flowEnvironmentField(field) {
+  return environmentField(field.trim(), true);
+}
+
+function environmentField(field, trimValue) {
+  const separator = field.indexOf(":");
+  if (separator < 1) return undefined;
+  const key = field.slice(0, separator);
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key)) return undefined;
+  const untrimmed = field.slice(separator + 1);
+  const value = trimValue ? untrimmed.trim() : untrimmed.trimStart();
+  return value ? { key, value } : undefined;
 }
 
 function literalValue(value) {

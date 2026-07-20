@@ -180,15 +180,19 @@ function terminateByPid(pid, timeoutMs) {
     'if (!app) throw new Error("target process is not running")',
     'if (!app.terminate) throw new Error("target process cannot terminate")',
   ].join("; ");
-  const result = spawnSync("osascript", ["-l", "JavaScript", "-e", script], {
-    encoding: "utf8",
-    timeout: timeoutMs,
-  });
+  const result = spawnSync(
+    "/usr/bin/osascript",
+    ["-l", "JavaScript", "-e", script],
+    {
+      encoding: "utf8",
+      timeout: timeoutMs,
+    },
+  );
   if (result.status !== 0) throw new Error("Exact-PID quit helper failed");
 }
 
 function descendantCount(processGroup) {
-  const result = spawnSync("pgrep", ["-g", String(processGroup)], {
+  const result = spawnSync("/usr/bin/pgrep", ["-g", String(processGroup)], {
     encoding: "utf8",
   });
   if (result.status === 1) return 0;

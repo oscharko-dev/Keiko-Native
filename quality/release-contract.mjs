@@ -123,13 +123,14 @@ export function packageManifestFailures(
     manifest !== null &&
     typeof manifest === "object" &&
     !Array.isArray(manifest)
-      ? Object.keys(manifest).toSorted()
+      ? Object.keys(manifest).toSorted(compareCodeUnits)
       : [];
   const inventory = Array.isArray(manifest?.inventory)
     ? manifest.inventory
     : [];
   if (
-    JSON.stringify(keys) !== JSON.stringify(expectedKeys.toSorted()) ||
+    JSON.stringify(keys) !==
+      JSON.stringify(expectedKeys.toSorted(compareCodeUnits)) ||
     manifest?.schema !== "keiko-native-package-manifest/v1" ||
     manifest?.sourceRevision !== expectedRevision ||
     manifest?.target !== "keiko-native-desktop" ||
@@ -229,7 +230,8 @@ function inventoryFailures(inventory) {
   const paths = inventory.map((entry) => entry?.path);
   if (
     new Set(paths).size !== paths.length ||
-    JSON.stringify(paths) !== JSON.stringify([...paths].toSorted()) ||
+    JSON.stringify(paths) !==
+      JSON.stringify([...paths].toSorted(compareCodeUnits)) ||
     inventory.some(
       (entry) =>
         !exactKeys(entry, ["mode", "path", "sha256", "size"]) ||
@@ -288,7 +290,7 @@ function invalidPackageInventoryEntry(entry) {
     entry === null ||
     typeof entry !== "object" ||
     Array.isArray(entry) ||
-    JSON.stringify(Object.keys(entry).toSorted()) !==
+    JSON.stringify(Object.keys(entry).toSorted(compareCodeUnits)) !==
       JSON.stringify(["mode", "path", "sha256"])
   );
 }
@@ -322,7 +324,8 @@ function exactKeys(value, expected) {
     value !== null &&
     typeof value === "object" &&
     !Array.isArray(value) &&
-    JSON.stringify(Object.keys(value).toSorted()) ===
-      JSON.stringify([...expected].toSorted())
+    JSON.stringify(Object.keys(value).toSorted(compareCodeUnits)) ===
+      JSON.stringify([...expected].toSorted(compareCodeUnits))
   );
 }
+import { compareCodeUnits } from "./deterministic-order.mjs";

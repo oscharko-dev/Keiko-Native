@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 
+import { compareCodeUnits } from "./deterministic-order.mjs";
 import { filesBelow } from "./native-files.mjs";
 import { readOpenedRegular } from "./native-snapshot-runtime.mjs";
 
@@ -156,7 +157,8 @@ function validateFindingBindings(groups, vulnerabilities) {
   for (const group of groups) {
     if (
       !object(group) ||
-      Object.keys(group).toSorted().join(",") !== "aliases,ids,max_severity" ||
+      Object.keys(group).toSorted(compareCodeUnits).join(",") !==
+        "aliases,ids,max_severity" ||
       !validIdList(group.ids, false) ||
       !validIdList(group.aliases, true)
     )
@@ -293,7 +295,7 @@ function validateInformationalAdvisory(vulnerability, packageIdentity) {
     const classification = affected.database_specific;
     if (
       !object(classification) ||
-      Object.keys(classification).toSorted().join(",") !==
+      Object.keys(classification).toSorted(compareCodeUnits).join(",") !==
         "categories,cvss,informational,source" ||
       classification.informational !== "unmaintained" ||
       classification.cvss !== null ||
@@ -301,14 +303,15 @@ function validateInformationalAdvisory(vulnerability, packageIdentity) {
       classification.categories.length !== 0 ||
       classification.source !==
         `https://github.com/rustsec/advisory-db/blob/osv/crates/${vulnerability.id}.json` ||
-      Object.keys(affected.package).toSorted().join(",") !==
+      Object.keys(affected.package).toSorted(compareCodeUnits).join(",") !==
         "ecosystem,name,purl"
     )
       throw vulnerabilityPolicyRejected("informational-database-shape");
     for (const range of affected.ranges) {
       if (
         !object(range) ||
-        Object.keys(range).toSorted().join(",") !== "events,type" ||
+        Object.keys(range).toSorted(compareCodeUnits).join(",") !==
+          "events,type" ||
         range.type !== "SEMVER" ||
         !Array.isArray(range.events) ||
         range.events.length === 0 ||
@@ -343,7 +346,8 @@ function validateScoredAdvisory(vulnerability, group) {
     const [severity] = vulnerability.severity;
     if (
       !object(severity) ||
-      Object.keys(severity).toSorted().join(",") !== "score,type" ||
+      Object.keys(severity).toSorted(compareCodeUnits).join(",") !==
+        "score,type" ||
       severity.type !== "CVSS_V3" ||
       typeof severity.score !== "string"
     )
@@ -575,7 +579,7 @@ function validateInventory(lock, marker, paths) {
   const installed = marker.packages;
   if (!object(locked) || !object(installed)) throw rejected("lock-shape");
   const roots = [];
-  for (const path of Object.keys(installed).toSorted()) {
+  for (const path of Object.keys(installed).toSorted(compareCodeUnits)) {
     if (!path.startsWith("node_modules/") || !object(installed[path]))
       throw rejected("marker-inventory");
     if (JSON.stringify(installed[path]) !== JSON.stringify(locked[path]))
@@ -588,7 +592,7 @@ function validateInventory(lock, marker, paths) {
   const actualRoots = paths
     .filter((path) => /^(?:@[^/]+\/)?[^/]+\/package\.json$/u.test(path))
     .map((path) => dirname(path))
-    .toSorted();
+    .toSorted(compareCodeUnits);
   if (JSON.stringify(actualRoots) !== JSON.stringify(roots))
     throw rejected("package-inventory");
   for (const path of paths) {
