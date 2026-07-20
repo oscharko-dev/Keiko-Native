@@ -250,13 +250,27 @@ test("fails closed on malformed, empty, mixed, and replayed chains", () => {
   assert.equal(rejectionCode([first, digestReplay]), "replayed_contract");
 });
 
+test("accepts migrated roots but rejects later semantic gaps", () => {
+  for (const version of [2, 3]) {
+    const root = contract(
+      `docs/contracts/task-35-v${version}-r1.md`,
+      String(version).repeat(64),
+    );
+    assert.deepEqual(
+      validateContractChain({ contracts: [root], quarantined: [] }),
+      { ok: true, terminal: root },
+    );
+    const skipped = contract(
+      `docs/contracts/task-35-v${version + 2}-r1.md`,
+      String(version + 2).repeat(64),
+      reference(root),
+    );
+    assert.equal(rejectionCode([root, skipped]), "unexplained_semantic_gap");
+  }
+});
+
 test("rejects non-monotonic semantic versions and stale predecessors", () => {
   const first = contract("docs/contracts/task-35-v1-r1.md", "1".repeat(64));
-  const skippedRoot = contract(
-    "docs/contracts/task-35-v2-r1.md",
-    "3".repeat(64),
-  );
-  assert.equal(rejectionCode([skippedRoot]), "unexplained_semantic_gap");
   const skippedVersion = contract(
     "docs/contracts/task-35-v3-r1.md",
     "4".repeat(64),
