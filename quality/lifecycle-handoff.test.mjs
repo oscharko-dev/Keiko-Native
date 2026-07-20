@@ -12,80 +12,51 @@ const target = "epic/29-repository-backed-contracts";
 const readinessFingerprint = "c".repeat(64);
 const [PR_OPEN, REVIEW] = LIFECYCLE_STATES.slice(4, 6);
 const contexts = ["Issue contract current", "PR contract"];
-const producers = {
-  "Contract publication": "publication.yml@protected-dev",
-  "Issue contract current": "issue-current.yml@protected-dev",
-  "Lifecycle handoff": "lifecycle-handoff.yml@protected-dev",
-  "PR contract": "pr-contract.yml@protected-dev",
-};
+// prettier-ignore
+const producers = { "Contract publication": "publication.yml@protected-dev", "Issue contract current": "issue-current.yml@protected-dev", "Lifecycle handoff": "lifecycle-handoff.yml@protected-dev", "PR contract": "pr-contract.yml@protected-dev" };
 const string = (value) => ({ type: "string", value });
+// prettier-ignore
 const generationInputs = (revision = "observation-1", lifecycle = REVIEW) => ({
   fields: [
-    ["issueRevision", revision],
-    ["readiness", `10:v2:${readinessFingerprint}`],
-    ["lifecycle", lifecycle],
-    ["target", target],
-    ["reviews", "reviews-1"],
-    ["conversations", "conversations-1"],
-    ["audit", "audit-1"],
-    ["journey", "journey-1"],
-    ["manual", "manual-1"],
-    ["external", "external-1"],
-    ["platform", "platform-1"],
-    ["upstream", "upstream-1"],
+    ["issueRevision", revision], ["readiness", `10:v2:${readinessFingerprint}`],
+    ["lifecycle", lifecycle], ["target", target], ["reviews", "reviews-1"],
+    ["conversations", "conversations-1"], ["audit", "audit-1"], ["journey", "journey-1"],
+    ["manual", "manual-1"], ["external", "external-1"], ["platform", "platform-1"], ["upstream", "upstream-1"],
   ].map(([name, value]) => ({ name, value: string(value) })),
   type: "record",
 });
 function diff(files = [], overrides = {}) {
+  // prettier-ignore
   return {
-    base,
-    complete: true,
-    files,
-    head,
+    base, complete: true, files, head,
     normalValidated: files.length === 0,
-    pullRequest: 32,
-    repository,
-    truncated: false,
-    ...overrides,
+    pullRequest: 32, repository, truncated: false, ...overrides,
   };
 }
 function authority(overrides = {}) {
+  // prettier-ignore
   return {
-    head,
-    id: "issue-32-v2",
-    issueIdentity: "issue-32",
-    lane: "normal",
-    pullRequest: 32,
-    repository,
+    evidence: "normal-observation-1", head, id: "issue-32-v2",
+    issueIdentity: "issue-32", lane: "normal", pullRequest: 32, repository,
     scope: "quality/lifecycle-handoff*",
-    target,
-    ...overrides,
+    target, ...overrides,
   };
 }
+// prettier-ignore
+const laneInput = (overrides = {}) => ({ authority: authority(overrides.authority), diff: diff([], overrides.diff), target: overrides.target ?? target });
 const classify = (overrides = {}) =>
-  classifyLifecycleHandoffLane({
-    authority: authority(overrides.authority),
-    diff: diff([], overrides.diff),
-    target: overrides.target ?? target,
-  });
+  classifyLifecycleHandoffLane(laneInput(overrides));
 test("classifies an immutable normal lane and rejects ambiguity", () => {
   const normal = classify();
   assert.equal(normal.ok, true);
+  // prettier-ignore
   assert.deepEqual(
-    {
-      authority: normal.binding.authority,
-      issueIdentity: normal.binding.issueIdentity,
-      lane: normal.binding.lane,
-      scope: normal.binding.scope,
-      target: normal.binding.target,
-    },
-    {
-      authority: "issue-32-v2",
-      issueIdentity: "issue-32",
-      lane: "normal",
-      scope: "quality/lifecycle-handoff*",
-      target,
-    },
+    { authority: normal.binding.authority, evidence: normal.binding.evidence,
+      issueIdentity: normal.binding.issueIdentity, lane: normal.binding.lane,
+      scope: normal.binding.scope, target: normal.binding.target },
+    { authority: "issue-32-v2", evidence: "normal-observation-1",
+      issueIdentity: "issue-32", lane: "normal",
+      scope: "quality/lifecycle-handoff*", target },
   );
   for (const invalid of [
     classify({ target: "dev" }),
@@ -115,13 +86,10 @@ function generationRequest(classification, overrides = {}) {
   };
 }
 function completion(state, context, conclusion = "success", overrides = {}) {
+  // prettier-ignore
   return {
-    conclusion,
-    context,
-    generation: state.generation.digest,
-    head,
-    producer: producers[context],
-    result: `${context}-result-1`,
+    conclusion, context, generation: state.generation.digest, head,
+    producer: producers[context], result: `${context}-result-1`,
     workflowRun: `${context}-run-1`,
     ...overrides,
   };
@@ -166,6 +134,7 @@ function normalInput(overrides = {}) {
     classification,
     generation: completed.generation,
     generationRequest: completed.request,
+    laneInput: laneInput(),
     phaseOne: {
       conversationsCurrent: true,
       evidenceCurrent: true,
@@ -286,6 +255,36 @@ test("accepts only the serialized normal two-phase exact-head handshake", () => 
   pending.generation.status = "pending";
   assert.equal(evaluateNormalLifecycleHandoff(pending).status, "pending");
   assert.equal(evaluateNormalLifecycleHandoff(pending).target, PR_OPEN);
+});
+test("recomputes every normal classification field from raw lane input", () => {
+  // prettier-ignore
+  const forgeries = {
+    authority: { authority: { id: "forged-authority" } },
+    diff: { diff: { files: [{ mode: "100644", path: "forged.txt", status: "modified" }], normalValidated: true } },
+    evidence: { authority: { evidence: "forged-evidence" } },
+    issueIdentity: { authority: { issueIdentity: "issue-forged" } },
+    scope: { authority: { scope: "forged/**" } },
+  };
+  for (const [name, overrides] of Object.entries(forgeries)) {
+    const input = normalInput();
+    const forged = classify(overrides);
+    const completed = completedGeneration(forged);
+    // prettier-ignore
+    Object.assign(input, { classification: forged, generation: completed.generation, generationRequest: completed.request });
+    input.transition.authority = forged.binding.authority;
+    input.transition.issueIdentity = forged.binding.issueIdentity;
+    input.readback.actualIssueIdentity = forged.binding.issueIdentity;
+    input.readback.expectedIssueIdentity = forged.binding.issueIdentity;
+    assert.equal(evaluateNormalLifecycleHandoff(input).ok, false, name);
+  }
+});
+test("rejects missing and hostile normal raw lane input", () => {
+  const hostile = new Proxy({}, { get: () => assert.fail("SECRET") });
+  for (const laneInput of [undefined, hostile]) {
+    const input = normalInput();
+    input.laneInput = laneInput;
+    assert.equal(evaluateNormalLifecycleHandoff(input).ok, false);
+  }
 });
 test("returns exact validated transition and stable handoff identity", () => {
   const result = evaluateNormalLifecycleHandoff(normalInput());
