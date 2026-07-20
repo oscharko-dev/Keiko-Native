@@ -280,8 +280,9 @@ function historyFailure(observation, candidate, migration) {
   const predecessor = observation.predecessor;
   const prior =
     predecessor === null ? null : parseContractPath(predecessor.path).contract;
-  // prettier-ignore
-  const [same, start] = [prior?.version === current.version, prior === null && migration ? current.revision : prior?.version === current.version ? prior.revision + 1 : 1];
+  const same = prior?.version === current.version;
+  let start = same ? prior.revision + 1 : 1;
+  if (prior === null && migration) start = current.revision;
   // prettier-ignore
   if (!validHistoryTransition(prior, current, same, start, observation, candidate)) return "invalid_history_transition";
   const digests = new Set([candidate.digest, predecessor?.digest]);
