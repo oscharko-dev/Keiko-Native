@@ -53,3 +53,12 @@ test("workflow and job environment declarations are always inherited controls", 
     ["workflow-job-environment"],
   );
 });
+
+test("multiline explicit workflow job keys fail closed", () => {
+  assert.deepEqual(
+    inheritedWorkflowControlFailures(
+      ["jobs:", "  ? |", "    hidden-job", "  :", "    steps: []"].join("\n"),
+    ),
+    ["workflow-job-key-shape"],
+  );
+});

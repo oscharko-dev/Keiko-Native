@@ -20,6 +20,21 @@
 #include <sys/syscall.h>
 #endif
 
+static DIR *try_directory_stream(int descriptor) {
+  if (descriptor < 0) return NULL;
+  int scan = dup(descriptor);
+  if (scan < 0) return NULL;
+  DIR *directory = fdopendir(scan);
+  if (!directory) close(scan);
+  return directory;
+}
+
+static DIR *open_directory_stream(int descriptor, const char *category) {
+  DIR *directory = try_directory_stream(descriptor);
+  if (!directory) fail(category);
+  return directory;
+}
+
 static int swap_entries(int parent, const char *left, const char *right) {
 #ifdef __APPLE__
   return renameatx_np(parent, left, parent, right, RENAME_SWAP);
@@ -91,8 +106,7 @@ void copy_directory(int source, int destination, const char *exclude,
   if (depth >= MAX_DEPTH) fail("depth");
   struct stat directory_before, directory_after;
   if (fstat(source, &directory_before)) fail("directory-stat");
-  DIR *directory = fdopendir(dup(source));
-  if (!directory) fail("directory-read");
+  DIR *directory = open_directory_stream(source, "directory-read");
   struct dirent *entry;
   while ((entry = readdir(directory))) {
     if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
@@ -149,8 +163,7 @@ void remove_entry(int parent, const char *name) {
   }
   if (S_ISDIR(entry.st_mode)) {
     int child = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
-    DIR *directory = child < 0 ? NULL : fdopendir(dup(child));
-    if (!directory) fail("remove-open");
+    DIR *directory = open_directory_stream(child, "remove-open");
     struct dirent *nested;
     while ((nested = readdir(directory)))
       if (strcmp(nested->d_name, ".") && strcmp(nested->d_name, ".."))
@@ -169,7 +182,7 @@ int try_remove_entry(int parent, const char *name) {
     return errno == ENOENT ? 0 : -1;
   if (!S_ISDIR(entry.st_mode)) return unlinkat(parent, name, 0);
   int child = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
-  DIR *directory = child < 0 ? NULL : fdopendir(dup(child));
+  DIR *directory = try_directory_stream(child);
   if (!directory) {
     if (child >= 0) close(child);
     return -1;
@@ -196,8 +209,7 @@ void print_tree(int root, const char *prefix, const char *exclude, int depth) {
   struct stat directory_before, directory_after;
   if (fsync(root) || fstat(root, &directory_before))
     fail("list-directory-stat");
-  DIR *directory = fdopendir(dup(root));
-  if (!directory) fail("list-open");
+  DIR *directory = open_directory_stream(root, "list-open");
   struct dirent *entry;
   while ((entry = readdir(directory))) {
     if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;

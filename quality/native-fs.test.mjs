@@ -40,6 +40,15 @@ test("Windows drive roots are decomposed without duplicating the drive", () => {
 });
 
 test(
+  "native helper barriers reject an exit before the ready signal",
+  { skip: !supported },
+  async () => {
+    const barrier = startBarrier("/usr/bin/false", []);
+    await assert.rejects(barrier.ready, /helper closed before barrier/u);
+  },
+);
+
+test(
   "native helper compiles exact sources and handles regular trees",
   {
     skip: !supported,

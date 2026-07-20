@@ -160,7 +160,7 @@ dt {
 dd {
   margin: 0;
   overflow-wrap: anywhere;
-  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-family: ui-monospace, SFMono-Regular, monospace;
 }
 
 label {

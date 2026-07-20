@@ -40,6 +40,9 @@ export function startNativeFsBarrier(helper, args, input) {
   const ready = new Promise((resolve, reject) => {
     child.once("error", reject);
     child.stdio[3].once("data", resolve);
+    child.once("close", () =>
+      reject(new Error("helper closed before barrier")),
+    );
   });
   return {
     ready,

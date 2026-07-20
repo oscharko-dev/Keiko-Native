@@ -319,6 +319,9 @@ function startBarrier(helper, args, input, point = "1") {
     ready: new Promise((resolve, reject) => {
       child.once("error", reject);
       child.stdio[3].once("data", resolve);
+      child.once("close", () =>
+        reject(new Error("helper closed before barrier")),
+      );
     }),
     async release() {
       child.stdio[4].end("C");

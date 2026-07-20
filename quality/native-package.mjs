@@ -207,10 +207,6 @@ export function createNativePackageGate({
       await readInputFile(join(nativeRoot, "package-policy.json"), "utf8"),
     );
     const dependencies = await dependencyInventory();
-    const noticePath = join(
-      appRoot,
-      "Contents/Resources/THIRD-PARTY-NOTICES.json",
-    );
     const notice = JSON.parse(
       files
         .find(

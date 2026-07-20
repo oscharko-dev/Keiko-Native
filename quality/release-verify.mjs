@@ -16,6 +16,7 @@ import {
   loadReleaseInputs,
   loadReleaseInputsFromRevision,
 } from "./release-inputs.mjs";
+import { compareCodeUnits } from "./deterministic-order.mjs";
 import { createReleaseNativeFilesystem } from "./release-native-fs.mjs";
 import {
   commandFailure,
@@ -58,7 +59,8 @@ export function dependenciesFromPolicy(policy) {
   )
     throw new Error("release-dependencies-rejected");
   return entries.toSorted((left, right) =>
-    `${left.name}@${left.version}`.localeCompare(
+    compareCodeUnits(
+      `${left.name}@${left.version}`,
       `${right.name}@${right.version}`,
     ),
   );

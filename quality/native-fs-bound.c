@@ -132,6 +132,14 @@ static ssize_t find_entry(bound_entry_t *entries, size_t count,
   return -1;
 }
 
+static DIR *try_directory_stream(int descriptor) {
+  int scan = dup(descriptor);
+  if (scan < 0) return NULL;
+  DIR *directory = fdopendir(scan);
+  if (!directory) close(scan);
+  return directory;
+}
+
 static int validate_inventory(bound_entry_t *entries, size_t count) {
   unsigned char seen[MAX_BOUND_ENTRIES] = {1};
   for (size_t i = 0; i < count; i++) {
@@ -140,7 +148,7 @@ static int validate_inventory(bound_entry_t *entries, size_t count) {
         !matches_record(&entries[i], &current))
       return 0;
     if (entries[i].type != 'D') continue;
-    DIR *directory = fdopendir(dup(entries[i].fd));
+    DIR *directory = try_directory_stream(entries[i].fd);
     if (!directory) return 0;
     rewinddir(directory);
     struct dirent *item;

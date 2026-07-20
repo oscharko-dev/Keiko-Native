@@ -31,6 +31,8 @@ export function inheritedWorkflowControlFailures(workflow) {
   const normalized = workflow.replaceAll("\r", "");
   const failures = [];
   if (hasNonBareMappingKey(normalized, 0)) failures.push("workflow-key-shape");
+  if (hasNonBareMappingKey(workflowJobMap(normalized), 2))
+    failures.push("workflow-job-key-shape");
   if (hasMappingKey(normalized, 0, "continue-on-error"))
     failures.push("workflow-continue-on-error");
   if (hasMappingKey(normalized, 0, "defaults"))
@@ -160,6 +162,18 @@ function hasMappingKey(source, indentation, expected) {
     if (colon < 0) return false;
     return semanticMappingKey(rest.slice(0, colon)) === expected;
   });
+}
+
+function workflowJobMap(source) {
+  const lines = source.split("\n");
+  const jobs = lines.findIndex((line) => /^jobs:\s*$/u.test(line));
+  if (jobs < 0) return "";
+  const body = [];
+  for (const line of lines.slice(jobs + 1)) {
+    if (line.trim() && !line.startsWith(" ")) break;
+    body.push(line);
+  }
+  return body.join("\n");
 }
 
 function hasNonBareMappingKey(source, indentation) {

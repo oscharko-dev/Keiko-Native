@@ -120,7 +120,6 @@ test(
       await assert.rejects(command, /release-cancelled/u);
       commandSettled = true;
       assertProcessesDead(pids);
-      await new Promise((resolveWait) => setTimeout(resolveWait, 250));
       await assert.rejects(access(childMarker));
     } finally {
       controller.abort();
@@ -173,7 +172,6 @@ test(
       await rejected;
       commandSettled = true;
       assertProcessesDead(pids);
-      await new Promise((resolveWait) => setTimeout(resolveWait, 250));
       await assert.rejects(access(markerPath));
     } finally {
       if (command && !commandSettled) await command.catch(() => {});
@@ -227,7 +225,6 @@ for (const leaderStatus of [0, 7]) {
         await rejected;
         commandSettled = true;
         assertProcessesDead(pids);
-        await new Promise((resolveWait) => setTimeout(resolveWait, 250));
         await assert.rejects(access(markerPath));
       } finally {
         if (command && !commandSettled) await command.catch(() => {});
