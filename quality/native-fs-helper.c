@@ -182,14 +182,21 @@ static int open_dir_at_path(int root, const char *path, int create,
   } else if (create)
     created = 1;
   int result = openat(parent, leaf, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
-  struct stat descriptor, named;
+  struct stat descriptor;
+  struct stat named;
   if (result < 0 || fstat(result, &descriptor) ||
       fstatat(parent, leaf, &named, AT_SYMLINK_NOFOLLOW) ||
       !S_ISDIR(descriptor.st_mode) ||
-      (created && (descriptor.st_mode & 0777) != create_mode) ||
       descriptor.st_dev != named.st_dev ||
       descriptor.st_ino != named.st_ino || descriptor.st_mode != named.st_mode)
     fail("directory-open");
+  if (created) {
+    if (fchmod(result, create_mode) || fstat(result, &descriptor) ||
+        fstatat(parent, leaf, &named, AT_SYMLINK_NOFOLLOW) ||
+        !same_stat(&descriptor, &named) ||
+        (descriptor.st_mode & 0777) != create_mode)
+      fail("directory-mode");
+  }
   if (created && sync_directory(parent, "directory-parent-sync"))
     fail("directory-parent-sync");
   remember_chain(chain, result, leaf);

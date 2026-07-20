@@ -140,6 +140,42 @@ test(
 );
 
 test(
+  "native helper creates a closed package root under a restrictive umask",
+  { skip: !supported },
+  async () => {
+    await fixture(async ({ helper, root }) => {
+      const source = join(root, "source");
+      const destination = join(root, "destination");
+      await mkdir(source);
+      await mkdir(destination);
+      await writeFile(join(source, "value"), "trusted");
+
+      const result = spawnSync(
+        "/bin/sh",
+        [
+          "-c",
+          'umask 077; exec "$@"',
+          "keiko-native-umask",
+          helper,
+          "copy-tree",
+          source,
+          ".",
+          destination,
+          "copy",
+        ],
+        { encoding: "utf8" },
+      );
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(
+        (await lstat(join(destination, "copy"))).mode & 0o777,
+        0o755,
+      );
+    });
+  },
+);
+
+test(
   "native helper rejects symlinks and special files without disclosure",
   {
     skip: !supported,
