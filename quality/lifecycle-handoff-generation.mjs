@@ -154,7 +154,6 @@ function laneInput(binding, inputs, recovery) {
     type: "record",
   };
 }
-
 function generationValue(input) {
   const binding = {
     ...input.classification.binding,
@@ -285,10 +284,11 @@ function generationContexts(input) {
 const validObservationTarget = ({ inputs, classification }) =>
   lifecycleObservation(inputs)?.target === classification.binding.target;
 function recoveryFailure(input) {
-  const attemptChanged = input.attemptSequence !== input.prior.attemptSequence;
-  if (!attemptChanged) return undefined;
+  const terminal = terminalStates.has(input.prior.status);
+  if (!terminal && input.attemptSequence === input.prior.attemptSequence)
+    return undefined;
   const recovery = Object(input.recovery);
-  if (!terminalStates.has(input.prior.status)) return "recovery_not_terminal";
+  if (!terminal) return "recovery_not_terminal";
   if (input.attemptSequence !== input.prior.attemptSequence + 1)
     return "recovery_attempt_mismatch";
   const invalid = [
