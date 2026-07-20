@@ -275,17 +275,15 @@ const validRecoveryIdentity = (identity, current, start) =>
   identity.version === current.version &&
   identity.revision >= start &&
   identity.revision < current.revision;
-function historyFailure(observation, candidate) {
+function historyFailure(observation, candidate, migration) {
   const current = parseContractPath(observation.candidatePath).contract;
   const predecessor = observation.predecessor;
   const prior =
     predecessor === null ? null : parseContractPath(predecessor.path).contract;
-  const same = prior?.version === current.version;
-  const start = same ? prior.revision + 1 : 1;
-  if (
-    !validHistoryTransition(prior, current, same, start, observation, candidate)
-  )
-    return "invalid_history_transition";
+  // prettier-ignore
+  const [same, start] = [prior?.version === current.version, prior === null && migration ? current.revision : prior?.version === current.version ? prior.revision + 1 : 1];
+  // prettier-ignore
+  if (!validHistoryTransition(prior, current, same, start, observation, candidate)) return "invalid_history_transition";
   const digests = new Set([candidate.digest, predecessor?.digest]);
   for (const recovery of observation.recoveries) {
     const identity = parseContractPath(recovery.path).contract;
@@ -348,7 +346,8 @@ function candidateEqualityFailure(receipt) {
   for (const observation of receipt.observations) {
     const candidate = candidates.get(observation.candidatePath);
     if (candidate === undefined) return "candidate_identity_mismatch";
-    const failure = historyFailure(observation, candidate);
+    // prettier-ignore
+    const failure = historyFailure(observation, candidate, receipt.terminalManifest !== null);
     if (failure !== undefined) return failure;
   }
   return undefined;
