@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
   compareLifecycleGenerationDigestV1,
@@ -37,7 +38,7 @@ const normalProducerKeys = Object.freeze(["Issue contract current", "Lifecycle h
 // prettier-ignore
 const publicationProducerKeys = Object.freeze(["Contract publication", ...normalProducerKeys]);
 // prettier-ignore
-const groupReadKeys = Object.freeze(["baseTip", "baseTree", "cursor", "groupSha", "groupTree", "members", "ordering", "pagination", "repository", "target"]);
+const groupReadKeys = Object.freeze(["baseTip", "baseTree", "cursor", "groupCommit", "groupSha", "groupTree", "members", "ordering", "pagination", "repository", "target"]);
 // prettier-ignore
 const groupMemberKeys = Object.freeze(["handoffInput", "head", "inputTree", "laneInput", "order", "outputTree", "pullRequest"]);
 
@@ -286,6 +287,7 @@ export function bindMergeGroupSnapshot(input) {
   try {
     const read = stableRead(input);
     if (read === undefined) return reject("unstable_group_observation");
+    if (!verifyGroupCommitTree(read).ok) return reject("invalid_group_commit");
     const members = classifiedMembers(read, input.expectedProducers);
     if (members === undefined) return reject("invalid_group_membership");
     if (!verifyCombinedGroupTree(read).ok)
@@ -311,6 +313,25 @@ export function bindMergeGroupSnapshot(input) {
     };
   } catch {
     return reject("invalid_group_evidence");
+  }
+}
+
+// prettier-ignore
+export function verifyGroupCommitTree(input) {
+  try {
+    const bytes = input?.groupCommit;
+    if (!(bytes instanceof Uint8Array)) return reject("invalid_group_commit");
+    const algorithm = { 40: "sha1", 64: "sha256" }[input.groupSha?.length];
+    if (!algorithm || input.groupTree?.length !== input.groupSha.length) return reject("unsupported_group_object_id");
+    const header = Buffer.from(`commit ${bytes.byteLength}\0`);
+    if (createHash(algorithm).update(header).update(bytes).digest("hex") !== input.groupSha) return reject("group_commit_hash_mismatch");
+    const end = bytes.indexOf(10);
+    if (end < 0) return reject("invalid_group_commit");
+    const tree = Buffer.from(bytes.subarray(0, end)).toString("ascii").match(/^tree ([0-9a-f]{40}|[0-9a-f]{64})$/u)?.[1];
+    if (tree !== input.groupTree) return reject("group_commit_tree_mismatch");
+    return { ok: true };
+  } catch {
+    return reject("invalid_group_commit");
   }
 }
 

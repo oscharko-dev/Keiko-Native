@@ -1,21 +1,20 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
-import {
-  bindMergeGroupSnapshot,
-  classifyMergeGroupConstituent,
-  evaluateMergeGroup,
-  verifyCombinedGroupTree,
-} from "./merge-group.mjs";
-import {
-  classifyLifecycleHandoffLane,
-  coalesceLifecycleInputGeneration,
-} from "./lifecycle-handoff.mjs";
-import { issueSchemaForLabels } from "./issue-contract.mjs";
-import { semanticIssueFingerprint } from "./issue-contract.mjs";
+// prettier-ignore
+import { bindMergeGroupSnapshot, classifyMergeGroupConstituent, evaluateMergeGroup, verifyCombinedGroupTree, verifyGroupCommitTree } from "./merge-group.mjs";
+// prettier-ignore
+import { classifyLifecycleHandoffLane, coalesceLifecycleInputGeneration } from "./lifecycle-handoff.mjs";
+// prettier-ignore
+import { issueSchemaForLabels, semanticIssueFingerprint } from "./issue-contract.mjs";
 import { verifyPublicationCandidate } from "./publication-candidate.mjs";
 import { contractSha256 } from "./repository-contract.mjs";
 
 const sha = (value) => value.repeat(40);
+// prettier-ignore
+function gitObject(bytes, algorithm = "sha1") { const header = Buffer.from(`commit ${bytes.byteLength}\0`); return { bytes, sha: createHash(algorithm).update(header).update(bytes).digest("hex") }; }
+// prettier-ignore
+function gitCommit(tree, algorithm = "sha1") { return gitObject(new TextEncoder().encode(`tree ${tree}\n\nmerge group\n`), algorithm); }
 const repository = "oscharko-dev/Keiko-Native";
 const target = "dev";
 const [base, head, fingerprint] = [sha("1"), sha("2"), "c".repeat(64)];
@@ -128,18 +127,17 @@ function publicationMember(lifecycle = null, pullRequest = 33, memberHead = head
   };
 }
 function groupRead(members = [normalMember()], groupTarget = target) {
-  const composed = members.map((member, order) => ({
-    ...member,
-    inputTree: sha(String.fromCharCode(97 + order)),
-    order,
-    outputTree: sha(String.fromCharCode(98 + order)),
-  }));
+  // prettier-ignore
+  const composed = members.map((member, order) => ({ ...member, inputTree: sha(String.fromCharCode(97 + order)), order, outputTree: sha(String.fromCharCode(98 + order)) }));
+  const groupTree = composed.at(-1).outputTree;
+  const groupCommit = gitCommit(groupTree);
   return {
     baseTip: base,
     baseTree: sha("a"),
     cursor: "group-cursor-1",
-    groupSha: sha("9"),
-    groupTree: composed.at(-1).outputTree,
+    groupCommit: groupCommit.bytes,
+    groupSha: groupCommit.sha,
+    groupTree,
     members: composed,
     ordering: "proven",
     pagination: {
@@ -371,13 +369,15 @@ test("rejects malformed, empty, broken, and unexplained tree composition", () =>
     assert.equal(verifyCombinedGroupTree(input).ok, false);
 });
 
+// prettier-ignore
+test("rejects a composed tree that is not bound to the group commit", () => { const read = groupRead(); read.groupTree = sha("f"); read.members.at(-1).outputTree = read.groupTree; assert.equal(bindGroup(read).ok, false); });
+// prettier-ignore
+test("verifies SHA-1 and SHA-256 group commit objects and rejects bad evidence", () => { const tree = "a".repeat(64); const object = gitCommit(tree, "sha256"); assert.equal(verifyGroupCommitTree({ groupCommit: object.bytes, groupSha: object.sha, groupTree: tree }).ok, true); const noLine = gitObject(new TextEncoder().encode("parent")); const noTree = gitObject(new TextEncoder().encode(`parent ${sha("1")}\n`)); for (const input of [null, {}, { groupCommit: new Uint8Array(), groupSha: sha("1"), groupTree: sha("2") }, { groupCommit: object.bytes, groupSha: "a".repeat(48), groupTree: "b".repeat(48) }, { groupCommit: object.bytes, groupSha: object.sha, groupTree: sha("2") }, { groupCommit: noLine.bytes, groupSha: noLine.sha, groupTree: sha("2") }, { groupCommit: noTree.bytes, groupSha: noTree.sha, groupTree: sha("2") }]) assert.equal(verifyGroupCommitTree(input).ok, false); });
+
 test("fails closed on hostile constituent, tree, snapshot, and readback evidence", () => {
   const hostile = new Proxy({}, { get: () => assert.fail("SECRET") });
-  for (const decide of [
-    classifyMergeGroupConstituent,
-    verifyCombinedGroupTree,
-    bindMergeGroupSnapshot,
-  ])
+  // prettier-ignore
+  for (const decide of [classifyMergeGroupConstituent, verifyCombinedGroupTree, verifyGroupCommitTree, bindMergeGroupSnapshot])
     assert.equal(decide(hostile).ok, false);
   const read = groupRead();
   const input = {
