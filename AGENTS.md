@@ -115,8 +115,8 @@ and maintained by Keiko Native; do not create a shared core by default.
 
 ## Local green bar
 
-Use Node.js 24.18.x and npm 11.16.x for the repository quality control plane. Use npm only; the
-committed `package-lock.json` is authoritative.
+Use exactly Node.js 24.18.0 and npm 11.16.0 for the repository quality control plane. Use npm only;
+the committed `package-lock.json` is authoritative.
 
 ```bash
 npm ci --ignore-scripts
@@ -179,6 +179,11 @@ merge into `dev`. Gitar and `Keiko for Quality` remain independent advisory evid
 availability and liveness probes satisfy `docs/qa/quality-gates.md`. A successful processing badge
 never substitutes for zero unresolved findings on the exact current head.
 
+Repository coverage runs on every accepted CI event. CI-based SonarQube Cloud analysis runs only
+for pull requests targeting `dev`, pushes to `dev`, and manual dispatches bound exactly to `dev`.
+Epic pull requests and pushes retain every applicable non-Sonar gate without requesting unavailable
+non-main branch data. The final epic pull request supplies the integrated Sonar evidence for `dev`.
+
 `Ready for Human Review` is the automation stop state for every pull request targeting `dev`. Only
 an authorized maintainer may manually initiate that merge; the current allowlist is limited to Niko
 and Oscharko. A separate non-author approval is not required, so either maintainer may merge their
@@ -187,11 +192,14 @@ evidence, exact current head, findings, conversations, and residual risks. An ag
 into `dev`, enable auto-merge for a pull request targeting `dev`, or use a human credential to evade
 this boundary.
 
-The sole automated-merge exception is a child-issue pull request targeting its designated epic
-integration branch. An agent may enable or perform that merge only when the accepted issue
-authorizes the target, all applicable exact-head gates are green, acceptance and audit evidence is
-complete, and no blocking finding or review conversation remains. The exception does not extend to
-epic or standalone pull requests targeting `dev`.
+The sole automated-merge exception is an accepted child-issue pull request targeting its designated
+epic integration branch. An authenticated agent may use the authenticated maintainer account to
+merge a fully eligible accepted child branch only into the exact accepted epic target. Before the
+mutation, the agent must revalidate the open issue, accepted contract and target, source issue
+number, exact current head, applicable green gates, completed acceptance and audit evidence, and
+zero blocking findings or unresolved review conversations. A wrong, changed, stale, closed, or
+`dev` target fails closed. Never merge or enable auto-merge for `dev`. The exception does not extend
+to epic or standalone pull requests targeting `dev`.
 
 Before pushing, review the full diff against the task requirements, trust boundaries, failure modes,
 and every affected gate. Use GitHub only for remote-only evidence, not as the primary test loop.

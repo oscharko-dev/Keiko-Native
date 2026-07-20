@@ -10,18 +10,45 @@
     "url": "https://github.com/oscharko-dev/Keiko-Native"
   },
   "engines": {
-    "node": ">=24.18.0 <25",
-    "npm": ">=11.6.2 <12"
+    "node": "24.18.0",
+    "npm": "11.16.0"
   },
   "packageManager": "npm@11.16.0",
+  "devEngines": {
+    "packageManager": {
+      "name": "npm",
+      "version": "11.16.0",
+      "onFail": "error"
+    },
+    "runtime": {
+      "name": "node",
+      "version": "24.18.0",
+      "onFail": "error"
+    }
+  },
   "scripts": {
     "build": "node quality/smoke.mjs",
     "check:contract": "node quality/check.mjs",
-    "coverage": "node --test --experimental-test-coverage --test-coverage-include=quality/contract.mjs --test-coverage-include=quality/coverage-reporter.mjs --test-coverage-include=quality/epic-merge-broker.mjs --test-coverage-include=quality/github-api.mjs --test-coverage-include=quality/github-reference.mjs --test-coverage-include=quality/issue-contract.mjs --test-coverage-include=quality/issue-lifecycle.mjs --test-coverage-include=quality/issue-lifecycle-action.mjs --test-coverage-include=quality/issue-lifecycle-readiness.mjs --test-coverage-include=quality/issue-readiness-action.mjs --test-coverage-include=quality/lifecycle-generation.mjs --test-coverage-include=quality/lifecycle-handoff-generation.mjs --test-coverage-include=quality/lifecycle-handoff-publication.mjs --test-coverage-include=quality/lifecycle-handoff.mjs --test-coverage-include=quality/merge-group.mjs --test-coverage-include=quality/markdown-contract.mjs --test-coverage-include=quality/markdown-policy.mjs --test-coverage-include=quality/pr-contract.mjs --test-coverage-include=quality/pr-contract-action.mjs --test-coverage-include=quality/publication-candidate.mjs --test-coverage-include=quality/publication-contract-schema.mjs --test-coverage-include=quality/publication-contract.mjs --test-coverage-include=quality/repository-contract-chain.mjs --test-coverage-include=quality/repository-contract.mjs --test-coverage-branches=85 --test-coverage-functions=85 --test-coverage-lines=85 --test-reporter=./quality/coverage-reporter.mjs quality/*.test.mjs",
+    "coverage": "node --test --test-concurrency=1 --experimental-test-coverage --test-coverage-include=quality/git-integrity.mjs --test-coverage-include=quality/contract.mjs --test-coverage-include=quality/coverage-reporter.mjs --test-coverage-include=quality/epic-merge-broker.mjs --test-coverage-include=quality/github-api.mjs --test-coverage-include=quality/github-reference.mjs --test-coverage-include=quality/issue-contract.mjs --test-coverage-include=quality/issue-lifecycle.mjs --test-coverage-include=quality/issue-lifecycle-action.mjs --test-coverage-include=quality/issue-lifecycle-readiness.mjs --test-coverage-include=quality/issue-readiness-action.mjs --test-coverage-include=quality/lifecycle-generation.mjs --test-coverage-include=quality/lifecycle-handoff-generation.mjs --test-coverage-include=quality/lifecycle-handoff-publication.mjs --test-coverage-include=quality/lifecycle-handoff.mjs --test-coverage-include=quality/merge-group.mjs --test-coverage-include=quality/internal-release.mjs --test-coverage-include=quality/internal-release-workflow.mjs --test-coverage-include=quality/attestation-policy.mjs --test-coverage-include=quality/iso-normalization.mjs --test-coverage-include=quality/markdown-contract.mjs --test-coverage-include=quality/markdown-policy.mjs --test-coverage-include=quality/native-architecture-contract.mjs --test-coverage-include=quality/native-contract.mjs --test-coverage-include=quality/native-dependencies.mjs --test-coverage-include=quality/native-files.mjs --test-coverage-include=quality/native-gate.mjs --test-coverage-include=quality/native-lifecycle.mjs --test-coverage-include=quality/native-package.mjs --test-coverage-include=quality/native-package-policy.mjs --test-coverage-include=quality/native-process.mjs --test-coverage-include=quality/native-repository.mjs --test-coverage-include=quality/native-snapshot.mjs --test-coverage-include=quality/native-snapshot-runtime.mjs --test-coverage-include=quality/pr-contract.mjs --test-coverage-include=quality/pr-contract-action.mjs --test-coverage-include=quality/publication-candidate.mjs --test-coverage-include=quality/publication-contract-schema.mjs --test-coverage-include=quality/publication-contract.mjs --test-coverage-include=quality/repository-contract-chain.mjs --test-coverage-include=quality/repository-contract.mjs --test-coverage-include=quality/release-contract.mjs --test-coverage-include=quality/release-evidence.mjs --test-coverage-include=quality/release-inputs.mjs --test-coverage-include=quality/release-io.mjs --test-coverage-include=quality/release-mounted.mjs --test-coverage-include=quality/release-native-fs.mjs --test-coverage-include=quality/release-owned-fs.mjs --test-coverage-include=quality/release-system.mjs --test-coverage-include=quality/release-verify.mjs --test-coverage-include=quality/update-metadata.mjs --test-coverage-include=quality/native-fs.mjs --test-coverage-include=quality/native-package-io.mjs --test-coverage-include=quality/native-package-publication.mjs --test-coverage-include=quality/toolchain.mjs --test-coverage-include=quality/workflow-job-contracts.mjs --test-coverage-include=quality/workflow-structure.mjs --test-coverage-branches=85 --test-coverage-functions=85 --test-coverage-lines=85 --test-reporter=./quality/coverage-reporter.mjs quality/*.test.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "node quality/markdown.mjs",
-    "quality": "npm run check:contract && npm run lint && npm run format:check && npm run coverage && npm run build",
+    "quality:control": "npm run native:dependencies && npm run check:contract && npm run lint && npm run format:check && npm run coverage && npm run build",
+    "quality": "node quality/check-toolchain.mjs && npm run quality:control && npm run native:format && npm run native:lint && npm run native:architecture && npm run native:build && npm run native:coverage && npm run native:package && npm run native:platform && npm run native:security && npm run native:signing && npm run native:test",
+    "native:architecture": "node quality/native-gate.mjs architecture",
+    "native:build": "node quality/native-gate.mjs build",
+    "native:coverage": "node quality/native-gate.mjs coverage",
+    "native:dependencies": "node quality/check-toolchain.mjs && npm --prefix native/frontend ci --ignore-scripts --workspaces=false",
+    "native:format": "node quality/native-gate.mjs format",
+    "native:lint": "node quality/native-gate.mjs lint",
+    "native:package": "node quality/native-gate.mjs package",
+    "native:platform": "node quality/native-gate.mjs platform",
+    "native:security": "node quality/native-gate.mjs security",
+    "native:signing": "node quality/native-gate.mjs signing",
+    "native:test": "node quality/native-gate.mjs test",
+    "native:quality": "npm run native:format && npm run native:lint && npm run native:architecture && npm run native:build && npm run native:coverage && npm run native:package && npm run native:platform && npm run native:security && npm run native:signing && npm run native:test",
+    "release:verify": "node quality/release-verify.mjs",
+    "acceptance:macos": "node quality/native-gate.mjs acceptance",
     "test": "node --test quality/*.test.mjs"
   },
   "devDependencies": {

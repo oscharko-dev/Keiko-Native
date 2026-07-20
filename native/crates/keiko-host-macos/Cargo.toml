@@ -1,0 +1,23 @@
+[package]
+name = "keiko-host-macos"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+keiko-application.workspace = true
+keiko-ui-port.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri = { workspace = true, optional = true, features = ["wry"] }
+wry = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit.workspace = true
+objc2-foundation.workspace = true
+
+[features]
+default = ["tauri-host"]
+tauri-host = ["dep:tauri", "dep:wry"]

@@ -33,8 +33,10 @@ jobs:
         with:
           node-version: "24.18.0"
           package-manager-cache: false
+      - name: Verify exact npm 11.16.0
+        run: node quality/check-toolchain.mjs
       - run: npm ci --ignore-scripts
-      - run: npm run quality
+      - run: npm run quality:control
       - run: npm audit --audit-level=high
 
   coverage-sonar:
@@ -48,13 +50,27 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'dev' || github.ref }}
+      - name: Verify manual analysis is bound to remote dev
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev'
+        run: |
+          if [ "$(git rev-parse HEAD)" != "$(git rev-parse refs/remotes/origin/dev)" ]; then
+            echo "Manual Sonar analysis must run on the exact remote dev head."
+            exit 1
+          fi
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "24.18.0"
           package-manager-cache: false
+      - name: Verify exact npm 11.16.0
+        run: node quality/check-toolchain.mjs
       - run: npm ci --ignore-scripts
       - run: npm run coverage
       - name: Download and verify Sonar Scanner CLI
+        if: >-
+          (github.event_name == 'pull_request' && github.base_ref == 'dev') ||
+          (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||
+          (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev')
         run: |
           scanner_zip="$RUNNER_TEMP/sonar-scanner-cli.zip"
           curl --proto '=https' -sSfL -o "$scanner_zip" "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-8.1.0.6389-linux-x64.zip"
@@ -62,6 +78,10 @@ jobs:
           unzip -q "$scanner_zip" -d "$RUNNER_TEMP"
           echo "SONAR_SCANNER_HOME=$RUNNER_TEMP/sonar-scanner-8.1.0.6389-linux-x64" >> "$GITHUB_ENV"
       - name: SonarQube Cloud analysis
+        if: >-
+          (github.event_name == 'pull_request' && github.base_ref == 'dev') ||
+          (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||
+          (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev')
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
@@ -69,16 +89,10 @@ jobs:
             echo "SONAR_TOKEN is required for exact-head SonarQube Cloud evidence."
             exit 1
           fi
-          quality_gate_wait=true
-          case "$GITHUB_EVENT_NAME:$GITHUB_REF" in
-            push:refs/heads/epic/*)
-              quality_gate_wait=false
-              ;;
-          esac
           "$SONAR_SCANNER_HOME/bin/sonar-scanner" \
             -Dsonar.projectBaseDir="$GITHUB_WORKSPACE" \
             -Dsonar.projectVersion="$(node -p "require('./package.json').version")" \
-            -Dsonar.qualitygate.wait="$quality_gate_wait" \
+            -Dsonar.qualitygate.wait=true \
             -Dsonar.working.directory="$RUNNER_TEMP/sonar-work"
 
   cross-platform-smoke:
@@ -99,6 +113,8 @@ jobs:
         with:
           node-version: "24.18.0"
           package-manager-cache: false
+      - name: Verify exact npm 11.16.0
+        run: node quality/check-toolchain.mjs
       - run: npm ci --ignore-scripts
       - run: npm run check:contract
       - run: npm test
@@ -111,6 +127,7 @@ jobs:
       - core-quality
       - coverage-sonar
       - cross-platform-smoke
+      - native
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
@@ -120,8 +137,9 @@ jobs:
           CORE_QUALITY_RESULT: ${{ needs.core-quality.result }}
           COVERAGE_SONAR_RESULT: ${{ needs.coverage-sonar.result }}
           CROSS_PLATFORM_RESULT: ${{ needs.cross-platform-smoke.result }}
+          NATIVE_RESULT: ${{ needs.native.result }}
         run: |
-          for result in "$CORE_QUALITY_RESULT" "$COVERAGE_SONAR_RESULT" "$CROSS_PLATFORM_RESULT"; do
+          for result in "$CORE_QUALITY_RESULT" "$COVERAGE_SONAR_RESULT" "$CROSS_PLATFORM_RESULT" "$NATIVE_RESULT"; do
             if [ "$result" != "success" ]; then
               echo "Required CI dependency did not succeed: $result"
               exit 1
@@ -160,6 +178,8 @@ jobs:
         with:
           node-version: "24.18.0"
           package-manager-cache: false
+      - name: Verify exact npm 11.16.0
+        run: node quality/check-toolchain.mjs
       - run: npm ci --ignore-scripts
       - run: npm run check:contract
 
@@ -196,6 +216,8 @@ jobs:
         with:
           node-version: "24.18.0"
           package-manager-cache: false
+      - name: Verify exact npm 11.16.0
+        run: node quality/check-toolchain.mjs
       - run: npm ci --ignore-scripts
       - run: npm run build
       - run: npm audit --audit-level=high
@@ -212,10 +234,14 @@ jobs:
         with:
           subject-path: sbom.cdx.json
 
-  native:
-    name: native
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+  native-matrix:
+    name: native (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-14, macos-26]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -226,6 +252,54 @@ jobs:
         with:
           node-version: "24.18.0"
           package-manager-cache: false
+      - name: Verify exact npm 11.16.0
+        run: node quality/check-toolchain.mjs
+      - name: Verify authoritative runner
+        run: |
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          test "$RUNNER_ARCH" = ARM64
+      - name: Install exact productive and coverage-only Rust toolchains
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component rustfmt --component clippy
+          rustup toolchain install nightly-2026-07-17 --profile minimal --component llvm-tools-preview
+          cargo install cargo-llvm-cov --version 0.8.7 --locked
       - run: npm ci --ignore-scripts
-      - run: npm run check:contract
-      - run: npm run build
+      - run: npm run native:dependencies
+      - run: npm run native:format
+      - run: npm run native:lint
+      - run: npm run native:architecture
+      - run: npm run native:build
+      - run: npm run native:coverage
+      - run: npm run native:package
+      - run: npm run native:platform
+      - run: npm run native:security
+      - run: npm run native:signing
+      - run: npm run native:test
+      - run: npm run acceptance:macos
+        env:
+          KEIKO_NATIVE_REQUIRE_MACOS: "1"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-foundation-${{ matrix.runner }}
+          path: native/target/keiko-native-package/acceptance-evidence.json
+          if-no-files-found: error
+          retention-days: 30
+
+  native:
+    name: native
+    if: ${{ always() }}
+    needs:
+      - native-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Aggregate native matrix results fail closed
+        env:
+          NATIVE_MATRIX_RESULT: ${{ needs.native-matrix.result }}
+        run: |
+          if [ "$NATIVE_MATRIX_RESULT" != "success" ]; then
+            echo "Native matrix did not succeed: $NATIVE_MATRIX_RESULT"
+            exit 1
+          fi
