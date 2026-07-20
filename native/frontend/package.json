@@ -19,10 +19,11 @@
     "@tauri-apps/cli": "2.11.4",
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
+    "@vitest/coverage-v8": "4.1.8",
     "axe-core": "4.12.1",
+    "happy-dom": "20.11.0",
     "typescript": "5.9.3",
     "vite": "7.3.6",
-    "@vitest/coverage-v8": "4.1.8",
     "vitest": "4.1.8"
   }
 }

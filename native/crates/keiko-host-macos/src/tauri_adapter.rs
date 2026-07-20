@@ -5,8 +5,9 @@ use tauri::{AppHandle, Manager, RunEvent, Runtime, State, Webview, WebviewWindow
 
 use crate::document_nonce::secure_document_nonce;
 use crate::{
-    HostLifecycle, application_cancel as dispatch_cancel, application_request as dispatch_request,
-    canonical_origin, is_bundled_navigation,
+    FoundationHost, HostLifecycle, SenderContext, application_cancel as dispatch_cancel,
+    application_request as dispatch_request, canonical_origin,
+    foundation_request as dispatch_foundation_request, is_bundled_navigation,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -134,6 +135,52 @@ pub fn application_cancel(
         &document_nonce,
         &request,
     )
+}
+
+#[tauri::command]
+pub fn foundation_request(
+    app: AppHandle,
+    window: WebviewWindow,
+    lifecycle: State<'_, Mutex<HostLifecycle>>,
+    foundation: State<'_, Mutex<FoundationHost>>,
+    generation: u64,
+    document_nonce: String,
+    request: String,
+) -> String {
+    let origin = canonical_origin(window.url().ok().as_ref());
+    let sender = SenderContext {
+        window_label: window.label().to_owned(),
+        origin,
+        generation,
+        document_nonce,
+    };
+    let output = dispatch_foundation_request(
+        lifecycle.inner(),
+        foundation.inner(),
+        &sender,
+        &request,
+        platform_open,
+    );
+    if output.quit {
+        app.exit(0);
+    }
+    output.encoded
+}
+
+fn platform_open(url: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::NSWorkspace;
+        use objc2_foundation::{NSString, NSURL};
+
+        NSURL::URLWithString(&NSString::from_str(url))
+            .is_some_and(|url| NSWorkspace::sharedWorkspace().openURL(&url))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = url;
+        false
+    }
 }
 
 pub fn navigation_policy<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {

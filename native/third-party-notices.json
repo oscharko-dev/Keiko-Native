@@ -2,8 +2,8 @@
   "schema": "keiko-native-third-party-notices/v1",
   "target": "keiko-native-desktop",
   "locks": {
-    "cargoSha256": "c8965be31fd9d43356a6ef13e856aed369b66580402a96272c058889d7457ee8",
-    "npmSha256": "5af86c5a3c4754abd5d4b047d89150e86d3513c7bac723166e02fe3ff6bc24a8"
+    "cargoSha256": "5e0a3945e58dcb5269868409f1910e2a63bf5a3a272e9d888d22acfd340541d5",
+    "npmSha256": "b94bdc5c3c163fe39eecb11458df2e47c470c7cd5059c9ebd2673c54ed3d0252"
   },
   "acceptedSpdxExpressions": [
     "(MIT OR Apache-2.0) AND Unicode-3.0",
@@ -14,6 +14,7 @@
     "Apache-2.0 OR MIT",
     "Apache-2.0 WITH LLVM-exception",
     "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+    "BSD-2-Clause",
     "BSD-3-Clause",
     "BSD-3-Clause OR MIT OR Apache-2.0",
     "CC0-1.0 OR MIT-0 OR Apache-2.0",
@@ -2584,6 +2585,12 @@
     },
     {
       "dev": true,
+      "license": "BSD-2-Clause",
+      "name": "entities",
+      "version": "7.0.1"
+    },
+    {
+      "dev": true,
       "license": "BSD-3-Clause",
       "name": "istanbul-lib-coverage",
       "version": "3.2.2"
@@ -3005,6 +3012,12 @@
     {
       "dev": true,
       "license": "MIT",
+      "name": "@types/node",
+      "version": "26.1.1"
+    },
+    {
+      "dev": true,
+      "license": "MIT",
       "name": "@types/react-dom",
       "version": "19.2.3"
     },
@@ -3013,6 +3026,18 @@
       "license": "MIT",
       "name": "@types/react",
       "version": "19.2.7"
+    },
+    {
+      "dev": true,
+      "license": "MIT",
+      "name": "@types/whatwg-mimetype",
+      "version": "3.0.2"
+    },
+    {
+      "dev": true,
+      "license": "MIT",
+      "name": "@types/ws",
+      "version": "8.18.1"
     },
     {
       "dev": true,
@@ -3077,6 +3102,12 @@
     {
       "dev": true,
       "license": "MIT",
+      "name": "buffer-image-size",
+      "version": "0.6.4"
+    },
+    {
+      "dev": true,
+      "license": "MIT",
       "name": "chai",
       "version": "6.2.2"
     },
@@ -3121,6 +3152,12 @@
       "license": "MIT",
       "name": "fsevents",
       "version": "2.3.3"
+    },
+    {
+      "dev": true,
+      "license": "MIT",
+      "name": "happy-dom",
+      "version": "20.11.0"
     },
     {
       "dev": true,
@@ -3239,6 +3276,12 @@
     {
       "dev": true,
       "license": "MIT",
+      "name": "undici-types",
+      "version": "8.3.0"
+    },
+    {
+      "dev": true,
+      "license": "MIT",
       "name": "vite",
       "version": "7.3.6"
     },
@@ -3251,8 +3294,20 @@
     {
       "dev": true,
       "license": "MIT",
+      "name": "whatwg-mimetype",
+      "version": "3.0.0"
+    },
+    {
+      "dev": true,
+      "license": "MIT",
       "name": "why-is-node-running",
       "version": "2.3.0"
+    },
+    {
+      "dev": true,
+      "license": "MIT",
+      "name": "ws",
+      "version": "8.21.1"
     },
     {
       "dev": true,
