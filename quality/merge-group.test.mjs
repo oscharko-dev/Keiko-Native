@@ -24,7 +24,7 @@ const completeSection =
 // prettier-ignore
 const contractBody = issueSchemaForLabels(["type: task"]).requiredHeadings.map((heading) => `## ${heading}\n\n${heading === "Acceptance criteria" ? "- [ ] AC1 — Candidate is accepted." : completeSection}`).join("\n\n");
 // prettier-ignore
-const producers = { "Contract publication": "publication.yml@protected-dev", "Issue contract current": "issue-current.yml@protected-dev", "Lifecycle handoff": "lifecycle-handoff.yml@protected-dev", "PR contract": "pr-contract.yml@protected-dev" };
+const producers = { "Contract publication": "contract-policy.yml@protected-dev", "Issue contract current": "contract-policy.yml@protected-dev", "Lifecycle handoff": "lifecycle-handoff.yml@protected-dev", "PR contract": "contract-policy.yml@protected-dev" };
 // prettier-ignore
 const normalProducers = Object.fromEntries(Object.entries(producers).filter(([key]) => key !== "Contract publication"));
 // prettier-ignore

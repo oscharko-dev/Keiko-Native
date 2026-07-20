@@ -15,7 +15,7 @@ const issueTitle = "Publication candidate contract";
 const contexts =
   "Contract publication|Issue contract current|PR contract".split("|");
 // prettier-ignore
-const producers = { "Contract publication": "publication.yml@protected-dev", "Issue contract current": "issue-current.yml@protected-dev", "Lifecycle handoff": "lifecycle-handoff.yml@protected-dev", "PR contract": "pr-contract.yml@protected-dev" };
+const producers = { "Contract publication": "contract-policy.yml@protected-dev", "Issue contract current": "contract-policy.yml@protected-dev", "Lifecycle handoff": "lifecycle-handoff.yml@protected-dev", "PR contract": "contract-policy.yml@protected-dev" };
 const text = (value) => ({ type: "string", value });
 const taskHeadings = issueSchemaForLabels(["type: task"]).requiredHeadings;
 const completeSection =
@@ -201,7 +201,7 @@ function handoffInput(candidate) {
     laneInput: publicationLaneInput(candidate, accepted),
   };
 }
-test("re-evaluates and accepts the exact ordinary B2 candidate and matrix", () => {
+test("accepts the exact ordinary B2 candidate from one shared producer", () => {
   const candidate = reversedMultiCandidate();
   const accepted = verifyPublicationCandidate(candidate);
   for (const authority of [
