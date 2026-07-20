@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 
+import { compareCodeUnits } from "./deterministic-order.mjs";
 import { evidenceFailures, redactionMatches } from "./native-contract.mjs";
 import {
   CLOSED_FILE_MODES,
@@ -133,9 +134,9 @@ function validatePackage(
     "schema",
     "sourceRevision",
     "target",
-  ].toSorted();
+  ].toSorted(compareCodeUnits);
   if (
-    JSON.stringify(Object.keys(manifest).toSorted()) !==
+    JSON.stringify(Object.keys(manifest).toSorted(compareCodeUnits)) !==
       JSON.stringify(expectedManifestKeys) ||
     manifest.schema !== "keiko-native-package-manifest/v1" ||
     manifest.sourceRevision !== revision ||

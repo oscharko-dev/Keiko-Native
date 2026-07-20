@@ -17,9 +17,16 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
-void fail(const char *category) {
+_Noreturn void fail(const char *category) {
   fprintf(stderr, "native-fs-helper:%s\n", category);
   exit(1);
+}
+
+void copy_bounded(char *destination, size_t capacity, const char *source,
+                  const char *category) {
+  size_t length = strlen(source);
+  if (length >= capacity) fail(category);
+  memcpy(destination, source, length + 1);
 }
 
 int same_stat(const struct stat *a, const struct stat *b) {
@@ -304,7 +311,9 @@ int native_fs_run(int argc, char **argv) {
     int destination_root = open_absolute(argv[4], 0, &destination_chain);
     int destination =
         open_dir_at_path(destination_root, argv[5], 1, &destination_chain);
-    if (strcmp(argv[5], ".") && fchmod(destination, 0755))
+    const mode_t packaged_directory_mode =
+        S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH;
+    if (strcmp(argv[5], ".") && fchmod(destination, packaged_directory_mode))
       fail("copy-directory-mode");
     refresh_chain(&source_chain);
     refresh_chain(&destination_chain);

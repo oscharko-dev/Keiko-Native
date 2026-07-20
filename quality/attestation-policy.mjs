@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { readdir } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { compareCodeUnits } from "./deterministic-order.mjs";
 import { isDirectInvocation, sanitizeDiagnostic } from "./native-process.mjs";
 import { parseReleaseJson, readBoundRegularFile } from "./release-io.mjs";
 
@@ -52,8 +52,11 @@ export async function main(args = process.argv.slice(2)) {
 export const releasePredicateType = predicateType;
 
 async function bundleSubjects(directory) {
-  const names = (await readdir(directory)).toSorted();
-  if (JSON.stringify(names) !== JSON.stringify([...bundleFiles].toSorted()))
+  const names = (await readdir(directory)).toSorted(compareCodeUnits);
+  if (
+    JSON.stringify(names) !==
+    JSON.stringify([...bundleFiles].toSorted(compareCodeUnits))
+  )
     throw new Error("release-attestation-bundle-files");
   return Promise.all(
     names.map(async (name) => {
@@ -73,7 +76,7 @@ function sameSubjects(subjects, expected) {
   const normalized = subjects.map((subject) => {
     if (
       Object.keys(subject ?? {})
-        .toSorted()
+        .toSorted(compareCodeUnits)
         .join(",") !== "digest,name" ||
       Object.keys(subject?.digest ?? {}).join(",") !== "sha256"
     )

@@ -39,7 +39,7 @@ export function compileNativeFsHelper({
   const expected = new Map(
     (expectedSources ?? [])
       .filter((entry) => entry && typeof entry.path === "string")
-      .map(({ blob, path, sha256 }) => [path, { blob, sha256 }]),
+      .map(({ path, sha256 }) => [path, { sha256 }]),
   );
   if (
     expected.size !== NATIVE_FS_SOURCES.length ||
@@ -282,13 +282,6 @@ function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function gitBlob(bytes) {
-  return createHash("sha1")
-    .update(`blob ${bytes.length}\0`)
-    .update(bytes)
-    .digest("hex");
-}
-
 function bindSources(snapshotRoot, expected) {
   const sources = [];
   try {
@@ -307,8 +300,7 @@ function bindSources(snapshotRoot, expected) {
         !named.isFile() ||
         named.isSymbolicLink() ||
         !sameIdentity(named, opened) ||
-        sha256(bytes) !== record.sha256 ||
-        gitBlob(bytes) !== record.blob
+        sha256(bytes) !== record.sha256
       )
         throw new Error("Native filesystem helper rejected source-integrity");
     }
@@ -396,4 +388,4 @@ function sameIdentity(left, right) {
   );
 }
 
-export const nativeFsTestSupport = { boundRootPaths, gitBlob, sha256 };
+export const nativeFsTestSupport = { boundRootPaths, sha256 };

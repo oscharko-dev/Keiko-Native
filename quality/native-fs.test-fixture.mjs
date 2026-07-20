@@ -58,7 +58,6 @@ export async function copyNativeFsSources(root) {
   for (const path of NATIVE_FS_SOURCES) {
     const bytes = await copySource(root, path);
     records.push({
-      blob: nativeFsTestSupport.gitBlob(bytes),
       path,
       sha256: nativeFsTestSupport.sha256(bytes),
     });

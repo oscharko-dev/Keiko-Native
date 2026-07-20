@@ -165,7 +165,7 @@ async function sourceEntries(project) {
   );
   return Promise.all(
     paths.map(async (path) => ({
-      path: relative(repositoryRoot, path).split("\\").join("/"),
+      path: relative(repositoryRoot, path).replaceAll("\\", "/"),
       text: await readInput(path, "utf8"),
     })),
   );
@@ -180,7 +180,7 @@ async function projectContract() {
 async function architecture() {
   const project = await projectContract();
   const paths = (await nativeFiles()).map((path) =>
-    relative(repositoryRoot, path).split("\\").join("/"),
+    relative(repositoryRoot, path).replaceAll("\\", "/"),
   );
   const metadata = cargoMetadata();
   const workspacePackages = metadata.packages.filter(({ id }) =>

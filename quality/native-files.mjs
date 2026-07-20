@@ -1,6 +1,8 @@
 import { lstat, readdir } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 
+import { compareCodeUnits } from "./deterministic-order.mjs";
+
 export async function filesBelow(
   root,
   ignored = new Set(),
@@ -18,7 +20,7 @@ export async function filesBelow(
     else if (entry.isFile()) files.push(path);
     else throw unsupportedEntry("special-entry", traversalRoot, path);
   }
-  return files.toSorted();
+  return files.toSorted(compareCodeUnits);
 }
 
 export async function trackedFiles(encoded, repositoryRoot, nativeRoot) {
@@ -43,7 +45,7 @@ export async function trackedFiles(encoded, repositoryRoot, nativeRoot) {
     await requireRegularPath(nativeRoot, nativePath);
     files.push(path);
   }
-  return [...new Set(files)].toSorted();
+  return [...new Set(files)].toSorted(compareCodeUnits);
 }
 
 async function requireDirectory(path, traversalRoot) {
@@ -91,5 +93,5 @@ function unsupportedEntry(category, traversalRoot, path) {
 }
 
 export function mergeNativeInspectionPaths(ephemeral, tracked) {
-  return [...new Set([...ephemeral, ...tracked])].toSorted();
+  return [...new Set([...ephemeral, ...tracked])].toSorted(compareCodeUnits);
 }
