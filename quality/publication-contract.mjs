@@ -386,13 +386,13 @@ function successfulContexts(input, binding, lane) {
   return { "Contract publication": publication ? "success" : "not_applicable", "Issue contract current": "success", "PR contract": "success" };
 }
 export function publicationResultMatrix(input) {
-  let [contexts, lane] = [failedContexts, "invalid"];
+  let contexts = failedContexts;
+  let lane;
   try {
     input = Object(input);
     const binding = classifiedBinding(input.classification);
-    const nextLane = binding?.lane ?? "invalid";
-    const nextContexts = successfulContexts(input, binding, nextLane);
-    [contexts, lane] = [nextContexts, nextLane];
+    lane = binding?.lane ?? "invalid";
+    contexts = successfulContexts(input, binding, lane);
   } catch {
     lane = "invalid";
   }
