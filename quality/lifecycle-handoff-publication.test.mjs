@@ -99,7 +99,7 @@ function migrationCandidate(lifecycle) {
     observation.readinessProducer = "issue-readiness.yml@protected-dev";
   });
   const entries = structuredClone(input.issueObservations);
-  const bytes = Buffer.from("# Terminal migration manifest\n");
+  const bytes = Buffer.from(`${JSON.stringify({ entries })}\n`);
   const manifest = {
     digest: contractSha256(bytes).digest,
     path: "docs/qa/repository-migration-manifest-v1.md",
@@ -109,7 +109,6 @@ function migrationCandidate(lifecycle) {
     base,
     bytes,
     digest: manifest.digest,
-    entries,
     mode: "100644",
     path: manifest.path,
     repository,

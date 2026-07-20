@@ -1,7 +1,7 @@
 import { isDeepStrictEqual as same } from "node:util";
 import { contractSha256, parseContractPath } from "./repository-contract.mjs";
 // prettier-ignore
-import { decodeSnapshotReceipt, publicationAncestryFailure, publicationEvidenceMaps, publicationIdentityFailure, samePublicationBytes, validateSnapshotReceipt } from "./publication-contract-schema.mjs";
+import { decodeSnapshotReceipt, decodeTerminalManifest, publicationAncestryFailure, publicationEvidenceMaps, publicationIdentityFailure, samePublicationBytes, validateSnapshotReceipt } from "./publication-contract-schema.mjs";
 export { validateSnapshotReceipt } from "./publication-contract-schema.mjs";
 // prettier-ignore
 const contractTrailer = /^Keiko-Contract-SHA256: ([0-9a-f]{64}) (docs\/contracts\/[A-Za-z0-9./-]+\.md)$/u, snapshotTrailer = /^Keiko-Publication-Snapshot-SHA256: ([0-9a-f]{64}) (docs\/contracts\/publications\/pr-([1-9]\d*)\.md)$/u, receiptPathPattern = /^docs\/contracts\/publications\/pr-([1-9]\d*)\.md$/u;
@@ -226,16 +226,16 @@ function treeEqualityFailure(expected, publishing, current) {
 function manifestEvidenceFailure(binding, evidence) {
   if (binding.submode === "ordinary")
     return evidence === null ? undefined : "unexpected_manifest_evidence";
+  const manifest = decodeTerminalManifest(evidence);
   if (
-    !record(evidence) ||
+    !exactKeys(evidence, ["bytes", "digest", "path"]) ||
     evidence.path !== binding.terminalManifest.path ||
     evidence.digest !== binding.terminalManifest.digest ||
-    !Array.isArray(evidence.entries) ||
-    evidence.entries.length !== binding.observations.length
+    contractSha256(evidence.bytes).digest !== evidence.digest ||
+    manifest?.entries.length !== binding.observations.length
   )
     return "invalid_manifest_evidence";
-  return JSON.stringify(evidence.entries) ===
-    JSON.stringify(binding.observations)
+  return same(manifest.entries, binding.observations)
     ? undefined
     : "manifest_entry_mismatch";
 }

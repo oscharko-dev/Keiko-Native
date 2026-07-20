@@ -147,7 +147,7 @@ function migrationCandidate(lifecycle) {
     observation.readinessProducer = "issue-readiness.yml@protected-dev";
   });
   const entries = structuredClone(input.issueObservations);
-  const bytes = Buffer.from("# Terminal migration manifest\n");
+  const bytes = Buffer.from(`${JSON.stringify({ entries })}\n`);
   // prettier-ignore
   const binding = { digest: contractSha256(bytes).digest, path: "docs/qa/repository-migration-manifest-v1.md" };
   rewriteReceipt(input, (receipt) => (receipt.terminalManifest = binding));
@@ -155,7 +155,6 @@ function migrationCandidate(lifecycle) {
     base,
     bytes,
     digest: binding.digest,
-    entries,
     mode: "100644",
     path: binding.path,
     repository,
@@ -237,36 +236,35 @@ test("requires exact live, receipt, manifest, readiness, and linked-PR evidence"
   // prettier-ignore
   const invalid = [
     changed((input) => (input.issueObservations[0].fingerprint = "a".repeat(64))),
-    changed((input) => (input.terminalManifest.entries[0].fingerprint = "a".repeat(64))),
+    changed((input) => (input.terminalManifest.bytes = Buffer.from('{"entries":[]}\n'))),
     changed((input) => (input.terminalManifest.path = "docs/qa/stale-v1.md")),
     changed((input) => (input.terminalManifest.digest = "a".repeat(64))),
     changed((input) => (input.terminalManifest.base = head)),
     changed((input) => (input.terminalManifest.mode = "120000")),
     changed((input) => (input.terminalManifest.repository = "other/repo")),
     changed((input) => (input.terminalManifest.bytes = Buffer.from("stale"))),
+    // prettier-ignore
+    changed((input) => Object.defineProperty(input.terminalManifest, "bytes", { get() { throw new Error("SECRET"); } })),
     rewrite((receipt) => (receipt.observations[0].readinessProducer = "untrusted-producer")),
     changed((input) => {
       rewriteReceipt(input, (receipt) => (receipt.observations[0].readinessProducer = "attacker"));
-      input.terminalManifest.entries = structuredClone(input.issueObservations);
     }),
     changed((input) => {
       rewriteReceipt(input, (receipt) => (receipt.observations[0].readiness = "https://github.com/attacker/repo/issues/30#issuecomment-123"));
-      input.terminalManifest.entries = structuredClone(input.issueObservations);
     }),
     changed((input) => {
       rewriteReceipt(input, (receipt) => (receipt.observations[0].readiness = "https://github.com/oscharko-dev/Keiko-Native/issues/31#issuecomment-123"));
-      input.terminalManifest.entries = structuredClone(input.issueObservations);
     }),
     rewrite((receipt) => (receipt.observations[0].readiness = null)),
     rewrite((receipt) => (receipt.observations[0].lifecycleLabels = ["status: new"])),
     changed((input) => (input.issueObservations[0].linkedPullRequest.head = "4".repeat(40))),
     rewrite((receipt) => (receipt.observations[0].linkedPullRequest = null)),
-    changed((input) => input.terminalManifest.entries.push(input.issueObservations[0])),
+    changed((input) => (input.terminalManifest.bytes = Buffer.from("not json"))),
     changed((input) => (input.terminalManifest = null)),
     changed((input) => {
       const forged = { digest: "d".repeat(64), path: "docs/qa/nonexistent-v1.md" };
       rewriteReceipt(input, (receipt) => (receipt.terminalManifest = forged));
-      input.terminalManifest = { digest: forged.digest, entries: structuredClone(input.issueObservations), path: forged.path };
+      input.terminalManifest = { digest: forged.digest, path: forged.path };
     }),
   ];
   for (const [index, input] of invalid.entries()) {

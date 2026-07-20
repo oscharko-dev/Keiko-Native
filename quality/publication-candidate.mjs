@@ -4,6 +4,7 @@ import { validateIssueContract } from "./issue-contract.mjs";
 import { classifyPublicationLane } from "./publication-contract.mjs";
 import {
   decodeSnapshotReceipt,
+  decodeTerminalManifest,
   samePublicationBytes,
   validateSnapshotReceipt,
 } from "./publication-contract-schema.mjs";
@@ -47,15 +48,7 @@ const evidenceKeys = ["base", "entries", "head", "pullRequest", "repository"];
 const entryKeys = ["bytes", "mode", "path"];
 const issueTitleKeys = ["number", "title"];
 const receiptKeys = ["bytes", "digest", "path"];
-const manifestKeys = [
-  "base",
-  "bytes",
-  "digest",
-  "entries",
-  "mode",
-  "path",
-  "repository",
-];
+const manifestKeys = ["base", "bytes", "digest", "mode", "path", "repository"];
 const rejectionMessage = "Publication candidate evidence failed closed.";
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
 
@@ -291,9 +284,10 @@ function manifestFailure(input, validation) {
       ? undefined
       : "unexpected_terminal_manifest";
   const manifest = input.terminalManifest;
+  const decoded = decodeTerminalManifest(manifest);
   return validManifestIdentity(manifest, input, binding) &&
     contractSha256(manifest.bytes).digest === manifest.digest &&
-    same(manifest.entries, binding.observations)
+    same(decoded?.entries, binding.observations)
     ? undefined
     : "terminal_manifest_mismatch";
 }
