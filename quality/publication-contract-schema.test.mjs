@@ -251,19 +251,18 @@ test("derives migration only from readiness, lifecycle, and manifest evidence", 
     validateSnapshotReceipt(receipt, repository).binding.submode,
     "migration",
   );
-  for (const changed of [
-    { ...receipt, terminalManifest: null },
-    {
-      ...receipt,
-      observations: [{ ...receipt.observations[0], readiness: null }],
-    },
-    {
-      ...receipt,
-      observations: [
-        { ...receipt.observations[0], lifecycleLabels: ["status: new"] },
-      ],
-    },
-  ]) {
+  const rootPath = "docs/contracts/task-30-v2-r3.md";
+  Object.assign(receipt.observations[0], {
+    candidatePath: rootPath,
+    revision: 3,
+  });
+  receipt.candidates[0].path = rootPath;
+  assert.equal(validateSnapshotReceipt(receipt, repository).ok, true);
+  // prettier-ignore
+  const invalid = [(x) => (x.terminalManifest = null), (x) => (x.observations[0].readiness = null), (x) => (x.observations[0].lifecycleLabels = ["status: new"]), (x) => (x.observations[0].recoveries = [historyBinding("task", 2, 1, digestA)])];
+  for (const mutate of invalid) {
+    const changed = structuredClone(receipt);
+    mutate(changed);
     assert.equal(validateSnapshotReceipt(changed, repository).ok, false);
   }
 });
