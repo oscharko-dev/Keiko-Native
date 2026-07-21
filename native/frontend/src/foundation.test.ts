@@ -256,6 +256,36 @@ describe("closed Foundation presentation", () => {
       vi.useRealTimers();
     }
   });
+
+  it("discards a superseded composition commit when a new composition starts without focus loss", async () => {
+    vi.useFakeTimers();
+    try {
+      const commit = vi.fn(controller.commitCanvasText);
+      const rendered = renderFoundation(
+        { kind: "canvas", committedText: "bereit" },
+        { ...controller, commitCanvasText: commit },
+      );
+      const textarea = elements(rendered).find(
+        ({ type }) => type === "textarea",
+      )?.props as Record<string, (event?: unknown) => void>;
+      const target = { value: "bereit" };
+
+      textarea.onCompositionStart();
+      textarea.onCompositionUpdate({ data: "かな", currentTarget: target });
+      textarea.onCompositionEnd({ data: "かな", currentTarget: target });
+
+      // Rapid IME input can start the next composition before the deferred
+      // commit runs, with no intervening blur. `composing` therefore stays
+      // true, so only the generation guard can discard the superseded commit.
+      textarea.onCompositionStart();
+      vi.runAllTimers();
+
+      expect(target.value).toBe("bereit");
+      expect(commit).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("IME harness state", () => {
