@@ -183,19 +183,18 @@ where
         Ok(mut foundation) => foundation.dispatch(&accepted.request, open_external),
         Err(_) => failed("unknown-request", ReasonCode::InternalFailure),
     };
-    let (encoded, live) = lifecycle.lock().map_or_else(
+    let (encoded, quit) = lifecycle.lock().map_or_else(
         |_| {
             (
                 encode_error("unknown-request", ReasonCode::InternalFailure),
                 false,
             )
         },
-        |mut lifecycle| lifecycle.complete_foundation_request(accepted, output.encoded.clone()),
+        |mut lifecycle| {
+            lifecycle.complete_foundation_request(accepted, output.encoded.clone(), output.quit)
+        },
     );
-    FoundationRequestOutput {
-        encoded,
-        quit: output.quit && live,
-    }
+    FoundationRequestOutput { encoded, quit }
 }
 
 pub fn is_exact_allowed_url(value: &str, revision: &str) -> bool {
@@ -591,9 +590,10 @@ mod tests {
                 .cancel_application_request(&sender, &cancellation(1))
                 .contains("cancelled")
         );
-        let (encoded, live) = lifecycle.complete_foundation_request(accepted, output.encoded);
+        let (encoded, quit_honored) =
+            lifecycle.complete_foundation_request(accepted, output.encoded, output.quit);
         assert!(encoded.contains("cancelled"));
-        assert!(!live, "cancelled completion must withhold the exit");
+        assert!(!quit_honored, "cancelled completion must withhold the exit");
 
         lifecycle.set_test_now_ms(1000);
         let accepted = lifecycle
@@ -602,18 +602,22 @@ mod tests {
         let output = dispatch_quit(&accepted);
         assert!(output.quit);
         lifecycle.set_test_now_ms(2000);
-        let (encoded, live) = lifecycle.complete_foundation_request(accepted, output.encoded);
+        let (encoded, quit_honored) =
+            lifecycle.complete_foundation_request(accepted, output.encoded, output.quit);
         assert!(encoded.contains("timed-out"));
-        assert!(!live, "timed-out completion must withhold the exit");
+        assert!(!quit_honored, "timed-out completion must withhold the exit");
 
         lifecycle.set_test_now_ms(3000);
         let accepted = lifecycle
             .begin_application_request(&sender, quit(3).as_bytes())
             .expect("accepted");
         let output = dispatch_quit(&accepted);
-        let (encoded, live) = lifecycle.complete_foundation_request(accepted, output.encoded);
-        assert!(!encoded.contains("cancelled") && !encoded.contains("timed-out"));
-        assert!(live && output.quit, "a live quit stays honored");
+        let quit_requested = output.quit;
+        let (encoded, quit_honored) =
+            lifecycle.complete_foundation_request(accepted, output.encoded, quit_requested);
+        assert!(!encoded.contains("cancelled"));
+        assert!(!encoded.contains("timed-out"));
+        assert!(quit_honored, "a live quit stays honored");
 
         drop(lifecycle);
         let _ = fs::remove_file(path);

@@ -264,10 +264,11 @@ impl HostLifecycle {
         &mut self,
         accepted: AcceptedRequest,
         encoded: String,
+        quit_requested: bool,
     ) -> (String, bool) {
         let (encoded, _acknowledged, live) =
             self.complete_with_availability(accepted, encoded, true);
-        (encoded, live)
+        (encoded, quit_requested && live)
     }
 
     fn complete_with_acknowledgement(
