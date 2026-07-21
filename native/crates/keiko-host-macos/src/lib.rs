@@ -264,8 +264,10 @@ impl HostLifecycle {
         &mut self,
         accepted: AcceptedRequest,
         encoded: String,
-    ) -> String {
-        self.complete_with_encoded(accepted, encoded)
+    ) -> (String, bool) {
+        let (encoded, _acknowledged, live) =
+            self.complete_with_availability(accepted, encoded, true);
+        (encoded, live)
     }
 
     fn complete_with_acknowledgement(
@@ -273,7 +275,9 @@ impl HostLifecycle {
         accepted: AcceptedRequest,
         encoded: String,
     ) -> (String, bool) {
-        self.complete_with_availability(accepted, encoded, true)
+        let (encoded, acknowledged, _live) =
+            self.complete_with_availability(accepted, encoded, true);
+        (encoded, acknowledged)
     }
 
     fn complete_with_availability(
@@ -281,7 +285,7 @@ impl HostLifecycle {
         accepted: AcceptedRequest,
         encoded: String,
         host_available: bool,
-    ) -> (String, bool) {
+    ) -> (String, bool, bool) {
         let completed_at_ms = self.clock.now_ms();
         let (request_id, _, _) = request_metadata(&accepted.request);
         let request_id = request_id.to_owned();
@@ -289,10 +293,11 @@ impl HostLifecycle {
             return (
                 encode_error(&request_id, ReasonCode::InternalFailure),
                 false,
+                false,
             );
         };
         if let Some(reason) = terminal_reason(&in_flight, completed_at_ms, host_available) {
-            return (encode_error(&request_id, reason), false);
+            return (encode_error(&request_id, reason), false, false);
         }
         let (_, sequence, _) = request_metadata(&accepted.request);
         let acknowledged = self.session.as_mut().is_some_and(|session| {
@@ -301,7 +306,7 @@ impl HostLifecycle {
             }
             session.acknowledgement.record_success(sequence)
         });
-        (encoded, acknowledged)
+        (encoded, acknowledged, true)
     }
 
     fn validate_sender(&self, context: &SenderContext) -> Result<(), (String, ReasonCode)> {

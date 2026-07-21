@@ -183,13 +183,18 @@ where
         Ok(mut foundation) => foundation.dispatch(&accepted.request, open_external),
         Err(_) => failed("unknown-request", ReasonCode::InternalFailure),
     };
-    let encoded = lifecycle.lock().map_or_else(
-        |_| encode_error("unknown-request", ReasonCode::InternalFailure),
+    let (encoded, live) = lifecycle.lock().map_or_else(
+        |_| {
+            (
+                encode_error("unknown-request", ReasonCode::InternalFailure),
+                false,
+            )
+        },
         |mut lifecycle| lifecycle.complete_foundation_request(accepted, output.encoded.clone()),
     );
     FoundationRequestOutput {
         encoded,
-        quit: output.quit,
+        quit: output.quit && live,
     }
 }
 
@@ -324,6 +329,7 @@ fn failed(request_id: &str, reason: ReasonCode) -> FoundationRequestOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AcceptedRequest;
     use keiko_ui_port::canonical_request_id;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -546,6 +552,70 @@ mod tests {
                 .contains("unknown-operation")
         );
         assert!(call(12, r#"{"kind":"quit-application"}"#, true).quit);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn terminal_completion_withholds_quit_and_reports_the_terminal_reason() {
+        let path = temporary_state();
+        let foundation = Mutex::new(FoundationHost::new(path.clone()));
+        let (lifecycle, generation, nonce) = session();
+        let sender = SenderContext {
+            window_label: "main".to_owned(),
+            origin: "tauri://localhost".to_owned(),
+            generation,
+            document_nonce: nonce.clone(),
+        };
+        let cancellation = |sequence: u64| {
+            format!(
+                r#"{{"schemaVersion":1,"requestId":"{}"}}"#,
+                canonical_request_id(generation, sequence).expect("request ID")
+            )
+            .into_bytes()
+        };
+        let quit = |sequence: u64| request(generation, sequence, r#"{"kind":"quit-application"}"#);
+        let dispatch_quit = |accepted: &AcceptedRequest| {
+            let mut host = foundation.lock().expect("foundation");
+            host.dispatch(&accepted.request, |_| true)
+        };
+        let mut lifecycle = lifecycle.lock().expect("lifecycle");
+
+        lifecycle.set_test_now_ms(0);
+        let accepted = lifecycle
+            .begin_application_request(&sender, quit(1).as_bytes())
+            .expect("accepted");
+        let output = dispatch_quit(&accepted);
+        assert!(output.quit, "dispatch reports quit before completion");
+        assert!(
+            lifecycle
+                .cancel_application_request(&sender, &cancellation(1))
+                .contains("cancelled")
+        );
+        let (encoded, live) = lifecycle.complete_foundation_request(accepted, output.encoded);
+        assert!(encoded.contains("cancelled"));
+        assert!(!live, "cancelled completion must withhold the exit");
+
+        lifecycle.set_test_now_ms(1000);
+        let accepted = lifecycle
+            .begin_application_request(&sender, quit(2).as_bytes())
+            .expect("accepted");
+        let output = dispatch_quit(&accepted);
+        assert!(output.quit);
+        lifecycle.set_test_now_ms(2000);
+        let (encoded, live) = lifecycle.complete_foundation_request(accepted, output.encoded);
+        assert!(encoded.contains("timed-out"));
+        assert!(!live, "timed-out completion must withhold the exit");
+
+        lifecycle.set_test_now_ms(3000);
+        let accepted = lifecycle
+            .begin_application_request(&sender, quit(3).as_bytes())
+            .expect("accepted");
+        let output = dispatch_quit(&accepted);
+        let (encoded, live) = lifecycle.complete_foundation_request(accepted, output.encoded);
+        assert!(!encoded.contains("cancelled") && !encoded.contains("timed-out"));
+        assert!(live && output.quit, "a live quit stays honored");
+
+        drop(lifecycle);
         let _ = fs::remove_file(path);
     }
 
