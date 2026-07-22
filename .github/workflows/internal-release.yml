@@ -1,0 +1,166 @@
+name: Internal macOS release
+
+on:
+  pull_request:
+    branches:
+      - epic/9-foundation-v0.1
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: internal-release-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Internal release build (macos-14)
+    runs-on: macos-14
+    timeout-minutes: 45
+    outputs:
+      revision: ${{ steps.identity.outputs.revision }}
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - name: Bind exact source revision
+        id: identity
+        env:
+          PULL_REQUEST_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          revision="$PULL_REQUEST_HEAD"
+          if [ -z "$revision" ]; then
+            revision="$GITHUB_SHA"
+          fi
+          if ! printf '%s' "$revision" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "Exact release source revision is unavailable."
+            exit 1
+          fi
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ steps.identity.outputs.revision }}
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24.18.0"
+          package-manager-cache: false
+      - name: Verify exact npm 11.16.0
+        run: node quality/check-toolchain.mjs
+      - name: Install exact Rust toolchain
+        run: rustup toolchain install 1.92.0 --profile minimal --component rustfmt --component clippy
+      - run: npm ci --ignore-scripts
+      - run: npm run native:dependencies
+      - run: npm run release:verify
+      - name: Create closed retained-subject checksums
+        run: >-
+          shasum -a 256 native/target/keiko-native-internal-release/*
+          > "$RUNNER_TEMP/release-subjects.txt"
+      - name: Attest complete internal release provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-checksums: ${{ runner.temp }}/release-subjects.txt
+          create-storage-record: false
+      - name: Attest exact-head internal release predicate
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-checksums: ${{ runner.temp }}/release-subjects.txt
+          predicate-type: https://oscharko.dev/keiko-native/internal-release/v1
+          predicate-path: native/target/keiko-native-internal-release/release-manifest.json
+          create-storage-record: false
+      - name: Verify strict GitHub attestations before upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REVISION: ${{ steps.identity.outputs.revision }}
+          SOURCE_DIGEST: ${{ github.sha }}
+          SOURCE_REF: ${{ github.ref }}
+          WORKFLOW_DIGEST: ${{ github.workflow_sha }}
+        run: |
+          set -eu
+          for artifact in native/target/keiko-native-internal-release/*; do
+            gh attestation verify "$artifact" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/internal-release.yml" \
+              --signer-digest "$WORKFLOW_DIGEST" \
+              --source-digest "$SOURCE_DIGEST" \
+              --source-ref "$SOURCE_REF" \
+              --deny-self-hosted-runners
+            gh attestation verify "$artifact" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/internal-release.yml" \
+              --signer-digest "$WORKFLOW_DIGEST" \
+              --source-digest "$SOURCE_DIGEST" \
+              --source-ref "$SOURCE_REF" \
+              --predicate-type https://oscharko.dev/keiko-native/internal-release/v1 \
+              --deny-self-hosted-runners \
+              --format json > "$RUNNER_TEMP/custom-attestation.json"
+            node quality/attestation-policy.mjs \
+              "$RUNNER_TEMP/custom-attestation.json" "$RELEASE_REVISION" \
+              native/target/keiko-native-internal-release
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: keiko-native-internal-${{ steps.identity.outputs.revision }}
+          path: native/target/keiko-native-internal-release
+          if-no-files-found: error
+          retention-days: 14
+
+  verify:
+    name: Internal release verification (macos-26)
+    needs: build
+    runs-on: macos-26
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ needs.build.outputs.revision }}
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24.18.0"
+          package-manager-cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: keiko-native-internal-${{ needs.build.outputs.revision }}
+          path: native/target/keiko-native-internal-release
+      - name: Verify exact-head GitHub attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REVISION: ${{ needs.build.outputs.revision }}
+          SOURCE_DIGEST: ${{ github.sha }}
+          SOURCE_REF: ${{ github.ref }}
+          WORKFLOW_DIGEST: ${{ github.workflow_sha }}
+        run: |
+          set -eu
+          for artifact in native/target/keiko-native-internal-release/*; do
+            gh attestation verify "$artifact" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/internal-release.yml" \
+              --signer-digest "$WORKFLOW_DIGEST" \
+              --source-digest "$SOURCE_DIGEST" \
+              --source-ref "$SOURCE_REF" \
+              --deny-self-hosted-runners
+            gh attestation verify "$artifact" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/internal-release.yml" \
+              --signer-digest "$WORKFLOW_DIGEST" \
+              --source-digest "$SOURCE_DIGEST" \
+              --source-ref "$SOURCE_REF" \
+              --predicate-type https://oscharko.dev/keiko-native/internal-release/v1 \
+              --deny-self-hosted-runners \
+              --format json > "$RUNNER_TEMP/custom-attestation.json"
+            node quality/attestation-policy.mjs \
+              "$RUNNER_TEMP/custom-attestation.json" "$RELEASE_REVISION" \
+              native/target/keiko-native-internal-release
+          done
+      - name: Verify mounted package, digest, SBOM, and evidence
+        env:
+          RELEASE_REVISION: ${{ needs.build.outputs.revision }}
+        run: >-
+          node quality/release-verify.mjs
+          --verify-only native/target/keiko-native-internal-release
+          --expected-head "$RELEASE_REVISION"

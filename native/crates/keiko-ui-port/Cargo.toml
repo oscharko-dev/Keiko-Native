@@ -1,0 +1,12 @@
+[package]
+name = "keiko-ui-port"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+keiko-application.workspace = true
+serde.workspace = true
+serde_json.workspace = true

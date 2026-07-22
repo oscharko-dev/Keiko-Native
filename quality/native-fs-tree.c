@@ -1,0 +1,332 @@
+#ifdef __APPLE__
+#define _DARWIN_C_SOURCE
+#else
+#define _GNU_SOURCE
+#endif
+#ifndef KEIKO_NATIVE_FS_INTERNAL_HEADER
+#define KEIKO_NATIVE_FS_INTERNAL_HEADER "native-fs-internal.h"
+#endif
+#include KEIKO_NATIVE_FS_INTERNAL_HEADER
+
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#ifndef __APPLE__
+#include <linux/fs.h>
+#include <sys/syscall.h>
+#endif
+
+static DIR *try_directory_stream(int descriptor) {
+  if (descriptor < 0) return NULL;
+  int scan = dup(descriptor);
+  if (scan < 0) return NULL;
+  DIR *directory = fdopendir(scan);
+  if (!directory) close(scan);
+  return directory;
+}
+
+static DIR *open_directory_stream(int descriptor, const char *category) {
+  DIR *directory = try_directory_stream(descriptor);
+  if (!directory) fail(category);
+  return directory;
+}
+
+static int swap_entries(int parent, const char *left, const char *right) {
+#ifdef __APPLE__
+  return renameatx_np(parent, left, parent, right, RENAME_SWAP);
+#else
+  return (int)syscall(SYS_renameat2, parent, left, parent, right,
+                      RENAME_EXCHANGE);
+#endif
+}
+
+static int move_entry_exclusive(int parent, const char *source,
+                                const char *destination) {
+#ifdef __APPLE__
+  return renameatx_np(parent, source, parent, destination, RENAME_EXCL);
+#else
+  return (int)syscall(SYS_renameat2, parent, source, parent, destination,
+                      RENAME_NOREPLACE);
+#endif
+}
+
+static void rollback_publication(int parent, const char *leaf,
+                                 const char *retained, int replaced) {
+  remove_entry(parent, leaf);
+  if (replaced && renameat(parent, retained, parent, leaf))
+    fail("publish-rollback");
+  if (sync_directory(parent, "publish-rollback-sync"))
+    fail("publish-rollback-sync");
+}
+
+static void copy_regular(int source_parent, const char *name, int dest_parent) {
+  int source = openat(source_parent, name, O_RDONLY | O_NONBLOCK | O_NOFOLLOW);
+  struct stat before;
+  if (source < 0 || fstat(source, &before) || !S_ISREG(before.st_mode))
+    fail("copy-source");
+  mode_t destination_mode = (before.st_mode & 0111) ? 0755 : 0644;
+  int dest = openat(dest_parent, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,
+                    destination_mode);
+  if (dest < 0) fail("copy-create");
+  set_created_mode(dest, dest_parent, name, destination_mode, "copy-mode");
+  char buffer[65536];
+  ssize_t size;
+  while ((size = read(source, buffer, sizeof(buffer))) > 0) {
+    ssize_t offset = 0;
+    while (offset < size) {
+      ssize_t written = write(dest, buffer + offset, (size_t)(size - offset));
+      if (written <= 0) fail("copy-write");
+      offset += written;
+    }
+  }
+  struct stat after, destination_before, destination_after, parent_before,
+      parent_after;
+  if (size < 0 || fstat(source, &after) || !same_stat(&before, &after))
+    fail("copy-source-changed");
+  if (fsync(dest)) fail("copy-sync");
+  if (fstat(dest, &destination_before) || fstat(dest_parent, &parent_before))
+    fail("copy-destination-stat");
+  test_barrier_at("copy-file-created");
+  if (fstat(dest_parent, &parent_after) ||
+      !same_stat(&parent_before, &parent_after) ||
+      fstat(dest, &destination_after) ||
+      fstatat(dest_parent, name, &after, AT_SYMLINK_NOFOLLOW) ||
+      !same_stat(&destination_before, &destination_after) ||
+      !same_stat(&destination_after, &after))
+    fail("copy-destination-rebound");
+  close(source);
+  close(dest);
+}
+
+void copy_directory(int source, int destination, const char *exclude,
+                    int depth) {
+  if (depth >= MAX_DEPTH) fail("depth");
+  struct stat directory_before, directory_after;
+  if (fstat(source, &directory_before)) fail("directory-stat");
+  DIR *directory = open_directory_stream(source, "directory-read");
+  struct dirent *entry;
+  while ((entry = readdir(directory))) {
+    if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+    if (!valid_component(entry->d_name)) fail("directory-name");
+    struct stat before, after;
+    if (fstatat(source, entry->d_name, &before, AT_SYMLINK_NOFOLLOW))
+      fail("entry-stat");
+    if (depth == 0 && exclude && !strcmp(entry->d_name, exclude)) {
+      if (!S_ISDIR(before.st_mode)) fail("excluded-type");
+      continue;
+    }
+    if (S_ISREG(before.st_mode))
+      copy_regular(source, entry->d_name, destination);
+    else if (S_ISDIR(before.st_mode)) {
+      if (mkdirat(destination, entry->d_name, 0755)) fail("copy-mkdir");
+      int child_source =
+          openat(source, entry->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+      int child_dest = openat(destination, entry->d_name,
+                              O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+      if (child_source < 0 || child_dest < 0) fail("copy-directory-open");
+      set_created_mode(child_dest, destination, entry->d_name, 0755,
+                       "copy-directory-mode");
+      copy_directory(child_source, child_dest, NULL, depth + 1);
+      struct stat child_before, child_after, named, parent_before, parent_after;
+      if (fstat(child_dest, &child_before) ||
+          fstat(destination, &parent_before))
+        fail("copy-directory-stat");
+      test_barrier_at("copy-directory-created");
+      if (fstat(destination, &parent_after) ||
+          !same_stat(&parent_before, &parent_after) ||
+          fstat(child_dest, &child_after) ||
+          fstatat(destination, entry->d_name, &named, AT_SYMLINK_NOFOLLOW) ||
+          !same_stat(&child_before, &child_after) ||
+          !same_stat(&child_after, &named))
+        fail("copy-directory-rebound");
+      close(child_source);
+      close(child_dest);
+    } else
+      fail("unsupported-entry");
+    if (fstatat(source, entry->d_name, &after, AT_SYMLINK_NOFOLLOW) ||
+        !same_stat(&before, &after))
+      fail("entry-changed");
+  }
+  closedir(directory);
+  if (fstat(source, &directory_after) ||
+      !same_stat(&directory_before, &directory_after))
+    fail("directory-changed");
+  if (fsync(destination)) fail("copy-directory-sync");
+}
+
+void remove_entry(int parent, const char *name) {
+  struct stat entry;
+  if (fstatat(parent, name, &entry, AT_SYMLINK_NOFOLLOW)) {
+    if (errno == ENOENT) return;
+    fail("remove-stat");
+  }
+  if (S_ISDIR(entry.st_mode)) {
+    int child = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+    DIR *directory = open_directory_stream(child, "remove-open");
+    struct dirent *nested;
+    while ((nested = readdir(directory)))
+      if (strcmp(nested->d_name, ".") && strcmp(nested->d_name, ".."))
+        remove_entry(child, nested->d_name);
+    closedir(directory);
+    close(child);
+    if (unlinkat(parent, name, AT_REMOVEDIR)) fail("remove-directory");
+  } else {
+    if (unlinkat(parent, name, 0)) fail("remove-file");
+  }
+}
+
+int try_remove_entry(int parent, const char *name) {
+  struct stat entry;
+  if (fstatat(parent, name, &entry, AT_SYMLINK_NOFOLLOW))
+    return errno == ENOENT ? 0 : -1;
+  if (!S_ISDIR(entry.st_mode)) return unlinkat(parent, name, 0);
+  int child = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+  DIR *directory = try_directory_stream(child);
+  if (!directory) {
+    if (child >= 0) close(child);
+    return -1;
+  }
+  int result = 0;
+  errno = 0;
+  struct dirent *nested;
+  while ((nested = readdir(directory))) {
+    if (!strcmp(nested->d_name, ".") || !strcmp(nested->d_name, "..")) continue;
+    if (try_remove_entry(child, nested->d_name)) {
+      result = -1;
+      break;
+    }
+    errno = 0;
+  }
+  if (!result && errno) result = -1;
+  closedir(directory);
+  close(child);
+  if (!result && unlinkat(parent, name, AT_REMOVEDIR)) result = -1;
+  return result;
+}
+
+void print_tree(int root, const char *prefix, const char *exclude, int depth) {
+  struct stat directory_before, directory_after;
+  if (fsync(root) || fstat(root, &directory_before))
+    fail("list-directory-stat");
+  DIR *directory = open_directory_stream(root, "list-open");
+  struct dirent *entry;
+  while ((entry = readdir(directory))) {
+    if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+    if (depth == 0 && exclude && !strcmp(entry->d_name, exclude)) continue;
+    struct stat metadata;
+    if (fstatat(root, entry->d_name, &metadata, AT_SYMLINK_NOFOLLOW))
+      fail("list-stat");
+    char path[PATH_MAX];
+    if (snprintf(path, sizeof(path), "%s%s%s", prefix, prefix[0] ? "/" : "",
+                 entry->d_name) >= (int)sizeof(path))
+      fail("path-too-long");
+    if (S_ISREG(metadata.st_mode))
+      printf("F\t%04o\t%s\n", (unsigned)(metadata.st_mode & 0777), path);
+    else if (S_ISDIR(metadata.st_mode)) {
+      printf("D\t%04o\t%s\n", (unsigned)(metadata.st_mode & 0777), path);
+      int child =
+          openat(root, entry->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+      if (child < 0) fail("list-directory");
+      print_tree(child, path, NULL, depth + 1);
+      close(child);
+    } else
+      fail("unsupported-entry");
+  }
+  closedir(directory);
+  if (fstat(root, &directory_after) ||
+      !same_stat(&directory_before, &directory_after))
+    fail("list-directory-changed");
+}
+
+void publish_staged(int parent, chain_t *chain, const char *leaf,
+                    const char *staging, int stage) {
+  if (sync_directory(stage, "stage-sync")) fail("stage-sync");
+  struct stat stage_before, stage_named;
+  if (fstat(stage, &stage_before)) fail("stage-stat");
+  refresh_chain_leaf(chain);
+  test_barrier();
+  verify_chain(chain, 1);
+  if (fstat(stage, &stage_named) || !same_stat(&stage_before, &stage_named) ||
+      fstatat(parent, staging, &stage_named, AT_SYMLINK_NOFOLLOW) ||
+      !same_stat(&stage_before, &stage_named))
+    fail("stage-rebound");
+  struct stat existing;
+  int replaced = 0;
+  char cleanup[NAME_MAX + 1];
+  if (snprintf(cleanup, sizeof(cleanup), ".keiko-cleanup-%ld",
+               (long)getpid()) >= (int)sizeof(cleanup))
+    fail("cleanup-name");
+  if (!fstatat(parent, leaf, &existing, AT_SYMLINK_NOFOLLOW)) {
+    if (!S_ISDIR(existing.st_mode)) {
+      fail("publish-destination-type");
+    }
+    if (swap_entries(parent, staging, leaf)) {
+      fail("publish-swap");
+    }
+    replaced = 1;
+  } else if (errno != ENOENT || renameat(parent, staging, parent, leaf)) {
+    fail("publish-rename");
+  }
+  const char *retained = staging;
+  if (replaced) {
+    if (move_entry_exclusive(parent, staging, cleanup)) {
+      rollback_publication(parent, leaf, staging, replaced);
+      close(stage);
+      fail("publish-retain");
+    }
+    retained = cleanup;
+  }
+  struct stat published, stage_after, parent_before, parent_after;
+  if (fstat(parent, &parent_before)) fail("publish-parent-stat");
+  test_barrier_at("published-leaf");
+  if (fstat(parent, &parent_after) ||
+      !same_stat(&parent_before, &parent_after) || fstat(stage, &stage_after) ||
+      fstatat(parent, leaf, &published, AT_SYMLINK_NOFOLLOW) ||
+      !same_stat(&stage_after, &published)) {
+    rollback_publication(parent, leaf, retained, replaced);
+    close(stage);
+    fail("publish-rebound");
+  }
+  if (sync_directory(parent, "publish-parent-sync")) {
+    rollback_publication(parent, leaf, retained, replaced);
+    close(stage);
+    fail("publish-sync");
+  }
+  if (fstat(stage, &stage_after) ||
+      fstatat(parent, leaf, &published, AT_SYMLINK_NOFOLLOW) ||
+      !same_stat(&stage_after, &published)) {
+    rollback_publication(parent, leaf, retained, replaced);
+    close(stage);
+    fail("publish-rebound");
+  }
+  disarm_stage_cleanup();
+  close(stage);
+  if (replaced) {
+    (void)try_remove_entry(parent, cleanup);
+    (void)sync_directory(parent, "publish-cleanup-sync");
+  }
+  refresh_chain_leaf(chain);
+  close_chain(chain, 1);
+}
+
+void publish_tree(int source, int destination_root, const char *path) {
+  chain_t chain = {0};
+  char leaf[NAME_MAX + 1];
+  int parent = open_parent(destination_root, path, 1, &chain, leaf);
+  refresh_chain(&chain);
+  char staging[NAME_MAX + 1];
+  if (snprintf(staging, sizeof(staging), ".keiko-stage-%ld", (long)getpid()) >=
+      (int)sizeof(staging))
+    fail("stage-name");
+  if (mkdirat(parent, staging, 0700)) fail("stage-create");
+  int stage = openat(parent, staging, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+  if (stage < 0) fail("stage-open");
+  arm_stage_cleanup(parent, staging, stage);
+  if (sync_directory(parent, "stage-parent-sync")) fail("stage-parent-sync");
+  copy_directory(source, stage, NULL, 0);
+  publish_staged(parent, &chain, leaf, staging, stage);
+}
