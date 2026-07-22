@@ -555,7 +555,7 @@ test("public governance restricts automated epic merges to the broker and keeps 
       "utf8",
     ),
   ]);
-  const activeProjections = [
+  const policyProjections = [
     agents,
     baseline,
     gates,
@@ -564,8 +564,8 @@ test("public governance restricts automated epic merges to the broker and keeps 
     decisionTemplate,
     defectTemplate,
     pullRequestTemplate,
-    supersedingAdr,
   ];
+  const activeProjections = [...policyProjections, supersedingAdr];
   for (const document of activeProjections) {
     assert.match(document, /dedicated[\s\S]{0,120}GitHub\s+App/u);
     assert.match(document, /server-side\s+merge-authority broker/u);
@@ -574,11 +574,21 @@ test("public governance restricts automated epic merges to the broker and keeps 
       document,
       /(?:never|no)[\s\S]{0,120}(?:merge|auto-merge)[\s\S]{0,120}`dev`/iu,
     );
-    assert.doesNotMatch(document, /authenticated maintainer account/u);
+  }
+  for (const document of policyProjections) {
+    assert.doesNotMatch(document, /authenticated\s+maintainer\s+account/iu);
   }
   assert.match(supersedingAdr, /Supersedes[\s\S]*ADR-0005/u);
   assert.match(supersedingAdr, /ADR-0005's Sonar[\s\S]*unchanged/u);
   assert.match(supersedingAdr, /human-only child integration/u);
+  assert.match(
+    supersedingAdr,
+    /authenticated-maintainer-account automation path is historical context only and grants no current\s+execution authority/u,
+  );
+  assert.match(
+    supersedingAdr,
+    /`contents: write`[\s\S]*`pull requests: read`[\s\S]*`issues: read`[\s\S]*`checks: read`[\s\S]*`commit statuses: read`[\s\S]*`administration: read`[\s\S]*`metadata: read`/u,
+  );
   assert.match(historicalAdr, /PR #15/u);
   assert.match(historicalAdr, /one-time/u);
   assert.match(historicalAdr, /authenticated maintainer account/u);

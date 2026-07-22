@@ -69,10 +69,12 @@ ref, enable provider auto-merge, enqueue a merge group, select a broader target,
 credential, or impersonate Niko or Oscharko.
 
 The broker authenticates as a dedicated non-human GitHub App installation restricted to
-`oscharko-dev/Keiko-Native`. It uses short-lived installation tokens and only the pull-request,
-contents, and metadata permissions required to merge an eligible child into `epic/**`. Agents,
-ordinary workflows, logs, caches, artifacts, and pull-request content cannot read, receive, mint,
-or replay that credential.
+`oscharko-dev/Keiko-Native`. It uses short-lived installation tokens with `contents: write` only
+for the conditional merge effect, plus `pull requests: read`, `issues: read`, `checks: read`,
+`commit statuses: read`, `administration: read`, and `metadata: read` for its independent evidence,
+protected-branch-policy, and exact-effect reads. It receives no other repository write permission.
+Agents, ordinary workflows, logs, caches, artifacts, and pull-request content cannot read, receive,
+mint, or replay that credential.
 
 Repository rules grant that App no update, merge, auto-merge, merge-queue enqueue, force-push,
 administration, or bypass effect on `dev`. No automated principal can affect `dev`. Every pull
