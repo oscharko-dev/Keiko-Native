@@ -521,35 +521,68 @@ test("Sonar workflow validation rejects predicate expansion and weakened failure
     assert.ok(sonarWorkflowFailures(mutation).length > 0);
 });
 
-test("public governance records exact-target authenticated epic merge and sacred dev", async () => {
+test("public governance restricts automated epic merges to the broker and keeps dev sacred", async () => {
   const root = join(import.meta.dirname, "..");
-  const [agents, gates, activation, adr] = await Promise.all([
+  const [
+    agents,
+    baseline,
+    gates,
+    activation,
+    taskTemplate,
+    decisionTemplate,
+    defectTemplate,
+    pullRequestTemplate,
+    supersedingAdr,
+    historicalAdr,
+  ] = await Promise.all([
     readFile(join(root, "AGENTS.md"), "utf8"),
+    readFile(join(root, "docs/planning/agent-planning-baseline.md"), "utf8"),
     readFile(join(root, "docs/qa/quality-gates.md"), "utf8"),
     readFile(join(root, "docs/qa/repository-activation.md"), "utf8"),
+    readFile(join(root, ".github/ISSUE_TEMPLATE/feature_task.md"), "utf8"),
+    readFile(
+      join(root, ".github/ISSUE_TEMPLATE/decision_evaluation.md"),
+      "utf8",
+    ),
+    readFile(join(root, ".github/ISSUE_TEMPLATE/defect_finding.md"), "utf8"),
+    readFile(join(root, ".github/pull_request_template.md"), "utf8"),
+    readFile(
+      join(root, "docs/adr/ADR-0008-restricted-broker-epic-auto-merge.md"),
+      "utf8",
+    ),
     readFile(
       join(root, "docs/adr/ADR-0005-free-tier-sonar-and-epic-delivery.md"),
       "utf8",
     ),
   ]);
-  for (const document of [agents, gates, activation, adr]) {
-    assert.match(document, /authenticated maintainer account/u);
-    assert.match(document, /exact accepted epic/u);
+  const activeProjections = [
+    agents,
+    baseline,
+    gates,
+    activation,
+    taskTemplate,
+    decisionTemplate,
+    defectTemplate,
+    pullRequestTemplate,
+    supersedingAdr,
+  ];
+  for (const document of activeProjections) {
+    assert.match(document, /dedicated[\s\S]{0,120}GitHub\s+App/u);
+    assert.match(document, /server-side\s+merge-authority broker/u);
+    assert.match(document, /exact\s+accepted epic/u);
     assert.match(
       document,
-      /Never\s+(?:merge|enable auto-merge)[\s\S]{0,80}`dev`/u,
+      /(?:never|no)[\s\S]{0,120}(?:merge|auto-merge)[\s\S]{0,120}`dev`/iu,
     );
+    assert.doesNotMatch(document, /authenticated maintainer account/u);
   }
-  assert.match(adr, /PR #15/u);
-  assert.match(adr, /one-time/u);
-  assert.match(
-    gates,
-    /for actions\s+targeting `dev`, operate through a human merge-capable credential/u,
-  );
-  assert.doesNotMatch(
-    gates,
-    /or operate through a\s+human merge-capable credential\./u,
-  );
+  assert.match(supersedingAdr, /Supersedes[\s\S]*ADR-0005/u);
+  assert.match(supersedingAdr, /ADR-0005's Sonar[\s\S]*unchanged/u);
+  assert.match(supersedingAdr, /human-only child integration/u);
+  assert.match(historicalAdr, /PR #15/u);
+  assert.match(historicalAdr, /one-time/u);
+  assert.match(historicalAdr, /authenticated maintainer account/u);
+  assert.match(gates, /no automated principal[\s\S]*affect `dev`/u);
 });
 
 async function fixtureRepository() {
