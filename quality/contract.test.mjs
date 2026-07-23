@@ -585,9 +585,15 @@ test("public governance restricts automated epic merges to the broker and keeps 
     supersedingAdr,
     /authenticated-maintainer-account automation path is historical context only and grants no current\s+execution authority/u,
   );
+  const brokerPermissionsParagraph = supersedingAdr
+    .split(/\r?\n\r?\n/u)
+    .find((paragraph) =>
+      paragraph.includes("It uses short-lived installation tokens"),
+    );
+  assert.ok(brokerPermissionsParagraph);
   assert.match(
-    supersedingAdr,
-    /`contents: write`[\s\S]*`pull requests: read`[\s\S]*`issues: read`[\s\S]*`checks: read`[\s\S]*`statuses: read`[\s\S]*`administration: read`[\s\S]*`metadata: read`/u,
+    brokerPermissionsParagraph.replace(/\s+/gu, " "),
+    /short-lived installation tokens with `contents: write` only for the conditional merge effect, plus `pull requests: read`, `issues: read`, `checks: read`, `statuses: read`, `administration: read`, and `metadata: read` for its independent evidence/u,
   );
   assert.match(historicalAdr, /PR #15/u);
   assert.match(historicalAdr, /one-time/u);
