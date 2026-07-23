@@ -75,23 +75,28 @@ person: either maintainer may merge their own pull request after reviewing the l
 pull request on the exact current head.
 
 That final review covers scope, acceptance criteria, the issue Quality Plan, verification and audit
-evidence, required and advisory findings, review conversations, and residual risks. Agents and bots
-must not merge into `dev`, enable auto-merge on a pull request targeting `dev`, or, for actions
-targeting `dev`, operate through a human merge-capable credential.
+evidence, required and advisory findings, review conversations, and residual risks. Agents, bots,
+and every other automated principal must not merge into `dev`, enable auto-merge, enqueue a merge
+group, update its ref, or operate through a human merge-capable credential. Repository rules must
+prove that no automated principal can affect `dev`.
 
-An authenticated agent may use the authenticated maintainer account to merge a fully eligible
-accepted child branch only into the exact accepted epic target. Immediately before mutation it
-revalidates the accepted issue, exact source and target, current head, applicable green checks,
-acceptance and audit evidence, blocking findings, and review conversations. Any mismatch, stale
-evidence, failed or skipped required check, unresolved thread, closed issue, or `dev` target fails
-closed. Never merge or enable auto-merge for `dev`. An epic or standalone pull request targeting
-`dev` is always outside this exception.
+Only the trusted server-side merge-authority broker authenticated as the dedicated non-human GitHub
+App may merge a fully eligible child branch into its exact accepted epic target. An agent or
+ordinary workflow may submit a bounded request and observe its sanitized receipt, but cannot merge,
+enable provider auto-merge, select the target, access the broker credential, or impersonate a
+maintainer. Immediately before the effect, the broker independently revalidates protected-`dev`
+policy, current issue authority and lifecycle, exact source and target refs, applicable exact-head
+checks, acceptance and audit evidence, findings, review conversations, serialization fences, and
+replay state. It conditionally submits once and verifies the exact provider outcome and commit
+parents. Any mismatch, stale or unavailable evidence, failed or skipped required check, unresolved
+item, closed issue, lost fence, ambiguous response, or `dev` target fails closed.
 
-Repository administration limits `dev` merge authority to the two authorized maintainers and keeps
-repository auto-merge available for epic delivery. Because GitHub attribution identifies the
-account rather than whether its operation was human- or agent-driven, the accepted issue, pull
-request evidence, exact target validation, and recorded automation handoff provide the audit trail
-for child-to-epic delivery. They never authorize an agent action against `dev`.
+Repository administration limits `dev` merge authority to Niko and Oscharko and grants the
+dedicated App no update, merge, auto-merge, enqueue, administration, or bypass effect there. Broker
+unavailability or unproven provider semantics select human-only child integration. An agent never
+falls back to direct merge, maintainer-credential automation, provider auto-merge, or a weaker gate.
+The accepted issue, request, authorization snapshot, exact refs, actor, provider result, and
+post-effect read-back form the sanitized child-to-epic audit trail.
 
 ## Bootstrap and productive phases
 

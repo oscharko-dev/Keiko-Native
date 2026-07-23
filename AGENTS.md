@@ -192,14 +192,18 @@ evidence, exact current head, findings, conversations, and residual risks. An ag
 into `dev`, enable auto-merge for a pull request targeting `dev`, or use a human credential to evade
 this boundary.
 
-The sole automated-merge exception is an accepted child-issue pull request targeting its designated
-epic integration branch. An authenticated agent may use the authenticated maintainer account to
-merge a fully eligible accepted child branch only into the exact accepted epic target. Before the
-mutation, the agent must revalidate the open issue, accepted contract and target, source issue
-number, exact current head, applicable green gates, completed acceptance and audit evidence, and
-zero blocking findings or unresolved review conversations. A wrong, changed, stale, closed, or
-`dev` target fails closed. Never merge or enable auto-merge for `dev`. The exception does not extend
-to epic or standalone pull requests targeting `dev`.
+The sole automated-merge exception is an accepted child-issue pull request targeting its exact
+accepted epic integration branch. Only the trusted server-side merge-authority broker authenticated
+as the dedicated non-human GitHub App may perform that effect. An agent or ordinary workflow may
+submit a bounded request and observe its sanitized receipt, but cannot merge, update the target,
+enable provider auto-merge, enqueue a merge group, hold the broker credential, or impersonate a
+maintainer. The broker independently revalidates the open issue, accepted contract and target,
+source issue number, exact current head and base, applicable green gates, completed acceptance and
+audit evidence, and zero blocking findings or unresolved review conversations under ADR-0004 and
+ADR-0008. A wrong, changed, stale, closed, unavailable, or `dev` target fails closed. No automated
+principal may merge or enable auto-merge for `dev`. Broker unavailability selects human-only child
+integration; an agent never falls back to direct merge or maintainer-credential automation. The
+exception does not extend to epic or standalone pull requests targeting `dev`.
 
 Before pushing, review the full diff against the task requirements, trust boundaries, failure modes,
 and every affected gate. Use GitHub only for remote-only evidence, not as the primary test loop.

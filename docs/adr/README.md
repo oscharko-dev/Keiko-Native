@@ -10,6 +10,8 @@ rewriting history or renumbering files.
 - [ADR-0005: Sonar and authenticated epic delivery](ADR-0005-free-tier-sonar-and-epic-delivery.md)
 - [ADR-0006: Tauri macOS foundation stack](ADR-0006-tauri-macos-foundation-stack.md)
 - [ADR-0007: Internal unsigned macOS release engineering][adr-0007]
+- [ADR-0008: Restricted broker authority for automated epic delivery][adr-0008]
 
 [adr-0004]: ADR-0004-readiness-authority-and-workflow-lifecycle.md
 [adr-0007]: ADR-0007-internal-unsigned-macos-release-engineering.md
+[adr-0008]: ADR-0008-restricted-broker-epic-auto-merge.md

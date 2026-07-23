@@ -45,8 +45,10 @@ Configure a ruleset or branch protection that:
 - requires each exact-head context and expected App ID listed in `quality-gates.md`, but only after
   its producer has passed the live negative and positive probes.
 
-GitHub's repository-wide auto-merge feature may remain available for epic delivery, but agents must
-not be able to merge or enable auto-merge on a pull request targeting `dev`.
+Repository-wide provider auto-merge is not the Keiko Native epic-delivery mechanism. Repository
+rules must prove that no automated principal, including the dedicated non-human GitHub App used by
+the trusted server-side merge-authority broker, can update, merge, enable auto-merge, enqueue,
+administer, or bypass `dev`.
 
 ## 4. Protect `epic/**`
 
@@ -54,12 +56,16 @@ Configure an epic-branch ruleset that requires pull requests, signed commits, li
 resolved conversations, `PR contract`, `Issue contract current`, and every deterministic or
 provider check observed for that target during the live probes.
 
-An authenticated agent may use the authenticated maintainer account to merge a fully eligible
-accepted child branch only into the exact accepted epic target. Require it to revalidate the issue
-contract, source, target, current head, applicable checks, audit evidence, findings, and review
-conversations immediately before mutation. Any mismatch or `dev` target fails closed. Never merge
-or enable auto-merge for `dev`. Retain the issue, pull request, exact head, actor, and result as the
-automation record.
+Grant the dedicated non-human GitHub App only the permissions and ruleset access required by the
+trusted server-side merge-authority broker to merge a fully eligible child branch into its exact
+accepted epic target. An agent or ordinary workflow may submit and observe a bounded request but
+cannot merge, enable provider auto-merge, hold the App credential, select a broader target, or
+impersonate a maintainer. Require broker-side revalidation of protected-`dev` policy, issue
+authority and lifecycle, source and target refs, current head and base, applicable checks, audit
+evidence, findings, review conversations, locks, fences, replay state, conditional provider
+acceptance, and exact post-effect parents. Any mismatch, ambiguity, unavailable evidence, or `dev`
+target fails closed. Retain the request, authorization snapshot, issue, pull request, exact refs,
+App identity, result, and read-back as the automation record.
 
 ## 5. Verify workflow permissions and providers
 
@@ -88,9 +94,10 @@ Record the issue, pull request, exact head, actor, result, and timestamp for eac
    again.
 6. A wrong source issue number, delivery target, readiness URL, contract version, or stale head
    fails closed.
-7. An authenticated-agent probe using the authenticated maintainer account can merge one fully
-   green child pull request to its exact accepted epic branch, rejects a wrong or stale target, and
-   does not merge, enable auto-merge, push, or bypass a gate on `dev`.
+7. A dedicated-App probe through the trusted server-side merge-authority broker merges one fully
+   green child pull request to its exact accepted epic branch, rejects wrong, stale, replayed, and
+   concurrent requests, verifies the exact commit parents and target tip, and proves no automated
+   principal can merge, update, enable auto-merge, enqueue, administer, or bypass `dev`.
 8. Niko or Oscharko can manually merge a fully green `dev` pull request after reviewing the exact
    head; no separate non-author approval is required.
 
