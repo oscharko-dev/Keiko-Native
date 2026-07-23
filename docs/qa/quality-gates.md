@@ -9,6 +9,22 @@ Quality Plan, an untested changed behavior, or a violated architecture or trust 
 Manual label, ruleset, identity, provider, and live-probe sequencing follows
 [`repository-activation.md`](repository-activation.md).
 
+The staged machine policy is
+[`quality/repository-controls-policy.json`](../../quality/repository-controls-policy.json). It
+separates the restricted caller from the broker-only App and binds provider read-back to the
+canonical broker capability policy rather than creating another merge policy. Null identity or
+ruleset IDs, extra or missing permission, a shared principal, stale or unavailable evidence, or
+missing denial, cleanup, rotation, revocation, outage, or ambiguous-result recovery evidence keeps
+automated epic delivery disabled. The repository validator consumes sanitized evidence only and
+has no agent-accessible broker or human credential path.
+
+The checked-in pending context matrix is activation-blocking. It cannot produce a green repository
+controls result until a later accepted staged contract promotes those exact producer-bound
+contexts according to applicability and empties both `pendingChecks` lists: `dev` promotes
+`Contract publication` and `Lifecycle handoff`, while epic branches promote only
+`Lifecycle handoff`. Repository, install account, disposable probe target, context names, and
+producer App IDs are frozen constants rather than caller-selected policy coordinates.
+
 ## Required exact-head checks
 
 `dev` protection is activated only after a live pull request proves that every context below is
@@ -95,8 +111,15 @@ Repository administration limits `dev` merge authority to Niko and Oscharko and 
 dedicated App no update, merge, auto-merge, enqueue, administration, or bypass effect there. Broker
 unavailability or unproven provider semantics select human-only child integration. An agent never
 falls back to direct merge, maintainer-credential automation, provider auto-merge, or a weaker gate.
-The accepted issue, request, authorization snapshot, exact refs, actor, provider result, and
-post-effect read-back form the sanitized child-to-epic audit trail.
+The accepted issue, request, canonical authorization-snapshot digest, exact refs and fences, actor,
+closed provider result class, merge commit and parents, and post-effect read-back form the
+sanitized child-to-epic audit trail. The producing boundary evaluates the complete transient broker
+input, then discards raw provider bodies and readiness comments; durable validation consumes only
+the broker-owned bound snapshot, distinct request ID, and accepted conditional response. The
+canonical broker verifier recomputes snapshot provenance and the exact accepted outcome; no
+self-hashed receipt wrapper is merge authority. The fixed canonical payload is authenticated first
+with RSA-PSS-SHA256 using the broker App's staged SPKI public key and exact SHA-256 fingerprint;
+private signing material and raw broker inputs never enter repository evidence.
 
 ## Bootstrap and productive phases
 

@@ -1,0 +1,84 @@
+{
+  "schema": "keiko-native-repository-controls-policy/v4",
+  "repository": "oscharko-dev/Keiko-Native",
+  "devBranch": "dev",
+  "evidenceMaxAgeMinutes": 60,
+  "identities": {
+    "caller": {
+      "appId": null,
+      "appSlug": null,
+      "installationId": null,
+      "installationAccount": "oscharko-dev",
+      "permissions": {
+        "contents": "write",
+        "issues": "write",
+        "metadata": "read",
+        "pull_requests": "write"
+      }
+    },
+    "broker": {
+      "appId": null,
+      "appSlug": null,
+      "installationId": null,
+      "installationAccount": "oscharko-dev",
+      "capabilityPolicy": "keiko-native-epic-merge-broker-capability/v1",
+      "receiptVerificationKey": null,
+      "receiptVerificationKeyFingerprint": null
+    }
+  },
+  "humanAllowlist": ["Niko4417", "oscharko"],
+  "requiredChecks": [
+    { "context": "PR contract", "appId": 15368 },
+    { "context": "Issue contract current", "appId": 15368 },
+    { "context": "ci", "appId": 15368 },
+    { "context": "actionlint", "appId": 15368 },
+    { "context": "Verify pinned action SHAs", "appId": 15368 },
+    { "context": "zizmor", "appId": 15368 },
+    { "context": "Analyze (actions)", "appId": 15368 },
+    {
+      "context": "Analyze (javascript-typescript)",
+      "appId": 15368
+    },
+    { "context": "Build, scan, SBOM, smoke", "appId": 15368 },
+    { "context": "Review dependency diff (dev/main)", "appId": 15368 },
+    { "context": "native", "appId": 15368 },
+    { "context": "Scan dependency lockfiles", "appId": 15368 },
+    { "context": "SonarCloud Code Analysis", "appId": 12526 },
+    { "context": "Socket Security: Project Report", "appId": 156372 },
+    { "context": "Socket Security: Pull Request Alerts", "appId": 156372 }
+  ],
+  "pendingChecks": {
+    "dev": [
+      { "context": "Contract publication", "appId": 15368 },
+      { "context": "Lifecycle handoff", "appId": 15368 }
+    ],
+    "epic": [{ "context": "Lifecycle handoff", "appId": 15368 }]
+  },
+  "mergeQueue": { "maxEntriesToMerge": 1 },
+  "epic": {
+    "rulesetId": null,
+    "include": ["refs/heads/epic/**"],
+    "probeTarget": "epic/50-controls-probe",
+    "requiredChecks": [
+      { "context": "PR contract", "appId": 15368 },
+      { "context": "Issue contract current", "appId": 15368 },
+      { "context": "ci", "appId": 15368 },
+      { "context": "actionlint", "appId": 15368 },
+      { "context": "Verify pinned action SHAs", "appId": 15368 },
+      { "context": "zizmor", "appId": 15368 },
+      { "context": "Analyze (actions)", "appId": 15368 },
+      {
+        "context": "Analyze (javascript-typescript)",
+        "appId": 15368
+      },
+      { "context": "Build, scan, SBOM, smoke", "appId": 15368 },
+      { "context": "native", "appId": 15368 },
+      { "context": "Scan dependency lockfiles", "appId": 15368 },
+      { "context": "Socket Security: Project Report", "appId": 156372 },
+      {
+        "context": "Socket Security: Pull Request Alerts",
+        "appId": 156372
+      }
+    ]
+  }
+}

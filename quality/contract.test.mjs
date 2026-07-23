@@ -6,6 +6,10 @@ import test from "node:test";
 
 import { canonicalCoverageCommand } from "./coverage-reporter.mjs";
 import {
+  BROKER_APP_PERMISSIONS,
+  BROKER_CAPABILITY_SCHEMA,
+} from "./epic-merge-broker-capability.mjs";
+import {
   aggregateCiBindingFailures,
   coverageCommandFailures,
   dependencyReviewWorkflowFailures,
@@ -23,6 +27,11 @@ import {
   workflowEventTargetsBranch,
 } from "./contract.mjs";
 import { governedWorkflowJobs } from "./workflow-job-contracts.mjs";
+import {
+  REPOSITORY_CONTROLS_POLICY_SCHEMA,
+  RESTRICTED_CALLER_PERMISSIONS,
+  repositoryControlsPolicyFailures,
+} from "./repository-controls.mjs";
 
 const validManifest = {
   baseBranch: "dev",
@@ -177,7 +186,20 @@ const repositoryControlPlaneModules = Object.freeze([
   "quality/lifecycle-handoff-publication.mjs",
   "quality/lifecycle-handoff.mjs",
   "quality/merge-group.mjs",
+  "quality/epic-merge-broker-capability.mjs",
+  "quality/epic-merge-broker-effect.mjs",
+  "quality/epic-merge-broker-receipt-crypto.mjs",
+  "quality/epic-merge-broker-receipt.mjs",
   "quality/epic-merge-broker.mjs",
+  "quality/repository-controls-evidence.mjs",
+  "quality/repository-controls-policy.mjs",
+  "quality/repository-controls-probe.mjs",
+  "quality/repository-controls-probe-denials.mjs",
+  "quality/repository-controls-probe-identities.mjs",
+  "quality/repository-controls-probe-scenarios.mjs",
+  "quality/repository-controls-probes.mjs",
+  "quality/repository-controls-readback.mjs",
+  "quality/repository-controls.mjs",
 ]);
 
 const coverageScript = canonicalCoverageCommand;
@@ -601,6 +623,45 @@ test("public governance restricts automated epic merges to the broker and keeps 
   assert.match(gates, /no automated principal[\s\S]*affect `dev`/u);
 });
 
+test("repository controls stage distinct identities and keep broker permission policy single-owned", async () => {
+  const root = join(import.meta.dirname, "..");
+  const [policy, activation, gates] = await Promise.all([
+    readFile(
+      join(root, "quality/repository-controls-policy.json"),
+      "utf8",
+    ).then(JSON.parse),
+    readFile(join(root, "docs/qa/repository-activation.md"), "utf8"),
+    readFile(join(root, "docs/qa/quality-gates.md"), "utf8"),
+  ]);
+  assert.equal(policy.schema, REPOSITORY_CONTROLS_POLICY_SCHEMA);
+  assert.deepEqual(
+    policy.identities.caller.permissions,
+    RESTRICTED_CALLER_PERMISSIONS,
+  );
+  assert.equal(
+    policy.identities.broker.capabilityPolicy,
+    BROKER_CAPABILITY_SCHEMA,
+  );
+  assert.equal(Object.hasOwn(policy.identities.broker, "permissions"), false);
+  assert.equal(
+    Object.keys(BROKER_APP_PERMISSIONS).includes("pull_requests"),
+    true,
+  );
+  const failures = repositoryControlsPolicyFailures(policy);
+  assert.ok(failures.includes("policy_caller_identity_pending"));
+  assert.ok(failures.includes("policy_broker_identity_pending"));
+  assert.ok(failures.includes("policy_epic_ruleset_pending"));
+  for (const document of [activation, gates]) {
+    assert.match(document, /repository-controls-policy\.json/u);
+    assert.match(document, /restricted caller/u);
+    assert.match(document, /broker-only/u);
+    assert.match(document, /ambiguous/u);
+    assert.match(document, /rotation/iu);
+    assert.match(document, /revocation/iu);
+    assert.match(document, /outage/iu);
+  }
+});
+
 async function fixtureRepository() {
   const root = await mkdtemp(join(tmpdir(), "keiko-native-quality-"));
   const files = [
@@ -653,6 +714,7 @@ async function fixtureRepository() {
     "quality/markdown-contract.mjs",
     "quality/pr-contract-action.mjs",
     "quality/pr-contract.mjs",
+    "quality/repository-controls-policy.json",
     ...repositoryControlPlaneModules,
     "quality/release-contract.mjs",
     "quality/release-evidence.mjs",

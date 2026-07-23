@@ -3,6 +3,7 @@ import {
   compareLifecycleGenerationDigestV1,
   digestLifecycleGenerationV1,
 } from "./lifecycle-generation.mjs";
+import { brokerProtocolSemanticsProven } from "./epic-merge-broker-capability.mjs";
 // prettier-ignore
 import { classifyLifecycleHandoffLane, evaluateNormalLifecycleHandoff } from "./lifecycle-handoff.mjs";
 import { lifecycleObservation } from "./lifecycle-handoff-generation.mjs";
@@ -39,8 +40,6 @@ const failed = (action, code) => ({ action, code, ...inactive });
 const humanOnly = (code) => failed("human_only", code);
 const noAction = (code) => failed("none", code);
 const automated = (action, extra = {}) => ({ action, ...active, ...extra });
-// prettier-ignore
-const semanticsKeys = Object.freeze(["completePagination", "cursorOrdering", "dualRefConditional", "exactOutcome", "fencing", "liveProbe", "stableReads"]);
 // prettier-ignore
 const evidenceKeys = Object.freeze(["audit", "conversations", "external", "journey", "manual", "platform", "reviews"]);
 // prettier-ignore
@@ -255,10 +254,7 @@ function immutable(value) {
 }
 export function bindEpicMergeAuthorizationSnapshot(input) {
   try {
-    if (
-      !exactKeys(input?.semantics, semanticsKeys) ||
-      !semanticsKeys.every((key) => input.semantics[key] === true)
-    )
+    if (!brokerProtocolSemanticsProven(input?.semantics))
       return humanOnly("automation_not_proven");
     if (!locksProven(input.locks)) return humanOnly("lock_semantics_unproven");
     const current = stableRead(input);
@@ -305,7 +301,7 @@ function conditionalRequest(snapshot) {
     targetLock: snapshot.targetLock,
   };
 }
-function acceptedOutcome(response, snapshot) {
+export function acceptedEpicMergeOutcomeCurrent(response, snapshot) {
   if (!record(response) || response.status !== "accepted") return false;
   const proof = snapshot.preSubmit;
   return [
@@ -324,7 +320,7 @@ const nodeField = (node, name) =>
   node?.fields?.find((item) => item.name === name)?.value;
 const nodeSame = (node, name, value) =>
   same(nodeField(node, name), exactNode(value));
-function snapshotCurrent(snapshot) {
+export function epicMergeAuthorizationSnapshotCurrent(snapshot) {
   if (!exactKeys(snapshot, snapshotKeys)) return false;
   const locks = {
     issue: snapshot.issueLock,
@@ -342,6 +338,8 @@ function snapshotCurrent(snapshot) {
       ...proof,
       issueIdentity: snapshot.issueIdentity,
     }),
+    proof.issueFence === snapshot.issueLock.fence,
+    proof.targetFence === snapshot.targetLock.fence,
     snapshot.value?.head === proof.head,
     snapshot.value?.pullRequest === proof.pullRequest,
     snapshot.value?.repository === proof.repository,
@@ -372,7 +370,8 @@ function responseDecision(response, snapshot, submitted) {
       : automated("submit_once", { request: conditionalRequest(snapshot) });
   }
   if (!submitted) return humanOnly("conditional_response_without_submission");
-  if (acceptedOutcome(response, snapshot)) return automated("accepted");
+  if (acceptedEpicMergeOutcomeCurrent(response, snapshot))
+    return automated("accepted");
   return exactKeys(response, ["status"]) && response.status === "rejected"
     ? noAction("conditional_rejected")
     : humanOnly("conditional_outcome_ambiguous");
@@ -384,7 +383,7 @@ export function decideEpicMergeAuthorization(input) {
     if (!validLedger(input.submittedSnapshots))
       return humanOnly("submission_ledger_unproven");
     const snapshot = bound.snapshot;
-    if (!snapshotCurrent(input.snapshotReadback))
+    if (!epicMergeAuthorizationSnapshotCurrent(input.snapshotReadback))
       return humanOnly("broker_snapshot_readback_unproven");
     if (!same(input.snapshotReadback, snapshot))
       return noAction("broker_snapshot_readback_mismatch");

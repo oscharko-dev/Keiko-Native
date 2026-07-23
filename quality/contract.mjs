@@ -30,7 +30,20 @@ const repositoryControlPlaneModules = Object.freeze([
   "quality/lifecycle-handoff-publication.mjs",
   "quality/lifecycle-handoff.mjs",
   "quality/merge-group.mjs",
+  "quality/epic-merge-broker-capability.mjs",
+  "quality/epic-merge-broker-effect.mjs",
+  "quality/epic-merge-broker-receipt-crypto.mjs",
+  "quality/epic-merge-broker-receipt.mjs",
   "quality/epic-merge-broker.mjs",
+  "quality/repository-controls-evidence.mjs",
+  "quality/repository-controls-policy.mjs",
+  "quality/repository-controls-probe.mjs",
+  "quality/repository-controls-probe-denials.mjs",
+  "quality/repository-controls-probe-identities.mjs",
+  "quality/repository-controls-probe-scenarios.mjs",
+  "quality/repository-controls-probes.mjs",
+  "quality/repository-controls-readback.mjs",
+  "quality/repository-controls.mjs",
 ]);
 
 const requiredFiles = [
@@ -81,6 +94,7 @@ const requiredFiles = [
   "quality/markdown-contract.mjs",
   "quality/pr-contract-action.mjs",
   "quality/pr-contract.mjs",
+  "quality/repository-controls-policy.json",
   ...repositoryControlPlaneModules,
   "quality/internal-release.mjs",
   "quality/internal-release-workflow.mjs",
