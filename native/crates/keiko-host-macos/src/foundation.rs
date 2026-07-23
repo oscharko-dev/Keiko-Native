@@ -381,9 +381,25 @@ impl PreparedReplacement {
 impl Drop for PreparedReplacement {
     fn drop(&mut self) {
         if let Some(temporary) = self.temporary.take() {
-            let _ = fs::remove_file(temporary);
+            match fs::remove_file(temporary) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => eprintln!("{}", drop_cleanup_failure_diagnostic()),
+            }
         }
     }
+}
+
+fn discard_cleanup_failure_diagnostic(request_id: &str) -> String {
+    format!("keiko-foundation-stage-discard-failed request={request_id}")
+}
+
+fn drop_cleanup_failure_diagnostic() -> &'static str {
+    "keiko-foundation-stage-drop-cleanup-failed"
+}
+
+fn report_discard_cleanup_failure(request_id: &str) {
+    eprintln!("{}", discard_cleanup_failure_diagnostic(request_id));
 }
 
 pub fn foundation_request<F>(
@@ -454,7 +470,9 @@ fn complete_prepared_dispatch(
             dispatch.output.quit,
         ),
         Err(_) => {
-            let _ = dispatch.discard();
+            if dispatch.discard().is_err() {
+                report_discard_cleanup_failure(&request_id);
+            }
             return failed(&request_id, ReasonCode::InternalFailure);
         }
     };
@@ -469,6 +487,7 @@ fn finish_foundation_dispatch(
 ) -> FoundationRequestOutput {
     if !completion.live {
         if dispatch.discard().is_err() {
+            report_discard_cleanup_failure(request_id);
             return failed(request_id, ReasonCode::InternalFailure);
         }
         return FoundationRequestOutput {
@@ -1234,6 +1253,35 @@ mod tests {
     }
 
     #[test]
+    fn poisoned_completion_reports_failure_after_successful_discard() {
+        let path = temporary_state();
+        let mut foundation = FoundationHost::new(path.clone());
+        let before = foundation.application().clone();
+        let (lifecycle, generation, nonce) = session();
+        let sender = sender(generation, &nonce);
+        let dismiss = request(generation, 1, r#"{"kind":"dismiss-welcome"}"#);
+        let accepted = lifecycle
+            .lock()
+            .expect("lifecycle")
+            .begin_application_request(&sender, dismiss.as_bytes())
+            .expect("accepted");
+        let dispatch = foundation.dispatch(&accepted.request, |_| true);
+        let temporary = prepared_temporary(&dispatch);
+        let _ = std::panic::catch_unwind(|| {
+            let lifecycle_guard = lifecycle.lock().expect("lifecycle");
+            assert!(lifecycle_guard.accepting);
+            panic!("poison lifecycle");
+        });
+
+        let output = complete_prepared_dispatch(&lifecycle, &mut foundation, accepted, dispatch);
+
+        assert!(output.encoded.contains("internal-failure"));
+        assert_eq!(foundation.application, Some(before));
+        assert!(!path.exists());
+        assert!(!temporary.exists());
+    }
+
+    #[test]
     fn foundation_lock_failure_occurs_after_request_registration() {
         let path = temporary_state();
         let foundation = Mutex::new(FoundationHost::new(path.clone()));
@@ -1395,6 +1443,57 @@ mod tests {
             .expect_err("non-file cleanup fails closed");
         assert_eq!(blocked.temporary.as_deref(), Some(temporary.as_path()));
         fs::remove_dir(temporary).expect("remove blocking directory");
+    }
+
+    #[test]
+    fn cleanup_failure_diagnostics_are_correlated_and_redacted() {
+        assert_eq!(
+            discard_cleanup_failure_diagnostic("request-1"),
+            "keiko-foundation-stage-discard-failed request=request-1"
+        );
+        assert_eq!(
+            drop_cleanup_failure_diagnostic(),
+            "keiko-foundation-stage-drop-cleanup-failed"
+        );
+    }
+
+    #[test]
+    fn drop_cleanup_failure_preserves_the_unknown_entry() {
+        let path = temporary_state();
+        let replacement =
+            PreparedReplacement::prepare(&path, b"candidate").expect("prepared stage");
+        let temporary = replacement
+            .temporary
+            .as_deref()
+            .expect("temporary")
+            .to_owned();
+        fs::remove_file(&temporary).expect("replace staged file");
+        fs::create_dir(&temporary).expect("unknown entry fixture");
+
+        drop(replacement);
+
+        assert!(
+            temporary.is_dir(),
+            "fallback cleanup must not remove an unknown non-file entry"
+        );
+        fs::remove_dir(temporary).expect("remove unknown entry fixture");
+    }
+
+    #[test]
+    fn drop_treats_an_already_missing_stage_as_cleaned() {
+        let path = temporary_state();
+        let replacement =
+            PreparedReplacement::prepare(&path, b"candidate").expect("prepared stage");
+        let temporary = replacement
+            .temporary
+            .as_deref()
+            .expect("temporary")
+            .to_owned();
+        fs::remove_file(&temporary).expect("externally removed stage");
+
+        drop(replacement);
+
+        assert!(!temporary.exists());
     }
 
     #[test]
