@@ -48,6 +48,13 @@ pub struct AcceptedRequest {
     request: UiRequest,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct FoundationCompletion {
+    encoded: String,
+    live: bool,
+    quit: bool,
+}
+
 #[derive(Debug)]
 pub struct HostLifecycle {
     accepting: bool,
@@ -265,10 +272,24 @@ impl HostLifecycle {
         accepted: AcceptedRequest,
         encoded: String,
         quit_requested: bool,
-    ) -> (String, bool) {
+    ) -> FoundationCompletion {
+        self.complete_foundation_request_with_availability(accepted, encoded, quit_requested, true)
+    }
+
+    fn complete_foundation_request_with_availability(
+        &mut self,
+        accepted: AcceptedRequest,
+        encoded: String,
+        quit_requested: bool,
+        host_available: bool,
+    ) -> FoundationCompletion {
         let (encoded, _acknowledged, live) =
-            self.complete_with_availability(accepted, encoded, true);
-        (encoded, quit_requested && live)
+            self.complete_with_availability(accepted, encoded, host_available);
+        FoundationCompletion {
+            encoded,
+            live,
+            quit: quit_requested && live,
+        }
     }
 
     fn complete_with_acknowledgement(
