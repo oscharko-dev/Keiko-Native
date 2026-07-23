@@ -38,7 +38,7 @@ export const denialEffects = Object.freeze([
 
 const observedAt = (value) => text(value) && Number.isFinite(Date.parse(value));
 const issueNumber = (identity) => {
-  const match = /^issue-([1-9][0-9]*)$/u.exec(identity ?? "");
+  const match = /^issue-([1-9]\d*)$/u.exec(identity ?? "");
   const value = match ? Number(match[1]) : undefined;
   return positiveInteger(value) ? value : undefined;
 };

@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 
+import { compareCodeUnits } from "./deterministic-order.mjs";
 import {
   bindEpicMergeAuthorizationSnapshot,
   decideEpicMergeAuthorization,
@@ -27,7 +28,6 @@ const responseKeys = Object.freeze([
   "target",
   "targetTip",
 ]);
-const compare = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
 
 function exactKeys(value, expected) {
   return (
@@ -35,8 +35,8 @@ function exactKeys(value, expected) {
     typeof value === "object" &&
     !Array.isArray(value) &&
     isDeepStrictEqual(
-      Object.keys(value).toSorted(compare),
-      [...expected].toSorted(compare),
+      Object.keys(value).toSorted(compareCodeUnits),
+      [...expected].toSorted(compareCodeUnits),
     )
   );
 }

@@ -1,5 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 
+import { compareCodeUnits } from "./deterministic-order.mjs";
+
 export const BROKER_CAPABILITY_SCHEMA =
   "keiko-native-epic-merge-broker-capability/v1";
 
@@ -48,7 +50,6 @@ const credentialKeys = Object.freeze([
   "kind",
   "ordinaryWorkflowReadable",
 ]);
-const compare = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
 const record = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const text = (value) => typeof value === "string" && value.length > 0;
@@ -58,8 +59,8 @@ function exactKeys(value, expected) {
   return (
     record(value) &&
     isDeepStrictEqual(
-      Object.keys(value).toSorted(compare),
-      [...expected].toSorted(compare),
+      Object.keys(value).toSorted(compareCodeUnits),
+      [...expected].toSorted(compareCodeUnits),
     )
   );
 }
@@ -69,7 +70,10 @@ function exactStrings(actual, expected) {
     Array.isArray(actual) &&
     actual.every(text) &&
     new Set(actual).size === actual.length &&
-    isDeepStrictEqual(actual.toSorted(compare), expected.toSorted(compare))
+    isDeepStrictEqual(
+      actual.toSorted(compareCodeUnits),
+      expected.toSorted(compareCodeUnits),
+    )
   );
 }
 
@@ -175,8 +179,10 @@ export function brokerCapabilityFailures(value, now = Date.now()) {
       "broker_capability_schema_invalid",
     );
     add(failures, !text(value.repository), "broker_repository_invalid");
-    failures.push(...identityFailures(value));
-    failures.push(...credentialFailures(value, now));
+    failures.push(
+      ...identityFailures(value),
+      ...credentialFailures(value, now),
+    );
     add(
       failures,
       !brokerProtocolSemanticsProven(value.protocol),

@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 
+import { compareCodeUnits } from "./deterministic-order.mjs";
 import {
   acceptedEpicMergeOutcomeCurrent,
   bindEpicMergeAuthorizationSnapshot,
@@ -19,7 +20,6 @@ export const EPIC_MERGE_BROKER_RECEIPT_SCHEMA =
   "keiko-native-epic-merge-broker-receipt/v3";
 
 const digestPattern = /^[0-9a-f]{64}$/u;
-const compare = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
 const record = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
@@ -27,8 +27,8 @@ function exactKeys(value, expected) {
   return (
     record(value) &&
     isDeepStrictEqual(
-      Object.keys(value).toSorted(compare),
-      [...expected].toSorted(compare),
+      Object.keys(value).toSorted(compareCodeUnits),
+      [...expected].toSorted(compareCodeUnits),
     )
   );
 }

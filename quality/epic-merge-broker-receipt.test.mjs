@@ -6,6 +6,7 @@ import {
   acceptedEpicMergeEffectFromReceipt,
   createAcceptedEpicMergeReceipt,
 } from "./epic-merge-broker-receipt.mjs";
+import { canonicalReceiptPayloadBytes } from "./epic-merge-broker-receipt-crypto.mjs";
 import { acceptedBrokerAuthorizationInput } from "./repository-controls-broker.test-fixtures.mjs";
 
 const requestId = "9".repeat(64);
@@ -60,6 +61,13 @@ test("signs a closed canonical broker receipt without raw provider bodies", () =
     "body",
   ])
     assert.doesNotMatch(serialized, new RegExp(rawProviderText, "u"));
+});
+
+test("canonicalizes receipt objects with deterministic code-unit ordering", () => {
+  assert.equal(
+    canonicalReceiptPayloadBytes({ z: 2, Z: 1, ä: 3 }).toString("utf8"),
+    '{"Z":1,"z":2,"ä":3}',
+  );
 });
 
 test("rejects unsigned, wrong-key, wrong-algorithm, and malformed receipts", () => {

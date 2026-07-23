@@ -1,3 +1,5 @@
+import { generateKeyPairSync } from "node:crypto";
+
 import {
   BROKER_APP_PERMISSIONS,
   BROKER_CAPABILITY_SCHEMA,
@@ -338,8 +340,8 @@ export function repositoryControlsEvidence(value = repositoryControlsPolicy()) {
         result: "passed",
       },
       denials: denialEffects.map((denial, index) => {
-        const { automationDisabled: _unused, ...coordinates } =
-          negativeCoordinates(effect, index + 40);
+        const coordinates = negativeCoordinates(effect, index + 40);
+        delete coordinates.automationDisabled;
         return {
           ...coordinates,
           actorAppId: denial.startsWith("broker_") ? 4242 : 5252,
@@ -385,4 +387,3 @@ export function repositoryControlsEvidence(value = repositoryControlsPolicy()) {
   };
   return result;
 }
-import { generateKeyPairSync } from "node:crypto";

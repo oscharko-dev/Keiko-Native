@@ -1,6 +1,5 @@
 import { brokerCapabilityFailures } from "./epic-merge-broker-capability.mjs";
 import {
-  REPOSITORY_CONTROLS_POLICY_SCHEMA,
   RESTRICTED_CALLER_PERMISSIONS,
   add,
   exactAppCoordinates,
@@ -12,18 +11,12 @@ import {
   text,
   unsafeEvidenceValue,
 } from "./repository-controls-policy.mjs";
-import {
-  REPOSITORY_CONTROLS_PROBES_SCHEMA,
-  repositoryControlProbeFailures,
-} from "./repository-controls-probes.mjs";
+import { repositoryControlProbeFailures } from "./repository-controls-probes.mjs";
 import { configurationReadFailures } from "./repository-controls-readback.mjs";
 
-export {
-  REPOSITORY_CONTROLS_POLICY_SCHEMA,
-  REPOSITORY_CONTROLS_PROBES_SCHEMA,
-  RESTRICTED_CALLER_PERMISSIONS,
-  repositoryControlsPolicyFailures,
-};
+export { RESTRICTED_CALLER_PERMISSIONS, repositoryControlsPolicyFailures };
+export { REPOSITORY_CONTROLS_POLICY_SCHEMA } from "./repository-controls-policy.mjs";
+export { REPOSITORY_CONTROLS_PROBES_SCHEMA } from "./repository-controls-probes.mjs";
 
 export const REPOSITORY_CONTROLS_EVIDENCE_SCHEMA =
   "keiko-native-repository-controls-evidence/v3";
@@ -298,8 +291,10 @@ function identityFailures(evidence, policy, now) {
     RESTRICTED_CALLER_PERMISSIONS,
     policy.repository,
   );
-  failures.push(...callerCredentialFailures(evidence, now));
-  failures.push(...brokerCapabilityFailures(evidence.broker, now));
+  failures.push(
+    ...callerCredentialFailures(evidence, now),
+    ...brokerCapabilityFailures(evidence.broker, now),
+  );
   add(
     failures,
     evidence.broker?.repository !== policy.repository,

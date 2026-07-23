@@ -217,8 +217,10 @@ export async function main(
 }
 
 if (isDirectInvocation(process.argv[1], fileURLToPath(import.meta.url))) {
-  main().catch((error) => {
+  try {
+    await main();
+  } catch (error) {
     console.error(sanitizeDiagnostic(error?.message ?? String(error)));
     process.exitCode = 1;
-  });
+  }
 }

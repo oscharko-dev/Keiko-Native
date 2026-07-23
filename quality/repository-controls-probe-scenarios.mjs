@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 import { BROKER_APP_PERMISSIONS } from "./epic-merge-broker-capability.mjs";
+import { compareCodeUnits } from "./deterministic-order.mjs";
 import {
   exactKeys,
   exactStrings,
@@ -25,18 +26,18 @@ export const brokerRejectionScenarios = Object.freeze([
 export const BROKER_PERMISSION_ENTRIES = Object.freeze(
   Object.entries(BROKER_APP_PERMISSIONS)
     .map(([name, access]) => `${name}:${access}`)
-    .toSorted(),
+    .toSorted(compareCodeUnits),
 );
 
 export function permissionSetDigest(entries) {
   return createHash("sha256")
-    .update(JSON.stringify([...entries].toSorted()))
+    .update(JSON.stringify([...entries].toSorted(compareCodeUnits)))
     .digest("hex");
 }
 
 const observedAt = (value) => text(value) && Number.isFinite(Date.parse(value));
 const issueNumber = (identity) => {
-  const match = /^issue-([1-9][0-9]*)$/u.exec(identity ?? "");
+  const match = /^issue-([1-9]\d*)$/u.exec(identity ?? "");
   const value = match ? Number(match[1]) : undefined;
   return positiveInteger(value) ? value : undefined;
 };
@@ -147,8 +148,8 @@ function permissionDetails(details) {
     !Array.isArray(details.observedPermissions) ||
     !exactStrings(details.observedPermissions, details.observedPermissions) ||
     isDeepStrictEqual(
-      details.observedPermissions.toSorted(),
-      [...BROKER_PERMISSION_ENTRIES].toSorted(),
+      details.observedPermissions.toSorted(compareCodeUnits),
+      [...BROKER_PERMISSION_ENTRIES].toSorted(compareCodeUnits),
     )
   )
     return false;

@@ -7,6 +7,8 @@ import {
   verify,
 } from "node:crypto";
 
+import { compareCodeUnits } from "./deterministic-order.mjs";
+
 export const EPIC_MERGE_RECEIPT_ALGORITHM = "RSA-PSS-SHA256";
 const digestPattern = /^[0-9a-f]{64}$/u;
 const signaturePattern = /^[A-Za-z0-9_-]+$/u;
@@ -27,7 +29,7 @@ function canonicalValue(value) {
     throw new Error("receipt_object_invalid");
   return Object.fromEntries(
     Object.keys(value)
-      .toSorted()
+      .toSorted(compareCodeUnits)
       .map((key) => [key, canonicalValue(value[key])]),
   );
 }

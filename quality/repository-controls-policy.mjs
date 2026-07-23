@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 
 import { BROKER_CAPABILITY_SCHEMA } from "./epic-merge-broker-capability.mjs";
+import { compareCodeUnits } from "./deterministic-order.mjs";
 import { receiptVerificationKeyValid } from "./epic-merge-broker-receipt-crypto.mjs";
 
 export const REPOSITORY_CONTROLS_POLICY_SCHEMA =
@@ -53,7 +54,6 @@ export const EPIC_REQUIRED_CHECKS = Object.freeze(
   ),
 );
 
-const compare = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
 const policyKeys = Object.freeze([
   "devBranch",
   "epic",
@@ -77,8 +77,8 @@ export function exactKeys(value, expected) {
   return (
     record(value) &&
     isDeepStrictEqual(
-      Object.keys(value).toSorted(compare),
-      [...expected].toSorted(compare),
+      Object.keys(value).toSorted(compareCodeUnits),
+      [...expected].toSorted(compareCodeUnits),
     )
   );
 }
@@ -86,7 +86,7 @@ export function exactKeys(value, expected) {
 function canonicalStrings(values) {
   if (!Array.isArray(values) || values.some((value) => !text(value)))
     return undefined;
-  const result = values.toSorted(compare);
+  const result = values.toSorted(compareCodeUnits);
   return new Set(result).size === result.length ? result : undefined;
 }
 
@@ -111,7 +111,7 @@ export function canonicalChecks(values) {
     return undefined;
   const result = values
     .map(({ appId, context }) => `${context}\0${String(appId)}`)
-    .toSorted(compare);
+    .toSorted(compareCodeUnits);
   return new Set(result).size === result.length ? result : undefined;
 }
 
@@ -144,7 +144,7 @@ export function exactAppCoordinates(actual, expected) {
       return undefined;
     const result = values
       .map(({ appId, appSlug }) => `${appSlug}\0${String(appId)}`)
-      .toSorted(compare);
+      .toSorted(compareCodeUnits);
     return new Set(result).size === result.length ? result : undefined;
   };
   const left = canonical(actual);
@@ -157,12 +157,14 @@ export function exactAppCoordinates(actual, expected) {
 export function add(failures, condition, code) {
   if (condition && !failures.includes(code)) failures.push(code);
 }
-
 const secretKeyPattern =
   /^(?:access[_-]?token|authorization|client[_-]?secret|password|private[_-]?key|secret|token)$/iu;
-const secretValuePattern =
-  /(?:-----BEGIN [A-Z ]*PRIVATE KEY-----|github_pat_|gh[pousr]_|Bearer\s+[A-Za-z0-9._~-]|(?:^|[^A-Za-z0-9_-])eyj[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,})/iu;
-
+const secretValuePatterns = Object.freeze([
+  /-----BEGIN [a-z ]*PRIVATE KEY-----|github_pat_|gh[pousr]_|Bearer\s+[\w.~-]+/iu,
+  /(?:^|[^a-z\d_-])eyj[a-z\d_-]{5,}\.[a-z\d_-]{5,}\.[a-z\d_-]{5,}/iu,
+]);
+const secretEvidenceString = (value) =>
+  secretValuePatterns.some((pattern) => pattern.test(value));
 export function unsafeEvidenceValue(value) {
   const ancestors = new Set();
   let nodes = 0;
@@ -170,7 +172,7 @@ export function unsafeEvidenceValue(value) {
     nodes += 1;
     if (nodes > 10_000 || depth > 32) return true;
     if (typeof item === "string")
-      return item.length > 512 || secretValuePattern.test(item);
+      return item.length > 512 || secretEvidenceString(item);
     if (
       item === null ||
       ["boolean", "number", "undefined"].includes(typeof item)
