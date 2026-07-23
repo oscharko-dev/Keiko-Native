@@ -587,7 +587,7 @@ test("public governance restricts automated epic merges to the broker and keeps 
   );
   assert.match(
     supersedingAdr,
-    /`contents: write`[\s\S]*`pull requests: read`[\s\S]*`issues: read`[\s\S]*`checks: read`[\s\S]*`commit statuses: read`[\s\S]*`administration: read`[\s\S]*`metadata: read`/u,
+    /`contents: write`[\s\S]*`pull requests: read`[\s\S]*`issues: read`[\s\S]*`checks: read`[\s\S]*`statuses: read`[\s\S]*`administration: read`[\s\S]*`metadata: read`/u,
   );
   assert.match(historicalAdr, /PR #15/u);
   assert.match(historicalAdr, /one-time/u);

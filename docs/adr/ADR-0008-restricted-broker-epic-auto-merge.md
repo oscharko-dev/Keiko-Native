@@ -71,7 +71,7 @@ credential, or impersonate Niko or Oscharko.
 The broker authenticates as a dedicated non-human GitHub App installation restricted to
 `oscharko-dev/Keiko-Native`. It uses short-lived installation tokens with `contents: write` only
 for the conditional merge effect, plus `pull requests: read`, `issues: read`, `checks: read`,
-`commit statuses: read`, `administration: read`, and `metadata: read` for its independent evidence,
+`statuses: read`, `administration: read`, and `metadata: read` for its independent evidence,
 protected-branch-policy, and exact-effect reads. It receives no other repository write permission.
 Agents, ordinary workflows, logs, caches, artifacts, and pull-request content cannot read, receive,
 mint, or replay that credential.
