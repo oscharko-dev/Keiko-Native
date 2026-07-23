@@ -39,11 +39,16 @@ const routes = [
   route("GET", `/pulls/${INTEGER}`, ["integer"]),
 ];
 
-function isOwner(value) {
+function isLogin(value, maximumLength) {
   return (
-    value.length <= 39 &&
+    value.length <= maximumLength &&
+    !value.includes("--") &&
     /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/u.test(value)
   );
+}
+
+function isOwner(value) {
+  return isLogin(value, 39);
 }
 
 function isRepository(value) {
@@ -78,14 +83,14 @@ function decodedCanonicalSegment(value) {
 
 function isActor(value) {
   const decoded = decodedCanonicalSegment(value);
-  return (
-    decoded !== undefined &&
-    /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?$/u.test(decoded)
-  );
+  if (decoded === undefined || decoded.length > 39) return false;
+  const login = decoded.endsWith("[bot]") ? decoded.slice(0, -5) : decoded;
+  return isLogin(login, 39);
 }
 
 function isLabel(value) {
-  return decodedCanonicalSegment(value) !== undefined;
+  const decoded = decodedCanonicalSegment(value);
+  return decoded !== undefined && Array.from(decoded).length <= 100;
 }
 
 const validators = {
@@ -140,6 +145,33 @@ function requestUrl(path) {
   return url.href;
 }
 
+async function fetchResponse(url, options, method) {
+  try {
+    return await fetch(url, options);
+  } catch {
+    throw new Error(
+      `GitHub API ${method} request failed: provider timeout or unavailable.`,
+    );
+  }
+}
+
+async function discardResponseBody(response) {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // The owning request error remains authoritative and body-free.
+  }
+}
+
+async function parseResponseJson(response, method) {
+  try {
+    return await response.json();
+  } catch {
+    await discardResponseBody(response);
+    throw new Error(`GitHub API ${method} response failed: invalid JSON.`);
+  }
+}
+
 export function githubRequestFor(userAgent) {
   return async function githubRequest(path, options = {}) {
     if (!hasValidSyntax(path))
@@ -148,20 +180,27 @@ export function githubRequestFor(userAgent) {
     validateRequestTarget(path, method);
     const url = requestUrl(path);
     const payload = options.payload;
-    const response = await fetch(url, {
-      body: payload === undefined ? undefined : JSON.stringify(payload),
-      headers: {
-        Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
-        "Content-Type": "application/json",
-        "User-Agent": userAgent,
-        "X-GitHub-Api-Version": "2022-11-28",
+    const response = await fetchResponse(
+      url,
+      {
+        body: payload === undefined ? undefined : JSON.stringify(payload),
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+          "Content-Type": "application/json",
+          "User-Agent": userAgent,
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+        method,
       },
       method,
-    });
+    );
     if (!response.ok) {
+      await discardResponseBody(response);
       throw new Error(`GitHub API ${method} failed with ${response.status}.`);
     }
-    return response.status === 204 ? undefined : response.json();
+    return response.status === 204
+      ? undefined
+      : parseResponseJson(response, method);
   };
 }

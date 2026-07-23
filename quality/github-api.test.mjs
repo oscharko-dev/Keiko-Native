@@ -144,6 +144,9 @@ const invalidTypedTargets = [
   "/repos/owner/extra/repo/issues/1",
   "/repos/./repo/issues/1",
   "/repos/owner/../issues/1",
+  `/repos/${"a".repeat(40)}/repo/issues/1`,
+  "/repos/owner--team/repo/issues/1",
+  `/repos/owner/${"r".repeat(101)}/issues/1`,
   "/repos/owner%2Frepo/name/issues/1",
   "/repos/owner name/repo/issues/1",
   "/repos/owner/repo/issues/0",
@@ -157,9 +160,14 @@ const invalidTypedTargets = [
   "/repos/owner/repo/collaborators/%61lice/permission",
   "/repos/owner/repo/collaborators/alice%2Fadmin/permission",
   "/repos/owner/repo/collaborators/alice%3aadmin/permission",
+  `/repos/owner/repo/collaborators/${"a".repeat(40)}/permission`,
+  "/repos/owner/repo/collaborators/actor--name/permission",
+  `/repos/owner/repo/collaborators/${"a".repeat(35)}%5Bbot%5D/permission`,
   "/repos/owner/repo/issues/1/labels/status:ready",
   "/repos/owner/repo/issues/1/labels/status%3a%20ready",
   "/repos/owner/repo/issues/1/labels/%2E%2E",
+  `/repos/owner/repo/issues/1/labels/${"a".repeat(101)}`,
+  `/repos/owner/repo/issues/1/labels/${encodeURIComponent("🚀".repeat(101))}`,
 ];
 
 test("rejects invalid repository and dynamic segments before fetch", async () => {
@@ -167,6 +175,26 @@ test("rejects invalid repository and dynamic segments before fetch", async () =>
     const { calls, request } = requestHarness();
     await assert.rejects(request(target), /request target is invalid/u);
     assert.equal(calls.length, 0, target);
+  }
+});
+
+test("accepts documented provider segment boundaries", async () => {
+  const owner = `a${"-a".repeat(19)}`;
+  const repositoryName = "r".repeat(100);
+  const actor = `a${"-a".repeat(19)}`;
+  const bot = `${"a".repeat(34)}%5Bbot%5D`;
+  const label = encodeURIComponent("🚀".repeat(100));
+  for (const path of [
+    `/repos/${owner}/repo/issues/1`,
+    `/repos/owner/${repositoryName}/issues/1`,
+    `/repos/owner/repo/collaborators/${actor}/permission`,
+    `/repos/owner/repo/collaborators/${bot}/permission`,
+    `/repos/owner/repo/issues/1/labels/${label}`,
+  ]) {
+    const { calls, request } = requestHarness();
+    const method = path.includes("/labels/") ? "DELETE" : "GET";
+    await request(path, { method });
+    assert.equal(calls.length, 1, path);
   }
 });
 
@@ -218,6 +246,10 @@ test("validates target and method before token, payload getters, or fetch", asyn
       /request target is invalid/u,
     );
     await assert.rejects(
+      request("/repos/owner--team/repo/issues/1", options),
+      /request target is invalid/u,
+    );
+    await assert.rejects(
       request("/repos/owner/repo/issues/1", {
         method: "POST",
         payload,
@@ -248,7 +280,66 @@ test("redacts target and response body from HTTP errors", async () => {
   });
 });
 
-test("preserves JSON, 204, and network-unavailable behavior", async () => {
+test("cancels failed response bodies without leaking cleanup failures", async () => {
+  let cancelCalls = 0;
+  const response = {
+    body: {
+      async cancel() {
+        cancelCalls += 1;
+        throw new Error("cleanup-secret-sentinel");
+      },
+    },
+    ok: false,
+    status: 503,
+  };
+  const { request } = requestHarness(response);
+  await assert.rejects(request("/repos/owner/repo/issues/1"), (error) => {
+    assert.equal(error.message, "GitHub API GET failed with 503.");
+    assert.doesNotMatch(error.message, /cleanup-secret-sentinel/u);
+    return true;
+  });
+  assert.equal(cancelCalls, 1);
+});
+
+test("redacts network and successful JSON parse failures", async () => {
+  const networkSentinel = "network-secret-sentinel";
+  const targetSentinel = "target-sentinel";
+  const network = requestHarness(new Error(networkSentinel));
+  await assert.rejects(
+    network.request(`/repos/owner/repo/issues/1/labels/${targetSentinel}`, {
+      method: "DELETE",
+    }),
+    (error) => {
+      assert.equal(
+        error.message,
+        "GitHub API DELETE request failed: provider timeout or unavailable.",
+      );
+      assert.doesNotMatch(error.message, new RegExp(networkSentinel, "u"));
+      assert.doesNotMatch(error.message, new RegExp(targetSentinel, "u"));
+      return true;
+    },
+  );
+
+  const jsonSentinel = "json-secret-sentinel";
+  const invalidJson = requestHarness(
+    new Response(jsonSentinel, {
+      headers: { "Content-Type": "application/json" },
+    }),
+  );
+  await assert.rejects(
+    invalidJson.request("/repos/owner/repo/issues/1"),
+    (error) => {
+      assert.equal(
+        error.message,
+        "GitHub API GET response failed: invalid JSON.",
+      );
+      assert.doesNotMatch(error.message, new RegExp(jsonSentinel, "u"));
+      return true;
+    },
+  );
+});
+
+test("preserves JSON and 204 success behavior", async () => {
   const json = requestHarness(Response.json({ value: 42 }));
   assert.deepEqual(await json.request("/repos/owner/repo/issues/1"), {
     value: 42,
@@ -260,12 +351,5 @@ test("preserves JSON, 204, and network-unavailable behavior", async () => {
       method: "DELETE",
     }),
     undefined,
-  );
-
-  const unavailable = new Error("network unavailable");
-  const failing = requestHarness(unavailable);
-  await assert.rejects(
-    failing.request("/repos/owner/repo/issues/1"),
-    (error) => error === unavailable,
   );
 });
