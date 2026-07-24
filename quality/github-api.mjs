@@ -6,9 +6,13 @@ const INTEGER = "([1-9][0-9]*)";
 const SHA = "([0-9a-f]{40})";
 const ENCODED_SEGMENT = "((?:[A-Za-z0-9_.!~*'()-]|%[0-9A-F]{2})+)";
 const repositoryPrefix = `/repos/${OWNER}/${REPOSITORY}`;
+const completeTagEmoji = /\u{1F3F4}[\u{E0020}-\u{E007E}]+\u{E007F}/gu;
+const completeZwjEmoji =
+  /\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier})*(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier})*)+/gu;
 
-function route(method, suffix, types) {
+function route(method, suffix, types, build) {
   return {
+    build,
     method,
     pattern: new RegExp(`^${repositoryPrefix}${suffix}$`, "u"),
     types: ["owner", "repository", ...types],
@@ -16,27 +20,90 @@ function route(method, suffix, types) {
 }
 
 const routes = [
-  route("GET", `/issues/${INTEGER}/comments\\?per_page=100&page=${INTEGER}`, [
-    "integer",
-    "integer",
-  ]),
-  route("GET", `/pulls\\?state=(open|closed)&per_page=100&page=${INTEGER}`, [
-    "pullState",
-    "integer",
-  ]),
-  route("POST", `/statuses/${SHA}`, ["sha"]),
-  route("GET", `/commits/${SHA}/status`, ["sha"]),
-  route("GET", `/collaborators/${ENCODED_SEGMENT}/permission`, ["actor"]),
-  route("GET", `/issues/${INTEGER}`, ["integer"]),
-  route("PATCH", `/issues/${INTEGER}`, ["integer"]),
-  route("POST", `/issues/${INTEGER}/labels`, ["integer"]),
-  route("DELETE", `/issues/${INTEGER}/labels/${ENCODED_SEGMENT}`, [
-    "integer",
-    "label",
-  ]),
-  route("POST", `/issues/${INTEGER}/comments`, ["integer"]),
-  route("GET", `/labels\\?per_page=100&page=${INTEGER}`, ["integer"]),
-  route("GET", `/pulls/${INTEGER}`, ["integer"]),
+  route(
+    "GET",
+    String.raw`/issues/${INTEGER}/comments\?per_page=100&page=${INTEGER}`,
+    ["integer", "integer"],
+    ([owner, repository, issue, page]) =>
+      `/repos/${owner}/${repository}/issues/${issue}/comments?per_page=100&page=${page}`,
+  ),
+  route(
+    "GET",
+    String.raw`/pulls\?state=(open|closed)&per_page=100&page=${INTEGER}`,
+    ["pullState", "integer"],
+    ([owner, repository, state, page]) =>
+      `/repos/${owner}/${repository}/pulls?state=${state}&per_page=100&page=${page}`,
+  ),
+  route(
+    "POST",
+    `/statuses/${SHA}`,
+    ["sha"],
+    ([owner, repository, sha]) =>
+      `/repos/${owner}/${repository}/statuses/${sha}`,
+  ),
+  route(
+    "GET",
+    `/commits/${SHA}/status`,
+    ["sha"],
+    ([owner, repository, sha]) =>
+      `/repos/${owner}/${repository}/commits/${sha}/status`,
+  ),
+  route(
+    "GET",
+    `/collaborators/${ENCODED_SEGMENT}/permission`,
+    ["actor"],
+    ([owner, repository, actor]) =>
+      `/repos/${owner}/${repository}/collaborators/${actor}/permission`,
+  ),
+  route(
+    "GET",
+    `/issues/${INTEGER}`,
+    ["integer"],
+    ([owner, repository, issue]) =>
+      `/repos/${owner}/${repository}/issues/${issue}`,
+  ),
+  route(
+    "PATCH",
+    `/issues/${INTEGER}`,
+    ["integer"],
+    ([owner, repository, issue]) =>
+      `/repos/${owner}/${repository}/issues/${issue}`,
+  ),
+  route(
+    "POST",
+    `/issues/${INTEGER}/labels`,
+    ["integer"],
+    ([owner, repository, issue]) =>
+      `/repos/${owner}/${repository}/issues/${issue}/labels`,
+  ),
+  route(
+    "DELETE",
+    `/issues/${INTEGER}/labels/${ENCODED_SEGMENT}`,
+    ["integer", "label"],
+    ([owner, repository, issue, label]) =>
+      `/repos/${owner}/${repository}/issues/${issue}/labels/${label}`,
+  ),
+  route(
+    "POST",
+    `/issues/${INTEGER}/comments`,
+    ["integer"],
+    ([owner, repository, issue]) =>
+      `/repos/${owner}/${repository}/issues/${issue}/comments`,
+  ),
+  route(
+    "GET",
+    String.raw`/labels\?per_page=100&page=${INTEGER}`,
+    ["integer"],
+    ([owner, repository, page]) =>
+      `/repos/${owner}/${repository}/labels?per_page=100&page=${page}`,
+  ),
+  route(
+    "GET",
+    `/pulls/${INTEGER}`,
+    ["integer"],
+    ([owner, repository, pull]) =>
+      `/repos/${owner}/${repository}/pulls/${pull}`,
+  ),
 ];
 
 function isLogin(value, maximumLength) {
@@ -64,6 +131,12 @@ function isInteger(value) {
   return Number.isSafeInteger(Number(value));
 }
 
+function hasHostileFormat(value) {
+  const withoutTagEmoji = value.replace(completeTagEmoji, "");
+  const withoutValidEmoji = withoutTagEmoji.replace(completeZwjEmoji, "");
+  return /\p{Cf}/u.test(withoutValidEmoji);
+}
+
 function decodedCanonicalSegment(value) {
   try {
     const decoded = decodeURIComponent(value);
@@ -71,7 +144,8 @@ function decodedCanonicalSegment(value) {
       decoded === "" ||
       decoded === "." ||
       decoded === ".." ||
-      /[\u0000-\u001f\u007f/\\?#]/u.test(decoded) ||
+      /[\p{Cc}/\\?#]/u.test(decoded) ||
+      hasHostileFormat(decoded) ||
       /%(?:00|23|2e|2f|3f|5c)/iu.test(decoded)
     )
       return undefined;
@@ -81,30 +155,26 @@ function decodedCanonicalSegment(value) {
   }
 }
 
-function isActor(value) {
+function normalizedActor(value) {
   const decoded = decodedCanonicalSegment(value);
-  if (decoded === undefined || decoded.length > 39) return false;
+  if (decoded === undefined || decoded.length > 39) return undefined;
   const login = decoded.endsWith("[bot]") ? decoded.slice(0, -5) : decoded;
-  return isLogin(login, 39);
+  return isLogin(login, 39) ? decoded : undefined;
 }
 
-function isLabel(value) {
+function normalizedLabel(value) {
   const decoded = decodedCanonicalSegment(value);
-  return decoded !== undefined && Array.from(decoded).length <= 100;
+  return decoded !== undefined && Array.from(decoded).length <= 100
+    ? decoded
+    : undefined;
 }
-
-const validators = {
-  actor: isActor,
-  integer: isInteger,
-  label: isLabel,
-  owner: isOwner,
-  pullState: (value) => value === "open" || value === "closed",
-  repository: isRepository,
-  sha: (value) => /^[0-9a-f]{40}$/u.test(value),
-};
 
 function hasValidSyntax(path) {
-  if (typeof path !== "string" || path[0] !== "/" || path[1] === "/")
+  if (
+    typeof path !== "string" ||
+    !path.startsWith("/") ||
+    path.startsWith("//")
+  )
     return false;
   if (/[\p{Cc}\p{Cf}\p{Z}\\#@]/u.test(path)) return false;
   if (/%(?![0-9A-F]{2})/u.test(path)) return false;
@@ -115,31 +185,59 @@ function hasValidSyntax(path) {
     .some((segment) => segment === "." || segment === "..");
 }
 
-function matchesRoute(path, method) {
-  return routes.some((candidate) => {
-    if (candidate.method !== method) return false;
+function canonicalValue(type, value) {
+  if (type === "actor") {
+    const actor = normalizedActor(value);
+    return actor === undefined ? undefined : encodeURIComponent(actor);
+  }
+  if (type === "label") {
+    const label = normalizedLabel(value);
+    return label === undefined ? undefined : encodeURIComponent(label);
+  }
+  if (type === "owner" && !isOwner(value)) return undefined;
+  if (type === "repository" && !isRepository(value)) return undefined;
+  if (type === "integer" && !isInteger(value)) return undefined;
+  if (type === "pullState" && !["open", "closed"].includes(value))
+    return undefined;
+  if (type === "sha" && !/^[0-9a-f]{40}$/u.test(value)) return undefined;
+  return encodeURIComponent(value);
+}
+
+function reconstructedTarget(path, method) {
+  for (const candidate of routes) {
+    if (candidate.method !== method) continue;
     const match = candidate.pattern.exec(path);
-    return (
-      match !== null &&
-      candidate.types.every((type, index) => validators[type](match[index + 1]))
+    if (match === null) continue;
+    const values = candidate.types.map((type, index) =>
+      canonicalValue(type, match[index + 1]),
     );
-  });
+    if (!values.includes(undefined)) return candidate.build(values);
+  }
+  return undefined;
 }
 
 function validateRequestTarget(path, method) {
-  if (!matchesRoute(path, method))
+  const target = reconstructedTarget(path, method);
+  if (target === undefined || target !== path)
     throw new Error("GitHub API request target is invalid.");
+  return target;
 }
 
-function requestUrl(path) {
-  const url = new URL(path, githubApiUrl);
+function requestUrl(canonicalTarget) {
+  const query = canonicalTarget.indexOf("?");
+  const pathname =
+    query === -1 ? canonicalTarget : canonicalTarget.slice(0, query);
+  const search = query === -1 ? "" : canonicalTarget.slice(query);
+  const url = new URL(githubApiUrl);
+  url.pathname = pathname;
+  url.search = search;
   if (
     url.protocol !== "https:" ||
     url.origin !== githubApiUrl ||
     url.username !== "" ||
     url.password !== "" ||
     url.hash !== "" ||
-    `${url.pathname}${url.search}` !== path
+    `${url.pathname}${url.search}` !== canonicalTarget
   )
     throw new Error("GitHub API request target is invalid.");
   return url.href;
@@ -177,8 +275,8 @@ export function githubRequestFor(userAgent) {
     if (!hasValidSyntax(path))
       throw new Error("GitHub API request target is invalid.");
     const method = options.method ?? "GET";
-    validateRequestTarget(path, method);
-    const url = requestUrl(path);
+    const canonicalTarget = validateRequestTarget(path, method);
+    const url = requestUrl(canonicalTarget);
     const payload = options.payload;
     const response = await fetchResponse(
       url,

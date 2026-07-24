@@ -5,9 +5,11 @@ import { githubRequestFor } from "./github-api.mjs";
 
 const originalFetch = globalThis.fetch;
 const originalToken = process.env.GITHUB_TOKEN;
+const originalUrl = globalThis.URL;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  globalThis.URL = originalUrl;
   if (originalToken === undefined) delete process.env.GITHUB_TOKEN;
   else process.env.GITHUB_TOKEN = originalToken;
 });
@@ -101,6 +103,37 @@ test("allows every current route only with its bound method", async () => {
   }
 });
 
+test("constructs the canonical fetch URL from the fixed origin", async () => {
+  const path = "/repos/owner/repo/issues/12/labels/status%3A%20ready";
+  const { calls, request } = requestHarness();
+  const constructorInputs = [];
+  globalThis.URL = class extends originalUrl {
+    constructor(input, base) {
+      constructorInputs.push([input, base]);
+      assert.equal(input, "https://api.github.com");
+      assert.equal(base, undefined);
+      super(input);
+    }
+  };
+  await request(path, { method: "DELETE" });
+  assert.deepEqual(constructorInputs, [["https://api.github.com", undefined]]);
+  assert.equal(calls[0][0], `https://api.github.com${path}`);
+});
+
+test("rejects path objects without coercing them toward fetch", async () => {
+  let coercions = 0;
+  const path = {
+    [Symbol.toPrimitive]() {
+      coercions += 1;
+      return "/repos/owner/repo/issues/1";
+    },
+  };
+  const { calls, request } = requestHarness();
+  await assert.rejects(request(path), /request target is invalid/u);
+  assert.equal(coercions, 0);
+  assert.equal(calls.length, 0);
+});
+
 const hostileTargets = [
   undefined,
   "",
@@ -163,8 +196,6 @@ const invalidTypedTargets = [
   `/repos/owner/repo/collaborators/${"a".repeat(40)}/permission`,
   "/repos/owner/repo/collaborators/actor--name/permission",
   `/repos/owner/repo/collaborators/${"a".repeat(35)}%5Bbot%5D/permission`,
-  "/repos/owner/repo/issues/1/labels/status:ready",
-  "/repos/owner/repo/issues/1/labels/status%3a%20ready",
   "/repos/owner/repo/issues/1/labels/%2E%2E",
   `/repos/owner/repo/issues/1/labels/${"a".repeat(101)}`,
   `/repos/owner/repo/issues/1/labels/${encodeURIComponent("🚀".repeat(101))}`,
@@ -177,13 +208,28 @@ test("rejects invalid repository and dynamic segments before fetch", async () =>
     assert.equal(calls.length, 0, target);
   }
 });
-
+test("rejects decoded Unicode control and format labels before fetch", async () => {
+  const invalidLabels =
+    "%C2%85,%E2%80%AE,%E2%80%8D,A%E2%80%8DB,%F3%A0%81%A7,%F0%9F%8F%B4%F3%A0%81%A7,%F3%A0%81%BF,%F0%9F%8F%B4%F3%A0%81%BF";
+  for (const label of invalidLabels.split(",")) {
+    const { calls, request } = requestHarness();
+    await assert.rejects(
+      request(`/repos/owner/repo/issues/1/labels/${label}`, {
+        method: "DELETE",
+      }),
+      /request target is invalid/u,
+    );
+    assert.equal(calls.length, 0, label);
+  }
+});
 test("accepts documented provider segment boundaries", async () => {
   const owner = `a${"-a".repeat(19)}`;
   const repositoryName = "r".repeat(100);
   const actor = `a${"-a".repeat(19)}`;
   const bot = `${"a".repeat(34)}%5Bbot%5D`;
-  const label = encodeURIComponent("🚀".repeat(100));
+  const label = encodeURIComponent(
+    `${"🚀".repeat(90)}👩‍💻🏴\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}`,
+  );
   for (const path of [
     `/repos/${owner}/repo/issues/1`,
     `/repos/owner/${repositoryName}/issues/1`,
@@ -197,7 +243,6 @@ test("accepts documented provider segment boundaries", async () => {
     assert.equal(calls.length, 1, path);
   }
 });
-
 test("rejects unsupported routes and wrong methods before fetch", async () => {
   for (const [path, method] of [
     ["/user", "GET"],
@@ -216,7 +261,6 @@ test("rejects unsupported routes and wrong methods before fetch", async () => {
     assert.equal(calls.length, 0, `${method} ${path}`);
   }
 });
-
 test("validates target and method before token, payload getters, or fetch", async () => {
   const { calls, request } = requestHarness();
   const originalEnvironment = process.env;
