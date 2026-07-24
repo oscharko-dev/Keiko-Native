@@ -114,6 +114,52 @@ test("binds the frozen prompt to the accepted bytes and digest", () => {
   );
 });
 
+test("binds generated JSON schemas with a path-bound canonical digest", () => {
+  const evidence = JSON.parse(evidenceText);
+
+  assert.deepEqual(evidence.generatedSchemas.method.jsonDigest, {
+    algorithm: "path-bound-canonical-json-v1",
+    canonicalizer: "jq -S .",
+    canonicalizerVersion: "jq-1.7.1-apple",
+    fileOrder: "LC_ALL=C sorted NUL-delimited relative paths",
+    recordFormat:
+      "<relative-path-without-leading-dot-slash> NUL <canonical-content-sha256> NUL",
+    aggregate: "SHA-256 of concatenated records",
+  });
+  assert.match(
+    evidence.generatedSchemas.method.jsonDigestCommand,
+    /jq -S \. "\$schema_file"/u,
+  );
+  assert.match(
+    evidence.generatedSchemas.method.jsonDigestCommand,
+    /printf '%s\\0%s\\0' "\$\{schema_file#\.\/\}" "\$canonical_sha"/u,
+  );
+  assert.doesNotMatch(
+    evidence.generatedSchemas.method.jsonDigestCommand,
+    /xargs -0 shasum/u,
+  );
+  assert.equal(
+    evidence.generatedSchemas.method.typeScriptDigestCommand,
+    "(find . -type f -print0 | sort -z | xargs -0 shasum -a 256) | shasum -a 256",
+  );
+  assert.deepEqual(evidence.generatedSchemas.stableJson, {
+    fileCount: 273,
+    sha256: "27fc5257cdd29b97b2abb064caadec32a72b7567d6df26a7f82c5f452c8bdfb9",
+  });
+  assert.deepEqual(evidence.generatedSchemas.experimentalJson, {
+    fileCount: 347,
+    sha256: "46c4414f08cdbb20e66ce4153ee1edcb865ed5fda67e59511a78939ddb7a82d1",
+  });
+  assert.equal(
+    evidence.generatedSchemas.stableTypeScript.sha256,
+    "bfe516c4dab610ddecc10ae40763cec197d8673853705f2cf39bb07f74bdd0ca",
+  );
+  assert.equal(
+    evidence.generatedSchemas.experimentalTypeScript.sha256,
+    "9f2716686ccc10c0fedcea92363f8ac0ad8eafcc081855e284a28c358c6ec82d",
+  );
+});
+
 function runNpmEvaluator(additionalArgs = []) {
   const result = spawnSync(
     process.platform === "win32" ? "npm.cmd" : "npm",

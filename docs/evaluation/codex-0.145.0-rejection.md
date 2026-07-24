@@ -93,8 +93,20 @@ separate fresh empty output directory:
 <VERIFIED_CODEX_BINARY> app-server generate-ts --out <EMPTY_EXPERIMENTAL_TYPESCRIPT_DIR> --experimental
 ```
 
-From inside each output directory, files were counted with `find . -type f | wc -l`. The aggregate
-digest was computed over sorted relative path and per-file digest records with exactly:
+From inside each output directory, files were counted with `find . -type f | wc -l`. JSON uses the
+path-bound canonical digest `path-bound-canonical-json-v1`: `jq-1.7.1-apple` serializes each file
+with sorted object keys via `jq -S .`; the per-file SHA-256 is paired with its sorted relative path
+as a NUL-delimited record; and the concatenated records receive the aggregate SHA-256. The exact
+command was:
+
+```text
+LC_ALL=C find . -type f -name '*.json' -print0 | LC_ALL=C sort -z | while IFS= read -r -d '' schema_file; do canonical_sha=$(jq -S . "$schema_file" | shasum -a 256 | awk '{print $1}'); printf '%s\0%s\0' "${schema_file#./}" "$canonical_sha"; done | shasum -a 256
+```
+
+This binds file identity and canonical JSON content while making irrelevant generated object-key
+order unable to change the result. The same canonical values reproduced across the original
+qualification generation, two independent audit generations, and a fresh remediation generation.
+TypeScript output is order-sensitive text and retained the original sorted path-and-file digest:
 
 ```text
 (find . -type f -print0 | sort -z | xargs -0 shasum -a 256) | shasum -a 256
@@ -104,8 +116,8 @@ The resulting closed bindings are:
 
 | Schema projection       | Files | SHA-256                                                            |
 | ----------------------- | ----: | ------------------------------------------------------------------ |
-| Stable JSON             |   273 | `ea5365fef3204e9bac265262d616e3c1a4896ee27ed9ae38d8b392a574c858a5` |
-| Experimental JSON       |   347 | `27a7e1d4002cb2987bd00b7186c85cda9ffcbaac036afab6d191f5c98a4ac2da` |
+| Stable JSON             |   273 | `27fc5257cdd29b97b2abb064caadec32a72b7567d6df26a7f82c5f452c8bdfb9` |
+| Experimental JSON       |   347 | `46c4414f08cdbb20e66ce4153ee1edcb865ed5fda67e59511a78939ddb7a82d1` |
 | Stable TypeScript       |   617 | `bfe516c4dab610ddecc10ae40763cec197d8673853705f2cf39bb07f74bdd0ca` |
 | Experimental TypeScript |   697 | `9f2716686ccc10c0fedcea92363f8ac0ad8eafcc081855e284a28c358c6ec82d` |
 

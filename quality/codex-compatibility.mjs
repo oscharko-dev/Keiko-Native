@@ -3,9 +3,9 @@ import { createHash } from "node:crypto";
 const SCHEMA_VERSION = "keiko-native-codex-compatibility-evaluation/v1";
 const EXACT_CANDIDATE = "@openai/codex@0.145.0";
 const EVIDENCE_SHA256 =
-  "6a5b45d2ae4e30bb16967fe179da3ee6a9c8ca834aa052c77a246200832ef8b5";
+  "dad2c2ef07ebee7ece6a0bb9ddc2dea2c28e88a94c5dbbc2c00bf31bff36d36b";
 const REPORT_SHA256 =
-  "e56ded04511ee010fe374dc7d5894d5bd27f0850948fc097138c349ecee5c7c0";
+  "3eb6306621cc68fe5501c79ad0b2169bcd410707ae82f0da79116155a2d669fa";
 
 export const PROMPT_BYTES = 182;
 export const PROMPT_SHA256 =
