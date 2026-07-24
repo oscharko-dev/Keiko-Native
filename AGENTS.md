@@ -192,19 +192,22 @@ evidence, exact current head, findings, conversations, and residual risks. An ag
 into `dev`, enable auto-merge for a pull request targeting `dev`, or use a human credential to evade
 this boundary.
 
-The sole automated-merge exception is an accepted child-issue pull request targeting its exact
-accepted `epic/**` target. Under ADR-0009, an agent may use the existing authenticated maintainer
-credential only through the repository-owned guarded operation and only after independently
-revalidating the open issue, accepted contract and target, `status: ready for human review`,
-source issue number, exact current head and base, applicable green gates, completed acceptance and
-audit evidence, and zero blocking findings or unresolved review conversations. The operation
-submits at most once, verifies the exact target tip and ordered parents, never uses provider
-auto-merge, and retains no credential material. Wrong, changed, stale, closed, unavailable,
-replayed, or non-exact authority fails closed. An ambiguous result causes no retry and requires
-human reconciliation. Shared GitHub attribution cannot distinguish agent and human actions; this
-accepted limitation does not widen agent authority. An agent must never merge, enable auto-merge,
-enqueue, push, or update `dev`, `main`, or `release/**`, including through a maintainer credential.
-The exception does not extend to epic or standalone pull requests targeting `dev`.
+The sole automated-merge exception is a fully eligible child-issue pull request targeting its exact
+accepted `epic/**` target. Epic and standalone pull requests remain human-only deliveries to `dev`.
+Under ADR-0009, an agent may use the existing authenticated maintainer credential only through the
+repository-owned guarded operation and only after independently revalidating the open issue,
+accepted contract and target, `status: ready for human review`, source issue number, exact current
+head and base, applicable green gates, completed acceptance and audit evidence, and zero blocking
+findings or unresolved review conversations. The guard persists a durable single-flight
+compare-and-set claim for the exact operation before any provider submission and rejects concurrent
+or replayed claims. It submits at most once, explicitly sends `merge_method: merge`, verifies the
+exact target tip and ordered parents, never uses provider auto-merge, and retains no credential
+material. Wrong, changed, stale, closed, unavailable, replayed, or non-exact authority fails closed.
+An ambiguous claim remains blocked with no retry until explicit human reconciliation using exact
+refs and ordered parents. Shared GitHub attribution cannot distinguish agent and human actions;
+this accepted limitation does not widen agent authority. An agent must never merge, enable
+auto-merge, enqueue, push, or update `dev`, `main`, or `release/**`, including through a maintainer
+credential.
 
 Before pushing, review the full diff against the task requirements, trust boundaries, failure modes,
 and every affected gate. Use GitHub only for remote-only evidence, not as the primary test loop.

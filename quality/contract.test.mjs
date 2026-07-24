@@ -525,56 +525,110 @@ function assertAgentCredentialProjection(document) {
   assert.match(
     document,
     /existing\s+authenticated\s+maintainer\s+credential/iu,
+    "projection must authorize the existing maintainer credential",
   );
-  assert.match(document, /exact\s+accepted\s+`epic\/\*\*`\s+target/iu);
-  assert.match(document, /`status:\s+ready\s+for\s+human\s+review`/iu);
+  assert.match(
+    document,
+    /fully\s+eligible\s+child-issue\s+pull\s+request/iu,
+    "projection must restrict automation to an eligible child-issue pull request",
+  );
+  assert.match(
+    document,
+    /exact\s+accepted\s+`epic\/\*\*`\s+(?:branch|target)/iu,
+    "projection must bind the exact accepted epic target",
+  );
+  assert.match(
+    document,
+    /epic\s+(?:and|or)\s+standalone[\s\S]{0,160}human-only[\s\S]{0,160}`dev`/iu,
+    "projection must keep epic and standalone delivery to dev human-only",
+  );
+  assert.match(
+    document,
+    /`status:\s+ready\s+for\s+human\s+review`/iu,
+    "projection must require ready-for-human-review lifecycle state",
+  );
   assert.match(
     document,
     /never[\s\S]{0,80}(?:use|using|uses|invoke|invokes|enable)\s+provider\s+auto-merge/iu,
+    "projection must deny provider auto-merge",
   );
   assert.match(
     document,
     /GitHub(?:\s+attribution)?\s+(?:therefore\s+)?cannot\s+distinguish[\s\S]{0,120}agent[\s\S]{0,120}human/iu,
+    "projection must preserve the shared-identity limitation",
   );
   assert.match(
     document,
     /(?:never|no)[\s\S]{0,120}(?:merge|auto-merge)[\s\S]{0,120}`dev`/iu,
+    "projection must keep dev sacred",
   );
   assert.match(
     document,
     /`dev`[\s\S]{0,160}`main`[\s\S]{0,160}`release\/\*\*`/iu,
+    "projection must deny all protected branch families",
   );
-  assert.match(document, /ambiguous[\s\S]{0,180}(?:no\s+retry|never\s+retr)/iu);
+  assert.match(
+    document,
+    /durable\s+single-flight\s+compare-and-set\s+claim/iu,
+    "projection must require a durable single-flight claim",
+  );
+  assert.match(
+    document,
+    /persist(?:s|ed)?[\s\S]{0,120}claim[\s\S]{0,160}before[\s\S]{0,120}provider\s+(?:call|submission)/iu,
+    "projection must persist the claim before provider submission",
+  );
+  assert.match(
+    document,
+    /ambiguous[\s\S]{0,160}claim[\s\S]{0,160}blocked[\s\S]{0,180}human[\s\S]{0,180}reconciliation/iu,
+    "projection must block ambiguous claims for human reconciliation",
+  );
+  assert.match(
+    document,
+    /`merge_method:\s*merge`/iu,
+    "projection must request merge-commit topology",
+  );
+  assert.match(
+    document,
+    /ambiguous[\s\S]{0,180}(?:no\s+retr(?:y|ies)|never\s+retr(?:y|ies))/iu,
+    "projection must prohibit retries after ambiguity",
+  );
 }
 
 function assertAgentCredentialActivation(document) {
   assert.match(
     document,
-    /restricts\s+updates\s+and\s+merges\s+to\s+Niko\s+and\s+Oscharko/iu,
+    /restricts\s+updates\s+and\s+merges\s+to\s+the\s+explicit\s+authorized-maintainer\s+allowlist/iu,
+    "activation must state the structural maintainer allowlist",
   );
   assert.match(
     document,
     /repository-owned\s+agent\/tool-policy\s+guard[\s\S]{0,120}denies[\s\S]{0,120}`dev`/iu,
+    "activation must deny agent dev effects before provider calls",
   );
   assert.match(
     document,
     /GitHub\s+cannot\s+distinguish[\s\S]{0,120}agent[\s\S]{0,120}human[\s\S]{0,160}cannot\s+apply\s+a\s+separate\s+automation-identity\s+deny\s+rule/iu,
+    "activation must reject provider identity-separation claims",
   );
   assert.doesNotMatch(
     document,
     /excludes\s+every\s+(?:agent|automation)[\s\S]{0,80}identit(?:y|ies)[\s\S]{0,80}`dev`\s+update\s+allowlist/iu,
+    "activation must not claim provider-enforced agent exclusion",
   );
   assert.match(
     document,
     /epic-branch\s+ruleset[\s\S]{0,180}strict\s+up-to-date\s+current-branch\s+checks/iu,
+    "activation must require strict epic current-branch checks",
   );
   assert.match(
     document,
     /base\s+advance[\s\S]{0,180}invalidates[\s\S]{0,180}rejects\s+the\s+merge\s+before\s+the\s+guarded\s+effect/iu,
+    "activation must reject stale-base merge effects",
   );
   assert.match(
     document,
     /merge\s+endpoint's\s+`sha`[\s\S]{0,180}head[\s\S]{0,180}does\s+not\s+atomically\s+bind\s+the\s+base/iu,
+    "activation must state head-only merge precondition semantics",
   );
 }
 
@@ -630,6 +684,7 @@ test("public governance restricts agent credential merges to exact epic targets 
     defectTemplate,
     pullRequestTemplate,
   ];
+  const issueTemplates = [taskTemplate, decisionTemplate, defectTemplate];
   const activeProjections = [...policyProjections, supersedingAdr];
   assertAgentCredentialActivation(activation);
   const impossibleIdentitySeparation = `${activation}
@@ -637,7 +692,10 @@ Provider protection excludes every agent identity from the \`dev\` update allowl
 `;
   assert.throws(
     () => assertAgentCredentialActivation(impossibleIdentitySeparation),
-    { name: "AssertionError" },
+    {
+      name: "AssertionError",
+      message: "activation must not claim provider-enforced agent exclusion",
+    },
   );
   const permissiveEpicProtection = activation.replace(
     /strict up-to-date current-branch\s+checks/u,
@@ -646,15 +704,19 @@ Provider protection excludes every agent identity from the \`dev\` update allowl
   assert.notEqual(permissiveEpicProtection, activation);
   assert.throws(
     () => assertAgentCredentialActivation(permissiveEpicProtection),
-    { name: "AssertionError" },
+    {
+      name: "AssertionError",
+      message: "activation must require strict epic current-branch checks",
+    },
   );
   const permissiveBaseAdvance = activation.replace(
-    "invalidates eligibility and rejects the merge before the guarded effect",
+    /invalidates\s+eligibility\s+and\s+rejects\s+the\s+merge\s+before\s+the\s+guarded\s+effect/u,
     "preserves eligibility and allows the guarded effect",
   );
   assert.notEqual(permissiveBaseAdvance, activation);
   assert.throws(() => assertAgentCredentialActivation(permissiveBaseAdvance), {
     name: "AssertionError",
+    message: "activation must reject stale-base merge effects",
   });
   for (const [index, document] of activeProjections.entries()) {
     assertAgentCredentialProjection(document);
@@ -665,7 +727,10 @@ Provider protection excludes every agent identity from the \`dev\` update allowl
     assert.notEqual(autoMergeMutation, document);
     assert.throws(
       () => assertAgentCredentialProjection(autoMergeMutation),
-      { name: "AssertionError" },
+      {
+        name: "AssertionError",
+        message: "projection must deny provider auto-merge",
+      },
       `projection ${index} accepted provider auto-merge authorization`,
     );
     const identityMutation = document.replace(
@@ -675,19 +740,131 @@ Provider protection excludes every agent identity from the \`dev\` update allowl
     assert.notEqual(identityMutation, document);
     assert.throws(
       () => assertAgentCredentialProjection(identityMutation),
-      { name: "AssertionError" },
+      {
+        name: "AssertionError",
+        message: "projection must preserve the shared-identity limitation",
+      },
       `projection ${index} omitted the shared-identity limitation`,
+    );
+    const claimMutation = document.replace(
+      /durable\s+single-flight\s+compare-and-set\s+claim/giu,
+      "volatile observation",
+    );
+    assert.notEqual(claimMutation, document);
+    assert.throws(
+      () => assertAgentCredentialProjection(claimMutation),
+      {
+        name: "AssertionError",
+        message: "projection must require a durable single-flight claim",
+      },
+      `projection ${index} accepted a non-durable concurrency control`,
+    );
+    const claimOrderingMutation = document.replace(
+      /before\s+any\s+provider\s+submission/giu,
+      "after provider submission",
+    );
+    assert.notEqual(claimOrderingMutation, document);
+    assert.throws(
+      () => assertAgentCredentialProjection(claimOrderingMutation),
+      {
+        name: "AssertionError",
+        message: "projection must persist the claim before provider submission",
+      },
+      `projection ${index} accepted a post-submission claim`,
+    );
+    const ambiguousClaimMutation = document.replace(
+      /ambiguous\s+claims?\s+remain(?:s)?\s+blocked/giu,
+      "ambiguous claim is automatically cleared",
+    );
+    assert.notEqual(ambiguousClaimMutation, document);
+    assert.throws(
+      () => assertAgentCredentialProjection(ambiguousClaimMutation),
+      {
+        name: "AssertionError",
+        message:
+          "projection must block ambiguous claims for human reconciliation",
+      },
+      `projection ${index} accepted automatic ambiguous-claim release`,
+    );
+    const topologyMutation = document.replace(
+      /`merge_method:\s*merge`/giu,
+      "`merge_method: squash`",
+    );
+    assert.notEqual(topologyMutation, document);
+    assert.throws(
+      () => assertAgentCredentialProjection(topologyMutation),
+      {
+        name: "AssertionError",
+        message: "projection must request merge-commit topology",
+      },
+      `projection ${index} accepted non-merge topology`,
+    );
+    const retryMutation = document.replace(
+      /no\s+retr(?:y|ies)/giu,
+      "retries are allowed",
+    );
+    assert.notEqual(retryMutation, document);
+    assert.throws(
+      () => assertAgentCredentialProjection(retryMutation),
+      {
+        name: "AssertionError",
+        message: "projection must prohibit retries after ambiguity",
+      },
+      `projection ${index} accepted an ambiguous retry`,
+    );
+  }
+  for (const [index, template] of issueTemplates.entries()) {
+    const childOnlyMutation = template.replace(
+      /fully\s+eligible\s+child-issue\s+pull\s+request/iu,
+      "fully eligible pull request",
+    );
+    assert.notEqual(childOnlyMutation, template);
+    assert.throws(
+      () => assertAgentCredentialProjection(childOnlyMutation),
+      {
+        name: "AssertionError",
+        message:
+          "projection must restrict automation to an eligible child-issue pull request",
+      },
+      `issue template ${index} widened guarded authority beyond child issues`,
+    );
+    const devDeliveryMutation = template.replace(
+      /human-only\s+deliveries\s+to\s+`dev`/iu,
+      "agent-enabled deliveries to `dev`",
+    );
+    assert.notEqual(devDeliveryMutation, template);
+    assert.throws(
+      () => assertAgentCredentialProjection(devDeliveryMutation),
+      {
+        name: "AssertionError",
+        message:
+          "projection must keep epic and standalone delivery to dev human-only",
+      },
+      `issue template ${index} widened epic or standalone dev delivery`,
     );
   }
   for (const document of policyProjections) {
-    assert.doesNotMatch(document, /server-side\s+merge-authority broker/iu);
-    assert.doesNotMatch(document, /dedicated non-human GitHub App/iu);
+    assert.doesNotMatch(
+      document,
+      /server-side\s+merge-authority\s+broker/iu,
+      "active projection must not restore the deprecated broker",
+    );
+    assert.doesNotMatch(
+      document,
+      /dedicated\s+non-human\s+GitHub\s+App/iu,
+      "active projection must not restore the deprecated App",
+    );
   }
-  assert.match(supersedingAdr, /Supersedes ADR-0008/u);
+  assert.match(supersedingAdr, /Supersedes\s+ADR-0008/u);
   assert.match(supersedingAdr, /amends[\s\S]*ADR-0004/iu);
   assert.match(supersedingAdr, /restores[\s\S]*ADR-0005/iu);
   assert.match(supersedingAdr, /ADR-0005's Sonar[\s\S]*unchanged/u);
   assert.match(supersedingAdr, /Issue #114/u);
+  assert.match(
+    supersedingAdr,
+    /Issue\s+#50\s+owns\s+implementation\s+and\s+live\s+proof/iu,
+    "ADR must leave implementation and live proof to issue #50",
+  );
   assert.match(
     supersedingAdr,
     /cannot distinguish[\s\S]{0,120}agent[\s\S]{0,120}human/iu,
@@ -699,7 +876,28 @@ Provider protection excludes every agent identity from the \`dev\` update allowl
   assert.match(supersedingAdr, /at most once/iu);
   assert.match(
     supersedingAdr,
-    /`Merge a pull request`[\s\S]{0,180}request field `sha`[\s\S]{0,180}`409 Conflict`/u,
+    /durable\s+single-flight\s+compare-and-set\s+claim[\s\S]{0,600}repository[\s\S]{0,200}pull\s+request[\s\S]{0,200}exact\s+(?:accepted\s+)?target[\s\S]{0,200}head[\s\S]{0,200}base[\s\S]{0,200}readiness[\s\S]{0,200}request\s+identity/iu,
+    "ADR must bind every minimum single-flight claim key",
+  );
+  assert.match(
+    supersedingAdr,
+    /persist(?:s|ed)?[\s\S]{0,120}claim[\s\S]{0,160}before[\s\S]{0,120}provider\s+(?:call|submission)/iu,
+    "ADR must persist the single-flight claim before provider submission",
+  );
+  assert.match(
+    supersedingAdr,
+    /rejects?[\s\S]{0,160}(?:concurrent[\s\S]{0,80}replayed|replayed[\s\S]{0,80}concurrent)/iu,
+    "ADR must reject concurrent and replayed attempts",
+  );
+  assert.match(
+    supersedingAdr,
+    /ambiguous[\s\S]{0,160}claim[\s\S]{0,160}blocked[\s\S]{0,200}explicit\s+human\s+reconciliation[\s\S]{0,180}exact[\s\S]{0,120}refs[\s\S]{0,180}(?:ordered\s+)?parents/iu,
+    "ADR must retain ambiguous claims until explicit human reconciliation",
+  );
+  assert.match(
+    supersedingAdr,
+    /`Merge a pull request`[\s\S]{0,180}request field `sha`[\s\S]{0,180}`merge_method:\s*merge`[\s\S]{0,180}`409 Conflict`/u,
+    "ADR must request merge topology with the head precondition",
   );
   assert.match(
     supersedingAdr,
@@ -711,15 +909,15 @@ Provider protection excludes every agent identity from the \`dev\` update allowl
   );
   assert.match(
     supersedingAdr,
-    /A — Guarded existing maintainer credential[\s\S]{0,180}\*\*4\.25\*\*/u,
+    /A\s+—\s+Guarded\s+existing\s+maintainer\s+credential[\s\S]{0,180}\*\*4\.25\*\*/u,
   );
   assert.match(
     supersedingAdr,
-    /B — Dedicated App and broker[\s\S]{0,180}\*\*3\.70\*\*/u,
+    /B\s+—\s+Dedicated\s+App\s+and\s+broker[\s\S]{0,180}\*\*3\.70\*\*/u,
   );
   assert.match(
     supersedingAdr,
-    /C — Human-only child integration[\s\S]{0,180}\*\*3\.95\*\*/u,
+    /C\s+—\s+Human-only\s+child\s+integration[\s\S]{0,180}\*\*3\.95\*\*/u,
   );
   assert.match(supersedingAdr, /recommendation and outcome are unchanged/iu);
   assert.match(
@@ -729,8 +927,8 @@ Provider protection excludes every agent identity from the \`dev\` update allowl
   assert.match(historicalAdr, /PR #15/u);
   assert.match(historicalAdr, /one-time/u);
   assert.match(historicalAdr, /authenticated maintainer account/u);
-  assert.match(brokerAdr, /dedicated non-human GitHub App/u);
-  assert.match(brokerAdr, /Supersedes ADR-0005/u);
+  assert.match(brokerAdr, /dedicated\s+non-human\s+GitHub\s+App/u);
+  assert.match(brokerAdr, /Supersedes\s+ADR-0005/u);
   assert.match(
     gates,
     /shared identity[\s\S]{0,180}cannot[\s\S]{0,120}distinguish/iu,

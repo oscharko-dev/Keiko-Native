@@ -562,13 +562,17 @@ select a small vertical outcome and explicitly defer the rest.
 - Require deterministic local verification and exact-current-head repository checks before a pull
   request can be accepted.
 - Agents may use the existing authenticated maintainer credential only through the repository-owned
-  guarded operation for a green child pull request whose exact accepted `epic/**` target matches
-  its pull-request base. The guard revalidates current issue authority,
+  guarded operation for a fully eligible child-issue pull request whose exact accepted `epic/**`
+  target matches its pull-request base. Epic and standalone pull requests remain human-only
+  deliveries to `dev`. The guard revalidates current issue authority,
   `status: ready for human review`, exact current head and base, evidence, findings, and
-  conversations; submits at most once; verifies the target tip and ordered parents; and never uses
-  provider auto-merge. Missing or changed authority fails closed. An ambiguous result causes no
-  retry and requires human reconciliation. Shared GitHub attribution cannot distinguish agent and
-  human actions and is an accepted residual risk, not a wider grant.
+  conversations. It persists a durable single-flight compare-and-set claim for the exact operation
+  before any provider submission and rejects concurrent or replayed claims. It submits at most
+  once, explicitly sends `merge_method: merge`, verifies the target tip and ordered parents, and
+  never uses provider auto-merge. Missing or changed authority fails closed. An ambiguous claim
+  remains blocked with no retry until explicit human reconciliation using exact refs and ordered
+  parents. Shared GitHub attribution cannot distinguish agent and human actions and is an accepted
+  residual risk, not a wider grant.
 - Agents must never merge, enable auto-merge, enqueue, push, or update `dev`, `main`, or
   `release/**`, including through the existing authenticated maintainer credential.
 - Every merge into `dev`, from an epic or standalone issue, is initiated manually by Niko or

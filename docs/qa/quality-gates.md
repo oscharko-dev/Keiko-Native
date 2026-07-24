@@ -79,16 +79,19 @@ evidence, required and advisory findings, review conversations, and residual ris
 merge into `dev`, enable auto-merge, enqueue a merge group, update its ref, or use a human
 merge-capable credential for any `dev` effect.
 
-For a fully eligible child pull request, an agent may use the existing authenticated maintainer
-credential only through the ADR-0009 guarded operation and only for its exact accepted `epic/**`
-target. Immediately before the effect, the guard independently revalidates current issue authority
-and `status: ready for human review`, exact source and target refs, applicable exact-head checks,
+For a fully eligible child-issue pull request, an agent may use the existing authenticated
+maintainer credential only through the ADR-0009 guarded operation and only for its exact accepted
+`epic/**` target. Epic and standalone pull requests remain human-only deliveries to `dev`.
+Immediately before the effect, the guard independently revalidates current issue authority and
+`status: ready for human review`, exact source and target refs, applicable exact-head checks,
 acceptance and audit evidence, findings, review conversations, stable reads, and replay state. It
-submits at most once with the exact expected head, never uses provider auto-merge, and verifies the
-exact target tip and ordered commit parents. Any mismatch, stale or unavailable evidence, failed or
-skipped required check, unresolved item, closed issue, changed ref, ambiguous response, or
-non-exact target fails closed. An ambiguous outcome causes no retry and requires human
-reconciliation from exact refs and parents.
+persists a durable single-flight compare-and-set claim for the exact operation before any provider
+submission and rejects concurrent or replayed claims. It submits at most once with the exact
+expected head, explicitly sends `merge_method: merge`, never uses provider auto-merge, and verifies
+the exact target tip and ordered commit parents. Any mismatch, stale or unavailable evidence,
+failed or skipped required check, unresolved item, closed issue, changed ref, ambiguous response,
+or non-exact target fails closed. An ambiguous claim remains blocked with no retry until explicit
+human reconciliation using exact refs and ordered parents.
 
 This shared identity means GitHub attribution cannot distinguish an agent operation from a
 deliberate human action, and repository identity rules cannot technically constrain the credential

@@ -91,13 +91,18 @@ The repository-wide defaults in `AGENTS.md` apply and are not repeated here.
 - Delivery authority: `guarded agent merge to exact accepted epic/** branch | human-only manual merge to dev`
 - Additional stop or escalation conditions: `None | ...`
 
-For epic delivery, an agent may use the existing authenticated maintainer credential only through
-the repository-owned guarded operation and only for the issue's exact accepted `epic/**` target
-after complete current evidence and `status: ready for human review` are revalidated. It submits at
-most once, never uses provider auto-merge, and verifies exact refs and ordered parents. An ambiguous
-result causes no retry and requires human reconciliation. GitHub cannot distinguish shared-identity
-agent and human actions. An agent must never merge or enable auto-merge for `dev`, `main`, or
-`release/**`; guard unavailability selects human-only child integration.
+This authority exists only for a fully eligible child-issue pull request targeting its exact
+accepted `epic/**` branch. Epic and standalone pull requests remain human-only deliveries to `dev`.
+For that child-issue delivery, an agent may use the existing authenticated maintainer credential
+only through the repository-owned guarded operation after complete current evidence and
+`status: ready for human review` are revalidated. The guard persists a durable single-flight
+compare-and-set claim for the exact operation before any provider submission and rejects concurrent
+or replayed claims. It submits at most once, explicitly sends `merge_method: merge`, never uses
+provider auto-merge, and verifies exact refs and ordered parents. An ambiguous claim remains blocked
+with no retry until explicit human reconciliation using exact refs and ordered parents. GitHub
+cannot distinguish shared-identity agent and human actions. An agent must never merge or enable
+auto-merge for `dev`, `main`, or `release/**`; guard unavailability selects human-only child
+integration.
 
 The executing agent chooses a dedicated source branch using its own runner prefix. It must include
 the issue number, remain unique to this issue, and be recorded in the pull request.

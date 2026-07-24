@@ -13,10 +13,10 @@ PR #15 disposition, and all other consequences remain accepted and unchanged.
 
 ## Context
 
-Keiko Native needs two delivery boundaries. A fully eligible child pull request should integrate
-autonomously into its exact accepted `epic/**` branch so an ordered epic can advance without a
-manual merge at every slice. Every epic and standalone pull request targeting protected `dev` must
-stop for deliberate human review and manual merge by Niko or Oscharko.
+Keiko Native needs two delivery boundaries. A fully eligible child-issue pull request should
+integrate autonomously into its exact accepted `epic/**` branch so an ordered epic can advance
+without a manual merge at every slice. Every epic and standalone pull request targeting protected
+`dev` must stop for deliberate human review and manual merge by Niko or Oscharko.
 
 ADR-0008 selected a dedicated GitHub App and hosted server-side merge-authority broker to separate
 automation from human authority. That design made provider attribution distinguishable and could
@@ -62,11 +62,12 @@ readiness fingerprint.
 ## Decision
 
 An agent may invoke one guarded operation using an existing authenticated maintainer credential to
-merge a fully eligible child pull request only into its exact accepted `epic/**` target. The
-credential comes from the operator's already authenticated environment. The agent must not inspect,
-print, copy, persist, export, log, or include it in evidence. Provider auto-merge, merge-queue
-enrollment, direct ref updates, force pushes, bypass, and target selection from caller input are not
-the delivery mechanism.
+merge a fully eligible child-issue pull request only into its exact accepted `epic/**` target. Epic
+and standalone pull requests remain human-only deliveries to `dev`. The credential comes from the
+operator's already authenticated environment. The agent must not inspect, print, copy, persist,
+export, log, or include it in evidence. Provider auto-merge, merge-queue enrollment, direct ref
+updates, force pushes, bypass, and target selection from caller input are not the delivery
+mechanism.
 
 The operation is unavailable for `dev`, `main`, `release/**`, feature branches, and every target
 not named exactly by the accepted issue. An agent must never merge, enable auto-merge, enqueue,
@@ -100,16 +101,22 @@ cannot authorize the operation.
 
 ### At-most-once effect and read-back
 
-The guard creates a sanitized immutable operation record that binds the repository, issue and
-readiness identity, lifecycle, pull request, exact accepted target, exact current head, exact
-current base, evidence identities, request ID, and attempt state. It submits at most once through
-GitHub's `Merge a pull request` endpoint with request field `sha`. GitHub defines that field as the
-SHA the pull-request head must match to allow the merge and returns `409 Conflict` when a supplied
-`sha` does not match. The similarly named `expected_head_sha` belongs to the separate
-`Update a pull request branch` endpoint, where a mismatch returns `422`; it is not the merge
-precondition and the guarded operation must not call that endpoint. Strict current-branch
-protection remains required for the accepted epic target so a base advance invalidates earlier
-checks rather than silently widening their composition.
+The guard creates a sanitized immutable operation record and acquires a durable single-flight
+compare-and-set claim keyed by at least the repository, pull request, exact accepted target, exact
+current head, exact current base, readiness identity, and request identity. It persists the claim
+before any provider submission. A claim already present for the same operation rejects concurrent
+and replayed attempts; neither process-local memory nor an uncommitted observation satisfies this
+boundary.
+
+After the durable claim succeeds, the guard submits at most once through GitHub's
+`Merge a pull request` endpoint with request field `sha` and `merge_method: merge`. GitHub defines
+`sha` as the SHA the pull-request head must match to allow the merge and returns `409 Conflict` when
+a supplied `sha` does not match. Explicit `merge_method: merge` is required so successful read-back
+can require a merge commit whose ordered parents are the previously observed base and head. The
+similarly named `expected_head_sha` belongs to the separate `Update a pull request branch` endpoint,
+where a mismatch returns `422`; it is not the merge precondition and the guarded operation must not
+call that endpoint. Strict current-branch protection remains required for the accepted epic target
+so a base advance invalidates earlier checks rather than silently widening their composition.
 
 A confirmed provider rejection remains unmerged. A successful response is accepted only after
 read-back proves the pull request is merged, the target tip is the reported merge commit, and its
@@ -126,10 +133,10 @@ That limitation is part of the accepted residual risk.
 ### Failure and recovery
 
 An ambiguous or partially observed provider outcome causes no retry and no replacement attempt.
-Automation stops for that target. An authorized human performs reconciliation using the exact
-source and target refs, pull request, merge commit, and ordered parents. Only a later fresh
-operation with a new request identity and fully revalidated evidence may resume after the prior
-outcome is settled.
+The ambiguous claim remains blocked until explicit human reconciliation using the exact source and
+target refs, pull request, merge commit, and ordered parents. Only a later fresh operation with a
+new request identity, a separately successful claim, and fully revalidated evidence may resume
+after the prior outcome is settled.
 
 Human reconciliation must compare the exact refs, merge commit, and ordered parents before any
 later operation is considered.
@@ -143,8 +150,9 @@ using provider auto-merge, weakening a gate, broadening a target, or retrying an
 `AGENTS.md`, the Agent Planning Baseline, quality-gate and activation documentation, issue
 templates, and the pull-request template must project this decision consistently. Contract tests
 must fail if an active projection restores a broker/App requirement, omits the exact accepted
-`epic/**` target or shared-identity limitation, permits provider auto-merge, permits an agent
-effect on `dev`, or allows an ambiguous attempt to retry.
+`epic/**` target or shared-identity limitation, permits provider auto-merge, omits the durable
+single-flight claim or explicit `merge_method: merge`, permits an agent effect on `dev`, or allows
+an ambiguous attempt to retry.
 
 Issue #50 owns implementation and live proof of the repository-owned guard. This ADR authorizes no
 workflow, repository-administration, credential, or merge mutation by itself. Activation remains a
@@ -223,15 +231,16 @@ capability/liveness requirements no longer govern child-to-epic merge implementa
 Issue #50 must add hermetic guard tests and disposable live probes that cover eligible exact-target
 success; `dev`, `main`, `release/**`, feature, wrong-epic, and caller-selected-target denial;
 changed head or base; stale readiness or lifecycle; missing, skipped, failed, or wrong-producer
-checks; incomplete evidence; unresolved findings or conversations; replay; concurrent attempts;
-provider rejection; rate limit; timeout; ambiguous or partial outcome; redaction; and human
-reconciliation.
+checks; incomplete evidence; unresolved findings or conversations; durable claim persistence;
+replay; concurrent attempts; provider rejection; rate limit; timeout; ambiguous or partial outcome;
+redaction; and human reconciliation.
 
 Tests must prove all pre-submission failures make no merge call, one accepted operation makes at
-most one provider call, an ambiguous result causes no retry, and success requires exact target-tip
-and ordered-parent read-back. They must also prove the guard never prints or persists credential
-material and never invokes provider auto-merge, direct ref update, queue enrollment, bypass, or any
-`dev` effect.
+most one provider call, the claim is persisted before submission, ambiguous claims remain blocked
+with no retry until explicit human reconciliation, and success requires exact target-tip and
+ordered-parent read-back after an explicit `merge_method: merge` request. They must also prove the
+guard never prints or persists credential material and never invokes provider auto-merge, direct
+ref update, queue enrollment, bypass, or any `dev` effect.
 
 ## Reopen triggers
 

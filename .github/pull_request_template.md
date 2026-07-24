@@ -123,13 +123,18 @@ For a child-issue pull request targeting its designated epic branch:
 - [ ] Acceptance and audit evidence is complete, every applicable exact-head gate is green, and no
       blocking finding or review conversation remains.
 
-An agent may use the existing authenticated maintainer credential only through the repository-owned
-guarded operation and only for the issue's exact accepted `epic/**` target after complete current
-evidence and `status: ready for human review` are revalidated. It submits at most once, never uses
-provider auto-merge, and verifies exact refs and ordered parents. An ambiguous result causes no
-retry and requires human reconciliation. GitHub cannot distinguish shared-identity agent and human
-actions. An agent must never merge or enable auto-merge for `dev`, `main`, or `release/**`; guard
-unavailability selects human-only child integration.
+This authority exists only for a fully eligible child-issue pull request targeting its exact
+accepted `epic/**` branch. Epic and standalone pull requests remain human-only deliveries to `dev`.
+For that child-issue delivery, an agent may use the existing authenticated maintainer credential
+only through the repository-owned guarded operation after complete current evidence and
+`status: ready for human review` are revalidated. The guard persists a durable single-flight
+compare-and-set claim for the exact operation before any provider submission and rejects concurrent
+or replayed claims. It submits at most once, explicitly sends `merge_method: merge`, never uses
+provider auto-merge, and verifies exact refs and ordered parents. An ambiguous claim remains blocked
+with no retry until explicit human reconciliation using exact refs and ordered parents. GitHub
+cannot distinguish shared-identity agent and human actions. An agent must never merge or enable
+auto-merge for `dev`, `main`, or `release/**`; guard unavailability selects human-only child
+integration.
 
 For an epic or standalone pull request targeting `dev`, complete only by Niko or Oscharko. Agents
 must leave this subsection untouched, stop at `Ready for Human Review`, and must not enable
