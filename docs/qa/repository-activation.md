@@ -41,21 +41,23 @@ Configure a ruleset or branch protection that:
   conversations;
 - blocks force pushes and branch deletion and applies to administrators;
 - restricts updates and merges to Niko and Oscharko;
-- excludes every agent or automation identity from the `dev` update allowlist; and
+- requires the repository-owned agent/tool-policy guard, which denies every agent request for `dev`
+  before any provider call; and
 - requires each exact-head context and expected App ID listed in `quality-gates.md`, but only after
   its producer has passed the live negative and positive probes.
 
 Repository-wide provider auto-merge is not the Keiko Native epic-delivery mechanism. Because the
 guarded operation uses the existing authenticated maintainer credential, GitHub cannot distinguish
-agent and human actions or apply a separate automation-identity deny rule. Preserve the human
+agent and human actions and cannot apply a separate automation-identity deny rule. Preserve the human
 allowlist and all protections as defense in depth, and prove the repository-owned guard denies
 every agent merge, update, auto-merge, enqueue, administration, or bypass request for `dev`.
 
 ## 4. Protect `epic/**`
 
-Configure an epic-branch ruleset that requires pull requests, signed commits, linear history,
-resolved conversations, `PR contract`, `Issue contract current`, and every deterministic or
-provider check observed for that target during the live probes.
+Configure an epic-branch ruleset that requires pull requests, strict up-to-date current-branch
+checks, signed commits, linear history, resolved conversations, `PR contract`,
+`Issue contract current`, and every deterministic or provider check observed for that target
+during the live probes.
 
 The repository-owned guard may use the existing authenticated maintainer credential for one fully
 eligible child pull request only when its base is the issue's exact accepted `epic/**` target.
@@ -69,6 +71,11 @@ sanitized request identity, issue, pull request, exact refs, result class, merge
 and read-back as the automation record; never retain the credential or raw provider bodies. The
 guard must deny every agent merge, auto-merge, enqueue, push, or update request for `dev`, `main`,
 and `release/**`.
+
+The merge endpoint's `sha` precondition binds only the pull-request head and does not atomically
+bind the base. Strict current-branch protection and immediate revalidation must therefore make a
+base advance invalidate eligibility and reject the merge before the guarded effect. This is
+defense in depth, not an atomic base compare-and-swap.
 
 ## 5. Verify workflow permissions and providers
 
@@ -103,6 +110,9 @@ Record the issue, pull request, exact head, actor, result, and timestamp for eac
    call, verifies the exact target tip and ordered parents, and proves an ambiguous outcome causes
    no retry or provider auto-merge. GitHub attribution cannot distinguish this agent operation from
    a human action; the evidence must state that limitation rather than claiming identity isolation.
+   In the disposable live probe, advance the base after green evidence and prove that the base
+   advance invalidates eligibility and rejects the merge before the guarded effect; eligibility
+   requires fresh evidence against the new base.
 8. Niko or Oscharko can manually merge a fully green `dev` pull request after reviewing the exact
    head; no separate non-author approval is required.
 

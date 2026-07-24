@@ -547,6 +547,37 @@ function assertAgentCredentialProjection(document) {
   assert.match(document, /ambiguous[\s\S]{0,180}(?:no\s+retry|never\s+retr)/iu);
 }
 
+function assertAgentCredentialActivation(document) {
+  assert.match(
+    document,
+    /restricts\s+updates\s+and\s+merges\s+to\s+Niko\s+and\s+Oscharko/iu,
+  );
+  assert.match(
+    document,
+    /repository-owned\s+agent\/tool-policy\s+guard[\s\S]{0,120}denies[\s\S]{0,120}`dev`/iu,
+  );
+  assert.match(
+    document,
+    /GitHub\s+cannot\s+distinguish[\s\S]{0,120}agent[\s\S]{0,120}human[\s\S]{0,160}cannot\s+apply\s+a\s+separate\s+automation-identity\s+deny\s+rule/iu,
+  );
+  assert.doesNotMatch(
+    document,
+    /excludes\s+every\s+(?:agent|automation)[\s\S]{0,80}identit(?:y|ies)[\s\S]{0,80}`dev`\s+update\s+allowlist/iu,
+  );
+  assert.match(
+    document,
+    /epic-branch\s+ruleset[\s\S]{0,180}strict\s+up-to-date\s+current-branch\s+checks/iu,
+  );
+  assert.match(
+    document,
+    /base\s+advance[\s\S]{0,180}invalidates[\s\S]{0,180}rejects\s+the\s+merge\s+before\s+the\s+guarded\s+effect/iu,
+  );
+  assert.match(
+    document,
+    /merge\s+endpoint's\s+`sha`[\s\S]{0,180}head[\s\S]{0,180}does\s+not\s+atomically\s+bind\s+the\s+base/iu,
+  );
+}
+
 test("public governance restricts agent credential merges to exact epic targets and keeps dev sacred", async () => {
   const root = join(import.meta.dirname, "..");
   const [
@@ -600,6 +631,31 @@ test("public governance restricts agent credential merges to exact epic targets 
     pullRequestTemplate,
   ];
   const activeProjections = [...policyProjections, supersedingAdr];
+  assertAgentCredentialActivation(activation);
+  const impossibleIdentitySeparation = `${activation}
+Provider protection excludes every agent identity from the \`dev\` update allowlist.
+`;
+  assert.throws(
+    () => assertAgentCredentialActivation(impossibleIdentitySeparation),
+    { name: "AssertionError" },
+  );
+  const permissiveEpicProtection = activation.replace(
+    /strict up-to-date current-branch\s+checks/u,
+    "non-strict stale-branch checks",
+  );
+  assert.notEqual(permissiveEpicProtection, activation);
+  assert.throws(
+    () => assertAgentCredentialActivation(permissiveEpicProtection),
+    { name: "AssertionError" },
+  );
+  const permissiveBaseAdvance = activation.replace(
+    "invalidates eligibility and rejects the merge before the guarded effect",
+    "preserves eligibility and allows the guarded effect",
+  );
+  assert.notEqual(permissiveBaseAdvance, activation);
+  assert.throws(() => assertAgentCredentialActivation(permissiveBaseAdvance), {
+    name: "AssertionError",
+  });
   for (const [index, document] of activeProjections.entries()) {
     assertAgentCredentialProjection(document);
     const autoMergeMutation = document.replace(
