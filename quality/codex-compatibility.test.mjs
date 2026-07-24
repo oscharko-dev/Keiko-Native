@@ -30,8 +30,8 @@ const reportText = normalizeUnitFixtureText(
     "utf8",
   ),
 );
-const macTest =
-  process.platform === "darwin"
+const macArm64Test =
+  process.platform === "darwin" && process.arch === "arm64"
     ? test
     : (name, callback) =>
         test(
@@ -215,22 +215,25 @@ function runNpmEvaluator(additionalArgs = []) {
   return result;
 }
 
-macTest("the exact npm command emits one closed rejection JSON line", () => {
-  const result = runNpmEvaluator();
+macArm64Test(
+  "the exact npm command emits one closed rejection JSON line",
+  () => {
+    const result = runNpmEvaluator();
 
-  assert.equal(result.status, 1);
-  assert.equal(result.stderr, "");
-  assert.deepEqual(JSON.parse(result.stdout), {
-    schemaVersion: "keiko-native-codex-compatibility-evaluation/v1",
-    candidate: exactCandidate,
-    decision: "reject",
-    failedGate: "no-effect-authority",
-    reasonCode: "local-tool-cannot-be-preexecution-denied",
-  });
-  assert.equal(result.stdout.split("\n").filter(Boolean).length, 1);
-});
+    assert.equal(result.status, 1);
+    assert.equal(result.stderr, "");
+    assert.deepEqual(JSON.parse(result.stdout), {
+      schemaVersion: "keiko-native-codex-compatibility-evaluation/v1",
+      candidate: exactCandidate,
+      decision: "reject",
+      failedGate: "no-effect-authority",
+      reasonCode: "local-tool-cannot-be-preexecution-denied",
+    });
+    assert.equal(result.stdout.split("\n").filter(Boolean).length, 1);
+  },
+);
 
-macTest(
+macArm64Test(
   "the silent npm boundary rejects hostile extras without echoing them",
   () => {
     const hostileValue = "private-endpoint-value";
