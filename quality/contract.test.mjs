@@ -521,7 +521,7 @@ test("Sonar workflow validation rejects predicate expansion and weakened failure
     assert.ok(sonarWorkflowFailures(mutation).length > 0);
 });
 
-test("public governance restricts automated epic merges to the broker and keeps dev sacred", async () => {
+test("public governance restricts agent credential merges to exact epic targets and keeps dev sacred", async () => {
   const root = join(import.meta.dirname, "..");
   const [
     agents,
@@ -534,6 +534,7 @@ test("public governance restricts automated epic merges to the broker and keeps 
     pullRequestTemplate,
     supersedingAdr,
     historicalAdr,
+    brokerAdr,
   ] = await Promise.all([
     readFile(join(root, "AGENTS.md"), "utf8"),
     readFile(join(root, "docs/planning/agent-planning-baseline.md"), "utf8"),
@@ -547,11 +548,18 @@ test("public governance restricts automated epic merges to the broker and keeps 
     readFile(join(root, ".github/ISSUE_TEMPLATE/defect_finding.md"), "utf8"),
     readFile(join(root, ".github/pull_request_template.md"), "utf8"),
     readFile(
-      join(root, "docs/adr/ADR-0008-restricted-broker-epic-auto-merge.md"),
+      join(
+        root,
+        "docs/adr/ADR-0009-agent-scoped-maintainer-credential-epic-merge.md",
+      ),
       "utf8",
     ),
     readFile(
       join(root, "docs/adr/ADR-0005-free-tier-sonar-and-epic-delivery.md"),
+      "utf8",
+    ),
+    readFile(
+      join(root, "docs/adr/ADR-0008-restricted-broker-epic-auto-merge.md"),
       "utf8",
     ),
   ]);
@@ -567,38 +575,57 @@ test("public governance restricts automated epic merges to the broker and keeps 
   ];
   const activeProjections = [...policyProjections, supersedingAdr];
   for (const document of activeProjections) {
-    assert.match(document, /dedicated[\s\S]{0,120}GitHub\s+App/u);
-    assert.match(document, /server-side\s+merge-authority broker/u);
-    assert.match(document, /exact\s+accepted epic/u);
+    assert.match(
+      document,
+      /existing\s+authenticated\s+maintainer\s+credential/iu,
+    );
+    assert.match(document, /exact\s+accepted\s+`epic\/\*\*`\s+target/iu);
+    assert.match(document, /`status:\s+ready\s+for\s+human\s+review`/iu);
+    assert.match(document, /provider\s+auto-merge/iu);
     assert.match(
       document,
       /(?:never|no)[\s\S]{0,120}(?:merge|auto-merge)[\s\S]{0,120}`dev`/iu,
     );
+    assert.match(
+      document,
+      /`dev`[\s\S]{0,160}`main`[\s\S]{0,160}`release\/\*\*`/iu,
+    );
+    assert.match(
+      document,
+      /ambiguous[\s\S]{0,180}(?:no\s+retry|never\s+retr)/iu,
+    );
   }
   for (const document of policyProjections) {
-    assert.doesNotMatch(document, /authenticated\s+maintainer\s+account/iu);
+    assert.doesNotMatch(document, /server-side\s+merge-authority broker/iu);
+    assert.doesNotMatch(document, /dedicated non-human GitHub App/iu);
   }
-  assert.match(supersedingAdr, /Supersedes[\s\S]*ADR-0005/u);
+  assert.match(supersedingAdr, /Supersedes ADR-0008/u);
+  assert.match(supersedingAdr, /amends[\s\S]*ADR-0004/iu);
+  assert.match(supersedingAdr, /restores[\s\S]*ADR-0005/iu);
   assert.match(supersedingAdr, /ADR-0005's Sonar[\s\S]*unchanged/u);
-  assert.match(supersedingAdr, /human-only child integration/u);
+  assert.match(supersedingAdr, /Issue #114/u);
   assert.match(
     supersedingAdr,
-    /authenticated-maintainer-account automation path is historical context only and grants no current\s+execution authority/u,
+    /cannot distinguish[\s\S]{0,120}agent[\s\S]{0,120}human/iu,
   );
-  const brokerPermissionsParagraph = supersedingAdr
-    .split(/\r?\n\r?\n/u)
-    .find((paragraph) =>
-      paragraph.includes("It uses short-lived installation tokens"),
-    );
-  assert.ok(brokerPermissionsParagraph);
   assert.match(
-    brokerPermissionsParagraph.replace(/\s+/gu, " "),
-    /short-lived installation tokens with `contents: write` only for the conditional merge effect, plus `pull requests: read`, `issues: read`, `checks: read`, `statuses: read`, `administration: read`, and `metadata: read` for its independent evidence/u,
+    supersedingAdr,
+    /exact current head[\s\S]{0,180}exact current base/iu,
+  );
+  assert.match(supersedingAdr, /at most once/iu);
+  assert.match(
+    supersedingAdr,
+    /human reconciliation[\s\S]*exact[\s\S]*parents/iu,
   );
   assert.match(historicalAdr, /PR #15/u);
   assert.match(historicalAdr, /one-time/u);
   assert.match(historicalAdr, /authenticated maintainer account/u);
-  assert.match(gates, /no automated principal[\s\S]*affect `dev`/u);
+  assert.match(brokerAdr, /dedicated non-human GitHub App/u);
+  assert.match(brokerAdr, /Supersedes ADR-0005/u);
+  assert.match(
+    gates,
+    /shared identity[\s\S]{0,180}cannot[\s\S]{0,120}distinguish/iu,
+  );
 });
 
 async function fixtureRepository() {

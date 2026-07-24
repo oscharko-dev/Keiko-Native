@@ -45,10 +45,11 @@ Configure a ruleset or branch protection that:
 - requires each exact-head context and expected App ID listed in `quality-gates.md`, but only after
   its producer has passed the live negative and positive probes.
 
-Repository-wide provider auto-merge is not the Keiko Native epic-delivery mechanism. Repository
-rules must prove that no automated principal, including the dedicated non-human GitHub App used by
-the trusted server-side merge-authority broker, can update, merge, enable auto-merge, enqueue,
-administer, or bypass `dev`.
+Repository-wide provider auto-merge is not the Keiko Native epic-delivery mechanism. Because the
+guarded operation uses the existing authenticated maintainer credential, GitHub cannot distinguish
+agent and human actions or apply a separate automation-identity deny rule. Preserve the human
+allowlist and all protections as defense in depth, and prove the repository-owned guard denies
+every agent merge, update, auto-merge, enqueue, administration, or bypass request for `dev`.
 
 ## 4. Protect `epic/**`
 
@@ -56,16 +57,18 @@ Configure an epic-branch ruleset that requires pull requests, signed commits, li
 resolved conversations, `PR contract`, `Issue contract current`, and every deterministic or
 provider check observed for that target during the live probes.
 
-Grant the dedicated non-human GitHub App only the permissions and ruleset access required by the
-trusted server-side merge-authority broker to merge a fully eligible child branch into its exact
-accepted epic target. An agent or ordinary workflow may submit and observe a bounded request but
-cannot merge, enable provider auto-merge, hold the App credential, select a broader target, or
-impersonate a maintainer. Require broker-side revalidation of protected-`dev` policy, issue
-authority and lifecycle, source and target refs, current head and base, applicable checks, audit
-evidence, findings, review conversations, locks, fences, replay state, conditional provider
-acceptance, and exact post-effect parents. Any mismatch, ambiguity, unavailable evidence, or `dev`
-target fails closed. Retain the request, authorization snapshot, issue, pull request, exact refs,
-App identity, result, and read-back as the automation record.
+The repository-owned guard may use the existing authenticated maintainer credential for one fully
+eligible child pull request only when its base is the issue's exact accepted `epic/**` target.
+Require immediate revalidation of issue authority, `status: ready for human review`, source and
+target refs, current head and base, applicable checks, audit evidence, findings, review
+conversations, stable reads, replay state, expected-head provider acceptance, and exact post-effect
+parents. Any mismatch, ambiguity, unavailable evidence, or non-exact target fails closed. The
+operation never uses provider auto-merge and submits at most once. An ambiguous result causes no
+retry and requires human reconciliation from exact refs and ordered parents. Retain only the
+sanitized request identity, issue, pull request, exact refs, result class, merge commit and parents,
+and read-back as the automation record; never retain the credential or raw provider bodies. The
+guard must deny every agent merge, auto-merge, enqueue, push, or update request for `dev`, `main`,
+and `release/**`.
 
 ## 5. Verify workflow permissions and providers
 
@@ -94,10 +97,12 @@ Record the issue, pull request, exact head, actor, result, and timestamp for eac
    again.
 6. A wrong source issue number, delivery target, readiness URL, contract version, or stale head
    fails closed.
-7. A dedicated-App probe through the trusted server-side merge-authority broker merges one fully
-   green child pull request to its exact accepted epic branch, rejects wrong, stale, replayed, and
-   concurrent requests, verifies the exact commit parents and target tip, and proves no automated
-   principal can merge, update, enable auto-merge, enqueue, administer, or bypass `dev`.
+7. A guarded-operation probe using the existing authenticated maintainer credential merges one
+   fully green child pull request to its exact accepted `epic/**` target, rejects `dev`, wrong,
+   stale, replayed, and concurrent requests before mutation, makes at most one expected-head merge
+   call, verifies the exact target tip and ordered parents, and proves an ambiguous outcome causes
+   no retry or provider auto-merge. GitHub attribution cannot distinguish this agent operation from
+   a human action; the evidence must state that limitation rather than claiming identity isolation.
 8. Niko or Oscharko can manually merge a fully green `dev` pull request after reviewing the exact
    head; no separate non-author approval is required.
 
@@ -123,9 +128,9 @@ merge-group workflow checks out only protected `dev` with non-persistent credent
 read-only contents access, is gated by an unset activation variable, and permits only syntax-check
 commands. It never executes constituent content.
 
-Automated epic-branch merge remains disabled until complete pagination, stable ordering, lock
-fences, dual-ref conditional rejection, and exact parent and outcome evidence are proven live. An
-unavailable, ambiguous, weak, or failed capability selects human-only child integration; it must
-not enable auto-merge or approximate the broker. Enrolling merge-group contexts, configuring the
-queue, granting the broker identity, or enabling either inert job requires a separate accepted
-human activation change.
+Automated epic-branch merge remains disabled until complete pagination, stable reads, exact-target
+denials, expected-head rejection, at-most-once submission, redaction, and exact parent and outcome
+evidence are proven live. An unavailable, ambiguous, weak, or failed capability selects human-only
+child integration; an ambiguous result causes no retry and must not enable provider auto-merge.
+Enrolling merge-group contexts, configuring the queue, or enabling either inert job requires a
+separate accepted human activation change.

@@ -75,28 +75,30 @@ person: either maintainer may merge their own pull request after reviewing the l
 pull request on the exact current head.
 
 That final review covers scope, acceptance criteria, the issue Quality Plan, verification and audit
-evidence, required and advisory findings, review conversations, and residual risks. Agents, bots,
-and every other automated principal must not merge into `dev`, enable auto-merge, enqueue a merge
-group, update its ref, or operate through a human merge-capable credential. Repository rules must
-prove that no automated principal can affect `dev`.
+evidence, required and advisory findings, review conversations, and residual risks. Agents must not
+merge into `dev`, enable auto-merge, enqueue a merge group, update its ref, or use a human
+merge-capable credential for any `dev` effect.
 
-Only the trusted server-side merge-authority broker authenticated as the dedicated non-human GitHub
-App may merge a fully eligible child branch into its exact accepted epic target. An agent or
-ordinary workflow may submit a bounded request and observe its sanitized receipt, but cannot merge,
-enable provider auto-merge, select the target, access the broker credential, or impersonate a
-maintainer. Immediately before the effect, the broker independently revalidates protected-`dev`
-policy, current issue authority and lifecycle, exact source and target refs, applicable exact-head
-checks, acceptance and audit evidence, findings, review conversations, serialization fences, and
-replay state. It conditionally submits once and verifies the exact provider outcome and commit
-parents. Any mismatch, stale or unavailable evidence, failed or skipped required check, unresolved
-item, closed issue, lost fence, ambiguous response, or `dev` target fails closed.
+For a fully eligible child pull request, an agent may use the existing authenticated maintainer
+credential only through the ADR-0009 guarded operation and only for its exact accepted `epic/**`
+target. Immediately before the effect, the guard independently revalidates current issue authority
+and `status: ready for human review`, exact source and target refs, applicable exact-head checks,
+acceptance and audit evidence, findings, review conversations, stable reads, and replay state. It
+submits at most once with the exact expected head, never uses provider auto-merge, and verifies the
+exact target tip and ordered commit parents. Any mismatch, stale or unavailable evidence, failed or
+skipped required check, unresolved item, closed issue, changed ref, ambiguous response, or
+non-exact target fails closed. An ambiguous outcome causes no retry and requires human
+reconciliation from exact refs and parents.
 
-Repository administration limits `dev` merge authority to Niko and Oscharko and grants the
-dedicated App no update, merge, auto-merge, enqueue, administration, or bypass effect there. Broker
-unavailability or unproven provider semantics select human-only child integration. An agent never
-falls back to direct merge, maintainer-credential automation, provider auto-merge, or a weaker gate.
-The accepted issue, request, authorization snapshot, exact refs, actor, provider result, and
-post-effect read-back form the sanitized child-to-epic audit trail.
+This shared identity means GitHub attribution cannot distinguish an agent operation from a
+deliberate human action, and repository identity rules cannot technically constrain the credential
+to only the guarded effect. The agent policy and guard categorically deny `dev`, `main`,
+`release/**`, feature, wrong-epic, direct-ref, provider auto-merge, queue, administration, and
+bypass operations. Repository protections remain defense in depth, not a claim of separate
+identity. Credential or guard unavailability selects human-only child integration. The accepted
+issue, request identity, exact refs, actor, closed provider result, merge commit and ordered
+parents, and post-effect read-back form the sanitized audit trail; credentials and raw provider
+bodies never enter evidence.
 
 ## Bootstrap and productive phases
 

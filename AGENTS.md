@@ -193,17 +193,18 @@ into `dev`, enable auto-merge for a pull request targeting `dev`, or use a human
 this boundary.
 
 The sole automated-merge exception is an accepted child-issue pull request targeting its exact
-accepted epic integration branch. Only the trusted server-side merge-authority broker authenticated
-as the dedicated non-human GitHub App may perform that effect. An agent or ordinary workflow may
-submit a bounded request and observe its sanitized receipt, but cannot merge, update the target,
-enable provider auto-merge, enqueue a merge group, hold the broker credential, or impersonate a
-maintainer. The broker independently revalidates the open issue, accepted contract and target,
+accepted `epic/**` target. Under ADR-0009, an agent may use the existing authenticated maintainer
+credential only through the repository-owned guarded operation and only after independently
+revalidating the open issue, accepted contract and target, `status: ready for human review`,
 source issue number, exact current head and base, applicable green gates, completed acceptance and
-audit evidence, and zero blocking findings or unresolved review conversations under ADR-0004 and
-ADR-0008. A wrong, changed, stale, closed, unavailable, or `dev` target fails closed. No automated
-principal may merge or enable auto-merge for `dev`. Broker unavailability selects human-only child
-integration; an agent never falls back to direct merge or maintainer-credential automation. The
-exception does not extend to epic or standalone pull requests targeting `dev`.
+audit evidence, and zero blocking findings or unresolved review conversations. The operation
+submits at most once, verifies the exact target tip and ordered parents, never uses provider
+auto-merge, and retains no credential material. Wrong, changed, stale, closed, unavailable,
+replayed, or non-exact authority fails closed. An ambiguous result causes no retry and requires
+human reconciliation. Shared GitHub attribution cannot distinguish agent and human actions; this
+accepted limitation does not widen agent authority. An agent must never merge, enable auto-merge,
+enqueue, push, or update `dev`, `main`, or `release/**`, including through a maintainer credential.
+The exception does not extend to epic or standalone pull requests targeting `dev`.
 
 Before pushing, review the full diff against the task requirements, trust boundaries, failure modes,
 and every affected gate. Use GitHub only for remote-only evidence, not as the primary test loop.

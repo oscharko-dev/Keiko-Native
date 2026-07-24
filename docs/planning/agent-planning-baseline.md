@@ -561,11 +561,16 @@ select a small vertical outcome and explicitly defer the rest.
   and merge as distinct states.
 - Require deterministic local verification and exact-current-head repository checks before a pull
   request can be accepted.
-- Agents may submit a bounded delivery request for a green issue pull request only to its exact
-  accepted epic integration branch. The sole automated effect owner is the trusted server-side
-  merge-authority broker authenticated as a dedicated non-human GitHub App; agents and ordinary
-  workflows cannot merge, enable provider auto-merge, hold its credential, or impersonate a
-  maintainer. Broker unavailability selects human-only child integration.
+- Agents may use the existing authenticated maintainer credential only through the repository-owned
+  guarded operation for a green child pull request whose exact accepted `epic/**` target matches
+  its pull-request base. The guard revalidates current issue authority,
+  `status: ready for human review`, exact current head and base, evidence, findings, and
+  conversations; submits at most once; verifies the target tip and ordered parents; and never uses
+  provider auto-merge. Missing or changed authority fails closed. An ambiguous result causes no
+  retry and requires human reconciliation. Shared GitHub attribution cannot distinguish agent and
+  human actions and is an accepted residual risk, not a wider grant.
+- Agents must never merge, enable auto-merge, enqueue, push, or update `dev`, `main`, or
+  `release/**`, including through the existing authenticated maintainer credential.
 - Every merge into `dev`, from an epic or standalone issue, is initiated manually by Niko or
   Oscharko after human review and green CI. No automated principal may merge, enable auto-merge,
   enqueue, or directly push to `dev`.

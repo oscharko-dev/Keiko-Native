@@ -72,13 +72,16 @@ The repository-wide defaults in `AGENTS.md` apply and are not repeated here.
 - Additional prohibited paths or actions: `None | ...`
 - Authorized external mutations: `None | ...`
 - Required credentials or secrets: `None | ...`
-- Delivery authority: `broker-only automated merge to exact accepted epic branch | human-only manual merge to dev`
+- Delivery authority: `guarded agent merge to exact accepted epic/** branch | human-only manual merge to dev`
 - Additional stop or escalation conditions: `None | ...`
 
-For epic delivery, an agent may submit a bounded request only to the trusted server-side
-merge-authority broker authenticated as the dedicated non-human GitHub App. The broker alone may
-merge into the exact accepted epic target. No automated principal may merge or enable auto-merge
-for `dev`; broker unavailability selects human-only child integration.
+For epic delivery, an agent may use the existing authenticated maintainer credential only through
+the repository-owned guarded operation and only for the issue's exact accepted `epic/**` target
+after complete current evidence and `status: ready for human review` are revalidated. It submits at
+most once, never uses provider auto-merge, and verifies exact refs and ordered parents. An ambiguous
+result causes no retry and requires human reconciliation. GitHub cannot distinguish shared-identity
+agent and human actions. An agent must never merge or enable auto-merge for `dev`, `main`, or
+`release/**`; guard unavailability selects human-only child integration.
 
 The executing agent chooses a dedicated source branch using its own runner prefix. It must include
 the issue number, remain unique to this issue, and be recorded in the pull request.

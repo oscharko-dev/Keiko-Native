@@ -123,9 +123,12 @@ For a child-issue pull request targeting its designated epic branch:
 - [ ] Acceptance and audit evidence is complete, every applicable exact-head gate is green, and no
       blocking finding or review conversation remains.
 
-An agent may submit a bounded request only to the trusted server-side merge-authority broker
-authenticated as the dedicated non-human GitHub App. The broker alone may merge into the exact
-accepted epic target. No automated principal may merge or enable auto-merge for `dev`; broker
+An agent may use the existing authenticated maintainer credential only through the repository-owned
+guarded operation and only for the issue's exact accepted `epic/**` target after complete current
+evidence and `status: ready for human review` are revalidated. It submits at most once, never uses
+provider auto-merge, and verifies exact refs and ordered parents. An ambiguous result causes no
+retry and requires human reconciliation. GitHub cannot distinguish shared-identity agent and human
+actions. An agent must never merge or enable auto-merge for `dev`, `main`, or `release/**`; guard
 unavailability selects human-only child integration.
 
 For an epic or standalone pull request targeting `dev`, complete only by Niko or Oscharko. Agents
