@@ -128,13 +128,18 @@ accepted `epic/**` branch. Epic and standalone pull requests remain human-only d
 For that child-issue delivery, an agent may use the existing authenticated maintainer credential
 only through the repository-owned guarded operation after complete current evidence and
 `status: ready for human review` are revalidated. The guard persists a durable single-flight
-compare-and-set claim for the exact operation before any provider submission and rejects concurrent
-or replayed claims. It submits at most once, explicitly sends `merge_method: merge`, never uses
-provider auto-merge, and verifies exact refs and ordered parents. An ambiguous claim remains blocked
-with no retry until explicit human reconciliation using exact refs and ordered parents. GitHub
-cannot distinguish shared-identity agent and human actions. An agent must never merge or enable
-auto-merge for `dev`, `main`, or `release/**`; guard unavailability selects human-only child
-integration.
+compare-and-set claim for target/base serialization before any provider submission. The target/base
+serialization uniqueness key consists only of repository, exact accepted target, and observed
+current base. The immutable per-operation record binds issue, contract, readiness, pull request,
+exact head, and request identity. Distinct request identities cannot create another serialization
+claim. Two distinct child-issue pull requests for the same exact accepted target and observed base
+contend on that one key; only one may reach provider submission. It submits at most once, explicitly
+sends `merge_method: merge`, never uses provider auto-merge, and verifies exact refs and ordered
+parents. An ambiguous claim remains blocked with no retry until explicit human reconciliation using
+exact refs and ordered parents. A new request identity is permitted only after explicit terminal
+settlement or human reconciliation and fresh revalidation. GitHub cannot distinguish
+shared-identity agent and human actions. An agent must never merge or enable auto-merge for `dev`,
+`main`, or `release/**`; guard unavailability selects human-only child integration.
 
 For an epic or standalone pull request targeting `dev`, complete only by Niko or Oscharko. Agents
 must leave this subsection untouched, stop at `Ready for Human Review`, and must not enable

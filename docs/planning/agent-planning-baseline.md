@@ -566,13 +566,19 @@ select a small vertical outcome and explicitly defer the rest.
   target matches its pull-request base. Epic and standalone pull requests remain human-only
   deliveries to `dev`. The guard revalidates current issue authority,
   `status: ready for human review`, exact current head and base, evidence, findings, and
-  conversations. It persists a durable single-flight compare-and-set claim for the exact operation
-  before any provider submission and rejects concurrent or replayed claims. It submits at most
-  once, explicitly sends `merge_method: merge`, verifies the target tip and ordered parents, and
-  never uses provider auto-merge. Missing or changed authority fails closed. An ambiguous claim
-  remains blocked with no retry until explicit human reconciliation using exact refs and ordered
-  parents. Shared GitHub attribution cannot distinguish agent and human actions and is an accepted
-  residual risk, not a wider grant.
+  conversations. It persists a durable single-flight compare-and-set claim for target/base
+  serialization before any provider submission. The target/base serialization
+  uniqueness key consists only of repository, exact accepted target, and observed current base. The
+  immutable per-operation record binds issue, contract, readiness, pull request, exact head, and
+  request identity. Distinct request identities cannot create another serialization claim. Two
+  distinct child-issue pull requests for the same exact accepted target and observed base contend on
+  that one key; only one may reach provider submission. It submits at most once, explicitly sends
+  `merge_method: merge`, verifies the target tip and ordered parents, and never uses provider
+  auto-merge. Missing or changed authority fails closed. An ambiguous claim remains blocked with no
+  retry until explicit human reconciliation using exact refs and ordered parents. A new request
+  identity is permitted only after explicit terminal settlement or human reconciliation and fresh
+  revalidation. Shared GitHub attribution cannot distinguish agent and human actions and is an
+  accepted residual risk, not a wider grant.
 - Agents must never merge, enable auto-merge, enqueue, push, or update `dev`, `main`, or
   `release/**`, including through the existing authenticated maintainer credential.
 - Every merge into `dev`, from an epic or standalone issue, is initiated manually by Niko or

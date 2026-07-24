@@ -85,13 +85,19 @@ maintainer credential only through the ADR-0009 guarded operation and only for i
 Immediately before the effect, the guard independently revalidates current issue authority and
 `status: ready for human review`, exact source and target refs, applicable exact-head checks,
 acceptance and audit evidence, findings, review conversations, stable reads, and replay state. It
-persists a durable single-flight compare-and-set claim for the exact operation before any provider
-submission and rejects concurrent or replayed claims. It submits at most once with the exact
+persists a durable single-flight compare-and-set claim for target/base serialization before any
+provider submission. The target/base serialization
+uniqueness key consists only of repository, exact accepted target, and observed current base. The
+immutable per-operation record binds issue, contract, readiness, pull request, exact head, and
+request identity. Distinct request identities cannot create another serialization claim. Two
+distinct child-issue pull requests for the same exact accepted target and observed base contend on
+that one key; only one may reach provider submission. It submits at most once with the exact
 expected head, explicitly sends `merge_method: merge`, never uses provider auto-merge, and verifies
 the exact target tip and ordered commit parents. Any mismatch, stale or unavailable evidence,
 failed or skipped required check, unresolved item, closed issue, changed ref, ambiguous response,
 or non-exact target fails closed. An ambiguous claim remains blocked with no retry until explicit
-human reconciliation using exact refs and ordered parents.
+human reconciliation using exact refs and ordered parents. A new request identity is permitted only
+after explicit terminal settlement or human reconciliation and fresh revalidation.
 
 This shared identity means GitHub attribution cannot distinguish an agent operation from a
 deliberate human action, and repository identity rules cannot technically constrain the credential

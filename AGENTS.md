@@ -199,15 +199,20 @@ repository-owned guarded operation and only after independently revalidating the
 accepted contract and target, `status: ready for human review`, source issue number, exact current
 head and base, applicable green gates, completed acceptance and audit evidence, and zero blocking
 findings or unresolved review conversations. The guard persists a durable single-flight
-compare-and-set claim for the exact operation before any provider submission and rejects concurrent
-or replayed claims. It submits at most once, explicitly sends `merge_method: merge`, verifies the
-exact target tip and ordered parents, never uses provider auto-merge, and retains no credential
-material. Wrong, changed, stale, closed, unavailable, replayed, or non-exact authority fails closed.
-An ambiguous claim remains blocked with no retry until explicit human reconciliation using exact
-refs and ordered parents. Shared GitHub attribution cannot distinguish agent and human actions;
-this accepted limitation does not widen agent authority. An agent must never merge, enable
-auto-merge, enqueue, push, or update `dev`, `main`, or `release/**`, including through a maintainer
-credential.
+compare-and-set claim for target/base serialization before any provider submission. The target/base
+serialization uniqueness key consists only of repository, exact accepted target, and observed
+current base. The immutable per-operation record binds issue, contract, readiness, pull request,
+exact head, and request identity. Distinct request identities cannot create another serialization
+claim. Two distinct child-issue pull requests for the same exact accepted target and observed base
+contend on that one key; only one may reach provider submission. It submits at most once, explicitly
+sends `merge_method: merge`, verifies the exact target tip and ordered parents, never uses provider
+auto-merge, and retains no credential material. Wrong, changed, stale, closed, unavailable,
+replayed, or non-exact authority fails closed. An ambiguous claim remains blocked with no retry
+until explicit human reconciliation using exact refs and ordered parents. A new request identity is
+permitted only after explicit terminal settlement or human reconciliation and fresh revalidation.
+Shared GitHub attribution cannot distinguish agent and human actions; this accepted limitation does
+not widen agent authority. An agent must never merge, enable auto-merge, enqueue, push, or update
+`dev`, `main`, or `release/**`, including through a maintainer credential.
 
 Before pushing, review the full diff against the task requirements, trust boundaries, failure modes,
 and every affected gate. Use GitHub only for remote-only evidence, not as the primary test loop.

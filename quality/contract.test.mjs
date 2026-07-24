@@ -574,6 +574,36 @@ function assertAgentCredentialProjection(document) {
   );
   assert.match(
     document,
+    /target\/base\s+serialization\s+uniqueness\s+key[\s\S]{0,220}repository[\s\S]{0,120}exact\s+accepted\s+target[\s\S]{0,120}observed\s+current\s+base/iu,
+    "projection must key serialization only by target and observed base",
+  );
+  assert.doesNotMatch(
+    document,
+    /target\/base\s+serialization\s+uniqueness\s+key[^.]*\b(?:pull\s+request|head|readiness|request\s+identity)\b/iu,
+    "projection must not partition target/base serialization by operation metadata",
+  );
+  assert.match(
+    document,
+    /immutable\s+per-operation\s+(?:record|value)[\s\S]{0,180}issue[\s\S]{0,100}contract[\s\S]{0,100}readiness[\s\S]{0,100}pull\s+request[\s\S]{0,100}exact\s+head[\s\S]{0,100}request\s+identity/iu,
+    "projection must bind operation metadata outside the serialization key",
+  );
+  assert.match(
+    document,
+    /distinct\s+request\s+identit(?:y|ies)[\s\S]{0,140}(?:cannot|must\s+not)[\s\S]{0,100}(?:another|separate)[\s\S]{0,100}serialization\s+claim/iu,
+    "projection must reject request-ID partitioning",
+  );
+  assert.match(
+    document,
+    /two\s+distinct\s+child-issue\s+pull\s+requests[\s\S]{0,160}same\s+exact\s+(?:accepted\s+)?target[\s\S]{0,100}observed\s+(?:current\s+)?base[\s\S]{0,180}only\s+one[\s\S]{0,120}provider\s+submission/iu,
+    "projection must serialize distinct PRs for one target/base",
+  );
+  assert.match(
+    document,
+    /new\s+request\s+identity[\s\S]{0,120}only\s+after[\s\S]{0,180}(?:terminal\s+settlement|human\s+reconciliation)[\s\S]{0,180}fresh\s+revalidation/iu,
+    "projection must gate a new request identity on settlement and revalidation",
+  );
+  assert.match(
+    document,
     /persist(?:s|ed)?[\s\S]{0,120}claim[\s\S]{0,160}before[\s\S]{0,120}provider\s+(?:call|submission)/iu,
     "projection must persist the claim before provider submission",
   );
@@ -759,8 +789,76 @@ Provider protection excludes every agent identity from the \`dev\` update allowl
       },
       `projection ${index} accepted a non-durable concurrency control`,
     );
+    const requestInKeyMutation = document.replace(
+      /observed\s+current\s+base(?=[.;])/giu,
+      "observed current base, pull request, exact head, readiness identity, and request identity",
+    );
+    assert.notEqual(requestInKeyMutation, document);
+    assert.throws(
+      () => assertAgentCredentialProjection(requestInKeyMutation),
+      {
+        name: "AssertionError",
+        message:
+          "projection must not partition target/base serialization by operation metadata",
+      },
+      `projection ${index} partitioned target/base serialization by operation metadata`,
+    );
+    const requestValueMutation = document.replace(
+      /(immutable\s+per-operation\s+(?:record|value)[\s\S]{0,500}?)request\s+identity/giu,
+      "$1discarded request marker",
+    );
+    assert.notEqual(requestValueMutation, document);
+    assert.throws(
+      () => assertAgentCredentialProjection(requestValueMutation),
+      {
+        name: "AssertionError",
+        message:
+          "projection must bind operation metadata outside the serialization key",
+      },
+      `projection ${index} failed to retain request identity as claim metadata`,
+    );
+    const distinctRequestMutation = document.replace(
+      /(distinct\s+request\s+identit(?:y|ies)[\s\S]{0,140})(?:cannot|must\s+not)([\s\S]{0,100}(?:another|separate)[\s\S]{0,100}serialization\s+claim)/giu,
+      "$1may$2",
+    );
+    assert.notEqual(distinctRequestMutation, document);
+    assert.throws(
+      () => assertAgentCredentialProjection(distinctRequestMutation),
+      {
+        name: "AssertionError",
+        message: "projection must reject request-ID partitioning",
+      },
+      `projection ${index} allowed distinct request IDs to bypass single-flight`,
+    );
+    const distinctPullRequestMutation = document.replace(
+      /(two\s+distinct\s+child-issue\s+pull\s+requests[\s\S]{0,160}same\s+exact\s+(?:accepted\s+)?target[\s\S]{0,100}observed\s+(?:current\s+)?base[\s\S]{0,180})only\s+one/giu,
+      "$1both",
+    );
+    assert.notEqual(distinctPullRequestMutation, document);
+    assert.throws(
+      () => assertAgentCredentialProjection(distinctPullRequestMutation),
+      {
+        name: "AssertionError",
+        message: "projection must serialize distinct PRs for one target/base",
+      },
+      `projection ${index} allowed two PRs to reach provider for one target/base`,
+    );
+    const prematureRequestMutation = document.replace(
+      /(new\s+request\s+identity[\s\S]{0,120})only\s+after([\s\S]{0,180}(?:terminal\s+settlement|human\s+reconciliation)[\s\S]{0,180}fresh\s+revalidation)/giu,
+      "$1before$2",
+    );
+    assert.notEqual(prematureRequestMutation, document);
+    assert.throws(
+      () => assertAgentCredentialProjection(prematureRequestMutation),
+      {
+        name: "AssertionError",
+        message:
+          "projection must gate a new request identity on settlement and revalidation",
+      },
+      `projection ${index} allowed a fresh request before settlement`,
+    );
     const claimOrderingMutation = document.replace(
-      /before\s+any\s+provider\s+submission/giu,
+      /before\s+(?:any|the)\s+provider\s+(?:submission|call)/giu,
       "after provider submission",
     );
     assert.notEqual(claimOrderingMutation, document);
@@ -876,8 +974,13 @@ Provider protection excludes every agent identity from the \`dev\` update allowl
   assert.match(supersedingAdr, /at most once/iu);
   assert.match(
     supersedingAdr,
-    /durable\s+single-flight\s+compare-and-set\s+claim[\s\S]{0,600}repository[\s\S]{0,200}pull\s+request[\s\S]{0,200}exact\s+(?:accepted\s+)?target[\s\S]{0,200}head[\s\S]{0,200}base[\s\S]{0,200}readiness[\s\S]{0,200}request\s+identity/iu,
-    "ADR must bind every minimum single-flight claim key",
+    /durable\s+single-flight\s+compare-and-set\s+claim[\s\S]{0,600}target\/base\s+serialization\s+uniqueness\s+key[\s\S]{0,200}repository[\s\S]{0,200}exact\s+accepted\s+target[\s\S]{0,200}observed\s+current\s+base/iu,
+    "ADR must define the target/base serialization key",
+  );
+  assert.doesNotMatch(
+    supersedingAdr,
+    /target\/base\s+serialization\s+uniqueness\s+key[^.]*\b(?:pull\s+request|head|readiness|request\s+identity)\b/iu,
+    "ADR must not partition target/base serialization by operation metadata",
   );
   assert.match(
     supersedingAdr,

@@ -66,15 +66,21 @@ Epic and standalone pull requests remain human-only deliveries to `dev`. Require
 revalidation of issue authority, `status: ready for human review`, source and target refs, current
 head and base, applicable checks, audit evidence, findings, review conversations, stable reads,
 replay state, expected-head provider acceptance, and exact post-effect parents. The guard persists
-a durable single-flight compare-and-set claim for the exact operation before any provider
-submission and rejects concurrent or replayed claims. Any mismatch, ambiguity, unavailable
-evidence, or non-exact target fails closed. The operation explicitly sends `merge_method: merge`,
-never uses provider auto-merge, and submits at most once. An ambiguous claim remains blocked with no
-retry until explicit human reconciliation using exact refs and ordered parents. Retain only the
-sanitized request identity, issue, pull request, exact refs, result class, merge commit and parents,
-and read-back as the automation record; never retain the credential or raw provider bodies. The
-guard must deny every agent merge, auto-merge, enqueue, push, or update request for `dev`, `main`,
-and `release/**`.
+a durable single-flight compare-and-set claim for target/base serialization before any provider
+submission. The target/base serialization uniqueness key consists only of repository, exact
+accepted target, and observed current base. The immutable per-operation record binds issue,
+contract, readiness, pull request, exact head, and request identity. Distinct request identities
+cannot create another serialization claim. Two distinct child-issue pull requests for the same
+exact accepted target and observed base contend on that one key; only one may reach provider
+submission. Any mismatch, ambiguity, unavailable evidence, or non-exact target fails closed. The
+operation explicitly sends `merge_method: merge`, never uses provider auto-merge, and submits at
+most once. An ambiguous claim remains blocked with no retry until explicit human reconciliation
+using exact refs and ordered parents. A new request identity is permitted only after explicit
+terminal settlement or human reconciliation and fresh revalidation. Retain only the sanitized
+request identity, issue, pull request, exact refs, result class, merge commit and parents, and
+read-back as the automation record; never retain the credential or raw provider bodies. The guard
+must deny every agent merge, auto-merge, enqueue, push, or update request for `dev`, `main`, and
+`release/**`.
 
 The merge endpoint's `sha` precondition binds only the pull-request head and does not atomically
 bind the base. Strict current-branch protection and immediate revalidation must therefore make a
@@ -114,11 +120,13 @@ Record the issue, pull request, exact head, actor, result, and timestamp for eac
    compare-and-set claim before making at most one expected-head merge call with
    `merge_method: merge`, verifies the exact target tip and ordered parents, and proves an ambiguous
    claim remains blocked with no retry or provider auto-merge until explicit human reconciliation.
-   GitHub attribution cannot distinguish this agent operation from a human action; the evidence
-   must state that limitation rather than claiming identity isolation. In the disposable live
-   probe, advance the base after green evidence and prove that the base advance invalidates
-   eligibility and rejects the merge before the guarded effect; eligibility requires fresh
-   evidence against the new base.
+   In the disposable live probe, race two distinct child-issue pull requests against the same exact
+   accepted target and observed current base and prove only one reaches provider submission. Also
+   prove that concurrent callers with distinct request identities cannot partition the
+   serialization key. GitHub attribution cannot distinguish this agent operation from a human
+   action; the evidence must state that limitation rather than claiming identity isolation. Advance
+   the base after green evidence and prove that the base advance invalidates eligibility and rejects
+   the merge before the guarded effect; eligibility requires fresh evidence against the new base.
 8. Niko or Oscharko can manually merge a fully green `dev` pull request after reviewing the exact
    head; no separate non-author approval is required.
 

@@ -101,12 +101,17 @@ cannot authorize the operation.
 
 ### At-most-once effect and read-back
 
-The guard creates a sanitized immutable operation record and acquires a durable single-flight
-compare-and-set claim keyed by at least the repository, pull request, exact accepted target, exact
-current head, exact current base, readiness identity, and request identity. It persists the claim
-before any provider submission. A claim already present for the same operation rejects concurrent
-and replayed attempts; neither process-local memory nor an uncommitted observation satisfies this
-boundary.
+The guard creates two complementary durable records. First, it acquires a durable single-flight
+compare-and-set claim for target/base serialization before any provider submission. The target/base
+serialization uniqueness key consists only of repository, exact accepted target, and observed
+current base. Pull request, head, readiness, and request identity must not partition this key.
+Second, the immutable per-operation record binds issue, contract, readiness, pull request, exact
+head, and request identity and references the serialization claim. Distinct request identities
+cannot create another serialization claim. Two distinct child-issue pull requests for the same
+exact accepted target and observed base contend on that one key; only one may reach provider
+submission. The guard persists the serialization claim and per-operation record before the provider
+call. Together they reject concurrent and replayed attempts. Neither process-local memory nor an
+uncommitted observation satisfies this boundary.
 
 After the durable claim succeeds, the guard submits at most once through GitHub's
 `Merge a pull request` endpoint with request field `sha` and `merge_method: merge`. GitHub defines
@@ -134,9 +139,9 @@ That limitation is part of the accepted residual risk.
 
 An ambiguous or partially observed provider outcome causes no retry and no replacement attempt.
 The ambiguous claim remains blocked until explicit human reconciliation using the exact source and
-target refs, pull request, merge commit, and ordered parents. Only a later fresh operation with a
-new request identity, a separately successful claim, and fully revalidated evidence may resume
-after the prior outcome is settled.
+target refs, pull request, merge commit, and ordered parents. Releasing that serialization claim or
+using a new request identity is permitted only after explicit terminal settlement or human
+reconciliation and fresh revalidation. Only then may a later fresh operation acquire a new claim.
 
 Human reconciliation must compare the exact refs, merge commit, and ordered parents before any
 later operation is considered.
@@ -236,11 +241,15 @@ replay; concurrent attempts; provider rejection; rate limit; timeout; ambiguous 
 redaction; and human reconciliation.
 
 Tests must prove all pre-submission failures make no merge call, one accepted operation makes at
-most one provider call, the claim is persisted before submission, ambiguous claims remain blocked
-with no retry until explicit human reconciliation, and success requires exact target-tip and
-ordered-parent read-back after an explicit `merge_method: merge` request. They must also prove the
-guard never prints or persists credential material and never invokes provider auto-merge, direct
-ref update, queue enrollment, bypass, or any `dev` effect.
+most one provider call, the serialization claim and per-operation record are persisted before
+submission, ambiguous claims remain blocked with no retry until explicit human reconciliation, and
+success requires exact target-tip and ordered-parent read-back after an explicit
+`merge_method: merge` request. A disposable live probe must race two distinct child-issue pull
+requests with the same exact accepted target and observed current base and prove that only one
+provider submission occurs. Tests must also prove pull request, head, readiness, and request
+identity cannot partition the serialization key, while the immutable per-operation record retains
+all of them. The guard never prints or persists credential material and never invokes provider
+auto-merge, direct ref update, queue enrollment, bypass, or any `dev` effect.
 
 ## Reopen triggers
 
