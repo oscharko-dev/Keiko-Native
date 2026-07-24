@@ -1,0 +1,82 @@
+{
+  "schemaVersion": "keiko-native-codex-compatibility-rejection/v1",
+  "issue": {
+    "number": 99,
+    "contractVersion": 3,
+    "readinessFingerprint": "00a484d5cd28890bc95eab9c3d8867aad893e254337e8d0881826dac82c1c2ff"
+  },
+  "evaluation": {
+    "date": "2026-07-24",
+    "environment": {
+      "hardwareClass": "Apple M4, 16 GiB",
+      "operatingSystem": "macOS 26.5.1",
+      "architecture": "arm64",
+      "node": "24.18.0",
+      "npm": "11.16.0"
+    }
+  },
+  "candidate": {
+    "package": "@openai/codex",
+    "version": "0.145.0",
+    "platform": "darwin-arm64",
+    "wrapper": {
+      "integrity": "sha512-/PSPSFujjjmiyVFvG2yu/grOFhsWdokTH8t2KGWhXSo/M5n/dIDsnbsnO82/7bLtIoDuzQf7ATBUMWqPWQINlQ==",
+      "tarballSha256": "416399796cac371d1a033b17f34b08ba9b25c8f298a5b9d00e10f72c3b128c8d"
+    },
+    "platformPackage": {
+      "version": "0.145.0-darwin-arm64",
+      "integrity": "sha512-h6aQ0UxnaP8mIM/9/qPAH9MNkRliJo88toq1T36IxNM2L5JSU0TFamu+MZn7YkFgDsrp0RfiI+97Tm8AVVxqtA==",
+      "tarballSha256": "53ff1055d35ca3dc964e8bedc2431e46c00608f7c8e145b222122648a7a4e3e8",
+      "binarySha256": "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
+      "codeSigningIdentity": "OpenAI OpCo, LLC",
+      "codeSigningTeam": "2DC432GLL2"
+    },
+    "license": "Apache-2.0",
+    "npmAttestations": "verified",
+    "source": {
+      "repository": "https://github.com/openai/codex",
+      "tag": "rust-v0.145.0",
+      "commit": "25af12f7e61572b0bc18ddb1008be543b91519b0",
+      "releaseWorkflow": "https://github.com/openai/codex/blob/25af12f7e61572b0bc18ddb1008be543b91519b0/.github/workflows/rust-release.yml"
+    }
+  },
+  "generatedSchemas": {
+    "stableJson": {
+      "fileCount": 273,
+      "sha256": "ea5365fef3204e9bac265262d616e3c1a4896ee27ed9ae38d8b392a574c858a5"
+    },
+    "experimentalJson": {
+      "fileCount": 347,
+      "sha256": "27a7e1d4002cb2987bd00b7186c85cda9ffcbaac036afab6d191f5c98a4ac2da"
+    },
+    "stableTypeScript": {
+      "fileCount": 617,
+      "sha256": "bfe516c4dab610ddecc10ae40763cec197d8673853705f2cf39bb07f74bdd0ca"
+    },
+    "experimentalTypeScript": {
+      "fileCount": 697,
+      "sha256": "9f2716686ccc10c0fedcea92363f8ac0ad8eafcc081855e284a28c358c6ec82d"
+    }
+  },
+  "prompt": {
+    "repositoryPath": "quality/fixtures/codex-tracer/no-effect-prompt.txt",
+    "bytes": 182,
+    "sha256": "e1a92579b1ca673135331829beb97792c1289a6bccdfe0303302256c546960f6"
+  },
+  "decision": {
+    "result": "reject",
+    "failedGate": "no-effect-authority",
+    "reasonCode": "local-tool-cannot-be-preexecution-denied",
+    "matrixExecuted": false,
+    "providerTurnExecuted": false,
+    "fallbackEvaluated": false
+  },
+  "retention": {
+    "containsCredentials": false,
+    "containsProviderTaskOrResponseContent": false,
+    "containsRawProtocol": false,
+    "containsMachineOrSelectedRepositoryPaths": false,
+    "containsRuntimeBinary": false,
+    "containsGeneratedSchemas": false
+  }
+}
