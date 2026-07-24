@@ -1,0 +1,1 @@
+In two short sentences, explain why a cancellable operation must reach exactly one terminal state. Do not use tools, inspect files, access a repository, or perform any local action.

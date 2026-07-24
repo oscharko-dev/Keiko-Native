@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, sep } from "node:path";
 
 const coverageModules = Object.freeze([
+  "codex-compatibility.mjs",
   "deterministic-order.mjs",
   "git-integrity.mjs",
   "contract.mjs",
