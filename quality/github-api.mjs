@@ -169,6 +169,14 @@ function normalizedLabel(value) {
     : undefined;
 }
 
+const plainValueValidators = {
+  integer: isInteger,
+  owner: isOwner,
+  pullState: (value) => ["open", "closed"].includes(value),
+  repository: isRepository,
+  sha: (value) => /^[0-9a-f]{40}$/u.test(value),
+};
+
 function hasValidSyntax(path) {
   if (
     typeof path !== "string" ||
@@ -185,22 +193,15 @@ function hasValidSyntax(path) {
     .some((segment) => segment === "." || segment === "..");
 }
 
+function normalizedValue(type, value) {
+  if (type === "actor") return normalizedActor(value);
+  if (type === "label") return normalizedLabel(value);
+  return plainValueValidators[type]?.(value) ? value : undefined;
+}
+
 function canonicalValue(type, value) {
-  if (type === "actor") {
-    const actor = normalizedActor(value);
-    return actor === undefined ? undefined : encodeURIComponent(actor);
-  }
-  if (type === "label") {
-    const label = normalizedLabel(value);
-    return label === undefined ? undefined : encodeURIComponent(label);
-  }
-  if (type === "owner" && !isOwner(value)) return undefined;
-  if (type === "repository" && !isRepository(value)) return undefined;
-  if (type === "integer" && !isInteger(value)) return undefined;
-  if (type === "pullState" && !["open", "closed"].includes(value))
-    return undefined;
-  if (type === "sha" && !/^[0-9a-f]{40}$/u.test(value)) return undefined;
-  return encodeURIComponent(value);
+  const normalized = normalizedValue(type, value);
+  return normalized === undefined ? undefined : encodeURIComponent(normalized);
 }
 
 function reconstructedTarget(path, method) {
