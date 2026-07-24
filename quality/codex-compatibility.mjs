@@ -3,7 +3,9 @@ import { createHash } from "node:crypto";
 const SCHEMA_VERSION = "keiko-native-codex-compatibility-evaluation/v1";
 const EXACT_CANDIDATE = "@openai/codex@0.145.0";
 const EVIDENCE_SHA256 =
-  "c1663d16c17d20b8af4cc128042cbbc10dbb6cea9e619170719bc016426b1a07";
+  "6a5b45d2ae4e30bb16967fe179da3ee6a9c8ca834aa052c77a246200832ef8b5";
+const REPORT_SHA256 =
+  "e56ded04511ee010fe374dc7d5894d5bd27f0850948fc097138c349ecee5c7c0";
 
 export const PROMPT_BYTES = 182;
 export const PROMPT_SHA256 =
@@ -24,7 +26,12 @@ function closedFailure(reasonCode) {
   };
 }
 
-export function evaluateCompatibility({ args, evidenceText, promptBytes }) {
+export function evaluateCompatibility({
+  args,
+  evidenceText,
+  promptBytes,
+  reportText,
+}) {
   if (
     args.length !== 2 ||
     args[0] !== "--candidate" ||
@@ -34,7 +41,11 @@ export function evaluateCompatibility({ args, evidenceText, promptBytes }) {
   }
 
   if (
+    typeof evidenceText !== "string" ||
+    typeof reportText !== "string" ||
+    !Buffer.isBuffer(promptBytes) ||
     sha256(evidenceText) !== EVIDENCE_SHA256 ||
+    sha256(reportText) !== REPORT_SHA256 ||
     promptBytes.byteLength !== PROMPT_BYTES ||
     sha256(promptBytes) !== PROMPT_SHA256
   ) {

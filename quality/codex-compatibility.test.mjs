@@ -18,12 +18,17 @@ const evidenceText = readFileSync(
   new URL("../docs/evaluation/codex-0.145.0-rejection.json", import.meta.url),
   "utf8",
 );
+const reportText = readFileSync(
+  new URL("../docs/evaluation/codex-0.145.0-rejection.md", import.meta.url),
+  "utf8",
+);
 
 test("rejects the exact candidate at the no-effect authority gate", () => {
   const result = evaluateCompatibility({
     args: ["--candidate", exactCandidate],
     evidenceText,
     promptBytes: exactPrompt,
+    reportText,
   });
 
   assert.equal(result.exitCode, 1);
@@ -49,6 +54,7 @@ test("rejects missing, different, and additional inputs without echoing them", (
       args,
       evidenceText,
       promptBytes: exactPrompt,
+      reportText,
     });
 
     assert.equal(result.exitCode, 2);
@@ -64,20 +70,38 @@ test("rejects missing, different, and additional inputs without echoing them", (
   }
 });
 
-test("fails closed when the retained evidence or prompt binding changes", () => {
+test("fails closed when an evidence, report, or prompt binding changes", () => {
   const malformedEvidence = evaluateCompatibility({
     args: ["--candidate", exactCandidate],
     evidenceText: `${evidenceText} `,
     promptBytes: exactPrompt,
+    reportText,
+  });
+  const changedReport = evaluateCompatibility({
+    args: ["--candidate", exactCandidate],
+    evidenceText,
+    promptBytes: exactPrompt,
+    reportText: `${reportText} `,
+  });
+  const missingReport = evaluateCompatibility({
+    args: ["--candidate", exactCandidate],
+    evidenceText,
+    promptBytes: exactPrompt,
+    reportText: undefined,
   });
   const changedPrompt = evaluateCompatibility({
     args: ["--candidate", exactCandidate],
     evidenceText,
     promptBytes: Buffer.from("changed\n", "utf8"),
+    reportText,
   });
 
   assert.equal(malformedEvidence.exitCode, 2);
   assert.equal(malformedEvidence.output.reasonCode, "evidence-binding-failed");
+  assert.equal(changedReport.exitCode, 2);
+  assert.equal(changedReport.output.reasonCode, "evidence-binding-failed");
+  assert.equal(missingReport.exitCode, 2);
+  assert.equal(missingReport.output.reasonCode, "evidence-binding-failed");
   assert.equal(changedPrompt.exitCode, 2);
   assert.equal(changedPrompt.output.reasonCode, "evidence-binding-failed");
 });
@@ -90,15 +114,28 @@ test("binds the frozen prompt to the accepted bytes and digest", () => {
   );
 });
 
-test("the repository command emits only the closed rejection result", () => {
+function runNpmEvaluator(additionalArgs = []) {
   const result = spawnSync(
-    process.execPath,
-    ["quality/evaluate-codex-compatibility.mjs", "--candidate", exactCandidate],
+    process.platform === "win32" ? "npm.cmd" : "npm",
+    [
+      "run",
+      "--silent",
+      "evaluate:codex-compatibility:macos",
+      "--",
+      "--candidate",
+      exactCandidate,
+      ...additionalArgs,
+    ],
     {
       cwd: new URL("..", import.meta.url),
       encoding: "utf8",
     },
   );
+  return result;
+}
+
+test("the exact npm command emits one closed rejection JSON line", () => {
+  const result = runNpmEvaluator();
 
   assert.equal(result.status, 1);
   assert.equal(result.stderr, "");
@@ -109,4 +146,20 @@ test("the repository command emits only the closed rejection result", () => {
     failedGate: "no-effect-authority",
     reasonCode: "local-tool-cannot-be-preexecution-denied",
   });
+  assert.equal(result.stdout.split("\n").filter(Boolean).length, 1);
+});
+
+test("the silent npm boundary rejects hostile extras without echoing them", () => {
+  const hostileValue = "private-endpoint-value";
+  const result = runNpmEvaluator(["--endpoint", hostileValue]);
+
+  assert.equal(result.status, 2);
+  assert.equal(result.stderr, "");
+  assert.deepEqual(JSON.parse(result.stdout), {
+    schemaVersion: "keiko-native-codex-compatibility-evaluation/v1",
+    decision: "reject",
+    reasonCode: "invalid-command",
+  });
+  assert.equal(result.stdout.split("\n").filter(Boolean).length, 1);
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, /private-endpoint/u);
 });

@@ -2,14 +2,14 @@
 
 ## Status
 
-Option B is selected for issue #99 contract v3. The exact official npm candidate
+Option B is selected for issue #99 contract v4. The exact official npm candidate
 `@openai/codex@0.145.0` is rejected on the `no-effect-authority` absolute gate. Epic #98 must return
 to planning without a runtime ADR or fallback candidate.
 
 The rejection is bound to readiness fingerprint
-`00a484d5cd28890bc95eab9c3d8867aad893e254337e8d0881826dac82c1c2ff`. The closed machine record is
+`7c2ae760477bac10e823a67eabfa19d5a536a76b7324a5133c8206487cc72d32`. The closed machine record is
 [`codex-0.145.0-rejection.json`](codex-0.145.0-rejection.json), SHA-256
-`c1663d16c17d20b8af4cc128042cbbc10dbb6cea9e619170719bc016426b1a07`.
+`6a5b45d2ae4e30bb16967fe179da3ee6a9c8ca834aa052c77a246200832ef8b5`.
 
 Evaluation occurred on the ADR-0006 physical authority: Apple M4 with 16 GiB, macOS 26.5.1, arm64.
 The repository quality control used Node.js 24.18.0 and npm 11.16.0.
@@ -18,9 +18,16 @@ The repository quality control used Node.js 24.18.0 and npm 11.16.0.
 
 The candidate cannot prove that the frozen no-effect turn executes no local action. Its turn
 environment field is experimental, and an empty environment omits environment tools. However,
-`update_plan` is registered independently and unconditionally. Its local handler applies a plan
-update without a pre-execution approval or denial exchange. The client also fixes tool choice to
-`auto`; the turn request has no deny-all tool-choice field.
+`update_plan` is registered independently and unconditionally. In ordinary mode its local handler
+applies a plan update without a pre-invocation approval or denial exchange. The client also fixes
+tool choice to `auto`; the turn request has no deny-all tool-choice field.
+
+Plan mode does not close this boundary. Its mutation guard runs only after a model invocation has
+been routed into the local plan handler, then returns before emitting `PlanUpdate`. The evaluated
+default tool set also leaves `request_user_input` and multi-agent handlers locally invokable
+independently of the empty runtime environment. Selecting Plan mode additionally changes the
+frozen generic agent-text workload semantics. It therefore cannot substitute for a turn-level
+zero-local-invocation authority control.
 
 The frozen prompt expressly says not to perform any local action. Whether a model happens not to
 select `update_plan` is not an authority control, and post-selection observation is not
@@ -39,13 +46,20 @@ All source links are pinned to upstream commit
 resolved from annotated tag
 [`rust-v0.145.0`](https://github.com/openai/codex/releases/tag/rust-v0.145.0).
 
-| Source                                                                                                                                                                  | Finding                                                                     |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| [Turn environment contract](https://github.com/openai/codex/blob/25af12f7e61572b0bc18ddb1008be543b91519b0/codex-rs/app-server-protocol/src/protocol/v2/turn.rs#L90-L97) | The field is experimental and exposes no deny-all tool-choice control.      |
-| [Tool-spec construction](https://github.com/openai/codex/blob/25af12f7e61572b0bc18ddb1008be543b91519b0/codex-rs/core/src/tools/spec_plan.rs#L622-L760)                  | Empty environments omit environment tools but still register the plan tool. |
-| [Plan handler](https://github.com/openai/codex/blob/25af12f7e61572b0bc18ddb1008be543b91519b0/codex-rs/core/src/tools/handlers/plan.rs#L48-L95)                          | The local update executes without a pre-execution approval exchange.        |
-| [Client request](https://github.com/openai/codex/blob/25af12f7e61572b0bc18ddb1008be543b91519b0/codex-rs/core/src/client.rs#L891-L897)                                   | Tool choice is fixed to `auto`.                                             |
-| [Empty-environment test](https://github.com/openai/codex/blob/25af12f7e61572b0bc18ddb1008be543b91519b0/codex-rs/core/src/tools/spec_plan_tests.rs#L622-L644)            | It corroborates environment-tool omission, not a closed no-tool posture.    |
+| Source                                                                                                                                                                    | Finding                                                                                               |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| [Turn environment contract](https://github.com/openai/codex/blob/25af12f7e61572b0bc18ddb1008be543b91519b0/codex-rs/app-server-protocol/src/protocol/v2/turn.rs#L90-L97)   | The field is experimental and exposes no deny-all tool-choice control.                                |
+| [Tool-spec construction](https://github.com/openai/codex/blob/25af12f7e61572b0bc18ddb1008be543b91519b0/codex-rs/core/src/tools/spec_plan.rs#L688-L855)                    | Plan, request-input, and collaboration handlers are registered independently of an empty environment. |
+| [Plan handler](https://github.com/openai/codex/blob/25af12f7e61572b0bc18ddb1008be543b91519b0/codex-rs/core/src/tools/handlers/plan.rs#L48-L93)                            | Plan mode guards mutation only after local handler invocation; ordinary mode emits `PlanUpdate`.      |
+| [Request-input default](https://github.com/openai/codex/blob/25af12f7e61572b0bc18ddb1008be543b91519b0/codex-rs/core/src/config/mod.rs#L2505-L2510)                        | The evaluated default enables `request_user_input`.                                                   |
+| [Request-input handler](https://github.com/openai/codex/blob/25af12f7e61572b0bc18ddb1008be543b91519b0/codex-rs/core/src/tools/handlers/request_user_input.rs#L23-L80)     | Plan mode reaches the local session request path.                                                     |
+| [Multi-agent feature default](https://github.com/openai/codex/blob/25af12f7e61572b0bc18ddb1008be543b91519b0/codex-rs/features/src/lib.rs#L1048-L1058)                     | The stable multi-agent feature is enabled.                                                            |
+| [Multi-agent configuration](https://github.com/openai/codex/blob/25af12f7e61572b0bc18ddb1008be543b91519b0/codex-rs/core/src/config/mod.rs#L1433-L1460)                    | The evaluated configuration defaults to V1 handlers.                                                  |
+| [Multi-agent enablement](https://github.com/openai/codex/blob/25af12f7e61572b0bc18ddb1008be543b91519b0/codex-rs/core/src/tools/spec_plan.rs#L335-L343)                    | Enablement has no Plan-mode or environment-empty check.                                               |
+| [Plan collaboration mode](https://github.com/openai/codex/blob/25af12f7e61572b0bc18ddb1008be543b91519b0/codex-rs/app-server-protocol/src/protocol/v2/turn.rs#L148-L155)   | Selecting Plan changes the collaboration mode and built-in instructions.                              |
+| [Plan instruction template](https://github.com/openai/codex/blob/25af12f7e61572b0bc18ddb1008be543b91519b0/codex-rs/collaboration-mode-templates/templates/plan.md#L1-L19) | Plan mode changes the workload into a staged planning workflow.                                       |
+| [Client request](https://github.com/openai/codex/blob/25af12f7e61572b0bc18ddb1008be543b91519b0/codex-rs/core/src/client.rs#L891-L897)                                     | Tool choice is fixed to `auto`.                                                                       |
+| [Empty-environment test](https://github.com/openai/codex/blob/25af12f7e61572b0bc18ddb1008be543b91519b0/codex-rs/core/src/tools/spec_plan_tests.rs#L622-L644)              | It corroborates environment-tool omission, not a closed no-tool posture.                              |
 
 ## Artifact, schema, provenance, and licence bindings
 
@@ -68,7 +82,25 @@ attestations. The binary signature resolved to OpenAI OpCo, LLC, team `2DC432GLL
 The exact package was evaluation-only, is not a productive dependency, and creates no shipped
 notice or package-policy change.
 
-Generated schema inventories were inspected and then deleted. Their closed bindings are:
+Generated schema inventories were inspected and then deleted. The exact 0.145.0 help contract
+verified this flag ordering. Each command used the verified absolute candidate binary and a
+separate fresh empty output directory:
+
+```text
+<VERIFIED_CODEX_BINARY> app-server generate-json-schema --out <EMPTY_STABLE_JSON_DIR>
+<VERIFIED_CODEX_BINARY> app-server generate-json-schema --out <EMPTY_EXPERIMENTAL_JSON_DIR> --experimental
+<VERIFIED_CODEX_BINARY> app-server generate-ts --out <EMPTY_STABLE_TYPESCRIPT_DIR>
+<VERIFIED_CODEX_BINARY> app-server generate-ts --out <EMPTY_EXPERIMENTAL_TYPESCRIPT_DIR> --experimental
+```
+
+From inside each output directory, files were counted with `find . -type f | wc -l`. The aggregate
+digest was computed over sorted relative path and per-file digest records with exactly:
+
+```text
+(find . -type f -print0 | sort -z | xargs -0 shasum -a 256) | shasum -a 256
+```
+
+The resulting closed bindings are:
 
 | Schema projection       | Files | SHA-256                                                            |
 | ----------------------- | ----: | ------------------------------------------------------------------ |
@@ -102,7 +134,7 @@ The repository fixture is exactly 182 bytes with SHA-256
 `e1a92579b1ca673135331829beb97792c1289a6bccdfe0303302256c546960f6`. Reproduce the decision with:
 
 ```text
-npm run evaluate:codex-compatibility:macos -- --candidate @openai/codex@0.145.0
+npm run --silent evaluate:codex-compatibility:macos -- --candidate @openai/codex@0.145.0
 ```
 
 The command accepts no alternate candidate, additional argument, credential, path, prompt,

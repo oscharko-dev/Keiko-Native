@@ -15,6 +15,10 @@ try {
       ),
       "utf8",
     ),
+    reportText: readFileSync(
+      new URL("../docs/evaluation/codex-0.145.0-rejection.md", import.meta.url),
+      "utf8",
+    ),
     promptBytes: readFileSync(
       new URL("./fixtures/codex-tracer/no-effect-prompt.txt", import.meta.url),
     ),

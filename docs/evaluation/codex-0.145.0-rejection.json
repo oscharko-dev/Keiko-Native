@@ -2,8 +2,8 @@
   "schemaVersion": "keiko-native-codex-compatibility-rejection/v1",
   "issue": {
     "number": 99,
-    "contractVersion": 3,
-    "readinessFingerprint": "00a484d5cd28890bc95eab9c3d8867aad893e254337e8d0881826dac82c1c2ff"
+    "contractVersion": 4,
+    "readinessFingerprint": "7c2ae760477bac10e823a67eabfa19d5a536a76b7324a5133c8206487cc72d32"
   },
   "evaluation": {
     "date": "2026-07-24",
@@ -41,6 +41,16 @@
     }
   },
   "generatedSchemas": {
+    "method": {
+      "commands": [
+        "<VERIFIED_CODEX_BINARY> app-server generate-json-schema --out <EMPTY_STABLE_JSON_DIR>",
+        "<VERIFIED_CODEX_BINARY> app-server generate-json-schema --out <EMPTY_EXPERIMENTAL_JSON_DIR> --experimental",
+        "<VERIFIED_CODEX_BINARY> app-server generate-ts --out <EMPTY_STABLE_TYPESCRIPT_DIR>",
+        "<VERIFIED_CODEX_BINARY> app-server generate-ts --out <EMPTY_EXPERIMENTAL_TYPESCRIPT_DIR> --experimental"
+      ],
+      "digestCommand": "(find . -type f -print0 | sort -z | xargs -0 shasum -a 256) | shasum -a 256",
+      "digestWorkingDirectory": "each fresh generated output directory"
+    },
     "stableJson": {
       "fileCount": 273,
       "sha256": "ea5365fef3204e9bac265262d616e3c1a4896ee27ed9ae38d8b392a574c858a5"
@@ -67,6 +77,12 @@
     "result": "reject",
     "failedGate": "no-effect-authority",
     "reasonCode": "local-tool-cannot-be-preexecution-denied",
+    "planModeAssessment": {
+      "planMutationGuard": "after-local-handler-invocation-before-plan-update",
+      "requestUserInputRemainsInvokable": true,
+      "defaultMultiAgentToolsRemainInvokable": true,
+      "changesFrozenWorkloadSemantics": true
+    },
     "matrixExecuted": false,
     "providerTurnExecuted": false,
     "fallbackEvaluated": false
