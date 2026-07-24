@@ -48,9 +48,9 @@ Configure a ruleset or branch protection that:
 
 Repository-wide provider auto-merge is not the Keiko Native epic-delivery mechanism. Because the
 guarded operation uses the existing authenticated maintainer credential, GitHub cannot distinguish
-agent and human actions and cannot apply a separate automation-identity deny rule. Preserve the human
-allowlist and all protections as defense in depth, and prove the repository-owned guard denies
-every agent merge, update, auto-merge, enqueue, administration, or bypass request for `dev`.
+agent and human actions and cannot apply a separate automation-identity deny rule. Preserve the
+human allowlist and all protections as defense in depth, and prove the repository-owned guard
+denies every agent merge, update, auto-merge, enqueue, administration, or bypass request for `dev`.
 
 ## 4. Protect `epic/**`
 
