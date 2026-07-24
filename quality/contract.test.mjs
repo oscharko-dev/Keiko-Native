@@ -521,6 +521,32 @@ test("Sonar workflow validation rejects predicate expansion and weakened failure
     assert.ok(sonarWorkflowFailures(mutation).length > 0);
 });
 
+function assertAgentCredentialProjection(document) {
+  assert.match(
+    document,
+    /existing\s+authenticated\s+maintainer\s+credential/iu,
+  );
+  assert.match(document, /exact\s+accepted\s+`epic\/\*\*`\s+target/iu);
+  assert.match(document, /`status:\s+ready\s+for\s+human\s+review`/iu);
+  assert.match(
+    document,
+    /never[\s\S]{0,80}(?:use|using|uses|invoke|invokes|enable)\s+provider\s+auto-merge/iu,
+  );
+  assert.match(
+    document,
+    /GitHub(?:\s+attribution)?\s+(?:therefore\s+)?cannot\s+distinguish[\s\S]{0,120}agent[\s\S]{0,120}human/iu,
+  );
+  assert.match(
+    document,
+    /(?:never|no)[\s\S]{0,120}(?:merge|auto-merge)[\s\S]{0,120}`dev`/iu,
+  );
+  assert.match(
+    document,
+    /`dev`[\s\S]{0,160}`main`[\s\S]{0,160}`release\/\*\*`/iu,
+  );
+  assert.match(document, /ambiguous[\s\S]{0,180}(?:no\s+retry|never\s+retr)/iu);
+}
+
 test("public governance restricts agent credential merges to exact epic targets and keeps dev sacred", async () => {
   const root = join(import.meta.dirname, "..");
   const [
@@ -574,25 +600,27 @@ test("public governance restricts agent credential merges to exact epic targets 
     pullRequestTemplate,
   ];
   const activeProjections = [...policyProjections, supersedingAdr];
-  for (const document of activeProjections) {
-    assert.match(
-      document,
-      /existing\s+authenticated\s+maintainer\s+credential/iu,
+  for (const [index, document] of activeProjections.entries()) {
+    assertAgentCredentialProjection(document);
+    const autoMergeMutation = document.replace(
+      /never(?=[\s\S]{0,80}(?:use|using|uses|invoke|invokes|enable)\s+provider\s+auto-merge)/giu,
+      "may",
     );
-    assert.match(document, /exact\s+accepted\s+`epic\/\*\*`\s+target/iu);
-    assert.match(document, /`status:\s+ready\s+for\s+human\s+review`/iu);
-    assert.match(document, /provider\s+auto-merge/iu);
-    assert.match(
-      document,
-      /(?:never|no)[\s\S]{0,120}(?:merge|auto-merge)[\s\S]{0,120}`dev`/iu,
+    assert.notEqual(autoMergeMutation, document);
+    assert.throws(
+      () => assertAgentCredentialProjection(autoMergeMutation),
+      { name: "AssertionError" },
+      `projection ${index} accepted provider auto-merge authorization`,
     );
-    assert.match(
-      document,
-      /`dev`[\s\S]{0,160}`main`[\s\S]{0,160}`release\/\*\*`/iu,
+    const identityMutation = document.replace(
+      /(GitHub(?:\s+attribution)?\s+(?:therefore\s+)?)cannot\s+distinguish/giu,
+      "$1can distinguish",
     );
-    assert.match(
-      document,
-      /ambiguous[\s\S]{0,180}(?:no\s+retry|never\s+retr)/iu,
+    assert.notEqual(identityMutation, document);
+    assert.throws(
+      () => assertAgentCredentialProjection(identityMutation),
+      { name: "AssertionError" },
+      `projection ${index} omitted the shared-identity limitation`,
     );
   }
   for (const document of policyProjections) {
@@ -613,6 +641,31 @@ test("public governance restricts agent credential merges to exact epic targets 
     /exact current head[\s\S]{0,180}exact current base/iu,
   );
   assert.match(supersedingAdr, /at most once/iu);
+  assert.match(
+    supersedingAdr,
+    /`Merge a pull request`[\s\S]{0,180}request field `sha`[\s\S]{0,180}`409 Conflict`/u,
+  );
+  assert.match(
+    supersedingAdr,
+    /`expected_head_sha`[\s\S]{0,260}`Update a pull request branch`[\s\S]{0,260}not\s+the\s+merge\s+precondition/iu,
+  );
+  assert.match(
+    supersedingAdr,
+    /https:\/\/docs\.github\.com\/en\/rest\/pulls\/pulls#merge-a-pull-request/u,
+  );
+  assert.match(
+    supersedingAdr,
+    /A — Guarded existing maintainer credential[\s\S]{0,180}\*\*4\.25\*\*/u,
+  );
+  assert.match(
+    supersedingAdr,
+    /B — Dedicated App and broker[\s\S]{0,180}\*\*3\.70\*\*/u,
+  );
+  assert.match(
+    supersedingAdr,
+    /C — Human-only child integration[\s\S]{0,180}\*\*3\.95\*\*/u,
+  );
+  assert.match(supersedingAdr, /recommendation and outcome are unchanged/iu);
   assert.match(
     supersedingAdr,
     /human reconciliation[\s\S]*exact[\s\S]*parents/iu,

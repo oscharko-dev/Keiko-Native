@@ -39,6 +39,26 @@ identity boundary prevents broader use if that credential or its controlling env
 compromised. This residual attribution and privilege risk is accepted explicitly and must never be
 described as provider-enforced identity separation.
 
+## Evaluation correction and dissenting evidence
+
+The frozen weights and option scores in issue #113 remain the decision inputs, but the displayed
+weighted totals contain arithmetic errors. Recalculating each score as
+`sum(weight × score) / 100` produces:
+
+| Option                                     | Frozen weighted contributions             | Corrected total |
+| ------------------------------------------ | ----------------------------------------- | --------------: |
+| A — Guarded existing maintainer credential | `1.25 + 1.00 + 0.80 + 0.60 + 0.10 + 0.50` |        **4.25** |
+| B — Dedicated App and broker               | `0.25 + 1.00 + 1.00 + 0.75 + 0.50 + 0.20` |        **3.70** |
+| C — Human-only child integration           | `1.25 + 0.20 + 1.00 + 0.60 + 0.50 + 0.40` |        **3.95** |
+
+Option A still wins, now by 0.30 over Option C, so the recommendation and outcome are unchanged.
+The dissenting evidence remains material: Option A scores last on attribution and credential
+isolation; Option B provides the strongest identity separation and race controls; and Option C
+avoids automated credential use entirely. The operator's no-new-identity constraint and retained
+autonomous child-delivery requirement still select Option A. This is a reproducible evidence
+correction recorded in the ADR; it does not edit or reinterpret the accepted issue contract or its
+readiness fingerprint.
+
 ## Decision
 
 An agent may invoke one guarded operation using an existing authenticated maintainer credential to
@@ -82,10 +102,14 @@ cannot authorize the operation.
 
 The guard creates a sanitized immutable operation record that binds the repository, issue and
 readiness identity, lifecycle, pull request, exact accepted target, exact current head, exact
-current base, evidence identities, request ID, and attempt state. It submits at most once using the
-provider's expected-head precondition. Strict current-branch protection remains required for the
-accepted epic target so a base advance invalidates earlier checks rather than silently widening
-their composition.
+current base, evidence identities, request ID, and attempt state. It submits at most once through
+GitHub's `Merge a pull request` endpoint with request field `sha`. GitHub defines that field as the
+SHA the pull-request head must match to allow the merge and returns `409 Conflict` when a supplied
+`sha` does not match. The similarly named `expected_head_sha` belongs to the separate
+`Update a pull request branch` endpoint, where a mismatch returns `422`; it is not the merge
+precondition and the guarded operation must not call that endpoint. Strict current-branch
+protection remains required for the accepted epic target so a base advance invalidates earlier
+checks rather than silently widening their composition.
 
 A confirmed provider rejection remains unmerged. A successful response is accepted only after
 read-back proves the pull request is merged, the target tip is the reported merge commit, and its
@@ -226,3 +250,8 @@ accepted at-most-once and recovery behavior.
 | Lifecycle and prior broker boundary | [ADR-0004](ADR-0004-readiness-authority-and-workflow-lifecycle.md)    |
 | Restored delivery and Sonar model   | [ADR-0005](ADR-0005-free-tier-sonar-and-epic-delivery.md)             |
 | Superseded broker decision          | [ADR-0008](ADR-0008-restricted-broker-epic-auto-merge.md)             |
+| GitHub pull-request merge semantics | [Merge a pull request][github-merge-pr]                               |
+| Distinct update-branch semantics    | [Update a pull request branch][github-update-pr-branch]               |
+
+[github-merge-pr]: https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request
+[github-update-pr-branch]: https://docs.github.com/en/rest/pulls/pulls#update-a-pull-request-branch
