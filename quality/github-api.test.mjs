@@ -323,8 +323,7 @@ test("redacts target and response body from HTTP errors", async () => {
     return true;
   });
 });
-
-test("cancels failed response bodies without leaking cleanup failures", async () => {
+test("reports failed response-body cleanup without leaking details", async () => {
   let cancelCalls = 0;
   const response = {
     body: {
@@ -338,13 +337,15 @@ test("cancels failed response bodies without leaking cleanup failures", async ()
   };
   const { request } = requestHarness(response);
   await assert.rejects(request("/repos/owner/repo/issues/1"), (error) => {
-    assert.equal(error.message, "GitHub API GET failed with 503.");
+    assert.equal(
+      error.message,
+      "GitHub API GET failed with 503. Response cleanup failed.",
+    );
     assert.doesNotMatch(error.message, /cleanup-secret-sentinel/u);
     return true;
   });
   assert.equal(cancelCalls, 1);
 });
-
 test("redacts network and successful JSON parse failures", async () => {
   const networkSentinel = "network-secret-sentinel";
   const targetSentinel = "target-sentinel";

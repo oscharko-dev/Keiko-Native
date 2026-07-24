@@ -256,9 +256,10 @@ async function fetchResponse(url, options, method) {
 
 async function discardResponseBody(response) {
   try {
-    await response.body?.cancel();
+    if (!response.bodyUsed) await response.body?.cancel();
+    return "";
   } catch {
-    // The owning request error remains authoritative and body-free.
+    return " Response cleanup failed.";
   }
 }
 
@@ -266,8 +267,10 @@ async function parseResponseJson(response, method) {
   try {
     return await response.json();
   } catch {
-    await discardResponseBody(response);
-    throw new Error(`GitHub API ${method} response failed: invalid JSON.`);
+    const cleanupNote = await discardResponseBody(response);
+    throw new Error(
+      `GitHub API ${method} response failed: invalid JSON.${cleanupNote}`,
+    );
   }
 }
 
@@ -295,8 +298,10 @@ export function githubRequestFor(userAgent) {
       method,
     );
     if (!response.ok) {
-      await discardResponseBody(response);
-      throw new Error(`GitHub API ${method} failed with ${response.status}.`);
+      const cleanupNote = await discardResponseBody(response);
+      throw new Error(
+        `GitHub API ${method} failed with ${response.status}.${cleanupNote}`,
+      );
     }
     return response.status === 204
       ? undefined
