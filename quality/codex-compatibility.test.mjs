@@ -9,19 +9,38 @@ import {
   PROMPT_SHA256,
 } from "./codex-compatibility.mjs";
 
+function normalizeUnitFixtureText(value) {
+  return value.replaceAll("\r\n", "\n");
+}
+
 const exactCandidate = "@openai/codex@0.145.0";
 const exactPrompt = Buffer.from(
   "In two short sentences, explain why a cancellable operation must reach exactly one terminal state. Do not use tools, inspect files, access a repository, or perform any local action.\n",
   "utf8",
 );
-const evidenceText = readFileSync(
-  new URL("../docs/evaluation/codex-0.145.0-rejection.json", import.meta.url),
-  "utf8",
+const evidenceText = normalizeUnitFixtureText(
+  readFileSync(
+    new URL("../docs/evaluation/codex-0.145.0-rejection.json", import.meta.url),
+    "utf8",
+  ),
 );
-const reportText = readFileSync(
-  new URL("../docs/evaluation/codex-0.145.0-rejection.md", import.meta.url),
-  "utf8",
+const reportText = normalizeUnitFixtureText(
+  readFileSync(
+    new URL("../docs/evaluation/codex-0.145.0-rejection.md", import.meta.url),
+    "utf8",
+  ),
 );
+const macTest =
+  process.platform === "darwin"
+    ? test
+    : (name, callback) =>
+        test(
+          name,
+          {
+            skip: "Issue #99 authorizes the end-to-end evaluator only on macOS arm64",
+          },
+          callback,
+        );
 
 test("rejects the exact candidate at the no-effect authority gate", () => {
   const result = evaluateCompatibility({
@@ -114,6 +133,13 @@ test("binds the frozen prompt to the accepted bytes and digest", () => {
   );
 });
 
+test("normalizes CRLF only for pure unit-test fixture strings", () => {
+  assert.equal(
+    normalizeUnitFixtureText("first\r\nsecond\nthird\rfourth"),
+    "first\nsecond\nthird\rfourth",
+  );
+});
+
 test("binds generated JSON schemas with a path-bound canonical digest", () => {
   const evidence = JSON.parse(evidenceText);
 
@@ -161,9 +187,17 @@ test("binds generated JSON schemas with a path-bound canonical digest", () => {
 });
 
 function runNpmEvaluator(additionalArgs = []) {
+  const npmExecPath = process.env.npm_execpath;
+  if (typeof npmExecPath !== "string" || npmExecPath.length === 0) {
+    throw new Error(
+      "npm_execpath is unavailable; refusing to invoke an unbound npm executable",
+    );
+  }
+
   const result = spawnSync(
-    process.platform === "win32" ? "npm.cmd" : "npm",
+    process.execPath,
     [
+      npmExecPath,
       "run",
       "--silent",
       "evaluate:codex-compatibility:macos",
@@ -175,12 +209,13 @@ function runNpmEvaluator(additionalArgs = []) {
     {
       cwd: new URL("..", import.meta.url),
       encoding: "utf8",
+      shell: false,
     },
   );
   return result;
 }
 
-test("the exact npm command emits one closed rejection JSON line", () => {
+macTest("the exact npm command emits one closed rejection JSON line", () => {
   const result = runNpmEvaluator();
 
   assert.equal(result.status, 1);
@@ -195,17 +230,23 @@ test("the exact npm command emits one closed rejection JSON line", () => {
   assert.equal(result.stdout.split("\n").filter(Boolean).length, 1);
 });
 
-test("the silent npm boundary rejects hostile extras without echoing them", () => {
-  const hostileValue = "private-endpoint-value";
-  const result = runNpmEvaluator(["--endpoint", hostileValue]);
+macTest(
+  "the silent npm boundary rejects hostile extras without echoing them",
+  () => {
+    const hostileValue = "private-endpoint-value";
+    const result = runNpmEvaluator(["--endpoint", hostileValue]);
 
-  assert.equal(result.status, 2);
-  assert.equal(result.stderr, "");
-  assert.deepEqual(JSON.parse(result.stdout), {
-    schemaVersion: "keiko-native-codex-compatibility-evaluation/v1",
-    decision: "reject",
-    reasonCode: "invalid-command",
-  });
-  assert.equal(result.stdout.split("\n").filter(Boolean).length, 1);
-  assert.doesNotMatch(`${result.stdout}${result.stderr}`, /private-endpoint/u);
-});
+    assert.equal(result.status, 2);
+    assert.equal(result.stderr, "");
+    assert.deepEqual(JSON.parse(result.stdout), {
+      schemaVersion: "keiko-native-codex-compatibility-evaluation/v1",
+      decision: "reject",
+      reasonCode: "invalid-command",
+    });
+    assert.equal(result.stdout.split("\n").filter(Boolean).length, 1);
+    assert.doesNotMatch(
+      `${result.stdout}${result.stderr}`,
+      /private-endpoint/u,
+    );
+  },
+);
