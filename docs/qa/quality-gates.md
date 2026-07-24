@@ -92,12 +92,14 @@ immutable per-operation record binds issue, contract, readiness, pull request, e
 request identity. Distinct request identities cannot create another serialization claim. Two
 distinct child-issue pull requests for the same exact accepted target and observed base contend on
 that one key; only one may reach provider submission. It submits at most once with the exact
-expected head, explicitly sends `merge_method: merge`, never uses provider auto-merge, and verifies
-the exact target tip and ordered commit parents. Any mismatch, stale or unavailable evidence,
-failed or skipped required check, unresolved item, closed issue, changed ref, ambiguous response,
-or non-exact target fails closed. An ambiguous claim remains blocked with no retry until explicit
-human reconciliation using exact refs and ordered parents. A new request identity is permitted only
-after explicit terminal settlement or human reconciliation and fresh revalidation.
+expected head by passing the exact revalidated head SHA as the provider request's `sha` parameter
+and explicitly sends `merge_method: squash`. It never uses provider auto-merge and verifies that
+the exact target tip is the reported squash commit, whose sole parent is the observed base and whose
+tree equals the observed head tree. Any mismatch, stale or unavailable evidence, failed or skipped
+required check, unresolved item, closed issue, changed ref, ambiguous response, or non-exact target
+fails closed. An ambiguous claim remains blocked with no retry until explicit human reconciliation
+using exact refs, the squash commit, its parent, and the observed trees. A new request identity is
+permitted only after explicit terminal settlement or human reconciliation and fresh revalidation.
 
 This shared identity means GitHub attribution cannot distinguish an agent operation from a
 deliberate human action, and repository identity rules cannot technically constrain the credential
@@ -105,9 +107,10 @@ to only the guarded effect. The agent policy and guard categorically deny `dev`,
 `release/**`, feature, wrong-epic, direct-ref, provider auto-merge, queue, administration, and
 bypass operations. Repository protections remain defense in depth, not a claim of separate
 identity. Credential or guard unavailability selects human-only child integration. The accepted
-issue, request identity, exact refs, actor, closed provider result, merge commit and ordered
-parents, and post-effect read-back form the sanitized audit trail; credentials and raw provider
-bodies never enter evidence.
+issue, request identity, exact refs, actor, closed provider result, squash commit, parent and tree
+identifiers, and post-effect read-back form the sanitized audit trail; credentials and raw provider
+bodies never enter evidence. An agent must never merge, enable auto-merge, enqueue, push, or update
+`dev`, `main`, or `release/**`, including through the existing authenticated maintainer credential.
 
 ## Bootstrap and productive phases
 

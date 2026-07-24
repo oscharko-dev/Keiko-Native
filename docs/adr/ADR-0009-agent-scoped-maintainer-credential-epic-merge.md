@@ -71,9 +71,10 @@ mechanism.
 
 The operation is unavailable for `dev`, `main`, `release/**`, feature branches, and every target
 not named exactly by the accepted issue. An agent must never merge, enable auto-merge, enqueue,
-push, or update `dev`, including through the existing authenticated maintainer credential. Every
-pull request targeting `dev` stops at `Ready for Human Review`; only Niko or Oscharko may
-deliberately initiate its manual merge after reviewing the exact current head and evidence.
+push, or update `dev`, `main`, or `release/**`, including through the existing authenticated
+maintainer credential. Every pull request targeting `dev` stops at `Ready for Human Review`; only
+Niko or Oscharko may deliberately initiate its manual merge after reviewing the exact current head
+and evidence.
 
 ### Guarded authorization
 
@@ -114,21 +115,25 @@ call. Together they reject concurrent and replayed attempts. Neither process-loc
 uncommitted observation satisfies this boundary.
 
 After the durable claim succeeds, the guard submits at most once through GitHub's
-`Merge a pull request` endpoint with request field `sha` and `merge_method: merge`. GitHub defines
-`sha` as the SHA the pull-request head must match to allow the merge and returns `409 Conflict` when
-a supplied `sha` does not match. Explicit `merge_method: merge` is required so successful read-back
-can require a merge commit whose ordered parents are the previously observed base and head. The
-similarly named `expected_head_sha` belongs to the separate `Update a pull request branch` endpoint,
-where a mismatch returns `422`; it is not the merge precondition and the guarded operation must not
-call that endpoint. Strict current-branch protection remains required for the accepted epic target
-so a base advance invalidates earlier checks rather than silently widening their composition.
+`Merge a pull request` endpoint. It passes the exact revalidated head SHA as the provider request's
+`sha` parameter and sets `merge_method: squash`. GitHub defines `sha` as the SHA the pull-request
+head must match to allow the merge and returns `409 Conflict` when a supplied `sha` does not match.
+Squash is required because the accepted epic ruleset requires linear history. Strict current-branch
+protection makes the observed base an ancestor of the exact head, so successful read-back can
+require the reported squash commit to have the observed base as its sole parent and the exact
+observed head tree as its tree. The similarly named `expected_head_sha` belongs to the separate
+`Update a pull request branch` endpoint, where a mismatch returns `422`; it is not the merge
+precondition and the guarded operation must not call that endpoint. Strict current-branch
+protection remains required for the accepted epic target so a base advance invalidates earlier
+checks rather than silently widening their composition.
 
 A confirmed provider rejection remains unmerged. A successful response is accepted only after
-read-back proves the pull request is merged, the target tip is the reported merge commit, and its
-ordered parents are the previously observed base and head. The durable evidence records only
-sanitized identifiers, exact refs, result classes, attempt count, merge commit and parents, and
-timestamp. It never contains credentials, raw provider bodies, readiness comments, private
-endpoints, or other unbounded input.
+read-back proves the pull request is merged, the target tip is the reported squash commit, that
+commit has exactly one parent equal to the previously observed base, and its tree equals the
+previously observed head tree. The durable evidence records only sanitized identifiers, exact refs,
+result classes, attempt count, squash commit, parent and tree identifiers, and timestamp. It never
+contains credentials, raw provider bodies, readiness comments, private endpoints, or other
+unbounded input.
 
 GitHub's ordinary pull-request merge interface does not provide the broker design's independent
 dual-ref conditional boundary or separate effect owner. Strict checks and immediate read-back
@@ -139,12 +144,13 @@ That limitation is part of the accepted residual risk.
 
 An ambiguous or partially observed provider outcome causes no retry and no replacement attempt.
 The ambiguous claim remains blocked until explicit human reconciliation using the exact source and
-target refs, pull request, merge commit, and ordered parents. Releasing that serialization claim or
-using a new request identity is permitted only after explicit terminal settlement or human
-reconciliation and fresh revalidation. Only then may a later fresh operation acquire a new claim.
+target refs, pull request, reported squash commit, its sole parent, and the observed base and head
+trees. Releasing that serialization claim or using a new request identity is permitted only after
+explicit terminal settlement or human reconciliation and fresh revalidation. Only then may a later
+fresh operation acquire a new claim.
 
-Human reconciliation must compare the exact refs, merge commit, and ordered parents before any
-later operation is considered.
+Human reconciliation must compare the exact refs, squash commit, its sole parent, and the observed
+trees before any later operation is considered.
 
 Credential unavailability, guard failure, provider semantic drift, protection drift, or an
 unproven exact-head precondition selects human-only child integration. Automation never responds by
@@ -156,8 +162,8 @@ using provider auto-merge, weakening a gate, broadening a target, or retrying an
 templates, and the pull-request template must project this decision consistently. Contract tests
 must fail if an active projection restores a broker/App requirement, omits the exact accepted
 `epic/**` target or shared-identity limitation, permits provider auto-merge, omits the durable
-single-flight claim or explicit `merge_method: merge`, permits an agent effect on `dev`, or allows
-an ambiguous attempt to retry.
+single-flight claim, exact-head `sha` parameter, or explicit `merge_method: squash`, permits an
+agent effect on `dev`, or allows an ambiguous attempt to retry.
 
 Issue #50 owns implementation and live proof of the repository-owned guard. This ADR authorizes no
 workflow, repository-administration, credential, or merge mutation by itself. Activation remains a
@@ -243,13 +249,15 @@ redaction; and human reconciliation.
 Tests must prove all pre-submission failures make no merge call, one accepted operation makes at
 most one provider call, the serialization claim and per-operation record are persisted before
 submission, ambiguous claims remain blocked with no retry until explicit human reconciliation, and
-success requires exact target-tip and ordered-parent read-back after an explicit
-`merge_method: merge` request. A disposable live probe must race two distinct child-issue pull
-requests with the same exact accepted target and observed current base and prove that only one
-provider submission occurs. Tests must also prove pull request, head, readiness, and request
-identity cannot partition the serialization key, while the immutable per-operation record retains
-all of them. The guard never prints or persists credential material and never invokes provider
-auto-merge, direct ref update, queue enrollment, bypass, or any `dev` effect.
+success requires the exact target tip to equal the reported squash commit, that commit's sole parent
+to equal the observed base, and its tree to equal the observed head tree after an explicit
+`merge_method: squash` request carrying the exact revalidated head in the `sha` parameter. A
+disposable live probe must race two distinct child-issue pull requests with the same exact accepted
+target and observed current base and prove that only one provider submission occurs. Tests must
+also prove pull request, head, readiness, and request identity cannot partition the serialization
+key, while the immutable per-operation record retains all of them. The guard never prints or
+persists credential material and never invokes provider auto-merge, direct ref update, queue
+enrollment, bypass, or any `dev` effect.
 
 ## Reopen triggers
 

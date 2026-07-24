@@ -569,6 +569,11 @@ function assertAgentCredentialProjection(document) {
   );
   assert.match(
     document,
+    /(?:must\s+never|must\s+deny)[\s\S]{0,100}(?:agent\s+)?merge[\s\S]{0,60}auto-merge[\s\S]{0,60}enqueue[\s\S]{0,60}push[\s\S]{0,60}update[\s\S]{0,180}`dev`[\s\S]{0,160}`main`[\s\S]{0,160}`release\/\*\*`/iu,
+    "projection must deny every protected-branch mutation verb",
+  );
+  assert.match(
+    document,
     /durable\s+single-flight\s+compare-and-set\s+claim/iu,
     "projection must require a durable single-flight claim",
   );
@@ -614,8 +619,18 @@ function assertAgentCredentialProjection(document) {
   );
   assert.match(
     document,
-    /`merge_method:\s*merge`/iu,
-    "projection must request merge-commit topology",
+    /exact\s+revalidated\s+head\s+SHA[\s\S]{0,160}`sha`\s+parameter/iu,
+    "projection must bind the provider request to the revalidated head",
+  );
+  assert.match(
+    document,
+    /`merge_method:\s*squash`/iu,
+    "projection must request linear-history squash topology",
+  );
+  assert.match(
+    document,
+    /squash\s+commit[\s\S]{0,180}sole\s+parent[\s\S]{0,120}observed\s+base[\s\S]{0,180}tree[\s\S]{0,120}observed\s+head\s+tree/iu,
+    "projection must reconcile squash parent and tree",
   );
   assert.match(
     document,
@@ -885,17 +900,57 @@ Provider protection excludes every agent identity from the \`dev\` update allowl
       `projection ${index} accepted automatic ambiguous-claim release`,
     );
     const topologyMutation = document.replace(
-      /`merge_method:\s*merge`/giu,
-      "`merge_method: squash`",
+      /`merge_method:\s*squash`/giu,
+      "`merge_method: merge`",
     );
     assert.notEqual(topologyMutation, document);
     assert.throws(
       () => assertAgentCredentialProjection(topologyMutation),
       {
         name: "AssertionError",
-        message: "projection must request merge-commit topology",
+        message: "projection must request linear-history squash topology",
       },
-      `projection ${index} accepted non-merge topology`,
+      `projection ${index} accepted a non-linear merge topology`,
+    );
+    const headBindingMutation = document.replace(
+      /exact\s+revalidated\s+head\s+SHA/giu,
+      "caller-selected head SHA",
+    );
+    assert.notEqual(headBindingMutation, document);
+    assert.throws(
+      () => assertAgentCredentialProjection(headBindingMutation),
+      {
+        name: "AssertionError",
+        message:
+          "projection must bind the provider request to the revalidated head",
+      },
+      `projection ${index} accepted a caller-selected provider head`,
+    );
+    const squashReadBackMutation = document.replace(
+      /sole\s+parent/giu,
+      "arbitrary parent",
+    );
+    assert.notEqual(squashReadBackMutation, document);
+    assert.throws(
+      () => assertAgentCredentialProjection(squashReadBackMutation),
+      {
+        name: "AssertionError",
+        message: "projection must reconcile squash parent and tree",
+      },
+      `projection ${index} accepted incomplete squash reconciliation`,
+    );
+    const protectedVerbMutation = document.replace(
+      /enqueue,\s+push,\s+or\s+update/giu,
+      "enqueue",
+    );
+    assert.notEqual(protectedVerbMutation, document);
+    assert.throws(
+      () => assertAgentCredentialProjection(protectedVerbMutation),
+      {
+        name: "AssertionError",
+        message: "projection must deny every protected-branch mutation verb",
+      },
+      `projection ${index} omitted protected-branch mutation verbs`,
     );
     const retryMutation = document.replace(
       /no\s+retr(?:y|ies)/giu,
@@ -994,13 +1049,18 @@ Provider protection excludes every agent identity from the \`dev\` update allowl
   );
   assert.match(
     supersedingAdr,
-    /ambiguous[\s\S]{0,160}claim[\s\S]{0,160}blocked[\s\S]{0,200}explicit\s+human\s+reconciliation[\s\S]{0,180}exact[\s\S]{0,120}refs[\s\S]{0,180}(?:ordered\s+)?parents/iu,
+    /ambiguous[\s\S]{0,160}claim[\s\S]{0,160}blocked[\s\S]{0,200}explicit\s+human\s+reconciliation[\s\S]{0,180}exact[\s\S]{0,120}refs[\s\S]{0,220}squash\s+commit[\s\S]{0,180}parent[\s\S]{0,180}trees/iu,
     "ADR must retain ambiguous claims until explicit human reconciliation",
   );
   assert.match(
     supersedingAdr,
-    /`Merge a pull request`[\s\S]{0,180}request field `sha`[\s\S]{0,180}`merge_method:\s*merge`[\s\S]{0,180}`409 Conflict`/u,
-    "ADR must request merge topology with the head precondition",
+    /`Merge a pull request`[\s\S]{0,220}exact\s+revalidated\s+head\s+SHA[\s\S]{0,160}`sha`\s+parameter[\s\S]{0,160}`merge_method:\s*squash`[\s\S]{0,220}`409 Conflict`/u,
+    "ADR must request squash topology with the head precondition",
+  );
+  assert.match(
+    supersedingAdr,
+    /linear\s+history[\s\S]{0,500}squash\s+commit[\s\S]{0,180}observed\s+base[\s\S]{0,100}sole\s+parent[\s\S]{0,180}(?:exact\s+)?observed\s+head\s+tree/iu,
+    "ADR must reconcile squash topology with linear-history protection",
   );
   assert.match(
     supersedingAdr,
@@ -1025,7 +1085,7 @@ Provider protection excludes every agent identity from the \`dev\` update allowl
   assert.match(supersedingAdr, /recommendation and outcome are unchanged/iu);
   assert.match(
     supersedingAdr,
-    /human reconciliation[\s\S]*exact[\s\S]*parents/iu,
+    /human reconciliation[\s\S]*exact[\s\S]*refs[\s\S]*squash commit[\s\S]*parent[\s\S]*trees/iu,
   );
   assert.match(historicalAdr, /PR #15/u);
   assert.match(historicalAdr, /one-time/u);

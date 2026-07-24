@@ -572,13 +572,15 @@ select a small vertical outcome and explicitly defer the rest.
   immutable per-operation record binds issue, contract, readiness, pull request, exact head, and
   request identity. Distinct request identities cannot create another serialization claim. Two
   distinct child-issue pull requests for the same exact accepted target and observed base contend on
-  that one key; only one may reach provider submission. It submits at most once, explicitly sends
-  `merge_method: merge`, verifies the target tip and ordered parents, and never uses provider
-  auto-merge. Missing or changed authority fails closed. An ambiguous claim remains blocked with no
-  retry until explicit human reconciliation using exact refs and ordered parents. A new request
-  identity is permitted only after explicit terminal settlement or human reconciliation and fresh
-  revalidation. Shared GitHub attribution cannot distinguish agent and human actions and is an
-  accepted residual risk, not a wider grant.
+  that one key; only one may reach provider submission. It submits at most once, passes the exact
+  revalidated head SHA as the provider request's `sha` parameter, and explicitly sends
+  `merge_method: squash`. It never uses provider auto-merge and verifies that the exact target tip
+  is the reported squash commit, whose sole parent is the observed base and whose tree equals the
+  observed head tree. Missing or changed authority fails closed. An ambiguous claim remains blocked
+  with no retry until explicit human reconciliation using exact refs, the squash commit, its parent,
+  and the observed trees. A new request identity is permitted only after explicit terminal
+  settlement or human reconciliation and fresh revalidation. Shared GitHub attribution cannot
+  distinguish agent and human actions and is an accepted residual risk, not a wider grant.
 - Agents must never merge, enable auto-merge, enqueue, push, or update `dev`, `main`, or
   `release/**`, including through the existing authenticated maintainer credential.
 - Every merge into `dev`, from an epic or standalone issue, is initiated manually by Niko or
