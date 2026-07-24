@@ -9,7 +9,7 @@ to planning without a runtime ADR or fallback candidate.
 The rejection is bound to readiness fingerprint
 `7c2ae760477bac10e823a67eabfa19d5a536a76b7324a5133c8206487cc72d32`. The closed machine record is
 [`codex-0.145.0-rejection.json`](codex-0.145.0-rejection.json), SHA-256
-`6a5b45d2ae4e30bb16967fe179da3ee6a9c8ca834aa052c77a246200832ef8b5`.
+`dad2c2ef07ebee7ece6a0bb9ddc2dea2c28e88a94c5dbbc2c00bf31bff36d36b`.
 
 Evaluation occurred on the ADR-0006 physical authority: Apple M4 with 16 GiB, macOS 26.5.1, arm64.
 The repository quality control used Node.js 24.18.0 and npm 11.16.0.

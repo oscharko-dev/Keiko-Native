@@ -5,7 +5,7 @@ const EXACT_CANDIDATE = "@openai/codex@0.145.0";
 const EVIDENCE_SHA256 =
   "dad2c2ef07ebee7ece6a0bb9ddc2dea2c28e88a94c5dbbc2c00bf31bff36d36b";
 const REPORT_SHA256 =
-  "3eb6306621cc68fe5501c79ad0b2169bcd410707ae82f0da79116155a2d669fa";
+  "757524319c8658a881c25c3bb45fa0ebb4c12179a9a8380332a38011c60e62b2";
 
 export const PROMPT_BYTES = 182;
 export const PROMPT_SHA256 =
