@@ -123,9 +123,25 @@ For a child-issue pull request targeting its designated epic branch:
 - [ ] Acceptance and audit evidence is complete, every applicable exact-head gate is green, and no
       blocking finding or review conversation remains.
 
-An agent may submit a bounded request only to the trusted server-side merge-authority broker
-authenticated as the dedicated non-human GitHub App. The broker alone may merge into the exact
-accepted epic target. No automated principal may merge or enable auto-merge for `dev`; broker
+This authority exists only for a fully eligible child-issue pull request targeting its exact
+accepted `epic/**` branch. Epic and standalone pull requests remain human-only deliveries to `dev`.
+For that child-issue delivery, an agent may use the existing authenticated maintainer credential
+only through the repository-owned guarded operation after complete current evidence and
+`status: ready for human review` are revalidated. The guard persists a durable single-flight
+compare-and-set claim for target/base serialization before any provider submission. The target/base
+serialization uniqueness key consists only of repository, exact accepted target, and observed
+current base. The immutable per-operation record binds issue, contract, readiness, pull request,
+exact head, and request identity. Distinct request identities cannot create another serialization
+claim. Two distinct child-issue pull requests for the same exact accepted target and observed base
+contend on that one key; only one may reach provider submission. It submits at most once, explicitly
+passes the exact revalidated head SHA as the provider request's `sha` parameter, and explicitly
+sends `merge_method: squash`. It never uses provider auto-merge and verifies that the exact target
+tip is the reported squash commit, whose sole parent is the observed base and whose tree equals the
+observed head tree. An ambiguous claim remains blocked with no retry until explicit human
+reconciliation using exact refs, the squash commit, its parent, and the observed trees. A new
+request identity is permitted only after explicit terminal settlement or human reconciliation and
+fresh revalidation. GitHub cannot distinguish shared-identity agent and human actions. An agent
+must never merge, enable auto-merge, enqueue, push, or update `dev`, `main`, or `release/**`; guard
 unavailability selects human-only child integration.
 
 For an epic or standalone pull request targeting `dev`, complete only by Niko or Oscharko. Agents
