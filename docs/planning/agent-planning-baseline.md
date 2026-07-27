@@ -587,10 +587,18 @@ select a small vertical outcome and explicitly defer the rest.
   signed Contract-as-Code activation. The guarded operation is therefore unavailable before
   activation and makes no provider merge request. Issue #55 owns the human-gated activation and
   then the first exact-target success plus the complete live denial, race, ambiguity, redaction,
-  and reconciliation matrix. General guarded child delivery remains unavailable until that matrix
-  settles successfully. Disposable epic targets derive from their provider-assigned parent issues,
-  stale-base concurrency uses a separate parent, prohibited-target evidence reads each actual tip,
-  and an absent `main` ref is never created for evidence.
+  and reconciliation matrix. Protected `dev` is the sole policy source and derives exactly three
+  availability states: `disabled` before activation makes no provider merge request; `probe-only`
+  immediately after activation permits effects solely for Issue #55's frozen disposable-probe
+  manifest and exact issue, pull request, target, head, base, request, and operation identities; and
+  `enabled` requires protected Contract-as-Code to consume an expected-producer exact-head
+  live-proof receipt and status bound to the signed activation commit, frozen manifest, and complete
+  successfully settled matrix. The evidence is consumed input, not independent authority. Missing,
+  stale, failed, wrong-producer, mismatched, incomplete, or ambiguous evidence remains `probe-only`
+  or `disabled`; no caller input or repository variable promotes it. Disposable epic targets derive
+  from their provider-assigned parent issues, stale-base concurrency uses a separate parent,
+  prohibited-target evidence reads each actual tip, and an absent `main` ref is never created for
+  evidence.
 - Agents must never merge, enable auto-merge, enqueue, push, or update `dev`, `main`, or
   `release/**`, including through the existing authenticated maintainer credential.
 - Every merge into `dev`, from an epic or standalone issue, is initiated manually by Niko or

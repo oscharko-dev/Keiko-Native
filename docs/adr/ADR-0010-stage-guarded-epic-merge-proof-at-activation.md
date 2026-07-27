@@ -36,19 +36,40 @@ The lifecycle rollout is staged without changing ADR-0009's authority model:
    harness behavior without a live provider mutation.
 2. Issues #51 through #54 install the remaining inactive lifecycle, migration, manifest, and
    publication machinery through their accepted human-reviewed deliveries.
-3. Issue #55 owns the single human-gated Contract-as-Code activation through `dev`. After that
-   activation establishes the canonical lifecycle and protected policy, Issue #55 owns the first
-   post-activation exact-target positive probe and the complete live denial, race, ambiguity,
-   redaction, and reconciliation matrix.
-4. General guarded child-to-epic automation remains unavailable until Issue #55's exact-head live
-   matrix has settled successfully. The live positive case is limited to its accepted disposable
-   probe artifacts. A failed, unavailable, or ambiguous capability selects human-only child
-   integration and never widens authority.
+3. Issue #55 owns the single human-gated Contract-as-Code activation through `dev`. That signed
+   activation moves the repository-policy-derived guard availability from `disabled` to
+   `probe-only`. Issue #55 then owns the first post-activation exact-target positive probe and the
+   complete live denial, race, ambiguity, redaction, and reconciliation matrix.
+4. General guarded child-to-epic automation remains unavailable until protected Contract-as-Code
+   derives `enabled` from the complete settled Issue #55 proof. A failed, unavailable, stale,
+   wrong-producer, or ambiguous capability remains `probe-only` or returns `disabled`, selects
+   human-only child integration, and never widens authority.
 
 The activation remains one deliberate human-only merge into `dev`. The post-activation probe does
 not authorize any agent merge, auto-merge, enqueue, push, update, administration, or bypass effect
 on `dev`, `main`, `release/**`, feature branches, or a non-exact epic target. Provider auto-merge
 remains prohibited.
+
+### Three-state availability policy
+
+Protected `dev` is the sole policy source and derives exactly one guard-availability state:
+
+- `disabled` — before the signed Contract-as-Code activation, the guard makes no provider merge
+  request;
+- `probe-only` — immediately after activation, effects are limited to Issue #55's frozen
+  disposable-probe manifest and the exact issue, pull request, target, head, base, request, and
+  operation identities committed by that manifest; every other child delivery remains denied; and
+- `enabled` — only after protected Contract-as-Code consumes an expected-producer, exact-head live
+  proof receipt and status bound to the signed activation commit, the frozen disposable-probe
+  manifest, and the complete successfully settled matrix.
+
+The proof receipt and status are validated inputs to the protected policy; they are not independent
+authority and cannot select or widen a target. The guard recomputes availability from protected
+policy and current exact evidence on every invocation. Missing, stale, failed, skipped,
+wrong-producer, mismatched-activation, incomplete, or ambiguous proof leaves the state `probe-only`
+or `disabled`. No caller parameter, issue prose, status name, repository variable, or unvalidated
+receipt can promote availability. Promotion never authorizes `dev`, `main`, `release/**`, feature,
+wrong-epic, or caller-selected effects.
 
 ### Corrected v2 live-probe topology
 
@@ -97,18 +118,19 @@ merge request. After activation, recovery moves forward under Issue #55: a settl
 corrected only with fresh evidence and revalidation; an ambiguous claim remains blocked and is
 never retried until explicit human reconciliation under ADR-0009.
 
-If the live matrix cannot establish the accepted behavior, guarded automation remains unavailable
-and child integration is human-only. The lifecycle itself remains active; a failed proof does not
-justify rewriting history, weakening the state model, recreating legacy compatibility, or
-automating `dev`.
+If the live matrix cannot establish the accepted behavior, guard availability remains `probe-only`
+or `disabled` and child integration is human-only. The lifecycle itself remains active; a failed
+proof does not justify rewriting history, weakening the state model, recreating legacy
+compatibility, promoting availability, or automating `dev`.
 
 ## Governance projections
 
 `AGENTS.md`, the Agent Planning Baseline, quality-gate and activation documentation, issue
 templates, and the pull-request template must state that the guard is inert before activation and
-unavailable for general child delivery until Issue #55 completes the live matrix. Contract tests
-must pin accepted ADR-0009's bytes, require this staged allocation, and reject a pre-activation
-provider request or synthetic `main` branch.
+unavailable for general child delivery until the protected three-state policy consumes Issue #55's
+complete exact proof. Contract tests must pin accepted ADR-0009's bytes, require this staged
+allocation and evidence-bound promotion, and reject a pre-activation provider request, a bypass of
+the post-Issue-#55 gate, invalid-evidence promotion, or a synthetic `main` branch.
 
 Epic #49 and every semantically affected child must name ADR-0010, increment its planning-contract
 version, return to `status: new`, and receive fresh readiness only after ADR-0010 is accepted on
@@ -140,7 +162,9 @@ Issue #55 must execute the full post-activation matrix on disposable artifacts a
 claim to the active protected policy, canonical lifecycle, exact issue and readiness, current
 source and target refs, current checks and evidence, request identity, durable claims, provider
 result, and exact read-back. It retains only sanitized bounded evidence and closes disposable
-artifacts after capture.
+artifacts after capture. Its expected-producer exact-head receipt and status must bind the signed
+activation commit, frozen disposable-probe manifest, exact operations, and complete settled matrix
+before protected Contract-as-Code may derive `enabled`.
 
 ## Reopen triggers
 
