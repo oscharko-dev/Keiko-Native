@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1196,13 +1197,29 @@ ${contradiction}
     }
   }
   assert.equal(
-    createHash("sha256").update(supersedingAdr).digest("hex"),
+    createHash("sha256")
+      .update(
+        execFileSync(
+          "git",
+          [
+            "show",
+            "HEAD:docs/adr/ADR-0009-agent-scoped-maintainer-credential-epic-merge.md",
+          ],
+          { cwd: root },
+        ),
+      )
+      .digest("hex"),
     acceptedAdr0009Sha256,
     "accepted ADR-0009 must remain byte-for-byte immutable",
   );
   assert.match(
     stagingAdr,
     /amends\s+only[\s\S]{0,160}ADR-0009[\s\S]{0,160}rollout/iu,
+  );
+  assert.match(
+    stagingAdr,
+    /exactly\s+one\s+current\s+guard-availability\s+state[\s\S]{0,120}three\s+mutually\s+exclusive\s+states/iu,
+    "ADR-0010 must define three possible availability states with exactly one current state",
   );
   assert.match(
     stagingAdr,
