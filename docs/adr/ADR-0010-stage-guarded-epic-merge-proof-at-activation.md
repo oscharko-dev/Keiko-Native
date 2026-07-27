@@ -52,7 +52,8 @@ remains prohibited.
 
 ### Three-state availability policy
 
-Protected `dev` is the sole policy source and derives exactly one guard-availability state:
+Protected `dev` is the sole policy source and derives exactly one current guard-availability state
+from these three mutually exclusive states:
 
 - `disabled` — before the signed Contract-as-Code activation, the guard makes no provider merge
   request;
