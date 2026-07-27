@@ -24,6 +24,10 @@ import {
   validateRepository,
   workflowEventTargetsBranch,
 } from "./contract.mjs";
+import {
+  hardenedGitArguments,
+  noReplaceGitEnvironment,
+} from "./git-integrity.mjs";
 import { governedWorkflowJobs } from "./workflow-job-contracts.mjs";
 
 const validManifest = {
@@ -768,6 +772,7 @@ test("public governance restricts agent credential merges to exact epic targets 
     taskTemplate,
     decisionTemplate,
     defectTemplate,
+    epicTemplate,
     pullRequestTemplate,
     supersedingAdr,
     stagingAdr,
@@ -784,6 +789,7 @@ test("public governance restricts agent credential merges to exact epic targets 
       "utf8",
     ),
     readFile(join(root, ".github/ISSUE_TEMPLATE/defect_finding.md"), "utf8"),
+    readFile(join(root, ".github/ISSUE_TEMPLATE/epic.md"), "utf8"),
     readFile(join(root, ".github/pull_request_template.md"), "utf8"),
     readFile(
       join(
@@ -828,6 +834,7 @@ test("public governance restricts agent credential merges to exact epic targets 
     taskTemplate,
     decisionTemplate,
     defectTemplate,
+    epicTemplate,
     pullRequestTemplate,
     stagingAdr,
   ];
@@ -1201,11 +1208,14 @@ ${contradiction}
       .update(
         execFileSync(
           "git",
-          [
+          hardenedGitArguments([
             "show",
             "HEAD:docs/adr/ADR-0009-agent-scoped-maintainer-credential-epic-merge.md",
-          ],
-          { cwd: root },
+          ]),
+          {
+            cwd: root,
+            env: noReplaceGitEnvironment(process.env),
+          },
         ),
       )
       .digest("hex"),
