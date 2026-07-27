@@ -581,6 +581,16 @@ select a small vertical outcome and explicitly defer the rest.
   and the observed trees. A new request identity is permitted only after explicit terminal
   settlement or human reconciliation and fresh revalidation. Shared GitHub attribution cannot
   distinguish agent and human actions and is an accepted residual risk, not a wider grant.
+- Stage the guarded delivery authority under ADR-0010. Issue #50 installs only the inert guard,
+  protected policy/status producer, hermetic proof, and v2 live-probe harness. The canonical
+  `status: ready for human review` state cannot truthfully exist as merge authority before the
+  signed Contract-as-Code activation. The guarded operation is therefore unavailable before
+  activation and makes no provider merge request. Issue #55 owns the human-gated activation and
+  then the first exact-target success plus the complete live denial, race, ambiguity, redaction,
+  and reconciliation matrix. General guarded child delivery remains unavailable until that matrix
+  settles successfully. Disposable epic targets derive from their provider-assigned parent issues,
+  stale-base concurrency uses a separate parent, prohibited-target evidence reads each actual tip,
+  and an absent `main` ref is never created for evidence.
 - Agents must never merge, enable auto-merge, enqueue, push, or update `dev`, `main`, or
   `release/**`, including through the existing authenticated maintainer credential.
 - Every merge into `dev`, from an epic or standalone issue, is initiated manually by Niko or

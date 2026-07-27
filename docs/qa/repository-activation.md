@@ -104,6 +104,15 @@ defense in depth, not an atomic base compare-and-swap.
 
 ## 6. Run the activation probes
 
+ADR-0010 assigns Issue #50 only the inert guard, protected policy/status producer, hermetic proof,
+and corrected v2 live-probe harness. The canonical `status: ready for human review` state cannot
+truthfully exist as merge authority before the signed Contract-as-Code activation. The guarded
+operation is therefore unavailable before activation and makes no provider merge request. Issue
+#55 owns this human-gated activation and, after the lifecycle and protected policy are active, the
+first exact-target success plus the complete live denial, race, ambiguity, redaction, and
+reconciliation matrix. General guarded child delivery remains unavailable until that matrix
+settles successfully.
+
 Record the issue, pull request, exact head, actor, result, and timestamp for each probe:
 
 1. An incomplete template cannot retain `status: ready`; a complete template can, and receives a
@@ -117,21 +126,24 @@ Record the issue, pull request, exact head, actor, result, and timestamp for eac
    again.
 6. A wrong source issue number, delivery target, readiness URL, contract version, or stale head
    fails closed.
-7. A guarded-operation probe using the existing authenticated maintainer credential merges one
-   fully green child-issue pull request to its exact accepted `epic/**` target, rejects `dev`,
-   wrong, stale, replayed, and concurrent requests before mutation, durably persists its
-   compare-and-set claim before making at most one merge call that passes the exact revalidated head
-   SHA as `sha` with `merge_method: squash`; verifies the exact target tip is the reported squash
-   commit, its sole parent is the observed base, and its tree equals the observed head tree; and
-   proves an ambiguous claim remains blocked with no retry or provider auto-merge until explicit
-   human reconciliation. In the disposable live probe, race two distinct child-issue pull requests
-   against the same exact accepted target and observed current base and prove only one reaches
-   provider submission. Also prove that concurrent callers with distinct request identities cannot
-   partition the serialization key. GitHub attribution cannot distinguish this agent operation from
-   a human action; the evidence must state that limitation rather than claiming identity isolation.
-   Advance the base after green evidence and prove that the base advance invalidates eligibility and
-   rejects the merge before the guarded effect; eligibility requires fresh evidence against the new
-   base.
+7. After activation, a guarded-operation probe using the existing authenticated maintainer
+   credential merges one fully green child-issue pull request to its exact accepted `epic/**`
+   target, rejects `dev`, wrong, stale, replayed, and concurrent requests before mutation, and
+   durably persists its compare-and-set claim before making at most one merge call that passes the
+   exact revalidated head SHA as `sha` with `merge_method: squash`; verifies the exact target tip is
+   the reported squash commit, its sole parent is the observed base, and its tree equals the
+   observed head tree; and proves an ambiguous claim remains blocked with no retry or provider
+   auto-merge until explicit human reconciliation. In the disposable live probe, race two distinct
+   child-issue pull requests against the same exact accepted target and observed current base and
+   prove only one reaches provider submission. Also prove that concurrent callers with distinct
+   request identities cannot partition the serialization key. GitHub attribution cannot
+   distinguish this agent operation from a human action; the evidence must state that limitation
+   rather than claiming identity isolation. Advance the base after green evidence and prove that
+   the base advance invalidates eligibility and rejects the merge before the guarded effect;
+   eligibility requires fresh evidence against the new base. Create every disposable
+   provider-assigned parent issue before deriving its `epic/**` target, use a separate parent and
+   target for the stale-base case, and read every prohibited target's actual tip before and after
+   denial. Treat an absent `main` ref as denial evidence and never create `main` for the probe.
 8. Niko or Oscharko can manually merge a fully green `dev` pull request after reviewing the exact
    head; no separate non-author approval is required.
 
@@ -157,9 +169,10 @@ merge-group workflow checks out only protected `dev` with non-persistent credent
 read-only contents access, is gated by an unset activation variable, and permits only syntax-check
 commands. It never executes constituent content.
 
-Automated epic-branch merge remains disabled until complete pagination, stable reads, exact-target
-denials, expected-head rejection, at-most-once submission, redaction, and exact parent and outcome
-evidence are proven live. An unavailable, ambiguous, weak, or failed capability selects human-only
-child integration; an ambiguous result causes no retry and must not enable provider auto-merge.
-Enrolling merge-group contexts, configuring the queue, or enabling either inert job requires a
-separate accepted human activation change.
+Automated epic-branch merge remains disabled before the signed Contract-as-Code activation. After
+activation, it remains unavailable for general child delivery until Issue #55 proves complete
+pagination, stable reads, exact-target denials, expected-head rejection, at-most-once submission,
+redaction, and exact parent and outcome evidence live. An unavailable, ambiguous, weak, or failed
+capability selects human-only child integration; an ambiguous result causes no retry and must not
+enable provider auto-merge. Enrolling merge-group contexts, configuring the queue, or enabling
+either inert job requires a separate accepted human activation change.

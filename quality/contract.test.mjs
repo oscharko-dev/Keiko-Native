@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -188,6 +189,9 @@ const issueTemplateFiles = [
   ".github/ISSUE_TEMPLATE/epic.md",
   ".github/ISSUE_TEMPLATE/feature_task.md",
 ];
+
+const acceptedAdr0009Sha256 =
+  "13bf5b3b259b722cbaf29d8d3324ce057d663f33ee0cdb5db2bf848d379c0a2f";
 
 function lifecycleList(states = lifecycleStates) {
   return states.map((state) => `- \`${state}\``).join("\n");
@@ -677,6 +681,19 @@ function assertAgentCredentialActivation(document) {
   );
 }
 
+function assertGuardRemainsInertBeforeActivation(document) {
+  assert.match(
+    document,
+    /`status:\s+ready\s+for\s+human\s+review`[\s\S]{0,240}cannot\s+(?:truthfully\s+)?exist[\s\S]{0,240}(?:signed\s+)?Contract-as-Code\s+activation/iu,
+    "projection must explain why pre-activation merge authority cannot exist",
+  );
+  assert.match(
+    document,
+    /guarded\s+operation[\s\S]{0,240}(?:unavailable|unusable)[\s\S]{0,240}no\s+provider\s+merge\s+request/iu,
+    "projection must keep the guarded operation effect-free before activation",
+  );
+}
+
 test("public governance restricts agent credential merges to exact epic targets and keeps dev sacred", async () => {
   const root = join(import.meta.dirname, "..");
   const [
@@ -689,6 +706,7 @@ test("public governance restricts agent credential merges to exact epic targets 
     defectTemplate,
     pullRequestTemplate,
     supersedingAdr,
+    stagingAdr,
     historicalAdr,
     brokerAdr,
   ] = await Promise.all([
@@ -707,6 +725,13 @@ test("public governance restricts agent credential merges to exact epic targets 
       join(
         root,
         "docs/adr/ADR-0009-agent-scoped-maintainer-credential-epic-merge.md",
+      ),
+      "utf8",
+    ),
+    readFile(
+      join(
+        root,
+        "docs/adr/ADR-0010-stage-guarded-epic-merge-proof-at-activation.md",
       ),
       "utf8",
     ),
@@ -731,6 +756,17 @@ test("public governance restricts agent credential merges to exact epic targets 
   ];
   const issueTemplates = [taskTemplate, decisionTemplate, defectTemplate];
   const activeProjections = [...policyProjections, supersedingAdr];
+  const stagedActivationProjections = [
+    agents,
+    baseline,
+    gates,
+    activation,
+    taskTemplate,
+    decisionTemplate,
+    defectTemplate,
+    pullRequestTemplate,
+    stagingAdr,
+  ];
   assertAgentCredentialActivation(activation);
   const impossibleIdentitySeparation = `${activation}
 Provider protection excludes every agent identity from the \`dev\` update allowlist.
@@ -1008,6 +1044,62 @@ Provider protection excludes every agent identity from the \`dev\` update allowl
       "active projection must not restore the deprecated App",
     );
   }
+  for (const [index, document] of stagedActivationProjections.entries()) {
+    assertGuardRemainsInertBeforeActivation(document);
+    const prematureEffect = document.replace(
+      /no\s+provider\s+merge\s+request/iu,
+      "one provider merge request",
+    );
+    assert.notEqual(prematureEffect, document);
+    assert.throws(
+      () => assertGuardRemainsInertBeforeActivation(prematureEffect),
+      {
+        name: "AssertionError",
+        message:
+          "projection must keep the guarded operation effect-free before activation",
+      },
+      `staged projection ${index} permitted a pre-activation provider effect`,
+    );
+  }
+  assert.equal(
+    createHash("sha256").update(supersedingAdr).digest("hex"),
+    acceptedAdr0009Sha256,
+    "accepted ADR-0009 must remain byte-for-byte immutable",
+  );
+  assert.match(
+    stagingAdr,
+    /amends\s+only[\s\S]{0,160}ADR-0009[\s\S]{0,160}rollout/iu,
+  );
+  assert.match(
+    stagingAdr,
+    /Issue\s+#50[\s\S]{0,240}inert[\s\S]{0,240}(?:v2\s+)?live-probe\s+harness/iu,
+    "ADR-0010 must assign inert guard and probe-harness implementation to issue #50",
+  );
+  assert.match(
+    stagingAdr,
+    /Issue\s+#55[\s\S]{0,320}post-activation[\s\S]{0,320}(?:positive|exact-target)[\s\S]{0,320}denial[\s\S]{0,320}race[\s\S]{0,320}ambiguity[\s\S]{0,320}redaction[\s\S]{0,320}reconciliation/iu,
+    "ADR-0010 must assign the complete post-activation live matrix to issue #55",
+  );
+  assert.match(
+    stagingAdr,
+    /provider-assigned\s+parent\s+issue[\s\S]{0,240}derive[\s\S]{0,240}`epic\/\*\*`\s+target/iu,
+    "ADR-0010 must derive disposable epic targets from their provider-assigned parents",
+  );
+  assert.match(
+    stagingAdr,
+    /stale-base[\s\S]{0,240}separate\s+(?:disposable\s+)?parent/iu,
+    "ADR-0010 must isolate the stale-base probe under a separate parent",
+  );
+  assert.match(
+    stagingAdr,
+    /prohibited\s+target[\s\S]{0,240}actual\s+tip/iu,
+    "ADR-0010 must bind denial evidence to each prohibited target's actual tip",
+  );
+  assert.match(
+    stagingAdr,
+    /absent\s+`main`[\s\S]{0,240}denial[\s\S]{0,240}(?:must\s+not|never)\s+(?:be\s+)?create/iu,
+    "ADR-0010 must prove absent main without creating it",
+  );
   assert.match(supersedingAdr, /Supersedes\s+ADR-0008/u);
   assert.match(supersedingAdr, /amends[\s\S]*ADR-0004/iu);
   assert.match(supersedingAdr, /restores[\s\S]*ADR-0005/iu);
