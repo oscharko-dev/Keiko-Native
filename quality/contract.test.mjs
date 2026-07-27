@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +24,10 @@ import {
   validateRepository,
   workflowEventTargetsBranch,
 } from "./contract.mjs";
+import {
+  hardenedGitArguments,
+  noReplaceGitEnvironment,
+} from "./git-integrity.mjs";
 import { governedWorkflowJobs } from "./workflow-job-contracts.mjs";
 
 const validManifest = {
@@ -188,6 +194,9 @@ const issueTemplateFiles = [
   ".github/ISSUE_TEMPLATE/epic.md",
   ".github/ISSUE_TEMPLATE/feature_task.md",
 ];
+
+const acceptedAdr0009Sha256 =
+  "13bf5b3b259b722cbaf29d8d3324ce057d663f33ee0cdb5db2bf848d379c0a2f";
 
 function lifecycleList(states = lifecycleStates) {
   return states.map((state) => `- \`${state}\``).join("\n");
@@ -677,6 +686,82 @@ function assertAgentCredentialActivation(document) {
   );
 }
 
+function assertGuardRemainsInertBeforeActivation(document) {
+  assert.match(
+    document,
+    /`status:\s+ready\s+for\s+human\s+review`[\s\S]{0,240}cannot\s+(?:truthfully\s+)?exist[\s\S]{0,240}(?:signed\s+)?Contract-as-Code\s+activation/iu,
+    "projection must explain why pre-activation merge authority cannot exist",
+  );
+  assert.match(
+    document,
+    /guarded\s+operation[\s\S]{0,240}(?:unavailable|unusable)[\s\S]{0,240}no\s+provider\s+merge\s+request/iu,
+    "projection must keep the guarded operation effect-free before activation",
+  );
+}
+
+function assertThreeStateGuardAvailability(document) {
+  assert.match(
+    document,
+    /protected\s+`dev`[\s\S]{0,160}sole\s+policy\s+source/iu,
+    "projection must keep guard availability owned by protected dev policy",
+  );
+  assert.match(
+    document,
+    /`disabled`[\s\S]{0,160}before\s+(?:the\s+signed\s+Contract-as-Code\s+)?activation/iu,
+    "projection must select disabled before activation",
+  );
+  assert.match(
+    document,
+    /no\s+provider\s+merge\s+request/iu,
+    "projection must make pre-activation policy effect-free",
+  );
+  assert.match(
+    document,
+    /`probe-only`[\s\S]{0,240}immediately\s+after\s+activation[\s\S]{0,320}Issue\s+#55(?:'s)?[\s\S]{0,240}frozen\s+disposable-probe\s+manifest[\s\S]{0,360}exact\s+issue[\s\S]{0,240}operation\s+identit/iu,
+    "projection must limit probe-only effects to frozen exact operation identities",
+  );
+  assert.match(
+    document,
+    /`enabled`[\s\S]{0,240}protected\s+Contract-as-Code[\s\S]{0,120}consum(?:e|es)[\s\S]{0,160}expected-producer[,\s-]{1,12}exact-head\s+live(?:-|\s+)proof\s+receipt\s+and\s+status[\s\S]{0,240}signed\s+activation\s+commit[\s\S]{0,360}complete\s+successfully\s+settled\s+matrix/iu,
+    "projection must bind enabled to complete expected-producer activation proof",
+  );
+  assert.match(
+    document,
+    /(?:evidence|proof\s+receipt\s+and\s+status)[\s\S]{0,160}(?:consumed|validated)\s+inputs?[\s\S]{0,120}not\s+independent\s+authority/iu,
+    "projection must keep proof evidence as input rather than authority",
+  );
+  assert.match(
+    document,
+    /missing[\s\S]{0,160}stale[\s\S]{0,160}wrong-producer[\s\S]{0,240}ambiguous\s+(?:evidence|proof|capability)[\s\S]{0,180}(?:remains|leaves\s+the\s+state)\s+`probe-only`[\s\S]{0,80}(?:or|\/)\s+`disabled`/iu,
+    "projection must fail closed on invalid promotion evidence",
+  );
+  assert.match(
+    document,
+    /absent\s+`main`\s+ref[\s\S]{0,240}(?:denial\s+evidence|never\s+created|without\s+creating|must\s+not\s+be\s+created)/iu,
+    "projection must preserve an absent main without creating it",
+  );
+  assert.doesNotMatch(
+    document,
+    /(?:before\s+|pre-)activation[\s\S]{0,160}(?:(?:may|can|does|makes?)\s+(?:make\s+)?(?:one\s+)?|authorized\s+to\s+submit\s+(?:a\s+)?)provider\s+merge\s+request/iu,
+    "projection must reject contradictory pre-activation provider effects",
+  );
+  assert.doesNotMatch(
+    document,
+    /general\s+child\s+delivery[\s\S]{0,120}(?:enabled|available)[\s\S]{0,200}(?:before\s+Issue\s+#55(?:'s)?\s+live\s+matrix|even\s+if\s+Issue\s+#55(?:'s)?\s+live\s+matrix\s+has\s+not\s+settled)/iu,
+    "projection must reject bypass of the post-Issue-#55 proof gate",
+  );
+  assert.doesNotMatch(
+    document,
+    /create(?:s|d)?\s+(?:a\s+)?(?:synthetic|temporary)\s+`main`\s+branch/iu,
+    "projection must reject synthetic main creation",
+  );
+  assert.doesNotMatch(
+    document,
+    /(?:(?:missing|stale|wrong-producer|ambiguous)\s+evidence|evidence\s+from\s+the\s+wrong\s+producer)[\s\S]{0,120}(?:may\s+)?(?:enable|enables|promote|promotes)\s+(?:general\s+delivery|the\s+guard|availability)/iu,
+    "projection must reject promotion from invalid evidence",
+  );
+}
+
 test("public governance restricts agent credential merges to exact epic targets and keeps dev sacred", async () => {
   const root = join(import.meta.dirname, "..");
   const [
@@ -687,8 +772,10 @@ test("public governance restricts agent credential merges to exact epic targets 
     taskTemplate,
     decisionTemplate,
     defectTemplate,
+    epicTemplate,
     pullRequestTemplate,
     supersedingAdr,
+    stagingAdr,
     historicalAdr,
     brokerAdr,
   ] = await Promise.all([
@@ -702,11 +789,19 @@ test("public governance restricts agent credential merges to exact epic targets 
       "utf8",
     ),
     readFile(join(root, ".github/ISSUE_TEMPLATE/defect_finding.md"), "utf8"),
+    readFile(join(root, ".github/ISSUE_TEMPLATE/epic.md"), "utf8"),
     readFile(join(root, ".github/pull_request_template.md"), "utf8"),
     readFile(
       join(
         root,
         "docs/adr/ADR-0009-agent-scoped-maintainer-credential-epic-merge.md",
+      ),
+      "utf8",
+    ),
+    readFile(
+      join(
+        root,
+        "docs/adr/ADR-0010-stage-guarded-epic-merge-proof-at-activation.md",
       ),
       "utf8",
     ),
@@ -731,6 +826,18 @@ test("public governance restricts agent credential merges to exact epic targets 
   ];
   const issueTemplates = [taskTemplate, decisionTemplate, defectTemplate];
   const activeProjections = [...policyProjections, supersedingAdr];
+  const stagedActivationProjections = [
+    agents,
+    baseline,
+    gates,
+    activation,
+    taskTemplate,
+    decisionTemplate,
+    defectTemplate,
+    epicTemplate,
+    pullRequestTemplate,
+    stagingAdr,
+  ];
   assertAgentCredentialActivation(activation);
   const impossibleIdentitySeparation = `${activation}
 Provider protection excludes every agent identity from the \`dev\` update allowlist.
@@ -1008,6 +1115,152 @@ Provider protection excludes every agent identity from the \`dev\` update allowl
       "active projection must not restore the deprecated App",
     );
   }
+  for (const [index, document] of stagedActivationProjections.entries()) {
+    assertGuardRemainsInertBeforeActivation(document);
+    assertThreeStateGuardAvailability(document);
+    const prematureEffect = document.replace(
+      /no\s+provider\s+merge\s+request/iu,
+      "one provider merge request",
+    );
+    assert.notEqual(prematureEffect, document);
+    assert.throws(
+      () => assertGuardRemainsInertBeforeActivation(prematureEffect),
+      {
+        name: "AssertionError",
+        message:
+          "projection must keep the guarded operation effect-free before activation",
+      },
+      `staged projection ${index} permitted a pre-activation provider effect`,
+    );
+    const contradictoryPrematureEffect = `${document}
+Before activation the guard may make one provider merge request.
+`;
+    assert.throws(
+      () => assertThreeStateGuardAvailability(contradictoryPrematureEffect),
+      {
+        name: "AssertionError",
+        message:
+          "projection must reject contradictory pre-activation provider effects",
+      },
+      `staged projection ${index} accepted contradictory pre-activation authorization`,
+    );
+    const bypassedPostProofGate = `${document}
+General child delivery is enabled before Issue #55's live matrix settles.
+`;
+    assert.throws(
+      () => assertThreeStateGuardAvailability(bypassedPostProofGate),
+      {
+        name: "AssertionError",
+        message:
+          "projection must reject bypass of the post-Issue-#55 proof gate",
+      },
+      `staged projection ${index} bypassed the post-Issue-#55 proof gate`,
+    );
+    const syntheticMain = `${document}
+The probe creates a synthetic \`main\` branch.
+`;
+    assert.throws(() => assertThreeStateGuardAvailability(syntheticMain), {
+      name: "AssertionError",
+      message: "projection must reject synthetic main creation",
+    });
+    const invalidEvidencePromotion = `${document}
+Wrong-producer evidence promotes availability.
+`;
+    assert.throws(
+      () => assertThreeStateGuardAvailability(invalidEvidencePromotion),
+      {
+        name: "AssertionError",
+        message: "projection must reject promotion from invalid evidence",
+      },
+      `staged projection ${index} accepted invalid-evidence promotion`,
+    );
+    const semanticContradictions = [
+      [
+        "Before activation, the guard is authorized to submit a provider merge request.",
+        "projection must reject contradictory pre-activation provider effects",
+      ],
+      [
+        "General child delivery is enabled even if Issue #55's live matrix has not settled.",
+        "projection must reject bypass of the post-Issue-#55 proof gate",
+      ],
+      [
+        "The probe creates a temporary `main` branch.",
+        "projection must reject synthetic main creation",
+      ],
+      [
+        "Evidence from the wrong producer may promote availability.",
+        "projection must reject promotion from invalid evidence",
+      ],
+    ];
+    for (const [contradiction, message] of semanticContradictions) {
+      assert.throws(
+        () =>
+          assertThreeStateGuardAvailability(`${document}
+${contradiction}
+`),
+        { name: "AssertionError", message },
+        `staged projection ${index} accepted: ${contradiction}`,
+      );
+    }
+  }
+  assert.equal(
+    createHash("sha256")
+      .update(
+        execFileSync(
+          "git",
+          hardenedGitArguments([
+            "show",
+            "HEAD:docs/adr/ADR-0009-agent-scoped-maintainer-credential-epic-merge.md",
+          ]),
+          {
+            cwd: root,
+            env: noReplaceGitEnvironment(process.env),
+          },
+        ),
+      )
+      .digest("hex"),
+    acceptedAdr0009Sha256,
+    "accepted ADR-0009 must remain byte-for-byte immutable",
+  );
+  assert.match(
+    stagingAdr,
+    /amends\s+only[\s\S]{0,160}ADR-0009[\s\S]{0,160}rollout/iu,
+  );
+  assert.match(
+    stagingAdr,
+    /exactly\s+one\s+current\s+guard-availability\s+state[\s\S]{0,120}three\s+mutually\s+exclusive\s+states/iu,
+    "ADR-0010 must define three possible availability states with exactly one current state",
+  );
+  assert.match(
+    stagingAdr,
+    /Issue\s+#50[\s\S]{0,240}inert[\s\S]{0,240}(?:v2\s+)?live-probe\s+harness/iu,
+    "ADR-0010 must assign inert guard and probe-harness implementation to issue #50",
+  );
+  assert.match(
+    stagingAdr,
+    /Issue\s+#55[\s\S]{0,320}post-activation[\s\S]{0,320}(?:positive|exact-target)[\s\S]{0,320}denial[\s\S]{0,320}race[\s\S]{0,320}ambiguity[\s\S]{0,320}redaction[\s\S]{0,320}reconciliation/iu,
+    "ADR-0010 must assign the complete post-activation live matrix to issue #55",
+  );
+  assert.match(
+    stagingAdr,
+    /provider-assigned\s+parent\s+issue[\s\S]{0,240}derive[\s\S]{0,240}`epic\/\*\*`\s+target/iu,
+    "ADR-0010 must derive disposable epic targets from their provider-assigned parents",
+  );
+  assert.match(
+    stagingAdr,
+    /stale-base[\s\S]{0,240}separate\s+(?:disposable\s+)?parent/iu,
+    "ADR-0010 must isolate the stale-base probe under a separate parent",
+  );
+  assert.match(
+    stagingAdr,
+    /prohibited\s+target[\s\S]{0,240}actual\s+tip/iu,
+    "ADR-0010 must bind denial evidence to each prohibited target's actual tip",
+  );
+  assert.match(
+    stagingAdr,
+    /absent\s+`main`[\s\S]{0,240}denial[\s\S]{0,240}(?:must\s+not|never)\s+(?:be\s+)?create/iu,
+    "ADR-0010 must prove absent main without creating it",
+  );
   assert.match(supersedingAdr, /Supersedes\s+ADR-0008/u);
   assert.match(supersedingAdr, /amends[\s\S]*ADR-0004/iu);
   assert.match(supersedingAdr, /restores[\s\S]*ADR-0005/iu);

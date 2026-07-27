@@ -217,5 +217,25 @@ and human actions; this accepted limitation does not widen agent authority. An a
 merge, enable auto-merge, enqueue, push, or update `dev`, `main`, or `release/**`, including through
 a maintainer credential.
 
+ADR-0010 stages that authority behind the lifecycle switch. Issue #50 installs only the inert
+guard, protected policy/status producer, hermetic proof, and v2 live-probe harness; it performs no
+live merge. The canonical `status: ready for human review` state cannot truthfully exist as merge
+authority before the signed Contract-as-Code activation. The guarded operation is therefore
+unavailable before activation and makes no provider merge request. Issue #55 owns the human-gated
+activation and then the first exact-target success plus the complete live denial, race, ambiguity,
+redaction, and reconciliation matrix.
+
+Protected `dev` is the sole policy source and derives exactly three availability states. `disabled`
+before activation makes no provider merge request. `probe-only` immediately after activation allows
+effects solely for Issue #55's frozen disposable-probe manifest and its exact issue, pull request,
+target, head, base, request, and operation identities. `enabled` is derived only when protected
+Contract-as-Code consumes an expected-producer exact-head live-proof receipt and status bound to the
+signed activation commit, frozen manifest, and complete successfully settled matrix. That evidence
+is consumed input, not independent authority. Missing, stale, failed, wrong-producer, mismatched,
+incomplete, or ambiguous evidence remains `probe-only` or `disabled`; no caller input or repository
+variable promotes it. The harness derives disposable `epic/**` targets from their provider-assigned
+parent issues, uses a separate parent for stale-base concurrency, reads each prohibited target's
+actual tip, and proves an absent `main` ref without creating it.
+
 Before pushing, review the full diff against the task requirements, trust boundaries, failure modes,
 and every affected gate. Use GitHub only for remote-only evidence, not as the primary test loop.

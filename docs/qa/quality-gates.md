@@ -101,6 +101,26 @@ fails closed. An ambiguous claim remains blocked with no retry until explicit hu
 using exact refs, the squash commit, its parent, and the observed trees. A new request identity is
 permitted only after explicit terminal settlement or human reconciliation and fresh revalidation.
 
+ADR-0010 stages this boundary behind lifecycle activation. Issue #50 installs only the inert guard,
+protected policy/status producer, hermetic proof, and v2 live-probe harness; it performs no live
+merge. The canonical `status: ready for human review` state cannot truthfully exist as merge
+authority before the signed Contract-as-Code activation. The guarded operation is therefore
+unavailable before activation and makes no provider merge request. Issue #55 owns the human-gated
+activation and then the first exact-target success plus the complete live denial, race, ambiguity,
+redaction, and reconciliation matrix.
+
+Protected `dev` is the sole policy source and derives exactly three availability states. `disabled`
+before activation makes no provider merge request. `probe-only` immediately after activation
+permits effects solely for Issue #55's frozen disposable-probe manifest and exact issue, pull
+request, target, head, base, request, and operation identities. `enabled` requires protected
+Contract-as-Code to consume an expected-producer exact-head live-proof receipt and status bound to
+the signed activation commit, frozen manifest, and complete successfully settled matrix. That
+evidence is consumed input, not independent authority. Missing, stale, failed, wrong-producer,
+mismatched, incomplete, or ambiguous evidence remains `probe-only` or `disabled`; no caller input
+or repository variable promotes it. The live harness derives each disposable `epic/**` target from
+its provider-assigned parent issue, uses a separate parent for stale-base concurrency, reads every
+prohibited target's actual tip, and records an absent `main` ref as denial without creating it.
+
 This shared identity means GitHub attribution cannot distinguish an agent operation from a
 deliberate human action, and repository identity rules cannot technically constrain the credential
 to only the guarded effect. The agent policy and guard categorically deny `dev`, `main`,
