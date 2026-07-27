@@ -144,6 +144,11 @@ fresh revalidation. GitHub cannot distinguish shared-identity agent and human ac
 must never merge, enable auto-merge, enqueue, push, or update `dev`, `main`, or `release/**`; guard
 unavailability selects human-only child integration.
 
+The canonical `status: ready for human review` state cannot truthfully exist as merge authority
+before the signed Contract-as-Code activation. The guarded operation is therefore unavailable
+before activation and makes no provider merge request. After activation, it remains unavailable
+for general child delivery until Issue #55's live matrix settles successfully.
+
 For an epic or standalone pull request targeting `dev`, complete only by Niko or Oscharko. Agents
 must leave this subsection untouched, stop at `Ready for Human Review`, and must not enable
 auto-merge.

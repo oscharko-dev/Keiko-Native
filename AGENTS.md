@@ -217,5 +217,16 @@ and human actions; this accepted limitation does not widen agent authority. An a
 merge, enable auto-merge, enqueue, push, or update `dev`, `main`, or `release/**`, including through
 a maintainer credential.
 
+ADR-0010 stages that authority behind the lifecycle switch. Issue #50 installs only the inert
+guard, protected policy/status producer, hermetic proof, and v2 live-probe harness; it performs no
+live merge. The canonical `status: ready for human review` state cannot truthfully exist as merge
+authority before the signed Contract-as-Code activation. The guarded operation is therefore
+unavailable before activation and makes no provider merge request. Issue #55 owns the human-gated
+activation and then the first exact-target success plus the complete live denial, race, ambiguity,
+redaction, and reconciliation matrix. General guarded child delivery remains unavailable until
+that matrix settles successfully. The harness derives disposable `epic/**` targets from their
+provider-assigned parent issues, uses a separate parent for stale-base concurrency, reads each
+prohibited target's actual tip, and proves an absent `main` ref without creating it.
+
 Before pushing, review the full diff against the task requirements, trust boundaries, failure modes,
 and every affected gate. Use GitHub only for remote-only evidence, not as the primary test loop.
