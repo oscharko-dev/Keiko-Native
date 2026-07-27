@@ -110,8 +110,17 @@ truthfully exist as merge authority before the signed Contract-as-Code activatio
 operation is therefore unavailable before activation and makes no provider merge request. Issue
 #55 owns this human-gated activation and, after the lifecycle and protected policy are active, the
 first exact-target success plus the complete live denial, race, ambiguity, redaction, and
-reconciliation matrix. General guarded child delivery remains unavailable until that matrix
-settles successfully.
+reconciliation matrix.
+
+Protected `dev` is the sole policy source and derives exactly three availability states. `disabled`
+before activation makes no provider merge request. `probe-only` immediately after activation
+permits effects solely for Issue #55's frozen disposable-probe manifest and exact issue, pull
+request, target, head, base, request, and operation identities. `enabled` requires protected
+Contract-as-Code to consume an expected-producer exact-head live-proof receipt and status bound to
+the signed activation commit, frozen manifest, and complete successfully settled matrix. That
+evidence is consumed input, not independent authority. Missing, stale, failed, wrong-producer,
+mismatched, incomplete, or ambiguous evidence remains `probe-only` or `disabled`; no caller input
+or repository variable promotes it.
 
 Record the issue, pull request, exact head, actor, result, and timestamp for each probe:
 
@@ -170,9 +179,12 @@ read-only contents access, is gated by an unset activation variable, and permits
 commands. It never executes constituent content.
 
 Automated epic-branch merge remains disabled before the signed Contract-as-Code activation. After
-activation, it remains unavailable for general child delivery until Issue #55 proves complete
-pagination, stable reads, exact-target denials, expected-head rejection, at-most-once submission,
-redaction, and exact parent and outcome evidence live. An unavailable, ambiguous, weak, or failed
-capability selects human-only child integration; an ambiguous result causes no retry and must not
-enable provider auto-merge. Enrolling merge-group contexts, configuring the queue, or enabling
-either inert job requires a separate accepted human activation change.
+activation, it remains `probe-only` and unavailable for general child delivery until protected
+Contract-as-Code consumes Issue #55's expected-producer exact-head receipt and status proving
+complete pagination, stable reads, exact-target denials, expected-head rejection, at-most-once
+submission, redaction, and exact parent and outcome evidence live, all bound to the signed
+activation commit and frozen disposable manifest. An unavailable, ambiguous, weak, stale,
+wrong-producer, or failed capability remains `probe-only` or `disabled` and selects human-only child
+integration; an ambiguous result causes no retry and must not enable provider auto-merge. Enrolling
+merge-group contexts, configuring the queue, or enabling either inert job requires a separate
+accepted human activation change.

@@ -107,8 +107,17 @@ merge. The canonical `status: ready for human review` state cannot truthfully ex
 authority before the signed Contract-as-Code activation. The guarded operation is therefore
 unavailable before activation and makes no provider merge request. Issue #55 owns the human-gated
 activation and then the first exact-target success plus the complete live denial, race, ambiguity,
-redaction, and reconciliation matrix. General guarded child delivery remains unavailable until
-that matrix settles successfully. The live harness derives each disposable `epic/**` target from
+redaction, and reconciliation matrix.
+
+Protected `dev` is the sole policy source and derives exactly three availability states. `disabled`
+before activation makes no provider merge request. `probe-only` immediately after activation
+permits effects solely for Issue #55's frozen disposable-probe manifest and exact issue, pull
+request, target, head, base, request, and operation identities. `enabled` requires protected
+Contract-as-Code to consume an expected-producer exact-head live-proof receipt and status bound to
+the signed activation commit, frozen manifest, and complete successfully settled matrix. That
+evidence is consumed input, not independent authority. Missing, stale, failed, wrong-producer,
+mismatched, incomplete, or ambiguous evidence remains `probe-only` or `disabled`; no caller input
+or repository variable promotes it. The live harness derives each disposable `epic/**` target from
 its provider-assigned parent issue, uses a separate parent for stale-base concurrency, reads every
 prohibited target's actual tip, and records an absent `main` ref as denial without creating it.
 
