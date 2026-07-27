@@ -238,8 +238,8 @@ static void AddScale(NSStackView *stack, NSString *identifier, NSString *label) 
 @implementation EvaluationDelegate
 - (void)setSemanticState:(NSString *)state {
   self.journeyState.stringValue = state;
-  self.window.title =
-      [@"Keiko Accessibility Evaluation:" stringByAppendingString:state];
+  self.window.accessibilityHelp =
+      [@"Keiko Accessibility Evaluation state:" stringByAppendingString:state];
 }
 
 - (void)completeLateTaskState {
@@ -282,7 +282,7 @@ static void AddScale(NSStackView *stack, NSString *identifier, NSString *label) 
     [self setSemanticState:@"runtime:crashed"];
     [self performSelector:@selector(completeRuntimeRecovery)
                withObject:nil
-               afterDelay:0.12];
+               afterDelay:0.75];
   } else if ([identifier isEqualToString:@"appearance-contrast"]) {
     NSArray<NSString *> *variants = @[
       @"appearance:light",
@@ -630,15 +630,11 @@ ${appleScriptBehaviorClauses()}
       end if
       set allElements to entire contents of item 1 of axWindows
       set matchingElements to {}
-      set journeyStateElements to {}
       repeat with elementItem in allElements
         try
           set elementIdentifier to value of attribute "AXIdentifier" of elementItem
           if elementIdentifier is identifierValue then
             set end of matchingElements to contents of elementItem
-          end if
-          if elementIdentifier is "journey-state" then
-            set end of journeyStateElements to contents of elementItem
           end if
         end try
       end repeat
@@ -666,10 +662,6 @@ ${appleScriptBehaviorClauses()}
           return my closed("failed", "checkpoint-observation-failed", 0)
         end if
       else if actionIdentifiers contains identifierValue then
-        if (count of journeyStateElements) is not 1 then
-          return my closed("failed", "missing-or-ambiguous-checkpoint", 0)
-        end if
-        set journeyStateElement to item 1 of journeyStateElements
         if singlePressIdentifiers contains identifierValue then
           perform action "AXPress" of targetElement
         end if
@@ -678,10 +670,12 @@ ${appleScriptBehaviorClauses()}
             perform action "AXPress" of targetElement
           end if
           set stateObserved to false
+          set expectedWindowHelp to "Keiko Accessibility Evaluation state:" & (contents of expectedState)
           set deadlineDate to (current date) + ${CHECKPOINT_TIMEOUT_MS / 1_000}
           repeat
             try
-              if (value of attribute "AXValue" of journeyStateElement) is (contents of expectedState) then
+              set refreshedWindows to value of attribute "AXWindows" of targetProcess
+              if (count of refreshedWindows) is 1 and (value of attribute "AXHelp" of item 1 of refreshedWindows) is expectedWindowHelp then
                 set stateObserved to true
                 exit repeat
               end if
@@ -845,19 +839,36 @@ function runClosed(command, args, timeoutMs = 30_000) {
 function parseClosedCandidateOutput(result) {
   try {
     const parsed = JSON.parse(result.stdout);
-    if (
+    const commonInvalid =
+      typeof parsed !== "object" ||
+      parsed === null ||
       !["passed", "permission-denied", "failed"].includes(parsed.status) ||
-      !Number.isInteger(parsed.checkpointPasses) ||
+      !Number.isInteger(parsed?.checkpointPasses) ||
       parsed.checkpointPasses < 0 ||
       parsed.checkpointPasses > 1 ||
       parsed.prompted !== false ||
       !(
         parsed.reasonCode === null ||
         candidateReasonCodes.includes(parsed.reasonCode)
-      )
-    )
+      );
+    const stateValid =
+      (parsed?.status === "passed" &&
+        parsed.checkpointPasses === 1 &&
+        parsed.reasonCode === null) ||
+      (parsed?.status === "permission-denied" &&
+        parsed.checkpointPasses === 0 &&
+        parsed.reasonCode === "accessibility-permission-denied") ||
+      (parsed?.status === "failed" &&
+        parsed.checkpointPasses === 0 &&
+        parsed.reasonCode !== null);
+    if (commonInvalid || !stateValid)
       throw new Error("candidate-output-invalid");
-    return parsed;
+    return {
+      checkpointPasses: parsed.checkpointPasses,
+      prompted: false,
+      reasonCode: parsed.reasonCode,
+      status: parsed.status,
+    };
   } catch {
     return {
       checkpointPasses: 0,

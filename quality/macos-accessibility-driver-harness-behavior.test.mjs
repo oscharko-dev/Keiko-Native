@@ -73,6 +73,11 @@ test("generated candidates observe behavioral states rather than identifier echo
     assert.match(surface, /completeLateTaskState/u);
     assert.match(surface, /completeCancellationRace/u);
     assert.match(surface, /completeRuntimeRecovery/u);
+    assert.equal(surface.match(/self\.window\.title =/gu)?.length, 1);
+    assert.match(
+      surface,
+      /self\.window\.accessibilityHelp =\s+\[@"Keiko Accessibility Evaluation state:" stringByAppendingString:state\];/u,
+    );
     for (const expected of [
       "workspace:permission-denied",
       "task:submitted-after-late-state",
@@ -86,7 +91,7 @@ test("generated candidates observe behavioral states rather than identifier echo
     }
     assert.match(
       surface,
-      /isEqualToString:@"crash-recovery"\]\) \{\s+\[self setSemanticState:@"runtime:crashed"\];\s+\[self performSelector:@selector\(completeRuntimeRecovery\)\s+withObject:nil\s+afterDelay:0\.12\];/u,
+      /isEqualToString:@"crash-recovery"\]\) \{\s+\[self setSemanticState:@"runtime:crashed"\];\s+\[self performSelector:@selector\(completeRuntimeRecovery\)\s+withObject:nil\s+afterDelay:0\.75\];/u,
     );
     const axActionBlock = axuielement.match(
       /\} else if \(IsActionCheckpoint\(identifier\)\) \{(?<body>[\s\S]*?)\n    \} else \{/u,
@@ -109,6 +114,18 @@ test("generated candidates observe behavioral states rather than identifier echo
       systemEventsActionBlock,
       /if singlePressIdentifiers contains identifierValue then\s+perform action "AXPress" of targetElement\s+end if\s+repeat with expectedState in expectedStates\s+if singlePressIdentifiers does not contain identifierValue then\s+perform action "AXPress" of targetElement/u,
     );
+    assert.doesNotMatch(
+      systemEventsActionBlock,
+      /set journeyStateElement to item 1 of journeyStateElements/u,
+    );
+    assert.doesNotMatch(
+      systemEventsActionBlock,
+      /entire contents of item 1 of \(value of attribute "AXWindows" of targetProcess\)/u,
+    );
+    assert.match(
+      systemEventsActionBlock,
+      /set expectedWindowHelp to "Keiko Accessibility Evaluation state:" & \(contents of expectedState\)\s+set deadlineDate to \(current date\) \+ 2\s+repeat\s+try\s+set refreshedWindows to value of attribute "AXWindows" of targetProcess\s+if \(count of refreshedWindows\) is 1 and \(value of attribute "AXHelp" of item 1 of refreshedWindows\) is expectedWindowHelp then[\s\S]*?end try\s+if \(current date\) is greater than or equal to deadlineDate then exit repeat\s+delay 0\.02\s+end repeat\s+if stateObserved is false then\s+return my closed\("failed", "checkpoint-observation-failed", 0\)/u,
+    );
   } finally {
     await rm(root, { force: true, recursive: true });
   }
@@ -120,7 +137,7 @@ test("candidate subprocess results fail closed on process-level anomalies", () =
     signal: null,
     stderrEmpty: true,
     stdout:
-      '{"status":"passed","reasonCode":null,"prompted":false,"checkpointPasses":1}',
+      '{"status":"passed","reasonCode":null,"prompted":false,"checkpointPasses":1,"hostile":"must-not-propagate"}',
     timedOut: false,
   };
   assert.deepEqual(classifyCandidateSubprocessOutcome(passed), {
@@ -152,4 +169,52 @@ test("candidate subprocess results fail closed on process-level anomalies", () =
       status: "failed",
     },
   );
+
+  assert.deepEqual(
+    classifyCandidateSubprocessOutcome({
+      ...passed,
+      stdout:
+        '{"status":"permission-denied","reasonCode":"accessibility-permission-denied","prompted":false,"checkpointPasses":0}',
+    }),
+    {
+      checkpointPasses: 0,
+      prompted: false,
+      reasonCode: "accessibility-permission-denied",
+      status: "permission-denied",
+    },
+  );
+  assert.deepEqual(
+    classifyCandidateSubprocessOutcome({
+      ...passed,
+      stdout:
+        '{"status":"failed","reasonCode":"checkpoint-observation-failed","prompted":false,"checkpointPasses":0}',
+    }),
+    {
+      checkpointPasses: 0,
+      prompted: false,
+      reasonCode: "checkpoint-observation-failed",
+      status: "failed",
+    },
+  );
+
+  for (const stdout of [
+    "{",
+    '{"status":"passed","reasonCode":null,"prompted":false,"checkpointPasses":0}',
+    '{"status":"passed","reasonCode":"checkpoint-observation-failed","prompted":false,"checkpointPasses":1}',
+    '{"status":"permission-denied","reasonCode":"accessibility-permission-denied","prompted":false,"checkpointPasses":1}',
+    '{"status":"permission-denied","reasonCode":"checkpoint-observation-failed","prompted":false,"checkpointPasses":0}',
+    '{"status":"failed","reasonCode":null,"prompted":false,"checkpointPasses":0}',
+    '{"status":"failed","reasonCode":"checkpoint-observation-failed","prompted":false,"checkpointPasses":1}',
+    '{"status":"unknown","reasonCode":null,"prompted":false,"checkpointPasses":1}',
+  ]) {
+    assert.deepEqual(
+      classifyCandidateSubprocessOutcome({ ...passed, stdout }),
+      {
+        checkpointPasses: 0,
+        prompted: false,
+        reasonCode: "candidate-output-invalid",
+        status: "failed",
+      },
+    );
+  }
 });
