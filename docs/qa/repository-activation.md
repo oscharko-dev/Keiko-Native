@@ -107,8 +107,8 @@ defense in depth, not an atomic base compare-and-swap.
 ADR-0010 assigns Issue #50 only the inert guard, protected policy/status producer, hermetic proof,
 and corrected v2 live-probe harness. The canonical `status: ready for human review` state cannot
 truthfully exist as merge authority before the signed Contract-as-Code activation. The guarded
-operation is therefore unavailable before activation and makes no provider merge request. Issue
-#55 owns this human-gated activation and, after the lifecycle and protected policy are active, the
+operation is therefore unavailable before activation and makes no provider merge request. Issue #55
+owns this human-gated activation and, after the lifecycle and protected policy are active, the
 first exact-target success plus the complete live denial, race, ambiguity, redaction, and
 reconciliation matrix.
 
