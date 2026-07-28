@@ -72,6 +72,13 @@ deletion. Attested transition/read-back checkpoints bound the effect-capable liv
 records, and effect-disabled cursor recovery handles deeper comment history. A login, marker,
 author association, context name, details URL, or event timing alone is never sufficient.
 
+Sequence-one bootstrap proves the exact compacted-prefix domain, schema, null prior-checkpoint
+identity, and complete ordered genesis member list. Forward orphan settlement requires a
+request-bound recovery-target digest, exact recovery-settlement schema, independently verified
+failed protected writer run, two stable zero-anchor/zero-attestation reads, and a normally
+authenticated settlement claim chained from the last authenticated predecessor. The orphan never
+becomes a record or authority source.
+
 Generation-request, producer-result, phase/fence-claim, and transition/read-back records use strict
 version-1 canonical bytes and domain-separated SHA-256 digests. The loader performs full-body
 parsing, bounded complete pagination, and stable double-reads. Deletion, edits, forks, cycles, gaps,

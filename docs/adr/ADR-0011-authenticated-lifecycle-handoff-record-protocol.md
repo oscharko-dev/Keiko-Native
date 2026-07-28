@@ -120,8 +120,11 @@ Every auxiliary identity is also SHA-256 over ADR-0004 canonical bytes with one 
 - effect identity: `keiko-native.lifecycle-effect-identity`
 - read-back identity: `keiko-native.lifecycle-read-back-identity`
 - publication candidate set: `keiko-native.lifecycle-candidate-set`
+- compacted prefix: `keiko-native.lifecycle-compacted-prefix-identity`
 - checkpoint identity: `keiko-native.lifecycle-checkpoint-identity`
 - recovery scan identity: `keiko-native.lifecycle-recovery-scan-identity`
+- recovery target: `keiko-native.lifecycle-recovery-target-identity`
+- recovery settlement: `keiko-native.lifecycle-recovery-settlement-identity`
 - artifact anchor: `keiko-native.lifecycle-artifact-anchor`
 
 That list is the exact one-to-one domain-to-schema mapping: the label before each colon is the
@@ -135,25 +138,31 @@ twice. There is no wrapper, implicit type, omitted field, alternate domain, or r
 
 The exact auxiliary v1 schemas are:
 
-| Identity                  | Fixed fields, in order                                                                                                                                                                                                                                                                                                                                                                                         |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| request identity          | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `pull_request_number:uint-or-null`, `exact_head_sha:commit-or-null`, `exact_target:string-or-null`, `generation_identity:sha256`, `attempt:uint`, `request_payload_digest:sha256`, `expected_producers:set<producer>`, `predecessor_comment_id:uint-or-null`, `predecessor_record_digest:sha256-or-null`                                    |
-| request payload           | `schema_version:uint=1`, `request_kind:enum(event-reconciliation,planner-request,pause-request,recovery-request,scheduled-reconciliation)`, `requested_state:requested-lifecycle-state-or-null`, `request_owner:enum(planner,assignment,pull-request,handoff,closure,reopen,invalidation,recovery,schedule)`, `reason_code:closed-reason-code`                                                                 |
-| source observation        | `schema_version:uint=1`, `generation_bytes_sha256:sha256`, `observed_state:lifecycle-observation`, `issue_updated_at:timestamp`, `readiness_identity:sha256-or-null`, `assignment_identity:sha256`, `pr_topology_identity:sha256`, `reviews_identity:sha256`, `conversations_identity:sha256`, `checks_identity:sha256`, `evidence_identity:sha256`, `activation_identity:sha256`                              |
-| fence identity            | `schema_version:uint=1`, `generation_identity:sha256`, `attempt:uint`, `phase:phase-enum`, `fence_sequence:uint`, `owner_workflow_path:coordinator-path`, `owner_run_id:uint`, `owner_run_attempt:uint`, `source_observation_identity:sha256`, `predecessor_comment_id:uint-or-null`, `predecessor_record_digest:sha256-or-null`                                                                               |
-| result identity           | `schema_version:uint=1`, `expected_producer:producer`, `producer_contract_version:uint`, `generation_identity:sha256`, `attempt:uint`, `phase_fence_digest:sha256`, `workflow_path:producer-path`, `workflow_id:uint`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `workflow_job_id:uint`, `provider_observation_identity:sha256`, `conclusion:producer-conclusion`, `reason_code:closed-reason-code` |
-| provider observation      | `schema_version:uint=1`, `expected_producer:producer`, `generation_identity:sha256`, `exact_head_sha:commit-or-null`, `phase_fence_digest:sha256`, `provider_result_id:uint`, `provider_result_name:closed-producer-result-name`, `provider_result_conclusion:producer-conclusion`, `provider_result_sha:commit-or-null`, `producer_payload_digest:sha256`                                                     |
-| effect identity           | `schema_version:uint=1`, `generation_identity:sha256`, `attempt:uint`, `phase_fence_digest:sha256`, `source_state:lifecycle-observation`, `desired_state:lifecycle-observation`, `transition_owner:transition-owner`, `mutation:enum(no-effect,set-lifecycle,remove-lifecycle)`, `source_observation_identity:sha256`                                                                                          |
-| read-back identity        | `schema_version:uint=1`, `generation_identity:sha256`, `attempt:uint`, `phase_fence_digest:sha256`, `effect_identity:sha256-or-null`, `observed_state:lifecycle-observation`, `issue_updated_at:timestamp`, `source_observation_identity:sha256`                                                                                                                                                               |
-| publication candidate set | `schema_version:uint=1`, `exact_commit_sha:commit`, `root_tree_sha:tree`, `entries:set<candidate-entry>`                                                                                                                                                                                                                                                                                                       |
-| checkpoint identity       | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `prior_checkpoint_comment_id:uint-or-null`, `prior_checkpoint_record_digest:sha256-or-null`, `compacted_prefix_identity:sha256`, `chain_tip_comment_id:uint`, `chain_tip_record_digest:sha256`                                                                                                                  |
-| recovery scan identity    | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `scan_direction:enum(backward)`, `provider_cursor:string-or-null`, `scanned_page_count:uint`, `scanned_comment_count:uint`, `accumulated_suffix_identity:sha256`, `complete:bool`                                                                                                                               |
-| artifact anchor           | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `record_type:record-type`, `record_digest:sha256`, `comment_id:uint`, `comment_body_sha256:sha256`, `generation_identity:sha256`, `attempt:uint`, `workflow_path:protected-writer-path`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `protected_dev_sha:commit`                                                                    |
+| Identity                  | Fixed fields, in order                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| request identity          | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `pull_request_number:uint-or-null`, `exact_head_sha:commit-or-null`, `exact_target:string-or-null`, `generation_identity:sha256`, `attempt:uint`, `request_payload_digest:sha256`, `expected_producers:set<producer>`, `predecessor_comment_id:uint-or-null`, `predecessor_record_digest:sha256-or-null`                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| request payload           | `schema_version:uint=1`, `request_kind:enum(event-reconciliation,planner-request,pause-request,recovery-request,scheduled-reconciliation)`, `requested_state:requested-lifecycle-state-or-null`, `request_owner:enum(planner,assignment,pull-request,handoff,closure,reopen,invalidation,recovery,schedule)`, `recovery_target_identity:sha256-or-null`, `reason_code:closed-reason-code`                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| source observation        | `schema_version:uint=1`, `generation_bytes_sha256:sha256`, `observed_state:lifecycle-observation`, `issue_updated_at:timestamp`, `readiness_identity:sha256-or-null`, `assignment_identity:sha256`, `pr_topology_identity:sha256`, `reviews_identity:sha256`, `conversations_identity:sha256`, `checks_identity:sha256`, `evidence_identity:sha256`, `activation_identity:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| fence identity            | `schema_version:uint=1`, `generation_identity:sha256`, `attempt:uint`, `phase:phase-enum`, `fence_sequence:uint`, `owner_workflow_path:coordinator-path`, `owner_run_id:uint`, `owner_run_attempt:uint`, `source_observation_identity:sha256`, `predecessor_comment_id:uint-or-null`, `predecessor_record_digest:sha256-or-null`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| result identity           | `schema_version:uint=1`, `expected_producer:producer`, `producer_contract_version:uint`, `generation_identity:sha256`, `attempt:uint`, `phase_fence_digest:sha256`, `workflow_path:producer-path`, `workflow_id:uint`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `workflow_job_id:uint`, `provider_observation_identity:sha256`, `conclusion:producer-conclusion`, `reason_code:closed-reason-code`                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| provider observation      | `schema_version:uint=1`, `expected_producer:producer`, `generation_identity:sha256`, `exact_head_sha:commit-or-null`, `phase_fence_digest:sha256`, `provider_result_id:uint`, `provider_result_name:closed-producer-result-name`, `provider_result_conclusion:producer-conclusion`, `provider_result_sha:commit-or-null`, `producer_payload_digest:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| effect identity           | `schema_version:uint=1`, `generation_identity:sha256`, `attempt:uint`, `phase_fence_digest:sha256`, `source_state:lifecycle-observation`, `desired_state:lifecycle-observation`, `transition_owner:transition-owner`, `mutation:enum(no-effect,set-lifecycle,remove-lifecycle)`, `source_observation_identity:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| read-back identity        | `schema_version:uint=1`, `generation_identity:sha256`, `attempt:uint`, `phase_fence_digest:sha256`, `effect_identity:sha256-or-null`, `observed_state:lifecycle-observation`, `issue_updated_at:timestamp`, `source_observation_identity:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| publication candidate set | `schema_version:uint=1`, `exact_commit_sha:commit`, `root_tree_sha:tree`, `entries:set<candidate-entry>`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| compacted prefix          | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `prior_checkpoint_identity:sha256-or-null`, `members:list<checkpoint-member>`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| checkpoint identity       | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `prior_checkpoint_comment_id:uint-or-null`, `prior_checkpoint_record_digest:sha256-or-null`, `compacted_prefix_identity:sha256`, `chain_tip_comment_id:uint`, `chain_tip_record_digest:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| recovery scan identity    | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `scan_direction:enum(backward)`, `provider_cursor:string-or-null`, `scanned_page_count:uint`, `scanned_comment_count:uint`, `accumulated_suffix_identity:sha256`, `complete:bool`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| recovery target           | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `orphan_comment_id:uint`, `orphan_comment_body_sha256:sha256`, `orphan_record_digest:sha256`, `last_authenticated_comment_id:uint-or-null`, `last_authenticated_record_digest:sha256-or-null`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| recovery settlement       | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `authorized_request_identity:sha256`, `recovery_target_identity:sha256`, `orphan_comment_id:uint`, `orphan_comment_body_sha256:sha256`, `orphan_record_digest:sha256`, `orphan_author_login:enum(github-actions[bot])`, `orphan_author_id:uint=41898282`, `orphan_actor_type:enum(Bot)`, `orphan_app_id:uint=15368`, `orphan_workflow_path:protected-writer-path`, `orphan_workflow_run_id:uint`, `orphan_workflow_run_attempt:uint`, `orphan_protected_dev_sha:commit`, `orphan_run_conclusion:enum(failure,cancelled,timed-out)`, `orphan_anchor_count:uint=0`, `orphan_attestation_count:uint=0`, `last_authenticated_comment_id:uint-or-null`, `last_authenticated_record_digest:sha256-or-null`, `quarantine_reason:enum(anchor-publication-interrupted)` |
+| artifact anchor           | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `record_type:record-type`, `record_digest:sha256`, `comment_id:uint`, `comment_body_sha256:sha256`, `generation_identity:sha256`, `attempt:uint`, `workflow_path:protected-writer-path`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `protected_dev_sha:commit`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
 `requested-lifecycle-state` is exactly `status: new`, `status: triaged`, `status: ready`,
 `status: in progress`, `status: pr open`, `status: ready for human review`, `status: blocked`,
 `status: waiting for user`, and `status: done`; it excludes `no-lifecycle`.
 `lifecycle-observation` is exactly those nine canonical lifecycle values plus `no-lifecycle`.
+`recovery_target_identity` is non-null only for `recovery-request` and binds the exact orphan plus
+the last authenticated predecessor selected by the authorized request; every other request kind
+uses explicit null.
 `phase-enum`, `producer-conclusion`, and `transition-owner` are the closed enums declared by the
 record fields below. `closed-producer-result-name` maps the three producers one-to-one to `Issue
 contract current`, `PR contract`, and `Contract publication`; another name rejects the observation.
@@ -170,6 +179,10 @@ The nested `candidate-entry` schema is exactly `path:string`, `mode:enum(100644,
 `result_identity:sha256`, in that order. Candidate entries sort by their complete canonical path
 node and reject duplicate normalized paths. Producer-result references sort by their complete
 canonical producer node and require exactly one member for every expected producer.
+
+The nested `checkpoint-member` schema is exactly `comment_id:uint` and `record_digest:sha256`, in
+that order. Its enclosing list preserves authenticated predecessor order and rejects duplicate
+comment IDs or record digests.
 
 `record-type` is the exact four-value record enum. `protected-writer-path` is the closed coordinator
 or producer workflow path. The artifact anchor is canonical bytes in one immutable GitHub Actions
@@ -217,9 +230,9 @@ Fixed fields, in order:
 The generation identity is independently recomputed from ADR-0004's complete trusted input. The
 request identity binds the repository, issue, pull request, exact head, generation, attempt,
 request-payload digest, expected-producer set, and predecessor. The request-payload digest is
-domain-separated and contains only normalized identifiers and a closed reason code. A raw reason,
-issue body, provider payload, endpoint, credential, customer content, or private-source content is
-never stored.
+domain-separated and contains only normalized identifiers, the optional recovery-target identity,
+and a closed reason code. A raw reason, issue body, provider payload, endpoint, credential, customer
+content, or private-source content is never stored.
 
 ### Producer result v1
 
@@ -296,16 +309,19 @@ Fixed fields, in order:
 20. `recovery_scan_identity`: SHA-256 or explicit null
 21. `recovery_provider_cursor`: string or explicit null
 22. `recovery_scan_complete`: bool
-23. `predecessor_comment_id`: uint or explicit null
-24. `predecessor_record_digest`: SHA-256 or explicit null
-25. `protected_dev_sha`: commit
-26. `recorded_at`: timestamp
+23. `recovery_settlement_identity`: SHA-256 or explicit null
+24. `predecessor_comment_id`: uint or explicit null
+25. `predecessor_record_digest`: SHA-256 or explicit null
+26. `protected_dev_sha`: commit
+27. `recorded_at`: timestamp
 
-The three recovery fields are respectively non-null, non-null, and `false` only for an incomplete
+The recovery scan triplet is respectively non-null, non-null, and `false` only for an incomplete
 `recovery` scan; the cursor becomes explicit null and completion becomes `true` for its final scan
-claim. Every non-recovery claim uses null, null, and `false`. A cursor is accepted only after Issue
-#55's live probe proves GitHub's backward GraphQL timeline cursor preserves the exact stable page
-boundary under the held per-issue group. It is an opaque provider locator, never authority.
+claim. Its settlement identity is null. A forward orphan settlement instead uses null, null,
+`false`, and a non-null `recovery_settlement_identity`. Every non-recovery claim uses null, null,
+`false`, and null. A cursor is accepted only after Issue #55's live probe proves GitHub's backward
+GraphQL timeline cursor preserves the exact stable page boundary under the held per-issue group. It
+is an opaque provider locator, never authority.
 
 For each issue, the unique serialization domain is exactly
 `issue-lifecycle-${decimal issue number}` with `queue: max` and no `cancel-in-progress` key. Every
@@ -468,6 +484,25 @@ both prior checkpoint fields are explicit null. Successful bootstrap continues t
 producers, fences, stable read-backs, and activation guard as every later generation, so an issue
 with no comments or artifacts does not remain effect-disabled merely because no checkpoint exists.
 
+The sequence-one null-root compacted-prefix values are:
+
+| Field                       | Exact value                                        |
+| --------------------------- | -------------------------------------------------- |
+| `digest_domain`             | `keiko-native.lifecycle-compacted-prefix-identity` |
+| `schema_version`            | `1`                                                |
+| `digest_algorithm`          | `sha-256`                                          |
+| `repository`                | `current repository`                               |
+| `issue_number`              | `current issue`                                    |
+| `checkpoint_sequence`       | `1`                                                |
+| `prior_checkpoint_identity` | `null`                                             |
+| `members`                   | `ordered authenticated genesis suffix`             |
+
+The members list starts at the unique authenticated null-predecessor record and ends at the
+transition/read-back predecessor. It uses the exact nested `checkpoint-member` schema and preserves
+predecessor order. The domain, schema, algorithm, repository, issue, sequence, null root, and
+complete members list form the exact canonical compacted-prefix preimage; no implicit empty digest,
+sentinel string, omitted field, or prior checkpoint default is permitted.
+
 A crash before the first checkpoint has three closed outcomes. If it occurred before any record
 publication, the empty-history bootstrap rule applies. If all published records are authenticated,
 the loader reconstructs the bounded authenticated genesis suffix from its unique null-predecessor
@@ -475,6 +510,40 @@ generation request and the next serialized run resumes or settles that generatio
 was interrupted, or any comment, anchor, attestation, predecessor, or provider fact is missing or
 ambiguous, the workflow performs no effect and requires explicit authorized recovery; it never
 reclassifies partial history as empty.
+
+The forward orphan-settlement record is exactly:
+
+| Field                          | Required value                                  |
+| ------------------------------ | ----------------------------------------------- |
+| `request_kind`                 | `recovery-request`                              |
+| `phase`                        | `recovery`                                      |
+| `claim_outcome`                | `settled`                                       |
+| `recovery_scan_identity`       | `null`                                          |
+| `recovery_provider_cursor`     | `null`                                          |
+| `recovery_scan_complete`       | `false`                                         |
+| `recovery_settlement_identity` | `sha-256 of exact recovery-settlement preimage` |
+| `predecessor`                  | `last authenticated record or null root`        |
+| `orphan_authority`             | `quarantined-only`                              |
+
+The orphan body is never trusted as a record or predecessor. An explicit authorized recovery
+request binds the exact recovery-target identity: orphan comment ID, body digest, parsed record
+digest, and last authenticated predecessor. Under the per-issue fence, two complete stable reads
+must independently verify the unchanged canonical orphan body and digest; built-in bot user, ID,
+type, and Actions App; claimed protected writer path, `refs/heads/dev`, protected commit, run, and
+attempt; a terminal `failure`, `cancelled`, or `timed-out` run conclusion; and zero matching anchors
+and attestations. Orphan body fields are candidate locators only and grant nothing until every
+provider fact is independently loaded.
+
+The coordinator then appends one normally authenticated phase/fence claim with the exact settlement
+matrix above and the last authenticated record as predecessor, or a null predecessor when none
+exists. Its domain-separated recovery-settlement identity binds the authorized request,
+recovery-target identity, all exact verified orphan/provider facts, the last authenticated
+predecessor, and reason `anchor-publication-interrupted`. Once that settlement's own
+comment/anchor/attestation tuple is stably authenticated, chain reconstruction quarantines only the
+exact orphan ID/body pair as a non-member and may continue from the settlement. A changed body,
+different or missing provider fact, non-terminal or successful run, existing anchor or attestation,
+authorization mismatch, second orphan, unstable reread, or settlement-publication failure remains
+blocked and effect-disabled; it cannot be settled by inference.
 
 If two comment pages do not reach the checkpoint, the workflow performs no lifecycle or status
 effect and enters recovery mode only when the stable reads prove that relevant non-empty history

@@ -127,6 +127,14 @@ stable double-reads, same-generation producer results, explicit crash recovery, 
 ambiguity. Deleted, edited, duplicated, conflicting, truncated, stale, wrong-generation,
 wrong-producer, rate-limited, or unavailable record evidence must fail closed.
 
+Bootstrap fixtures prove the exact sequence-one null-root compacted-prefix preimage and ordered
+genesis members. Crash fixtures prove the request-bound forward orphan settlement accepts only an
+unchanged canonical comment from an independently verified failed protected writer run with stable
+zero anchor and attestation counts, authenticates its own settlement record, and quarantines the
+orphan without trusting it. Wrong authorization, changed or missing facts, a successful run, an
+existing anchor or attestation, multiple orphans, and settlement-publication failure must remain
+effect-disabled.
+
 Publication proof loads the exact candidate commit, requires a complete recursive Git tree with
 `truncated === false`, and verifies exact regular-file path, mode, blob object, byte count, and
 SHA-256 equality through a stable reread. The pull-request files API is not complete tree authority,

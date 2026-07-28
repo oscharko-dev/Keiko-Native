@@ -1492,6 +1492,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       "recovery_scan_identity",
       "recovery_provider_cursor",
       "recovery_scan_complete",
+      "recovery_settlement_identity",
       "predecessor_comment_id",
       "predecessor_record_digest",
       "protected_dev_sha",
@@ -1541,7 +1542,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
         "|",
       ),
     "Phase/fence claim v1":
-      "record_type:enum phase-fence-claim|schema_version:uint 1|digest_algorithm:enum sha-256|digest_domain:enum keiko-native.lifecycle-record.phase-fence-claim|repository:string|issue_number:uint|pull_request_number:uint or explicit null|exact_head_sha:commit or explicit null|generation_identity:SHA-256|attempt:uint|request_identity:SHA-256|phase:enum request, phase-one, mutation, phase-two, terminal, or recovery|fence_sequence:uint|fence_identity:SHA-256|owner_workflow_path:closed protected coordinator path|owner_run_id:uint|owner_run_attempt:uint|source_observation_identity:SHA-256|claim_outcome:enum claimed, settled, abandoned, ambiguous, or superseded|recovery_scan_identity:SHA-256 or explicit null|recovery_provider_cursor:string or explicit null|recovery_scan_complete:bool|predecessor_comment_id:uint or explicit null|predecessor_record_digest:SHA-256 or explicit null|protected_dev_sha:commit|recorded_at:timestamp".split(
+      "record_type:enum phase-fence-claim|schema_version:uint 1|digest_algorithm:enum sha-256|digest_domain:enum keiko-native.lifecycle-record.phase-fence-claim|repository:string|issue_number:uint|pull_request_number:uint or explicit null|exact_head_sha:commit or explicit null|generation_identity:SHA-256|attempt:uint|request_identity:SHA-256|phase:enum request, phase-one, mutation, phase-two, terminal, or recovery|fence_sequence:uint|fence_identity:SHA-256|owner_workflow_path:closed protected coordinator path|owner_run_id:uint|owner_run_attempt:uint|source_observation_identity:SHA-256|claim_outcome:enum claimed, settled, abandoned, ambiguous, or superseded|recovery_scan_identity:SHA-256 or explicit null|recovery_provider_cursor:string or explicit null|recovery_scan_complete:bool|recovery_settlement_identity:SHA-256 or explicit null|predecessor_comment_id:uint or explicit null|predecessor_record_digest:SHA-256 or explicit null|protected_dev_sha:commit|recorded_at:timestamp".split(
         "|",
       ),
     "Transition/read-back v1":
@@ -1607,8 +1608,12 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
     "effect identity": "keiko-native.lifecycle-effect-identity",
     "read-back identity": "keiko-native.lifecycle-read-back-identity",
     "publication candidate set": "keiko-native.lifecycle-candidate-set",
+    "compacted prefix": "keiko-native.lifecycle-compacted-prefix-identity",
     "checkpoint identity": "keiko-native.lifecycle-checkpoint-identity",
     "recovery scan identity": "keiko-native.lifecycle-recovery-scan-identity",
+    "recovery target": "keiko-native.lifecycle-recovery-target-identity",
+    "recovery settlement":
+      "keiko-native.lifecycle-recovery-settlement-identity",
     "artifact anchor": "keiko-native.lifecycle-artifact-anchor",
   };
   const auxiliaryDomainSection = adr.match(
@@ -1685,6 +1690,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       "request_kind:enum(event-reconciliation,planner-request,pause-request,recovery-request,scheduled-reconciliation)",
       "requested_state:requested-lifecycle-state-or-null",
       "request_owner:enum(planner,assignment,pull-request,handoff,closure,reopen,invalidation,recovery,schedule)",
+      "recovery_target_identity:sha256-or-null",
       "reason_code:closed-reason-code",
     ],
     "source observation": [
@@ -1769,6 +1775,14 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       "root_tree_sha:tree",
       "entries:set<candidate-entry>",
     ],
+    "compacted prefix": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "checkpoint_sequence:uint",
+      "prior_checkpoint_identity:sha256-or-null",
+      "members:list<checkpoint-member>",
+    ],
     "checkpoint identity": [
       "schema_version:uint=1",
       "repository:string",
@@ -1791,6 +1805,40 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       "scanned_comment_count:uint",
       "accumulated_suffix_identity:sha256",
       "complete:bool",
+    ],
+    "recovery target": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "orphan_comment_id:uint",
+      "orphan_comment_body_sha256:sha256",
+      "orphan_record_digest:sha256",
+      "last_authenticated_comment_id:uint-or-null",
+      "last_authenticated_record_digest:sha256-or-null",
+    ],
+    "recovery settlement": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "authorized_request_identity:sha256",
+      "recovery_target_identity:sha256",
+      "orphan_comment_id:uint",
+      "orphan_comment_body_sha256:sha256",
+      "orphan_record_digest:sha256",
+      "orphan_author_login:enum(github-actions[bot])",
+      "orphan_author_id:uint=41898282",
+      "orphan_actor_type:enum(Bot)",
+      "orphan_app_id:uint=15368",
+      "orphan_workflow_path:protected-writer-path",
+      "orphan_workflow_run_id:uint",
+      "orphan_workflow_run_attempt:uint",
+      "orphan_protected_dev_sha:commit",
+      "orphan_run_conclusion:enum(failure,cancelled,timed-out)",
+      "orphan_anchor_count:uint=0",
+      "orphan_attestation_count:uint=0",
+      "last_authenticated_comment_id:uint-or-null",
+      "last_authenticated_record_digest:sha256-or-null",
+      "quarantine_reason:enum(anchor-publication-interrupted)",
     ],
     "artifact anchor": [
       "schema_version:uint=1",
@@ -1863,6 +1911,16 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       "result_identity:sha256",
     ],
   );
+  const checkpointMemberSchema = adr.match(
+    /The nested `checkpoint-member` schema is exactly ([\s\S]+?),\s+in\s+that order\./u,
+  );
+  assert.ok(checkpointMemberSchema, "nested checkpoint-member schema");
+  assert.deepEqual(
+    [...checkpointMemberSchema[1].matchAll(/`([^`]+)`/gu)].map(
+      (match) => match[1],
+    ),
+    ["comment_id:uint", "record_digest:sha256"],
+  );
 
   assert.match(
     adr,
@@ -1926,17 +1984,64 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
     adr,
     /relevant anchor without its exact comment\s+proves an\s+unreferenced suffix deletion/iu,
   );
+  assert.match(adr, /100 comments\s+per page and at most two pages/iu);
   assert.match(
     adr,
-    /100 comments\s+per page and at most two pages[\s\S]{0,5000}scans at most 100 more pages/iu,
+    /next serialized recovery run[\s\S]{0,200}scans at most 100 more pages/iu,
   );
   assert.match(
     adr,
     /empty-history bootstrap[\s\S]{0,600}zero relevant lifecycle record comments[\s\S]{0,300}zero exact-name anchor artifacts[\s\S]{0,500}explicit null[\s\S]{0,300}checkpoint sequence starts at one/iu,
   );
+  const genesisNullRootSection = adr.match(
+    /The sequence-one null-root compacted-prefix values are:\n\n([\s\S]+?)\n\nA crash before/u,
+  );
+  assert.ok(genesisNullRootSection, "sequence-one null-root values");
+  assert.deepEqual(
+    [
+      ...genesisNullRootSection[1].matchAll(
+        /^\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|$/gmu,
+      ),
+    ].map((match) => [match[1], match[2]]),
+    [
+      ["digest_domain", "keiko-native.lifecycle-compacted-prefix-identity"],
+      ["schema_version", "1"],
+      ["digest_algorithm", "sha-256"],
+      ["repository", "current repository"],
+      ["issue_number", "current issue"],
+      ["checkpoint_sequence", "1"],
+      ["prior_checkpoint_identity", "null"],
+      ["members", "ordered authenticated genesis suffix"],
+    ],
+  );
   assert.match(
     adr,
     /crash before the first checkpoint[\s\S]{0,700}authenticated genesis suffix[\s\S]{0,500}publication[\s\S]{0,40}interrupted[\s\S]{0,300}explicit authorized recovery/iu,
+  );
+  const forwardSettlementSection = adr.match(
+    /The forward orphan-settlement record is exactly:\n\n([\s\S]+?)\n\nThe orphan body/u,
+  );
+  assert.ok(forwardSettlementSection, "forward orphan-settlement matrix");
+  assert.deepEqual(
+    [
+      ...forwardSettlementSection[1].matchAll(
+        /^\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|$/gmu,
+      ),
+    ].map((match) => [match[1], match[2]]),
+    [
+      ["request_kind", "recovery-request"],
+      ["phase", "recovery"],
+      ["claim_outcome", "settled"],
+      ["recovery_scan_identity", "null"],
+      ["recovery_provider_cursor", "null"],
+      ["recovery_scan_complete", "false"],
+      [
+        "recovery_settlement_identity",
+        "sha-256 of exact recovery-settlement preimage",
+      ],
+      ["predecessor", "last authenticated record or null root"],
+      ["orphan_authority", "quarantined-only"],
+    ],
   );
   assert.match(adr, /missing predecessor[\s\S]{0,160}fork[\s\S]{0,80}cycle/iu);
   assert.match(

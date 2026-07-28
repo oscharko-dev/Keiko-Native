@@ -178,9 +178,12 @@ the next attempt and binds the settled predecessor.
 
 Stable proof of zero relevant record comments and zero exact-name anchors selects empty-history
 bootstrap, not truncated-history recovery. The first request uses null predecessors and checkpoint
-numbering begins at one. A pre-checkpoint crash either remains empty, resumes a completely
-authenticated genesis suffix, or fails closed for explicit authorized recovery when publication is
-partial or ambiguous.
+numbering begins at one through the exact domain-separated null-root compacted-prefix schema. A
+pre-checkpoint crash either remains empty, resumes a completely authenticated genesis suffix, or
+uses a protected forward recovery settlement. That settlement requires an explicit request binding
+the exact orphan and last authenticated predecessor, independently verifies the failed protected run
+and stable anchor/attestation absence, and quarantines only that orphan without treating it as a
+record. Every mismatch remains blocked and effect-disabled.
 
 The record protocol preserves all nine states and the exact allowed edge graph above.
 `no-lifecycle` is an outside-graph observation only for creation, reopen, and non-completed closure,
