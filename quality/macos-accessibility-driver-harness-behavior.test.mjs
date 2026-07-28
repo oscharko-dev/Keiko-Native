@@ -91,27 +91,25 @@ test("candidate execution exposes a closed behavioral checkpoint boundary", () =
     status: "passed",
   });
 
+  let systemEventsCalls = 0;
   assert.deepEqual(
     executeCandidateCheckpoint({
       candidate: "systemEvents",
       checkpoint: "task-submit",
-      runCandidate: () => ({
-        exitCode: 0,
-        signal: null,
-        stderrEmpty: true,
-        stdout:
-          '{"status":"failed","reasonCode":"checkpoint-observation-failed","prompted":false,"checkpointPasses":0}',
-        timedOut: false,
-      }),
+      runCandidate: () => {
+        systemEventsCalls += 1;
+        throw new Error("System Events runner must not execute");
+      },
       surfacePid: 4100,
     }),
     {
       checkpointPasses: 0,
-      prompted: false,
-      reasonCode: "checkpoint-observation-failed",
-      status: "failed",
+      prompted: null,
+      reasonCode: "authoritative-evidence-unavailable",
+      status: "rejected",
     },
   );
+  assert.equal(systemEventsCalls, 0);
 });
 
 test("candidate subprocess results fail closed on process-level anomalies", () => {

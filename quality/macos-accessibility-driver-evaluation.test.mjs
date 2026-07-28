@@ -67,14 +67,18 @@ test("selects deterministically only after complete absolute-gate evidence", () 
   assert.equal(result.output.decision, "select");
   assert.equal(result.output.selectedOption, "axuielement");
   assert.equal(result.output.recommendation, "external-axuielement-adapter");
+  assert.deepEqual(result.output.absoluteFailures.systemEvents, [
+    "authoritative-evidence-unavailable",
+  ]);
   assert.ok(
     result.output.weightedScores.axuielement >
       result.output.weightedScores.systemEvents,
   );
+  assert.equal(result.output.weightedScores.systemEvents, 260);
   assert.equal(result.output.weightedScores.noDriver, 260);
 });
 
-test("rejects a viable candidate with an absolute failure", () => {
+test("never selects statically rejected System Events", () => {
   const completed = completedEvidence();
   completed.options.axuielement.absoluteFailures = ["package-inclusion"];
   completed.options.axuielement.matrixScores = scoreOption(
@@ -90,8 +94,21 @@ test("rejects a viable candidate with an absolute failure", () => {
     retainedEvaluationInput(completed),
   );
 
-  assert.equal(result.exitCode, 0);
-  assert.equal(result.output.selectedOption, "systemEvents");
+  assert.equal(result.exitCode, 2);
+  assert.equal(result.output.reasonCode, "no-candidate-passed-absolute-gates");
+});
+
+test("requires zero-activity System Events rejection evidence", () => {
+  const attempted = completedEvidence();
+  attempted.options.systemEvents.physicalRepetitions = 1;
+  attempted.options.systemEvents.permissionMatrix.allowed.repetitions = 1;
+
+  const result = evaluateMacosAccessibilityDriver(
+    retainedEvaluationInput(attempted),
+  );
+
+  assert.equal(result.exitCode, 2);
+  assert.equal(result.output.reasonCode, "evaluation-evidence-invalid");
 });
 
 test("rejects submitted matrix scores that do not match fixed scoring", () => {
@@ -240,14 +257,12 @@ test("creates both candidate sources and one representative package outside prod
       await readFile(created.axuielementSource, "utf8"),
       /AXUIElement/u,
     );
-    assert.match(
-      await readFile(created.systemEventsSource, "utf8"),
-      /systemevents/iu,
-    );
-    assert.match(
-      await readFile(created.systemEventsSource, "utf8"),
-      /UI elements enabled/u,
-    );
+    const systemEvents = await readFile(created.systemEventsSource, "utf8");
+    assert.match(systemEvents, /authoritative-evidence-unavailable/u);
+    assert.match(systemEvents, /"prompted\\":null/u);
+    assert.doesNotMatch(systemEvents, /tell application/iu);
+    assert.doesNotMatch(systemEvents, /-1743/u);
+    assert.doesNotMatch(systemEvents, /UI elements enabled/u);
     const injectedCandidate = join(
       created.packageRoot,
       "Contents",
@@ -273,7 +288,7 @@ test("creates both candidate sources and one representative package outside prod
   }
 });
 
-test("permission probes are closed and never prompt", () => {
+test("permission probes reject System Events without claiming prompt state", () => {
   assert.deepEqual(permissionProbeResult("axuielement", false), {
     candidate: "axuielement",
     status: "permission-denied",
@@ -282,13 +297,35 @@ test("permission probes are closed and never prompt", () => {
   });
   assert.deepEqual(permissionProbeResult("systemEvents", true), {
     candidate: "systemEvents",
-    status: "ready",
-    reasonCode: null,
-    prompted: false,
+    status: "rejected",
+    reasonCode: "authoritative-evidence-unavailable",
+    prompted: null,
   });
   assert.throws(
     () => permissionProbeResult("other", true),
     /unknown-candidate/u,
+  );
+});
+
+test("System Events physical execution is statically rejected before process activity", async () => {
+  assert.deepEqual(
+    await runPhysicalCandidate({
+      candidate: "systemEvents",
+      includeTimings: true,
+      phase: "allowed",
+      repetition: 1,
+      root: "/path-that-must-not-be-read",
+    }),
+    {
+      candidate: "systemEvents",
+      repetition: 1,
+      status: "rejected",
+      checkpointPasses: 0,
+      boundedWait: true,
+      cleanupOwnedDescendants: 0,
+      reasonCode: "authoritative-evidence-unavailable",
+      timings: { checkpoints: [], elapsedMs: 0 },
+    },
   );
 });
 
@@ -481,9 +518,19 @@ test("operator phases retain one exact identity and run 20 allowed repetitions",
         };
       },
     });
-    assert.equal(calls, 40);
+    assert.equal(calls, 20);
     assert.equal(allowed.options.axuielement.repetitions, 20);
-    assert.equal(allowed.options.systemEvents.checkpointPasses, 320);
+    assert.deepEqual(allowed.options.systemEvents, {
+      status: "allowed",
+      repetitions: 0,
+      successfulRepetitions: 0,
+      checkpointPasses: 0,
+      boundedWaits: true,
+      unexplainedFailures: 0,
+      reasonCode: "authoritative-evidence-unavailable",
+      cleanupOwnedDescendants: 0,
+    });
+    assert.deepEqual(allowed.timings.systemEvents, []);
 
     let failedCalls = 0;
     const failed = await capturePhysicalMatrixPhase(root, {
@@ -502,9 +549,9 @@ test("operator phases retain one exact identity and run 20 allowed repetitions",
         };
       },
     });
-    assert.equal(failedCalls, 2);
+    assert.equal(failedCalls, 1);
     assert.equal(failed.options.axuielement.repetitions, 1);
-    assert.equal(failed.options.systemEvents.repetitions, 1);
+    assert.equal(failed.options.systemEvents.repetitions, 0);
 
     const mismatched = structuredClone(prepared);
     mismatched.sourceHead = "f".repeat(40);
@@ -525,7 +572,7 @@ test("operator phases retain one exact identity and run 20 allowed repetitions",
 });
 
 test(
-  "the compiled surface exposes the same 16 checkpoints to both candidates",
+  "the compiled surface exposes the 16 checkpoints to AXUIElement only",
   {
     skip:
       process.platform !== "darwin" ||
@@ -536,23 +583,27 @@ test(
     try {
       const compiled = await compileAndProbeEvaluation(root);
       assert.equal(compiled.compileStatus, "passed");
-      for (const candidate of ["axuielement", "systemEvents"]) {
-        const result = await runPhysicalCandidate({
-          candidate,
-          phase: "allowed",
-          repetition: 1,
-          root,
-        });
-        assert.deepEqual(result, {
-          candidate,
-          repetition: 1,
-          status: "passed",
-          checkpointPasses: 16,
-          boundedWait: true,
-          cleanupOwnedDescendants: 0,
-          reasonCode: null,
-        });
-      }
+      assert.deepEqual(compiled.candidateProbes.systemEvents, {
+        candidate: "systemEvents",
+        prompted: null,
+        reasonCode: "authoritative-evidence-unavailable",
+        status: "rejected",
+      });
+      const result = await runPhysicalCandidate({
+        candidate: "axuielement",
+        phase: "allowed",
+        repetition: 1,
+        root,
+      });
+      assert.deepEqual(result, {
+        candidate: "axuielement",
+        repetition: 1,
+        status: "passed",
+        checkpointPasses: 16,
+        boundedWait: true,
+        cleanupOwnedDescendants: 0,
+        reasonCode: null,
+      });
     } finally {
       await rm(root, { force: true, recursive: true });
     }

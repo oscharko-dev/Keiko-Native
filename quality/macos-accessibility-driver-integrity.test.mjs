@@ -151,6 +151,15 @@ test("rejects incomplete, failed, and internally inconsistent retained timings",
     capture.timings.axuielement[0].elapsedMs = 0;
   });
 
+  const systemEventsProcessActivity = await equalWorkloadInput();
+  replaceRetainedCapture(systemEventsProcessActivity, "allowed", (capture) => {
+    capture.timings.systemEvents.push({
+      checkpoints: [],
+      elapsedMs: 1,
+      repetition: 1,
+    });
+  });
+
   const deniedWithCheckpoint = await equalWorkloadInput();
   replaceRetainedCapture(deniedWithCheckpoint, "denied", (capture) => {
     capture.timings.axuielement[0].checkpoints.push({
@@ -164,6 +173,7 @@ test("rejects incomplete, failed, and internally inconsistent retained timings",
     failedCheckpoint,
     incompleteJourney,
     undercountedRun,
+    systemEventsProcessActivity,
     deniedWithCheckpoint,
   ]) {
     const result = evaluateMacosAccessibilityDriver(input);

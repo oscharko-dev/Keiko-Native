@@ -249,6 +249,52 @@ function optionMatrixComplete(option) {
   );
 }
 
+function rejectedSystemEventsStateComplete(state, expectedState) {
+  return (
+    physicalStateShapeValid(state) &&
+    state.status === expectedState &&
+    state.repetitions === 0 &&
+    state.successfulRepetitions === 0 &&
+    state.checkpointPasses === 0 &&
+    state.boundedWaits === true &&
+    state.unexplainedFailures === 0 &&
+    state.reasonCode === "authoritative-evidence-unavailable" &&
+    state.cleanupOwnedDescendants === 0
+  );
+}
+
+function systemEventsRejectionComplete(option) {
+  return (
+    hasExactValues(option?.absoluteFailures, [
+      "authoritative-evidence-unavailable",
+    ]) &&
+    option.evidenceStatus === "complete" &&
+    option.physicalRepetitions === 0 &&
+    hasExactKeys(option.permissionMatrix, [
+      "allowed",
+      "denied",
+      "recovered",
+      "revoked",
+    ]) &&
+    rejectedSystemEventsStateComplete(
+      option.permissionMatrix.allowed,
+      "allowed",
+    ) &&
+    rejectedSystemEventsStateComplete(
+      option.permissionMatrix.denied,
+      "denied",
+    ) &&
+    rejectedSystemEventsStateComplete(
+      option.permissionMatrix.revoked,
+      "revoked",
+    ) &&
+    rejectedSystemEventsStateComplete(
+      option.permissionMatrix.recovered,
+      "allowed",
+    )
+  );
+}
+
 function noDriverStateComplete(state, expectedState, repetitions, reasonCode) {
   return (
     physicalStateShapeValid(state) &&
@@ -626,7 +672,6 @@ function timingEntryValid(entry, expectedRepetition, expectedCheckpoints) {
 }
 
 function captureArtifactValid(capture, expectedPhase, prepared, evidence) {
-  const expectedRepetitions = expectedPhase === "allowed" ? 20 : 1;
   if (
     !hasExactKeys(capture, [
       "options",
@@ -645,12 +690,19 @@ function captureArtifactValid(capture, expectedPhase, prepared, evidence) {
     return false;
   const matrixKey = expectedPhase;
   return candidateIds.every((candidate) => {
+    const rejected = candidate === "systemEvents";
+    const expectedRepetitions = rejected
+      ? 0
+      : expectedPhase === "allowed"
+        ? 20
+        : 1;
     const aggregate = capture.options[candidate];
     const retainedAggregate =
       evidence.options[candidate].permissionMatrix[matrixKey];
     const timings = capture.timings[candidate];
     const expectedCheckpoints =
-      expectedPhase === "allowed" || expectedPhase === "recovered";
+      !rejected &&
+      (expectedPhase === "allowed" || expectedPhase === "recovered");
     const timingShapeValid =
       Array.isArray(timings) &&
       timings.length === expectedRepetitions &&
@@ -774,17 +826,13 @@ export function evaluateMacosAccessibilityDriver({
     foundationPackageAuthenticated &&
     representativePackageAuthenticated &&
     evidence.authority.physicalAccessibility === "complete" &&
-    evidence.authority.physicalRepetitions === 40 &&
+    evidence.authority.physicalRepetitions === 20 &&
     evidence.packageBindings.foundation.status === "complete" &&
     evidence.packageBindings.representative.status === "complete" &&
-    candidateIds.every((id) => {
-      const option = evidence.options[id];
-      return (
-        option.evidenceStatus === "complete" &&
-        option.physicalRepetitions === 20 &&
-        optionMatrixComplete(option)
-      );
-    }) &&
+    evidence.options.axuielement.evidenceStatus === "complete" &&
+    evidence.options.axuielement.physicalRepetitions === 20 &&
+    optionMatrixComplete(evidence.options.axuielement) &&
+    systemEventsRejectionComplete(evidence.options.systemEvents) &&
     evidence.options.noDriver.evidenceStatus === "complete" &&
     evidence.options.noDriver.physicalRepetitions === 20 &&
     noDriverMatrixComplete(evidence.options.noDriver) &&
@@ -803,9 +851,12 @@ export function evaluateMacosAccessibilityDriver({
         reasonCode: "physical-matrix-incomplete",
         selectedOption: null,
         pendingOptions: [
-          ...candidateIds.filter(
-            (id) => !optionMatrixComplete(evidence.options[id]),
-          ),
+          ...(optionMatrixComplete(evidence.options.axuielement)
+            ? []
+            : ["axuielement"]),
+          ...(systemEventsRejectionComplete(evidence.options.systemEvents)
+            ? []
+            : ["systemEvents"]),
           ...(noDriverMatrixComplete(evidence.options.noDriver)
             ? []
             : ["noDriver"]),

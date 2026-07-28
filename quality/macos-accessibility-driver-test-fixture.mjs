@@ -55,32 +55,58 @@ function completeState(status, repetitions = 20) {
   };
 }
 
+function rejectedSystemEventsState(status) {
+  return {
+    status,
+    repetitions: 0,
+    successfulRepetitions: 0,
+    checkpointPasses: 0,
+    boundedWaits: true,
+    unexplainedFailures: 0,
+    reasonCode: "authoritative-evidence-unavailable",
+    cleanupOwnedDescendants: 0,
+  };
+}
+
 export function completedEvidence() {
   const completed = structuredClone(evidenceFixture);
   completed.bindings.evaluationSourceSha256 = "b".repeat(64);
   completed.bindings.representativePackageSha256 = "e".repeat(64);
   completed.authority.physicalAccessibility = "complete";
-  completed.authority.physicalRepetitions = 40;
+  completed.authority.physicalRepetitions = 20;
   completed.packageBindings.foundation.status = "complete";
   completed.packageBindings.foundation.selfAssertedExclusion = true;
   completed.packageBindings.representative.status = "complete";
   completed.packageBindings.representative.selfAssertedProductExclusion = true;
-  for (const id of ["axuielement", "systemEvents"]) {
-    const option = completed.options[id];
-    option.evidenceStatus = "complete";
-    option.physicalRepetitions = 20;
-    option.permissionMatrix = {
-      allowed: completeState("allowed"),
-      denied: completeState("denied", 1),
-      revoked: completeState("revoked", 1),
-      recovered: completeState("allowed", 1),
-    };
-    option.absoluteFailures = [];
-    option.matrixScores = scoreOption(option, completed, {
-      foundationPackageAuthenticated: true,
-      representativePackageAuthenticated: true,
-    });
-  }
+  const axuielement = completed.options.axuielement;
+  axuielement.evidenceStatus = "complete";
+  axuielement.physicalRepetitions = 20;
+  axuielement.permissionMatrix = {
+    allowed: completeState("allowed"),
+    denied: completeState("denied", 1),
+    revoked: completeState("revoked", 1),
+    recovered: completeState("allowed", 1),
+  };
+  axuielement.absoluteFailures = [];
+  axuielement.matrixScores = scoreOption(axuielement, completed, {
+    foundationPackageAuthenticated: true,
+    representativePackageAuthenticated: true,
+  });
+
+  const systemEvents = completed.options.systemEvents;
+  systemEvents.evidenceStatus = "complete";
+  systemEvents.physicalRepetitions = 0;
+  systemEvents.permissionMatrix = {
+    allowed: rejectedSystemEventsState("allowed"),
+    denied: rejectedSystemEventsState("denied"),
+    revoked: rejectedSystemEventsState("revoked"),
+    recovered: rejectedSystemEventsState("allowed"),
+  };
+  systemEvents.absoluteFailures = ["authoritative-evidence-unavailable"];
+  systemEvents.matrixScores = scoreOption(systemEvents, completed, {
+    foundationPackageAuthenticated: true,
+    representativePackageAuthenticated: true,
+  });
   completed.pendingEvidence = [];
   return completed;
 }
@@ -116,21 +142,23 @@ export function retainedEvaluationInput(evidence = completedEvidence()) {
     const timings = Object.fromEntries(
       ["axuielement", "systemEvents"].map((candidate) => [
         candidate,
-        Array.from({ length: repetitions }, (_, index) => ({
-          checkpoints:
-            phase === "allowed" || phase === "recovered"
-              ? evaluationProfile.checkpoints.map((checkpoint) => ({
-                  checkpoint,
-                  elapsedMs: 1,
-                  status: "passed",
-                }))
-              : [],
-          elapsedMs:
-            phase === "allowed" || phase === "recovered"
-              ? evaluationProfile.checkpoints.length
-              : 1,
-          repetition: index + 1,
-        })),
+        candidate === "systemEvents"
+          ? []
+          : Array.from({ length: repetitions }, (_, index) => ({
+              checkpoints:
+                phase === "allowed" || phase === "recovered"
+                  ? evaluationProfile.checkpoints.map((checkpoint) => ({
+                      checkpoint,
+                      elapsedMs: 1,
+                      status: "passed",
+                    }))
+                  : [],
+              elapsedMs:
+                phase === "allowed" || phase === "recovered"
+                  ? evaluationProfile.checkpoints.length
+                  : 1,
+              repetition: index + 1,
+            })),
       ]),
     );
     const capture = {

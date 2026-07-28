@@ -120,7 +120,6 @@ const candidateReasonCodes = Object.freeze([
   "missing-or-ambiguous-checkpoint",
   "process-cleanup-failed",
   "surface-unavailable",
-  "system-events-operation-failed",
   "candidate-process-failed",
 ]);
 const CHECKPOINT_TIMEOUT_MS = 2_000;
@@ -155,19 +154,6 @@ function objectiveCBehaviorEntries() {
         `      @${sourceLiteral(checkpoint)}: @[${behavior.observations
           .map((observation) => `@${sourceLiteral(observation)}`)
           .join(", ")}],`,
-    )
-    .join("\n");
-}
-
-function appleScriptBehaviorClauses() {
-  return Object.entries(checkpointBehaviorContract)
-    .map(
-      ([checkpoint, behavior], index) =>
-        `      ${index === 0 ? "if" : "else if"} identifierValue is ${sourceLiteral(
-          checkpoint,
-        )} then\n        set expectedStates to {${behavior.observations
-          .map(sourceLiteral)
-          .join(", ")}}`,
     )
     .join("\n");
 }
@@ -571,134 +557,10 @@ ${checkpointIds.map((id) => `      @${sourceLiteral(id)},`).join("\n")}
 }
 `;
 
-const systemEventsSource = `-- SystemEvents evaluation through AppleScript.
-on closed(statusValue, reasonValue, checkpointPasses)
-  if reasonValue is missing value then
-    set reasonJson to "null"
-  else
-    set reasonJson to "\\"" & reasonValue & "\\""
-  end if
-  return "{\\"status\\":\\"" & statusValue & "\\",\\"reasonCode\\":" & reasonJson & ",\\"prompted\\":false,\\"checkpointPasses\\":" & checkpointPasses & "}"
-end closed
-
+const systemEventsSource = `-- Rejected without Apple Events execution.
+-- A separate Automation-consent boundary prevents authoritative non-prompting evidence.
 on run argv
-  try
-    if (count of argv) is 1 and item 1 of argv is "--probe" then
-      tell application "System Events"
-        if UI elements enabled is false then
-          return my closed("permission-denied", "accessibility-permission-denied", 0)
-        end if
-        count processes
-      end tell
-      return closed("ready", missing value, 0)
-    end if
-    if (count of argv) is not 2 then
-      return closed("invalid-invocation", "invalid-invocation", 0)
-    end if
-    set targetPid to item 1 of argv as integer
-    if targetPid is less than 1 then
-      return closed("invalid-invocation", "invalid-invocation", 0)
-    end if
-    set identifierValue to item 2 of argv
-    set expectedIdentifiers to {${checkpointIds
-      .map((id) => sourceLiteral(id))
-      .join(", ")}}
-    if expectedIdentifiers does not contain identifierValue then
-      return closed("invalid-invocation", "invalid-invocation", 0)
-    end if
-    set actionIdentifiers to {${actionCheckpointIds
-      .map((id) => sourceLiteral(id))
-      .join(", ")}}
-    set staticIdentifiers to {${staticCheckpointIds
-      .map((id) => sourceLiteral(id))
-      .join(", ")}}
-    set singlePressIdentifiers to {${singlePressTransitionIds
-      .map((id) => sourceLiteral(id))
-      .join(", ")}}
-${appleScriptBehaviorClauses()}
-      else
-        return closed("failed", "missing-checkpoint", 0)
-      end if
-    tell application "System Events"
-      set processMatches to every process whose unix id is targetPid
-      if (count of processMatches) is not 1 then
-        return my closed("failed", "surface-unavailable", 0)
-      end if
-      set targetProcess to item 1 of processMatches
-      set axWindows to value of attribute "AXWindows" of targetProcess
-      if (count of axWindows) is not 1 then
-        return my closed("failed", "surface-unavailable", 0)
-      end if
-      set allElements to entire contents of item 1 of axWindows
-      set matchingElements to {}
-      repeat with elementItem in allElements
-        try
-          set elementIdentifier to value of attribute "AXIdentifier" of elementItem
-          if elementIdentifier is identifierValue then
-            set end of matchingElements to contents of elementItem
-          end if
-        end try
-      end repeat
-      if (count of matchingElements) is not 1 then
-        return my closed("failed", "missing-or-ambiguous-checkpoint", 0)
-      end if
-      set targetElement to item 1 of matchingElements
-      if identifierValue is "unicode-ime" then
-        set value of attribute "AXValue" of targetElement to "Καλημέρα 世界"
-        if (value of attribute "AXValue" of targetElement) is not "Καλημέρα 世界" then
-          return my closed("failed", "checkpoint-observation-failed", 0)
-        end if
-      else if identifierValue is "keyboard-focus" then
-        set value of attribute "AXFocused" of targetElement to true
-        if (value of attribute "AXFocused" of targetElement) is not true then
-          return my closed("failed", "checkpoint-observation-failed", 0)
-        end if
-      else if identifierValue is "scaling" then
-        set value of attribute "AXValue" of targetElement to 2
-        if (value of attribute "AXValue" of targetElement) is not 2 then
-          return my closed("failed", "checkpoint-observation-failed", 0)
-        end if
-      else if staticIdentifiers contains identifierValue then
-        if (value of attribute "AXRole" of targetElement) is not "AXStaticText" or (value of attribute "AXValue" of targetElement) is not (item 1 of expectedStates) then
-          return my closed("failed", "checkpoint-observation-failed", 0)
-        end if
-      else if actionIdentifiers contains identifierValue then
-        if singlePressIdentifiers contains identifierValue then
-          perform action "AXPress" of targetElement
-        end if
-        repeat with expectedState in expectedStates
-          if singlePressIdentifiers does not contain identifierValue then
-            perform action "AXPress" of targetElement
-          end if
-          set stateObserved to false
-          set expectedWindowHelp to "Keiko Accessibility Evaluation state:" & (contents of expectedState)
-          set deadlineDate to (current date) + ${CHECKPOINT_TIMEOUT_MS / 1_000}
-          repeat
-            try
-              set refreshedWindows to value of attribute "AXWindows" of targetProcess
-              if (count of refreshedWindows) is 1 and (value of attribute "AXHelp" of item 1 of refreshedWindows) is expectedWindowHelp then
-                set stateObserved to true
-                exit repeat
-              end if
-            end try
-            if (current date) is greater than or equal to deadlineDate then exit repeat
-            delay 0.02
-          end repeat
-          if stateObserved is false then
-            return my closed("failed", "checkpoint-observation-failed", 0)
-          end if
-        end repeat
-      else
-        return my closed("failed", "checkpoint-action-failed", 0)
-      end if
-      return my closed("passed", missing value, 1)
-    end tell
-  on error errorMessage number errorNumber
-    if errorNumber is -1743 or errorNumber is -25211 or errorMessage contains "assistive" or errorMessage contains "not authorized" or errorMessage contains "not permitted" then
-      return closed("permission-denied", "accessibility-permission-denied", 0)
-    end if
-    return closed("failed", "system-events-operation-failed", 0)
-  end try
+  return "{\\"status\\":\\"rejected\\",\\"reasonCode\\":\\"authoritative-evidence-unavailable\\",\\"prompted\\":null,\\"checkpointPasses\\":0}"
 end run
 `;
 
@@ -874,6 +736,13 @@ export async function inspectEvaluationArtifacts(root) {
 export function permissionProbeResult(candidate, allowed) {
   if (!new Set(["axuielement", "systemEvents"]).has(candidate))
     throw new TypeError("unknown-candidate");
+  if (candidate === "systemEvents")
+    return {
+      candidate,
+      prompted: null,
+      reasonCode: "authoritative-evidence-unavailable",
+      status: "rejected",
+    };
   return allowed
     ? {
         candidate,
@@ -981,6 +850,13 @@ export function executeCandidateCheckpoint({
 }) {
   if (!new Set(["axuielement", "systemEvents"]).has(candidate))
     throw new TypeError("unknown-candidate");
+  if (candidate === "systemEvents")
+    return {
+      checkpointPasses: 0,
+      prompted: null,
+      reasonCode: "authoritative-evidence-unavailable",
+      status: "rejected",
+    };
   if (!Object.hasOwn(checkpointBehaviorContract, checkpoint))
     throw new TypeError("unknown-checkpoint");
   if (!Number.isSafeInteger(surfacePid) || surfacePid < 1)
@@ -1291,15 +1167,22 @@ export async function runPhysicalCandidate({
   if (!new Set(["axuielement", "systemEvents"]).has(candidate))
     throw new TypeError("unknown-candidate");
   if (!operatorPhases.has(phase)) throw new TypeError("unknown-capture-phase");
+  if (candidate === "systemEvents") {
+    const output = {
+      candidate,
+      repetition,
+      status: "rejected",
+      checkpointPasses: 0,
+      boundedWait: true,
+      cleanupOwnedDescendants: 0,
+      reasonCode: "authoritative-evidence-unavailable",
+    };
+    if (includeTimings) output.timings = { checkpoints: [], elapsedMs: 0 };
+    return output;
+  }
   const expectsPermission = phase === "allowed" || phase === "recovered";
-  const command =
-    candidate === "axuielement"
-      ? join(root, "AXUIElementCandidate")
-      : "/usr/bin/osascript";
-  const probeArgs =
-    candidate === "axuielement"
-      ? []
-      : [join(root, "sources", "SystemEventsCandidate.applescript"), "--probe"];
+  const command = join(root, "AXUIElementCandidate");
+  const probeArgs = [];
   if (!expectsPermission) {
     const probe = runClosed(command, probeArgs, CHECKPOINT_TIMEOUT_MS);
     const result = classifyCandidateSubprocessOutcome(probe);
@@ -1352,14 +1235,7 @@ export async function runPhysicalCandidate({
     for (const [index, checkpoint] of checkpointIds.entries()) {
       let attemptDurationMs = 0;
       do {
-        const args =
-          candidate === "axuielement"
-            ? [String(surface.pid), checkpoint]
-            : [
-                join(root, "sources", "SystemEventsCandidate.applescript"),
-                String(surface.pid),
-                checkpoint,
-              ];
+        const args = [String(surface.pid), checkpoint];
         let durationMs = 0;
         parsed = executeCandidateCheckpoint({
           candidate,
@@ -1458,7 +1334,7 @@ export async function runPhysicalCandidate({
   return output;
 }
 
-function closedProbe(probe, candidate) {
+function closedAxuielementProbe(probe) {
   try {
     if (
       probe.timedOut ||
@@ -1474,19 +1350,16 @@ function closedProbe(probe, candidate) {
     )
       throw new Error("invalid-probe");
     return {
-      candidate,
+      candidate: "axuielement",
       prompted: false,
       reasonCode: parsed.reasonCode,
       status: parsed.status,
     };
   } catch {
     return {
-      candidate,
+      candidate: "axuielement",
       prompted: false,
-      reasonCode:
-        candidate === "systemEvents"
-          ? "system-events-probe-unavailable"
-          : "closed-probe-invalid",
+      reasonCode: "closed-probe-invalid",
       status: "unavailable",
     };
   }
@@ -1542,11 +1415,13 @@ export async function compileAndProbeEvaluation(root) {
     };
   }
 
-  const axProbe = closedProbe(runClosed(axBinary, []), "axuielement");
-  const eventsProbe = closedProbe(
-    runClosed("/usr/bin/osascript", [artifacts.systemEventsSource, "--probe"]),
-    "systemEvents",
-  );
+  const axProbe = closedAxuielementProbe(runClosed(axBinary, []));
+  const eventsProbe = {
+    candidate: "systemEvents",
+    prompted: null,
+    reasonCode: "authoritative-evidence-unavailable",
+    status: "rejected",
+  };
   const inspection = await inspectEvaluationArtifacts(root);
   const packageFiles = await filesBelow(artifacts.packageRoot);
   const digest = createHash("sha256");
@@ -1681,6 +1556,19 @@ export function summarizePhysicalRuns(state, runs) {
   };
 }
 
+function rejectedSystemEventsState(phase) {
+  return {
+    status: phase === "recovered" ? "allowed" : phase,
+    repetitions: 0,
+    successfulRepetitions: 0,
+    checkpointPasses: 0,
+    boundedWaits: true,
+    unexplainedFailures: 0,
+    reasonCode: "authoritative-evidence-unavailable",
+    cleanupOwnedDescendants: 0,
+  };
+}
+
 export async function preparePhysicalMatrix(
   root = evaluationArtifactRoot,
   { compile = compileAndProbeEvaluation, sourceDigest, sourceHead } = {},
@@ -1728,7 +1616,7 @@ export async function capturePhysicalMatrixPhase(
   const repetitions = phase === "allowed" ? 20 : 1;
   const options = {};
   const timings = {};
-  for (const candidate of ["axuielement", "systemEvents"]) {
+  for (const candidate of ["axuielement"]) {
     const runs = [];
     for (let repetition = 1; repetition <= repetitions; repetition += 1) {
       const run = await runCandidate({
@@ -1752,6 +1640,8 @@ export async function capturePhysicalMatrixPhase(
       repetition: run.repetition,
     }));
   }
+  options.systemEvents = rejectedSystemEventsState(phase);
+  timings.systemEvents = [];
   const capture = {
     schemaVersion: "keiko-native-macos-accessibility-driver-capture/v1",
     phase,

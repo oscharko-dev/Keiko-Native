@@ -70,7 +70,7 @@
     "platform": "macos",
     "architecture": "arm64",
     "physicalAccessibility": "complete",
-    "physicalRepetitions": 40
+    "physicalRepetitions": 20
   },
   "packageBindings": {
     "foundation": {
@@ -179,59 +179,59 @@
     "systemEvents": {
       "mechanism": "bounded-system-events-extension",
       "evidenceStatus": "complete",
-      "absoluteFailures": [],
+      "absoluteFailures": ["authoritative-evidence-unavailable"],
       "matrixScores": {
-        "checkpointCoverage": 5,
-        "determinism": 5,
+        "checkpointCoverage": 1,
+        "determinism": 1,
         "packageIsolation": 5,
-        "permissionDiagnostics": 4,
+        "permissionDiagnostics": 1,
         "dependencyCost": 5,
         "platformBoundary": 5
       },
-      "physicalRepetitions": 20,
+      "physicalRepetitions": 0,
       "permissionMatrix": {
         "allowed": {
           "status": "allowed",
-          "repetitions": 20,
-          "successfulRepetitions": 20,
-          "checkpointPasses": 320,
+          "repetitions": 0,
+          "successfulRepetitions": 0,
+          "checkpointPasses": 0,
           "boundedWaits": true,
           "unexplainedFailures": 0,
-          "reasonCode": null,
+          "reasonCode": "authoritative-evidence-unavailable",
           "cleanupOwnedDescendants": 0
         },
         "denied": {
           "status": "denied",
-          "repetitions": 1,
+          "repetitions": 0,
           "successfulRepetitions": 0,
           "checkpointPasses": 0,
           "boundedWaits": true,
           "unexplainedFailures": 0,
-          "reasonCode": "accessibility-permission-denied",
+          "reasonCode": "authoritative-evidence-unavailable",
           "cleanupOwnedDescendants": 0
         },
         "revoked": {
           "status": "revoked",
-          "repetitions": 1,
+          "repetitions": 0,
           "successfulRepetitions": 0,
           "checkpointPasses": 0,
           "boundedWaits": true,
           "unexplainedFailures": 0,
-          "reasonCode": "accessibility-permission-denied",
+          "reasonCode": "authoritative-evidence-unavailable",
           "cleanupOwnedDescendants": 0
         },
         "recovered": {
           "status": "allowed",
-          "repetitions": 1,
-          "successfulRepetitions": 1,
-          "checkpointPasses": 16,
+          "repetitions": 0,
+          "successfulRepetitions": 0,
+          "checkpointPasses": 0,
           "boundedWaits": true,
           "unexplainedFailures": 0,
-          "reasonCode": null,
+          "reasonCode": "authoritative-evidence-unavailable",
           "cleanupOwnedDescendants": 0
         }
       },
-      "diagnostics": "Closed AppleScript reason codes, UI-elements-enabled permission probing, two-second per-checkpoint subprocess bounds, a separate bounded five-second natural-quit observation, and zero-owned-descendant cleanup were verified physically on macOS 26.5.1 build 25F80, Mac16,1 arm64, Apple clang 21.0.0, Node 24.18.0. The retained 20-run distribution spans 6755-8254 ms per journey (mean 7157 ms), with a 1525 ms maximum checkpoint observation; AppleScript remains less typed than AXUIElement.",
+      "diagnostics": "System Events is rejected before any Apple Events probe, process launch, or checkpoint operation. Its separate Automation-consent boundary cannot provide authoritative non-prompting evidence under this issue; prompt state remains unknown and error -1743 is not classified as Accessibility denial.",
       "dependencyInventory": ["macOS System Events system application"],
       "licenseInventory": [
         "macOS platform terms; no third-party repository dependency, redistribution, or notice"
