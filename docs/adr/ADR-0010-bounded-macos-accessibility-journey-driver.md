@@ -20,25 +20,28 @@ The retained evaluation uses one fixed profile with 16 semantic checkpoints:
 - keyboard focus, VoiceOver-compatible semantics, appearance and contrast, reduced-motion
   applicability, scaling, and Unicode/IME input.
 
-The external AXUIElement adapter and bounded System Events script each completed 20 clean allowed
-repetitions against the same generated representative package. Each candidate passed 320 of 320
-checkpoint operations, used two-second per-checkpoint subprocess bounds plus a separate bounded
-five-second natural-quit observation, produced zero unexplained failures, and left zero owned
-descendants. AXUIElement journeys took 3032–3921 ms (3146 ms mean); System Events journeys took
-8873–10237 ms (9050 ms mean). AXUIElement also failed closed under denied and revoked Accessibility
-permission and recovered through a fresh process after permission was restored.
+The external AXUIElement adapter completed 20 clean allowed repetitions against the generated
+representative package. It passed 320 of 320 checkpoint operations, used two-second per-checkpoint
+subprocess bounds plus a separate bounded five-second natural-quit observation, produced zero
+unexplained failures, and left zero owned descendants. The journeys took 3009–3392 ms (3192 ms
+mean), with an 838 ms maximum checkpoint observation. AXUIElement also failed closed under denied
+and revoked Accessibility permission and recovered through a fresh process after permission was
+restored.
 
-The System Events runs used an already-authorized Apple Events Automation relationship. A clean
-runner may encounter the separate Automation-consent boundary before System Events can report
-Accessibility state. Apple Event error `-1743` is Automation denial, not Accessibility denial, and
-an AppleScript result containing `prompted=false` cannot prove that macOS displayed no consent
-prompt before the script returned. The evaluation did not establish a non-prompting preflight for
-that boundary, so System Events fails the `authoritative-evidence-unavailable` absolute gate. The
-no-driver baseline cannot machine-evaluate the declared checkpoints.
+The same predeclared profile and absolute criteria were applied to System Events before candidate
+activity. System Events cannot report Accessibility state until it crosses a separate Apple Events
+Automation-consent boundary, and the evaluation found no non-prompting preflight for that boundary.
+Apple Event error `-1743` is Automation denial, not Accessibility denial, and an AppleScript result
+containing `prompted=false` cannot prove that macOS displayed no consent prompt before the script
+returned. System Events therefore failed the `authoritative-evidence-unavailable` absolute gate
+before any Apple Events probe, process launch, or checkpoint. Continuing the workload would have
+crossed an unauthenticated permission boundary, so all retained System Events phases contain zero
+repetitions and zero operations. The no-driver baseline cannot machine-evaluate the declared
+checkpoints.
 
-The fixed weighted matrix selected AXUIElement with 490 points. System Events scored 485 on the
-measured workload but is rejected by the `authoritative-evidence-unavailable` absolute gate. The
-no-driver baseline scored 260 and failed the absolute `missing-automatable-checkpoint` gate.
+The fixed weighted matrix selected AXUIElement with 490 points. System Events scored 260 and is
+rejected by the `authoritative-evidence-unavailable` absolute gate. The no-driver baseline also
+scored 260 and failed the absolute `missing-automatable-checkpoint` gate.
 
 The exact-head ADR-0006 package gate independently passed with closed acceptance evidence, normal
 shutdown, zero owned descendants, and no evaluation marker in the Foundation package. The
@@ -101,12 +104,11 @@ automation mutates the macOS privacy database.
 AXUIElement is selected because it passed every absolute gate, supplies a typed API/error boundary,
 and received the matrix's full permission and diagnostics score. System Events has the smaller
 build footprint, but its AppleScript boundary is less typed and crosses a separate Apple Events
-Automation-consent boundary. The retained Accessibility-state results remain measured dissenting
-evidence from an already-authorized environment; they do not authenticate clean-runner,
-non-prompting operation. This decision treats error `-1743` and an unknown Automation-consent state
-as `authoritative-evidence-unavailable`; it does not accept the rejected prototype's classification
-as Accessibility denial. The candidate is therefore rejected regardless of its five-point
-weighted-score difference.
+Automation-consent boundary. The final candidate is an inert rejection artifact: it performs no
+Apple Events activity and records the prompt state as unknown. This decision treats error `-1743`
+and an unknown Automation-consent state as `authoritative-evidence-unavailable`; it does not accept
+the rejected prototype's classification as Accessibility denial. Interim measurements from an
+already-authorized environment are superseded and are not selection evidence.
 
 ### Platform and ownership boundary
 
@@ -124,23 +126,23 @@ Its principal bindings are:
 
 - issue #111 contract v3 readiness fingerprint
   `6d95dc95700c17a2d29850d1f517ad45c53df4a95318e3ae482f7d32d5dc75d7`;
-- evaluation head `826f456df60cb5da6a5c8e814005836dc1fc78b1`;
+- evaluation head `edd50520f02b9d0e5d4a5400f01a6d5bd7743346`;
 - evaluation source SHA-256
-  `cca20f5a35d41c89b2bce0f28960b1ac66404df957fa5aa7b39f2b40d975d9ee`;
+  `52819186f444da1e2a80e8b8ff9cf27eafa54d2771c69e03848a744b62ed8bac`;
 - prepared evidence SHA-256
-  `c08eb729d9f75795022a6b8854d951170af8bd7e10a25725ec0ccebd12cbc888`;
+  `d47211f6b6f247670c100c9759cbbd038d761e78d95e66a5c1bd2963b0250e2a`;
 - allowed capture SHA-256
-  `f3618e0874aa4b1e4967994e11959d9fdab92ac883362e04cd2af40e2ffd9b3a`;
+  `2f90956502e904fc9e1182d824a86a889ac83dabd3b9279968cea4859d223512`;
 - denied capture SHA-256
-  `7691163736deff1c0704a218b76dc7919245dd215ddf857f7c372cefe424d000`;
+  `6700a8e5363060e3f48989de9fa7cfb0650e7af929bab4e5a9d020536d7fc553`;
 - revoked capture SHA-256
-  `6e062042fa20326637f55ab6a285196cfda9ed2cd27df60f15bf23480de1658a`;
+  `7e60b66806a11894db639f6eb5190a38762ccafacae2d1d397f9d9c7c9ad2adf`;
 - recovered capture SHA-256
-  `93fe61c9ca7023a3480b0768467a52471655e56059f981aa56b41bbcdf12c70d`;
+  `7e7c72f7087cff746d43696687dafb9e28c7311119d636cef0fdd3f9afea1fee`;
 - Foundation acceptance evidence SHA-256
-  `ab0a93a9f1df9c03a05582c7f7d8153e0e14a20c2001ee035bd82f3ed3e5f902`;
+  `88cafe54634c05b865a3aa01adaeeacc44ad1cd3ab5b90293f65f022a49a600e`;
 - Foundation package-manifest SHA-256
-  `70c515d8c70a94194202f06feec0e5f636d7ff59c06bffd3987e94d1dc759cca`;
+  `79ccf9312b811721c21fcbc367b71d25d554bbff50ff862dff7668d562a8e16d`;
   and
 - representative package SHA-256
   `9221319c3d37bdd7c2e36c0558f039d60d1aa3b3223f49668c3b4fa7aedf3e0c`.

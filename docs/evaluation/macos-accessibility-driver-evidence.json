@@ -6,18 +6,18 @@
     "contractVersion": "v3",
     "readinessFingerprint": "6d95dc95700c17a2d29850d1f517ad45c53df4a95318e3ae482f7d32d5dc75d7",
     "frozenBaseHead": "f8228706a5d60c5e85fa8e5ab576a64b3542c4ea",
-    "evaluationHead": "826f456df60cb5da6a5c8e814005836dc1fc78b1",
-    "evaluationSourceSha256": "cca20f5a35d41c89b2bce0f28960b1ac66404df957fa5aa7b39f2b40d975d9ee",
-    "preparedEvidenceSha256": "c08eb729d9f75795022a6b8854d951170af8bd7e10a25725ec0ccebd12cbc888",
-    "allowedCaptureSha256": "f3618e0874aa4b1e4967994e11959d9fdab92ac883362e04cd2af40e2ffd9b3a",
-    "deniedCaptureSha256": "7691163736deff1c0704a218b76dc7919245dd215ddf857f7c372cefe424d000",
-    "revokedCaptureSha256": "6e062042fa20326637f55ab6a285196cfda9ed2cd27df60f15bf23480de1658a",
-    "recoveredCaptureSha256": "93fe61c9ca7023a3480b0768467a52471655e56059f981aa56b41bbcdf12c70d",
-    "foundationPackageSha256": "70c515d8c70a94194202f06feec0e5f636d7ff59c06bffd3987e94d1dc759cca",
-    "foundationEvidenceSha256": "ab0a93a9f1df9c03a05582c7f7d8153e0e14a20c2001ee035bd82f3ed3e5f902",
+    "evaluationHead": "edd50520f02b9d0e5d4a5400f01a6d5bd7743346",
+    "evaluationSourceSha256": "52819186f444da1e2a80e8b8ff9cf27eafa54d2771c69e03848a744b62ed8bac",
+    "preparedEvidenceSha256": "d47211f6b6f247670c100c9759cbbd038d761e78d95e66a5c1bd2963b0250e2a",
+    "allowedCaptureSha256": "2f90956502e904fc9e1182d824a86a889ac83dabd3b9279968cea4859d223512",
+    "deniedCaptureSha256": "6700a8e5363060e3f48989de9fa7cfb0650e7af929bab4e5a9d020536d7fc553",
+    "revokedCaptureSha256": "7e60b66806a11894db639f6eb5190a38762ccafacae2d1d397f9d9c7c9ad2adf",
+    "recoveredCaptureSha256": "7e7c72f7087cff746d43696687dafb9e28c7311119d636cef0fdd3f9afea1fee",
+    "foundationPackageSha256": "79ccf9312b811721c21fcbc367b71d25d554bbff50ff862dff7668d562a8e16d",
+    "foundationEvidenceSha256": "88cafe54634c05b865a3aa01adaeeacc44ad1cd3ab5b90293f65f022a49a600e",
     "representativePackageSha256": "9221319c3d37bdd7c2e36c0558f039d60d1aa3b3223f49668c3b4fa7aedf3e0c",
     "axuielementCandidateSha256": "067860e0e034bea56c66816302fc7ceb76a93696b246a4a743a63db7ddc4ab6b",
-    "systemEventsCandidateSha256": "b547fe7c6e1bf0eea063ea40552fce1363aa1982556179a903fd13c49775fa7a"
+    "systemEventsCandidateSha256": "40a389c429c149259897b3eba79368e5f8fb0a85356581d3d2e2e6676b687287"
   },
   "commonProfile": {
     "profileId": "epic-98-packaged-journey/v1",
@@ -70,7 +70,7 @@
     "platform": "macos",
     "architecture": "arm64",
     "physicalAccessibility": "complete",
-    "physicalRepetitions": 40
+    "physicalRepetitions": 20
   },
   "packageBindings": {
     "foundation": {
@@ -164,7 +164,7 @@
           "cleanupOwnedDescendants": 0
         }
       },
-      "diagnostics": "Exact AXUIElement errors, closed reason codes, two-second per-checkpoint subprocess bounds, a separate bounded five-second natural-quit observation, and zero-owned-descendant cleanup were verified physically on macOS 26.5.1 build 25F80, Mac16,1 arm64, Apple clang 21.0.0, Node 24.18.0. The retained 20-run distribution spans 3032-3921 ms per journey (mean 3146 ms), with an 812 ms maximum checkpoint observation.",
+      "diagnostics": "Exact AXUIElement errors, closed reason codes, two-second per-checkpoint subprocess bounds, a separate bounded five-second natural-quit observation, and zero-owned-descendant cleanup were verified physically on macOS 26.5.1 build 25F80, Mac16,1 arm64, Apple clang 21.0.0, Node 24.18.0. The retained 20-run distribution spans 3009-3392 ms per journey (mean 3192 ms), with an 838 ms maximum checkpoint observation.",
       "dependencyInventory": [
         "macOS ApplicationServices AXUIElement system API"
       ],
@@ -181,57 +181,57 @@
       "evidenceStatus": "complete",
       "absoluteFailures": ["authoritative-evidence-unavailable"],
       "matrixScores": {
-        "checkpointCoverage": 5,
-        "determinism": 5,
+        "checkpointCoverage": 1,
+        "determinism": 1,
         "packageIsolation": 5,
-        "permissionDiagnostics": 4,
+        "permissionDiagnostics": 1,
         "dependencyCost": 5,
         "platformBoundary": 5
       },
-      "physicalRepetitions": 20,
+      "physicalRepetitions": 0,
       "permissionMatrix": {
         "allowed": {
           "status": "allowed",
-          "repetitions": 20,
-          "successfulRepetitions": 20,
-          "checkpointPasses": 320,
+          "repetitions": 0,
+          "successfulRepetitions": 0,
+          "checkpointPasses": 0,
           "boundedWaits": true,
           "unexplainedFailures": 0,
-          "reasonCode": null,
+          "reasonCode": "authoritative-evidence-unavailable",
           "cleanupOwnedDescendants": 0
         },
         "denied": {
           "status": "denied",
-          "repetitions": 1,
+          "repetitions": 0,
           "successfulRepetitions": 0,
           "checkpointPasses": 0,
           "boundedWaits": true,
           "unexplainedFailures": 0,
-          "reasonCode": "accessibility-permission-denied",
+          "reasonCode": "authoritative-evidence-unavailable",
           "cleanupOwnedDescendants": 0
         },
         "revoked": {
           "status": "revoked",
-          "repetitions": 1,
+          "repetitions": 0,
           "successfulRepetitions": 0,
           "checkpointPasses": 0,
           "boundedWaits": true,
           "unexplainedFailures": 0,
-          "reasonCode": "accessibility-permission-denied",
+          "reasonCode": "authoritative-evidence-unavailable",
           "cleanupOwnedDescendants": 0
         },
         "recovered": {
           "status": "allowed",
-          "repetitions": 1,
-          "successfulRepetitions": 1,
-          "checkpointPasses": 16,
+          "repetitions": 0,
+          "successfulRepetitions": 0,
+          "checkpointPasses": 0,
           "boundedWaits": true,
           "unexplainedFailures": 0,
-          "reasonCode": null,
+          "reasonCode": "authoritative-evidence-unavailable",
           "cleanupOwnedDescendants": 0
         }
       },
-      "diagnostics": "The retained 20-run distribution spans 8873-10237 ms per journey (mean 9050 ms), with an 1824 ms maximum checkpoint observation, bounded waits, and zero owned descendants on macOS 26.5.1 build 25F80, Mac16,1 arm64, Apple clang 21.0.0, Node 24.18.0. Those runs used an already-authorized Apple Events Automation relationship to System Events. A clean runner may require separate Automation consent before Accessibility can be queried; Apple Event error -1743 is Automation denial, not Accessibility denial, and a script-level prompted=false field cannot prove that macOS showed no consent prompt. Because the evaluation did not preflight that separate boundary without prompting, System Events fails the authoritative-evidence-unavailable absolute gate and its permission evidence is not accepted for selection.",
+      "diagnostics": "System Events is rejected statically before any Apple Events probe, process launch, or checkpoint because a non-prompting Automation-consent preflight is unavailable. Every phase therefore records zero repetitions, zero journey operations, zero descendants, reason authoritative-evidence-unavailable, and an unknown prompt state. Apple Event error -1743 is Automation denial rather than Accessibility denial and is not used as permission evidence.",
       "dependencyInventory": ["macOS System Events system application"],
       "licenseInventory": [
         "macOS platform terms; no third-party repository dependency, redistribution, or notice"
