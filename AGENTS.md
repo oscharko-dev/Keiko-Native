@@ -237,5 +237,25 @@ variable promotes it. The harness derives disposable `epic/**` targets from thei
 parent issues, uses a separate parent for stale-base concurrency, reads each prohibited target's
 actual tip, and proves an absent `main` ref without creating it.
 
+ADR-0011 defines the protected lifecycle handoff's durable record and producer protocol. Protected
+`dev` workflows use only the built-in `github-actions[bot]` with short-lived `GITHUB_TOKEN`
+permissions. Strict append-only issue-comment records bind canonical generations, producer results,
+phase/fence claims, and transition read-backs. Post-publication GitHub-native attestations bind each
+provider comment ID, exact body digest, record digest, and protected writer run in an immutable
+per-issue artifact anchor that detects an unreferenced suffix deletion. Attested
+transition/read-back checkpoints bound the live suffix to 15 records; cursor recovery advances
+without effects through authenticated, domain-separated root and resumed accumulator steps when
+comment history exceeds the normal two-page load. Per-issue `queue: max` serialization and the
+repository-wide lifecycle provider-budget group prevent lifecycle quota races. Empty history uses
+an exact sequence-one null-root compacted-prefix preimage. A protected
+forward recovery settlement can quarantine only one request-bound, independently verified
+comment-before-anchor orphan without treating it as a record or predecessor. Complete pagination,
+expected App/workflow/run authentication, stable rereads, and exact predecessor chains fail closed
+on deleted, stale, conflicting, malformed, truncated, wrong-generation, rate-limited, or unavailable
+evidence. No added account, installed App, PAT, broker, database, service, application/runtime
+dependency, or second credential is permitted. The protocol remains inert until Issue #55's signed
+activation; it grants no pre-activation lifecycle, status, branch, pull-request, queue, or merge
+effect.
+
 Before pushing, review the full diff against the task requirements, trust boundaries, failure modes,
 and every affected gate. Use GitHub only for remote-only evidence, not as the primary test loop.

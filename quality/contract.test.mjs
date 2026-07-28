@@ -1361,6 +1361,930 @@ ${contradiction}
   );
 });
 
+test("pins the authenticated lifecycle handoff record decision", async () => {
+  const root = join(import.meta.dirname, "..");
+  const normalizeLf = (source) => source.replaceAll("\r\n", "\n");
+  const sources = await Promise.all([
+    readFile(
+      join(
+        root,
+        "docs/adr/ADR-0011-authenticated-lifecycle-handoff-record-protocol.md",
+      ),
+      "utf8",
+    ),
+    readFile(join(root, "docs/adr/README.md"), "utf8"),
+    readFile(join(root, "AGENTS.md"), "utf8"),
+    readFile(join(root, "docs/qa/issue-lifecycle.md"), "utf8"),
+    readFile(join(root, "docs/qa/quality-gates.md"), "utf8"),
+    readFile(join(root, "docs/qa/repository-activation.md"), "utf8"),
+  ]);
+  const [adr, index, agents, lifecycle, gates, activation] =
+    sources.map(normalizeLf);
+  const projections = [agents, lifecycle, gates, activation];
+  const recordSection = (heading, nextHeading, source = adr) => {
+    const normalizedSource = normalizeLf(source);
+    const start = normalizedSource.indexOf(`### ${heading}`);
+    const end = normalizedSource.indexOf(`### ${nextHeading}`, start + 1);
+    assert.notEqual(start, -1, heading);
+    assert.notEqual(end, -1, nextHeading);
+    return normalizedSource.slice(start, end);
+  };
+  const recordFields = (heading, nextHeading) => {
+    return [
+      ...recordSection(heading, nextHeading).matchAll(
+        /^\d+\. `([a-z0-9_]+)`: /gmu,
+      ),
+    ].map((match) => match[1]);
+  };
+  const recordSchema = (heading, nextHeading, source = adr) => {
+    return [
+      ...recordSection(heading, nextHeading, source).matchAll(
+        /^\d+\. `([a-z0-9_]+)`: ([\s\S]*?)(?=^\d+\. `|^\n)/gmu,
+      ),
+    ].map(
+      (match) =>
+        `${match[1]}:${match[2]
+          .replace(/\n\s+/gu, " ")
+          .replaceAll("`", "")
+          .replace(/\s+/gu, " ")
+          .trim()}`,
+    );
+  };
+  const asCrLf = (source) => normalizeLf(source).replaceAll("\n", "\r\n");
+  for (const [name, source] of [
+    ["ADR-0011", adr],
+    ["ADR index", index],
+    ["AGENTS projection", agents],
+    ["lifecycle projection", lifecycle],
+    ["quality-gates projection", gates],
+    ["activation projection", activation],
+  ]) {
+    assert.equal(
+      normalizeLf(asCrLf(source)),
+      source,
+      `${name} CRLF normalization`,
+    );
+  }
+  const expectedRecordFields = {
+    "Generation request v1": [
+      "record_type",
+      "schema_version",
+      "digest_algorithm",
+      "digest_domain",
+      "repository",
+      "issue_number",
+      "pull_request_number",
+      "exact_head_sha",
+      "exact_target",
+      "lane",
+      "publication_submode",
+      "generation_schema",
+      "generation_bytes_sha256",
+      "generation_identity",
+      "attempt",
+      "request_identity",
+      "request_payload_digest",
+      "expected_producers",
+      "source_observation_identity",
+      "predecessor_comment_id",
+      "predecessor_record_digest",
+      "workflow_path",
+      "workflow_run_id",
+      "workflow_run_attempt",
+      "protected_dev_sha",
+      "recorded_at",
+    ],
+    "Producer result v1": [
+      "record_type",
+      "schema_version",
+      "digest_algorithm",
+      "digest_domain",
+      "repository",
+      "issue_number",
+      "pull_request_number",
+      "exact_head_sha",
+      "exact_target",
+      "generation_identity",
+      "attempt",
+      "request_identity",
+      "generation_request_comment_id",
+      "generation_request_digest",
+      "phase_fence_comment_id",
+      "phase_fence_digest",
+      "expected_producer",
+      "producer_contract_version",
+      "workflow_path",
+      "workflow_id",
+      "workflow_run_id",
+      "workflow_run_attempt",
+      "workflow_job_id",
+      "result_identity",
+      "protected_dev_sha",
+      "provider_observation_identity",
+      "conclusion",
+      "reason_code",
+      "predecessor_comment_id",
+      "predecessor_record_digest",
+      "recorded_at",
+    ],
+    "Phase/fence claim v1": [
+      "record_type",
+      "schema_version",
+      "digest_algorithm",
+      "digest_domain",
+      "repository",
+      "issue_number",
+      "pull_request_number",
+      "exact_head_sha",
+      "generation_identity",
+      "attempt",
+      "request_identity",
+      "phase",
+      "fence_sequence",
+      "fence_identity",
+      "owner_workflow_path",
+      "owner_run_id",
+      "owner_run_attempt",
+      "source_observation_identity",
+      "claim_outcome",
+      "recovery_scan_identity",
+      "recovery_scanned_page_count",
+      "recovery_scanned_comment_count",
+      "recovery_accumulated_suffix_identity",
+      "recovery_provider_cursor",
+      "recovery_scan_complete",
+      "recovery_settlement_identity",
+      "predecessor_comment_id",
+      "predecessor_record_digest",
+      "protected_dev_sha",
+      "recorded_at",
+    ],
+    "Transition/read-back v1": [
+      "record_type",
+      "schema_version",
+      "digest_algorithm",
+      "digest_domain",
+      "repository",
+      "issue_number",
+      "pull_request_number",
+      "exact_head_sha",
+      "exact_target",
+      "generation_identity",
+      "attempt",
+      "request_identity",
+      "phase_fence_comment_id",
+      "phase_fence_digest",
+      "source_state",
+      "desired_state",
+      "observed_state",
+      "transition_owner",
+      "effect_identity",
+      "read_back_identity",
+      "producer_results",
+      "checkpoint_sequence",
+      "prior_checkpoint_comment_id",
+      "prior_checkpoint_record_digest",
+      "compacted_prefix_identity",
+      "outcome",
+      "reason_code",
+      "predecessor_comment_id",
+      "predecessor_record_digest",
+      "protected_dev_sha",
+      "recorded_at",
+    ],
+  };
+  const expectedRecordSchemas = {
+    "Generation request v1":
+      "record_type:enum generation-request|schema_version:uint 1|digest_algorithm:enum sha-256|digest_domain:enum keiko-native.lifecycle-record.generation-request|repository:string|issue_number:uint|pull_request_number:uint or explicit null|exact_head_sha:commit or explicit null|exact_target:string or explicit null|lane:enum normal, publication, or not-applicable|publication_submode:enum ordinary, migration, or not-applicable|generation_schema:uint 1|generation_bytes_sha256:SHA-256|generation_identity:SHA-256|attempt:uint|request_identity:SHA-256|request_payload_digest:SHA-256|expected_producers:sorted set of closed producer identities|source_observation_identity:SHA-256|predecessor_comment_id:uint or explicit null|predecessor_record_digest:SHA-256 or explicit null|workflow_path:closed protected workflow path|workflow_run_id:uint|workflow_run_attempt:uint|protected_dev_sha:commit|recorded_at:timestamp".split(
+        "|",
+      ),
+    "Producer result v1":
+      "record_type:enum producer-result|schema_version:uint 1|digest_algorithm:enum sha-256|digest_domain:enum keiko-native.lifecycle-record.producer-result|repository:string|issue_number:uint|pull_request_number:uint or explicit null|exact_head_sha:commit or explicit null|exact_target:string or explicit null|generation_identity:SHA-256|attempt:uint|request_identity:SHA-256|generation_request_comment_id:uint|generation_request_digest:SHA-256|phase_fence_comment_id:uint|phase_fence_digest:SHA-256|expected_producer:closed producer identity|producer_contract_version:uint|workflow_path:closed protected workflow path|workflow_id:uint|workflow_run_id:uint|workflow_run_attempt:uint|workflow_job_id:uint|result_identity:SHA-256|protected_dev_sha:commit|provider_observation_identity:SHA-256|conclusion:enum success, failure, cancelled, timed-out, or unavailable|reason_code:closed redacted enum|predecessor_comment_id:uint|predecessor_record_digest:SHA-256|recorded_at:timestamp".split(
+        "|",
+      ),
+    "Phase/fence claim v1":
+      "record_type:enum phase-fence-claim|schema_version:uint 1|digest_algorithm:enum sha-256|digest_domain:enum keiko-native.lifecycle-record.phase-fence-claim|repository:string|issue_number:uint|pull_request_number:uint or explicit null|exact_head_sha:commit or explicit null|generation_identity:SHA-256|attempt:uint|request_identity:SHA-256|phase:enum request, phase-one, mutation, phase-two, terminal, or recovery|fence_sequence:uint|fence_identity:SHA-256|owner_workflow_path:closed protected coordinator path|owner_run_id:uint|owner_run_attempt:uint|source_observation_identity:SHA-256|claim_outcome:enum claimed, settled, abandoned, ambiguous, or superseded|recovery_scan_identity:SHA-256 or explicit null|recovery_scanned_page_count:uint|recovery_scanned_comment_count:uint|recovery_accumulated_suffix_identity:SHA-256 or explicit null|recovery_provider_cursor:string or explicit null|recovery_scan_complete:bool|recovery_settlement_identity:SHA-256 or explicit null|predecessor_comment_id:uint or explicit null|predecessor_record_digest:SHA-256 or explicit null|protected_dev_sha:commit|recorded_at:timestamp".split(
+        "|",
+      ),
+    "Transition/read-back v1":
+      "record_type:enum transition-read-back|schema_version:uint 1|digest_algorithm:enum sha-256|digest_domain:enum keiko-native.lifecycle-record.transition-read-back|repository:string|issue_number:uint|pull_request_number:uint or explicit null|exact_head_sha:commit or explicit null|exact_target:string or explicit null|generation_identity:SHA-256|attempt:uint|request_identity:SHA-256|phase_fence_comment_id:uint|phase_fence_digest:SHA-256|source_state:lifecycle-observation enum|desired_state:lifecycle-observation enum|observed_state:lifecycle-observation enum|transition_owner:enum request, assignment, pull-request, handoff, closure, reopen, invalidation, or recovery|effect_identity:SHA-256 or explicit null|read_back_identity:SHA-256|producer_results:sorted set of exact producer-result-reference members|checkpoint_sequence:uint|prior_checkpoint_comment_id:uint or explicit null|prior_checkpoint_record_digest:SHA-256 or explicit null|compacted_prefix_identity:SHA-256|outcome:enum planned, no-op, applied, denied, failed, abandoned, ambiguous, or superseded|reason_code:closed redacted enum|predecessor_comment_id:uint|predecessor_record_digest:SHA-256|protected_dev_sha:commit|recorded_at:timestamp".split(
+        "|",
+      ),
+  };
+  const recordHeadings = Object.keys(expectedRecordFields);
+  for (const [heading, fields] of Object.entries(expectedRecordFields)) {
+    const headingIndex = recordHeadings.indexOf(heading);
+    const nextHeading =
+      recordHeadings[headingIndex + 1] ??
+      "Record authentication and chain reconstruction";
+    assert.deepEqual(recordFields(heading, nextHeading), fields, heading);
+    assert.deepEqual(
+      recordSchema(heading, nextHeading),
+      expectedRecordSchemas[heading],
+      `${heading} types`,
+    );
+    const crlfAdr = asCrLf(adr);
+    assert.equal(asCrLf(crlfAdr), crlfAdr, `${heading} CRLF fixture`);
+    assert.deepEqual(
+      recordSchema(heading, nextHeading, crlfAdr),
+      expectedRecordSchemas[heading],
+      `${heading} CRLF types`,
+    );
+  }
+
+  assert.match(
+    index,
+    /ADR-0011: Authenticated lifecycle handoff record protocol/iu,
+  );
+  assert.match(
+    adr,
+    /Adopt Option A[\s\S]{0,600}github-actions\[bot\][\s\S]{0,600}short-lived[\s\S]{0,200}`GITHUB_TOKEN`/iu,
+  );
+  assert.match(
+    adr,
+    /no added[\s\S]{0,80}account[\s\S]{0,180}installed App[\s\S]{0,180}(?:PAT|personal access token)[\s\S]{0,180}broker[\s\S]{0,180}(?:database|hosted service)/iu,
+  );
+
+  for (const marker of [
+    "keiko-native-lifecycle-generation-request:v1",
+    "keiko-native-lifecycle-producer-result:v1",
+    "keiko-native-lifecycle-phase-fence-claim:v1",
+    "keiko-native-lifecycle-transition-read-back:v1",
+  ])
+    assert.match(adr, new RegExp(marker, "u"));
+
+  for (const domain of [
+    "keiko-native.lifecycle-record.generation-request",
+    "keiko-native.lifecycle-record.producer-result",
+    "keiko-native.lifecycle-record.phase-fence-claim",
+    "keiko-native.lifecycle-record.transition-read-back",
+    "keiko-native.lifecycle-input-generation",
+  ])
+    assert.match(adr, new RegExp(domain.replaceAll(".", String.raw`\.`), "u"));
+  const expectedAuxiliaryDomains = {
+    "request identity": "keiko-native.lifecycle-request-identity",
+    "request payload": "keiko-native.lifecycle-request-payload",
+    "source observation": "keiko-native.lifecycle-source-observation",
+    "fence identity": "keiko-native.lifecycle-fence-identity",
+    "result identity": "keiko-native.lifecycle-result-identity",
+    "provider observation": "keiko-native.lifecycle-provider-observation",
+    "effect identity": "keiko-native.lifecycle-effect-identity",
+    "read-back identity": "keiko-native.lifecycle-read-back-identity",
+    "publication candidate set": "keiko-native.lifecycle-candidate-set",
+    "compacted prefix": "keiko-native.lifecycle-compacted-prefix-identity",
+    "checkpoint identity": "keiko-native.lifecycle-checkpoint-identity",
+    "recovery suffix accumulator":
+      "keiko-native.lifecycle-recovery-suffix-identity",
+    "recovery scan identity": "keiko-native.lifecycle-recovery-scan-identity",
+    "recovery target": "keiko-native.lifecycle-recovery-target-identity",
+    "recovery settlement":
+      "keiko-native.lifecycle-recovery-settlement-identity",
+    "artifact anchor": "keiko-native.lifecycle-artifact-anchor",
+  };
+  const auxiliaryDomainSection = adr.match(
+    /Every auxiliary identity[\s\S]+?fixed domain:\n\n([\s\S]+?)\n\nThat list is/u,
+  );
+  assert.ok(auxiliaryDomainSection, "auxiliary identity domain list");
+  const actualAuxiliaryDomains = [
+    ...auxiliaryDomainSection[1].matchAll(/^- ([^:]+): `([^`]+)`$/gmu),
+  ].map((match) => [match[1], match[2]]);
+  assert.equal(
+    actualAuxiliaryDomains.length,
+    Object.keys(expectedAuxiliaryDomains).length,
+  );
+  assert.equal(
+    new Set(actualAuxiliaryDomains.map(([identity]) => identity)).size,
+    actualAuxiliaryDomains.length,
+  );
+  assert.deepEqual(
+    actualAuxiliaryDomains,
+    Object.entries(expectedAuxiliaryDomains),
+  );
+  assert.match(
+    adr,
+    /fields are\s+exactly, in order: `digest_domain` as an `enum`[\s\S]{0,240}`schema_version` as `uint` `1`[\s\S]{0,160}`digest_algorithm` as `enum` `sha-256`/iu,
+  );
+
+  const expectedReasonCodes = [
+    "ok",
+    "activation-disabled",
+    "not-applicable",
+    "unauthorized",
+    "invalid-schema",
+    "malformed-record",
+    "stale-generation",
+    "fence-lost",
+    "producer-mismatch",
+    "evidence-incomplete",
+    "provider-rejected",
+    "provider-conflict",
+    "provider-rate-limited",
+    "provider-timeout",
+    "provider-unavailable",
+    "read-back-mismatch",
+    "ambiguous-effect",
+    "recovery-required",
+    "superseded",
+  ];
+  const reasonParagraph = adr.match(
+    /The closed reason-code enum is exactly ([\s\S]+?)\. Provider status/u,
+  );
+  assert.ok(reasonParagraph, "closed reason-code enum");
+  assert.deepEqual(
+    [...reasonParagraph[1].matchAll(/`([^`]+)`/gu)].map((match) => match[1]),
+    expectedReasonCodes,
+  );
+
+  const expectedAuxiliarySchemas = {
+    "request identity": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "pull_request_number:uint-or-null",
+      "exact_head_sha:commit-or-null",
+      "exact_target:string-or-null",
+      "generation_identity:sha256",
+      "attempt:uint",
+      "request_payload_digest:sha256",
+      "expected_producers:set<producer>",
+      "predecessor_comment_id:uint-or-null",
+      "predecessor_record_digest:sha256-or-null",
+    ],
+    "request payload": [
+      "schema_version:uint=1",
+      "request_kind:enum(event-reconciliation,planner-request,pause-request,recovery-request,scheduled-reconciliation)",
+      "requested_state:requested-lifecycle-state-or-null",
+      "request_owner:enum(planner,assignment,pull-request,handoff,closure,reopen,invalidation,recovery,schedule)",
+      "recovery_target_identity:sha256-or-null",
+      "reason_code:closed-reason-code",
+    ],
+    "source observation": [
+      "schema_version:uint=1",
+      "generation_bytes_sha256:sha256",
+      "observed_state:lifecycle-observation",
+      "issue_updated_at:timestamp",
+      "readiness_identity:sha256-or-null",
+      "assignment_identity:sha256",
+      "pr_topology_identity:sha256",
+      "reviews_identity:sha256",
+      "conversations_identity:sha256",
+      "checks_identity:sha256",
+      "evidence_identity:sha256",
+      "activation_identity:sha256",
+    ],
+    "fence identity": [
+      "schema_version:uint=1",
+      "generation_identity:sha256",
+      "attempt:uint",
+      "phase:phase-enum",
+      "fence_sequence:uint",
+      "owner_workflow_path:coordinator-path",
+      "owner_run_id:uint",
+      "owner_run_attempt:uint",
+      "source_observation_identity:sha256",
+      "predecessor_comment_id:uint-or-null",
+      "predecessor_record_digest:sha256-or-null",
+    ],
+    "result identity": [
+      "schema_version:uint=1",
+      "expected_producer:producer",
+      "producer_contract_version:uint",
+      "generation_identity:sha256",
+      "attempt:uint",
+      "phase_fence_digest:sha256",
+      "workflow_path:producer-path",
+      "workflow_id:uint",
+      "workflow_run_id:uint",
+      "workflow_run_attempt:uint",
+      "workflow_job_id:uint",
+      "provider_observation_identity:sha256",
+      "conclusion:producer-conclusion",
+      "reason_code:closed-reason-code",
+    ],
+    "provider observation": [
+      "schema_version:uint=1",
+      "expected_producer:producer",
+      "generation_identity:sha256",
+      "exact_head_sha:commit-or-null",
+      "phase_fence_digest:sha256",
+      "provider_result_id:uint",
+      "provider_result_name:closed-producer-result-name",
+      "provider_result_conclusion:producer-conclusion",
+      "provider_result_sha:commit-or-null",
+      "producer_payload_digest:sha256",
+    ],
+    "effect identity": [
+      "schema_version:uint=1",
+      "generation_identity:sha256",
+      "attempt:uint",
+      "phase_fence_digest:sha256",
+      "source_state:lifecycle-observation",
+      "desired_state:lifecycle-observation",
+      "transition_owner:transition-owner",
+      "mutation:enum(no-effect,set-lifecycle,remove-lifecycle)",
+      "source_observation_identity:sha256",
+    ],
+    "read-back identity": [
+      "schema_version:uint=1",
+      "generation_identity:sha256",
+      "attempt:uint",
+      "phase_fence_digest:sha256",
+      "effect_identity:sha256-or-null",
+      "observed_state:lifecycle-observation",
+      "issue_updated_at:timestamp",
+      "source_observation_identity:sha256",
+    ],
+    "publication candidate set": [
+      "schema_version:uint=1",
+      "exact_commit_sha:commit",
+      "root_tree_sha:tree",
+      "entries:set<candidate-entry>",
+    ],
+    "compacted prefix": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "checkpoint_sequence:uint",
+      "prior_checkpoint_identity:sha256-or-null",
+      "members:list<checkpoint-member>",
+    ],
+    "checkpoint identity": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "checkpoint_sequence:uint",
+      "prior_checkpoint_comment_id:uint-or-null",
+      "prior_checkpoint_record_digest:sha256-or-null",
+      "compacted_prefix_identity:sha256",
+      "chain_tip_comment_id:uint",
+      "chain_tip_record_digest:sha256",
+    ],
+    "recovery suffix accumulator": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "checkpoint_sequence:uint",
+      "scan_direction:enum(backward)",
+      "accumulator_step:uint",
+      "prior_accumulated_suffix_identity:sha256-or-null",
+      "page_members:list<recovery-suffix-member>",
+      "cumulative_member_count:uint",
+      "next_provider_cursor:string-or-null",
+      "complete:bool",
+    ],
+    "recovery scan identity": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "checkpoint_sequence:uint",
+      "scan_direction:enum(backward)",
+      "provider_cursor:string-or-null",
+      "scanned_page_count:uint",
+      "scanned_comment_count:uint",
+      "accumulated_suffix_identity:sha256",
+      "complete:bool",
+    ],
+    "recovery target": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "orphan_comment_id:uint",
+      "orphan_comment_body_sha256:sha256",
+      "orphan_record_digest:sha256",
+      "last_authenticated_comment_id:uint-or-null",
+      "last_authenticated_record_digest:sha256-or-null",
+    ],
+    "recovery settlement": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "authorized_request_identity:sha256",
+      "recovery_target_identity:sha256",
+      "orphan_comment_id:uint",
+      "orphan_comment_body_sha256:sha256",
+      "orphan_record_digest:sha256",
+      "orphan_author_login:enum(github-actions[bot])",
+      "orphan_author_id:uint=41898282",
+      "orphan_actor_type:enum(Bot)",
+      "orphan_app_id:uint=15368",
+      "orphan_workflow_path:protected-writer-path",
+      "orphan_workflow_run_id:uint",
+      "orphan_workflow_run_attempt:uint",
+      "orphan_protected_dev_sha:commit",
+      "orphan_run_conclusion:enum(failure,cancelled,timed-out)",
+      "orphan_anchor_count:uint=0",
+      "orphan_attestation_count:uint=0",
+      "last_authenticated_comment_id:uint-or-null",
+      "last_authenticated_record_digest:sha256-or-null",
+      "quarantine_reason:enum(anchor-publication-interrupted)",
+    ],
+    "artifact anchor": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "record_type:record-type",
+      "record_digest:sha256",
+      "comment_id:uint",
+      "comment_body_sha256:sha256",
+      "generation_identity:sha256",
+      "attempt:uint",
+      "workflow_path:protected-writer-path",
+      "workflow_run_id:uint",
+      "workflow_run_attempt:uint",
+      "protected_dev_sha:commit",
+    ],
+  };
+  const auxiliarySection = adr.match(
+    /The exact auxiliary v1 schemas are:\n\n([\s\S]+?)\n\n`requested-lifecycle-state`/u,
+  );
+  assert.ok(auxiliarySection, "auxiliary v1 schema table");
+  const actualAuxiliarySchemas = Object.fromEntries(
+    [
+      ...auxiliarySection[1].matchAll(
+        /^\|\s*([^|-][^|]*?)\s*\|\s*(.*?)\s*\|$/gmu,
+      ),
+    ]
+      .slice(1)
+      .filter((match) => !/^[-:]+$/u.test(match[1].trim()))
+      .map((match) => [
+        match[1].trim(),
+        [...match[2].matchAll(/`([^`]+)`/gu)].map((field) => field[1]),
+      ]),
+  );
+  assert.deepEqual(actualAuxiliarySchemas, expectedAuxiliarySchemas);
+
+  const requestedStateDefinition = adr.match(
+    /`requested-lifecycle-state` is exactly ([\s\S]+?); it excludes `no-lifecycle`\./u,
+  );
+  assert.ok(requestedStateDefinition, "request-specific lifecycle-state enum");
+  assert.deepEqual(
+    [...requestedStateDefinition[1].matchAll(/`([^`]+)`/gu)].map(
+      (match) => match[1],
+    ),
+    lifecycleStates,
+  );
+  assert.match(
+    adr,
+    /request-payload digest preimage contains exactly these five fields in order:[\s\S]{0,100}`request_kind`[\s\S]{0,120}`requested_state`[\s\S]{0,120}`request_owner`[\s\S]{0,140}`recovery_target_identity`[\s\S]{0,140}`reason_code`/iu,
+  );
+
+  const nestedSchemas = adr.match(
+    /The nested `candidate-entry` schema is exactly ([\s\S]+?), in that order\. The nested\s+`producer-result-reference` schema is exactly ([\s\S]+?), in that order\./u,
+  );
+  assert.ok(nestedSchemas, "nested candidate and producer-reference schemas");
+  assert.deepEqual(
+    [...nestedSchemas[1].matchAll(/`([^`]+)`/gu)].map((match) => match[1]),
+    [
+      "path:string",
+      "mode:enum(100644,100755)",
+      "blob_object_id:blob",
+      "byte_count:uint",
+      "content_sha256:sha256",
+    ],
+  );
+  assert.deepEqual(
+    [...nestedSchemas[2].matchAll(/`([^`]+)`/gu)].map((match) => match[1]),
+    [
+      "producer:producer",
+      "comment_id:uint",
+      "record_digest:sha256",
+      "workflow_run_id:uint",
+      "workflow_job_id:uint",
+      "result_identity:sha256",
+    ],
+  );
+  const checkpointMemberSchema = adr.match(
+    /The nested `checkpoint-member` schema is exactly ([\s\S]+?),\s+in\s+that order\./u,
+  );
+  assert.ok(checkpointMemberSchema, "nested checkpoint-member schema");
+  assert.deepEqual(
+    [...checkpointMemberSchema[1].matchAll(/`([^`]+)`/gu)].map(
+      (match) => match[1],
+    ),
+    ["comment_id:uint", "record_digest:sha256"],
+  );
+  const recoverySuffixMemberSchema = adr.match(
+    /The nested `recovery-suffix-member` schema is exactly ([\s\S]+?),\s+in\s+that\s+order\./u,
+  );
+  assert.ok(recoverySuffixMemberSchema, "nested recovery-suffix-member schema");
+  assert.deepEqual(
+    [...recoverySuffixMemberSchema[1].matchAll(/`([^`]+)`/gu)].map(
+      (match) => match[1],
+    ),
+    [
+      "comment_id:uint",
+      "comment_body_sha256:sha256",
+      "classification:enum(irrelevant,authenticated-record)",
+      "record_digest:sha256-or-null",
+      "artifact_anchor_identity:sha256-or-null",
+      "predecessor_comment_id:uint-or-null",
+      "predecessor_record_digest:sha256-or-null",
+    ],
+  );
+
+  assert.match(
+    adr,
+    /There is no prefix, suffix[\s\S]{0,180}trailing byte[\s\S]{0,180}full-body\s+parser/iu,
+  );
+  assert.match(
+    adr,
+    /constant\s+time[\s\S]{0,280}caller-supplied\s+digest[\s\S]{0,120}never\s+trusted/iu,
+  );
+  assert.match(
+    adr,
+    /author\s+login\s+`github-actions\[bot\]`[\s\S]{0,300}41898282[\s\S]{0,300}performed_via_github_app\.id[\s\S]{0,180}15368/iu,
+  );
+  const attestationSubject = adr.match(
+    /name is exactly\n`([^`]+)`\nand whose digest is exactly `([^`]+)`/u,
+  );
+  assert.ok(attestationSubject, "post-publication attestation subject");
+  assert.deepEqual(attestationSubject.slice(1), [
+    "keiko-native/lifecycle-comment/v1/{repository}/{decimal-issue}/{decimal-comment-id}/{generation-identity}/{decimal-attempt}/{record-type}/{decimal-run-id}/{decimal-run-attempt}",
+    "sha256:{artifact-anchor-identity}",
+  ]);
+  assert.match(
+    adr,
+    /first publishes the canonical comment[\s\S]{0,300}provider-assigned comment ID[\s\S]{0,300}`comment_body_sha256`[\s\S]{0,500}artifact-anchor schema/iu,
+  );
+  assert.match(
+    adr,
+    /final\s+comment, artifact, attestation, run, and job reread[\s\S]{0,250}complete binding is stable/iu,
+  );
+  const permissionSet = adr.match(
+    /The exact writer permission set is ([\s\S]+?); every other permission/u,
+  );
+  assert.ok(permissionSet, "protected writer permission set");
+  assert.deepEqual(
+    [...permissionSet[1].matchAll(/`([^`]+)`/gu)].map((match) => match[1]),
+    [
+      "actions: read",
+      "attestations: write",
+      "contents: read",
+      "id-token: write",
+      "issues: write",
+    ],
+  );
+  const claimSet = adr.match(
+    /The exact verified attestation claim set is ([\s\S]+?)\. Claims map/u,
+  );
+  assert.ok(claimSet, "verified attestation claim set");
+  assert.deepEqual(
+    [...claimSet[1].matchAll(/`([^`]+)`/gu)].map((match) => match[1]),
+    [
+      "repository",
+      "job_workflow_ref",
+      "ref",
+      "sha",
+      "run_id",
+      "run_attempt",
+      "iss",
+    ],
+  );
+  assert.match(
+    adr,
+    /relevant anchor without its exact comment\s+proves an\s+unreferenced suffix deletion/iu,
+  );
+  assert.match(adr, /100 comments\s+per page and at most two pages/iu);
+  assert.match(
+    adr,
+    /next serialized recovery run[\s\S]{0,200}scans at most 100 more pages/iu,
+  );
+  assert.match(
+    adr,
+    /empty-history bootstrap[\s\S]{0,300}any issue comment of any author[\s\S]{0,180}reserved[\s\S]{0,80}keiko-native-lifecycle-[\s\S]{0,500}whether or not[\s\S]{0,300}valid/iu,
+  );
+  assert.match(
+    adr,
+    /zero lifecycle-marked comments[\s\S]{0,120}zero exact-name anchor artifacts[\s\S]{0,400}malformed[\s\S]{0,80}edited[\s\S]{0,80}duplicated[\s\S]{0,120}unanchored[\s\S]{0,300}both evidence sets are completely absent[\s\S]{0,300}predecessor fields explicit null[\s\S]{0,200}checkpoint sequence starts at one/iu,
+  );
+  const genesisNullRootSection = adr.match(
+    /The sequence-one null-root compacted-prefix values are:\n\n([\s\S]+?)\n\nA crash before/u,
+  );
+  assert.ok(genesisNullRootSection, "sequence-one null-root values");
+  assert.deepEqual(
+    [
+      ...genesisNullRootSection[1].matchAll(
+        /^\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|$/gmu,
+      ),
+    ].map((match) => [match[1], match[2]]),
+    [
+      ["digest_domain", "keiko-native.lifecycle-compacted-prefix-identity"],
+      ["schema_version", "1"],
+      ["digest_algorithm", "sha-256"],
+      ["repository", "current repository"],
+      ["issue_number", "current issue"],
+      ["checkpoint_sequence", "1"],
+      ["prior_checkpoint_identity", "null"],
+      ["members", "ordered authenticated genesis suffix"],
+    ],
+  );
+  assert.match(
+    adr,
+    /crash before the first checkpoint[\s\S]{0,700}authenticated genesis suffix[\s\S]{0,500}publication[\s\S]{0,40}interrupted[\s\S]{0,300}explicit authorized recovery/iu,
+  );
+  const forwardSettlementSection = adr.match(
+    /The forward orphan-settlement record is exactly:\n\n([\s\S]+?)\n\nThe orphan body/u,
+  );
+  assert.ok(forwardSettlementSection, "forward orphan-settlement matrix");
+  assert.deepEqual(
+    [
+      ...forwardSettlementSection[1].matchAll(
+        /^\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|$/gmu,
+      ),
+    ].map((match) => [match[1], match[2]]),
+    [
+      ["request_kind", "recovery-request"],
+      ["phase", "recovery"],
+      ["claim_outcome", "settled"],
+      ["recovery_scan_identity", "null"],
+      ["recovery_scanned_page_count", "0"],
+      ["recovery_scanned_comment_count", "0"],
+      ["recovery_accumulated_suffix_identity", "null"],
+      ["recovery_provider_cursor", "null"],
+      ["recovery_scan_complete", "false"],
+      [
+        "recovery_settlement_identity",
+        "sha-256 of exact recovery-settlement preimage",
+      ],
+      ["predecessor", "last authenticated record or null root"],
+      ["orphan_authority", "quarantined-only"],
+    ],
+  );
+  const recoveryAccumulatorSection = adr.match(
+    /The recovery suffix accumulator update is exactly:\n\n([\s\S]+?)\n\nA resumed recovery run/u,
+  );
+  assert.ok(
+    recoveryAccumulatorSection,
+    "recovery suffix accumulator update matrix",
+  );
+  assert.deepEqual(
+    [
+      ...recoveryAccumulatorSection[1].matchAll(
+        /^\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|$/gmu,
+      ),
+    ].map((match) => [match[1], match[2], match[3]]),
+    [
+      [
+        "checkpoint_sequence",
+        "0",
+        "0 until root; then exact checkpoint sequence or 0",
+      ],
+      ["accumulator_step", "1", "prior step + 1"],
+      ["prior_accumulated_suffix_identity", "null", "exact prior digest"],
+      [
+        "page_members",
+        "stable provider edge order",
+        "stable provider edge order",
+      ],
+      [
+        "cumulative_member_count",
+        "page member count",
+        "prior count + page member count",
+      ],
+      [
+        "next_provider_cursor",
+        "exact non-null cursor",
+        "exact cursor; null iff root found",
+      ],
+      ["complete", "false", "false until root found; then true"],
+    ],
+  );
+  assert.match(
+    adr,
+    /starts its accumulator at the first[\s\S]{0,100}two normal-load pages[\s\S]{0,140}exactly one accumulator step per[\s\S]{0,80}page/iu,
+  );
+  assert.match(
+    adr,
+    /`checkpoint_sequence` is `0` on every incomplete step[\s\S]{0,240}exact sequence from the authenticated checkpoint/iu,
+  );
+  assert.match(
+    adr,
+    /fresh transition\/read-back\s+checkpoint is sequence `1` after genesis[\s\S]{0,120}sequence plus one/iu,
+  );
+  assert.match(
+    adr,
+    /`recovery_scanned_page_count` equals the accumulator's `accumulator_step`[\s\S]{0,120}`recovery_scanned_comment_count` equals the accumulator's `cumulative_member_count`[\s\S]{0,260}first new step is exactly the prior page count plus one/iu,
+  );
+  assert.match(adr, /missing predecessor[\s\S]{0,160}fork[\s\S]{0,80}cycle/iu);
+  assert.match(
+    adr,
+    /pagination overflow[\s\S]{0,180}provider-rate-limited[\s\S]{0,120}no effect/iu,
+  );
+  assert.match(
+    adr,
+    /issue-lifecycle-\$\{decimal issue number\}[\s\S]{0,180}queue:\s*max[\s\S]{0,180}no `cancel-in-progress`/iu,
+  );
+  assert.match(
+    adr,
+    /GitHub Actions workflow syntax[\s\S]{0,300}retrieved 2026-07-28/iu,
+  );
+  assert.match(
+    adr,
+    /Waiting start and dispatch order are provider scheduling\s+facts, not authority/iu,
+  );
+  assert.match(
+    adr,
+    /repository-wide job concurrency group `issue-lifecycle-provider-budget`[\s\S]{0,180}`queue: max`[\s\S]{0,180}no\s+`cancel-in-progress`/iu,
+  );
+  assert.match(
+    adr,
+    /normal stable pass[\s\S]{0,500}93\s+requests[\s\S]{0,180}186\s+requests[\s\S]{0,180}ceiling to 200/iu,
+  );
+  assert.match(
+    adr,
+    /Recovery mode has a separate 150-request ceiling[\s\S]{0,180}cannot perform a\s+lifecycle\/status\/branch\/merge effect/iu,
+  );
+  assert.match(
+    adr,
+    /Neither mode relies on a racy\s+`x-ratelimit-remaining` read for safety/iu,
+  );
+  assert.match(
+    adr,
+    /at most 15 non-checkpoint record anchors[\s\S]{0,180}transition\/read-back checkpoint/iu,
+  );
+  assert.match(
+    adr,
+    /stable\s+complete\s+double-read[\s\S]{0,700}same-generation[\s\S]{0,300}expected producer/iu,
+  );
+  assert.match(
+    adr,
+    /ambiguous[\s\S]{0,100}never\s+retried[\s\S]{0,300}explicit recovery[\s\S]{0,200}increments the attempt/iu,
+  );
+  assert.match(
+    adr,
+    /cannot select lifecycle[\s\S]{0,180}lane[\s\S]{0,180}requested target[\s\S]{0,180}activation[\s\S]{0,180}transition/iu,
+  );
+  assert.match(
+    adr,
+    /recursive Git-tree enumeration[\s\S]{0,180}`truncated === false`/iu,
+  );
+  assert.match(
+    adr,
+    /pull-request files API[\s\S]{0,180}(?:complete tree authority|tree authority)/iu,
+  );
+
+  for (const state of lifecycleStates)
+    assert.match(adr, new RegExp(state, "u"));
+  const expectedEdges = [
+    "new -> triaged, blocked, waiting for user;",
+    "triaged -> ready, blocked, waiting for user, new;",
+    "ready -> in progress, blocked, waiting for user, new;",
+    "in progress -> ready, PR open, blocked, waiting for user, new;",
+    "PR open -> ready, in progress, ready for human review, blocked, waiting for user, new;",
+    "ready for human review -> PR open, in progress, blocked, waiting for user, new, done;",
+    "blocked -> waiting for user, new, triaged, ready, in progress, PR open;",
+    "waiting for user -> blocked, new, triaged, ready, in progress, PR open; and",
+    "done -> new only through reopen.",
+  ];
+  const edgeSection = adr.match(
+    /The allowed directed edges are exactly[\s\S]+?\n\nA source equal to target/u,
+  );
+  assert.ok(edgeSection, "complete nine-state edge policy");
+  assert.deepEqual(
+    [...edgeSection[0].matchAll(/^- (.+)$/gmu)].map((match) => match[1]),
+    expectedEdges,
+  );
+  assert.match(
+    adr,
+    /Every other ordered pair[\s\S]{0,180}nine-by-nine[\s\S]{0,180}rejected/iu,
+  );
+  for (const outsideEdge of [
+    "issue creation: `no-lifecycle -> status: new`;",
+    "reopen after non-completed closure: `no-lifecycle -> status: new`;",
+    "non-completed closure: any of the eight open states -> `no-lifecycle`;",
+    "completed closure: `status: ready for human review -> status: done`",
+  ])
+    assert.ok(adr.includes(outsideEdge), outsideEdge);
+  assert.match(
+    adr,
+    /Completed reopen is exactly `status: done -> status: new`/iu,
+  );
+  assert.match(
+    adr,
+    /Every other source or target involving\s+`no-lifecycle` is rejected/iu,
+  );
+  assert.match(
+    adr,
+    /Before issue #55[\s\S]{0,300}inert[\s\S]{0,420}no lifecycle[\s\S]{0,180}merge mutation/iu,
+  );
+  assert.match(
+    adr,
+    /Epic #49 increments to v8[\s\S]{0,240}Issue #51 increments to v5[\s\S]{0,240}Issue #55 increments[\s\S]{0,240}Issue #52 remains unchanged/iu,
+  );
+  assert.match(adr, /human[\s-]only `dev` boundary/iu);
+  assert.match(adr, /does not amend ADR-0009/iu);
+
+  for (const projection of projections) {
+    assert.match(projection, /ADR-0011/u);
+    assert.match(
+      projection,
+      /(?:github-actions\[bot\]|built-in bot user)[\s\S]{0,500}(?:short-lived\s+`GITHUB_TOKEN`|App ID `15368`)/iu,
+    );
+    assert.match(projection, /(?:inert|no pre-activation|Before Issue #55)/iu);
+    assert.match(projection, /lifecycle/iu);
+  }
+});
+
 async function fixtureRepository() {
   const root = await mkdtemp(join(tmpdir(), "keiko-native-quality-"));
   const files = [

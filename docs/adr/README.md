@@ -13,9 +13,11 @@ rewriting history or renumbering files.
 - [ADR-0008: Restricted broker authority for automated epic delivery][adr-0008]
 - [ADR-0009: Agent-scoped maintainer credential for epic delivery][adr-0009]
 - [ADR-0010: Stage guarded epic-merge proof at lifecycle activation][adr-0010]
+- [ADR-0011: Authenticated lifecycle handoff record protocol][adr-0011]
 
 [adr-0004]: ADR-0004-readiness-authority-and-workflow-lifecycle.md
 [adr-0007]: ADR-0007-internal-unsigned-macos-release-engineering.md
 [adr-0008]: ADR-0008-restricted-broker-epic-auto-merge.md
 [adr-0009]: ADR-0009-agent-scoped-maintainer-credential-epic-merge.md
 [adr-0010]: ADR-0010-stage-guarded-epic-merge-proof-at-activation.md
+[adr-0011]: ADR-0011-authenticated-lifecycle-handoff-record-protocol.md
