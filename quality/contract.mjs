@@ -4,6 +4,7 @@ import { extname, join, relative, sep } from "node:path";
 import { canonicalCoverageCommand } from "./coverage-reporter.mjs";
 import { compareCodeUnits } from "./deterministic-order.mjs";
 import { internalReleaseWorkflowFailures } from "./internal-release-workflow.mjs";
+import { validateEpicMergePolicy } from "./epic-merge-policy-schema.mjs";
 import {
   canonicalLineEndings,
   workflowToolchainFailures,
@@ -30,7 +31,17 @@ const repositoryControlPlaneModules = Object.freeze([
   "quality/lifecycle-handoff-publication.mjs",
   "quality/lifecycle-handoff.mjs",
   "quality/merge-group.mjs",
+  "quality/epic-merge-adapter.mjs",
+  "quality/epic-merge-authorization.mjs",
   "quality/epic-merge-broker.mjs",
+  "quality/epic-merge-composition.mjs",
+  "quality/epic-merge-evidence.mjs",
+  "quality/epic-merge-github.mjs",
+  "quality/epic-merge-graphql.mjs",
+  "quality/epic-merge-operation.mjs",
+  "quality/epic-merge-policy.mjs",
+  "quality/epic-merge-policy-schema.mjs",
+  "quality/epic-merge-store.mjs",
 ]);
 
 const requiredFiles = [
@@ -49,6 +60,7 @@ const requiredFiles = [
   ".github/workflows/codeql.yml",
   ".github/workflows/contract-publication.yml",
   ".github/workflows/dependency-review.yml",
+  ".github/workflows/epic-merge-guard-status.yml",
   ".github/workflows/issue-lifecycle.yml",
   ".github/workflows/issue-readiness.yml",
   ".github/workflows/merge-group.yml",
@@ -63,6 +75,7 @@ const requiredFiles = [
   "CONTRIBUTING.md",
   "SECURITY.md",
   "docs/engineering/code-quality-standard.md",
+  "docs/qa/guarded-epic-merge.md",
   "docs/planning/agent-planning-baseline.md",
   "docs/product/source-baseline.md",
   "docs/qa/issue-lifecycle.md",
@@ -78,6 +91,7 @@ const requiredFiles = [
   "quality/issue-lifecycle.mjs",
   "quality/issue-lifecycle.test.mjs",
   "quality/issue-readiness-action.mjs",
+  "quality/epic-merge-policy.json",
   "quality/markdown-contract.mjs",
   "quality/pr-contract-action.mjs",
   "quality/pr-contract.mjs",
@@ -258,7 +272,6 @@ const coverageArgumentPatterns = Object.freeze([
 const inertWorkflowMarkers = [
   "permissions: {}",
   "contents: read",
-  "ref: dev",
   "persist-credentials: false",
   'node-version: "24.18.0"',
   "package-manager-cache: false",
@@ -271,6 +284,7 @@ const contractPublicationWorkflowMarkers = [
   "KEIKO_CONTRACT_PUBLICATION_ACTIVATION: disabled",
   "node --check quality/publication-contract.mjs",
   "node --check quality/lifecycle-handoff-publication.mjs",
+  "ref: dev",
 ];
 
 const mergeGroupWorkflowMarkers = [
@@ -283,6 +297,31 @@ const mergeGroupWorkflowMarkers = [
   "KEIKO_MERGE_GROUP_ACTIVATION: disabled",
   "node --check quality/merge-group.mjs",
   "node --check quality/epic-merge-broker.mjs",
+  "node --check quality/epic-merge-operation.mjs",
+  "node --check quality/epic-merge-policy.mjs",
+  "node quality/epic-merge-policy.mjs status",
+  "ref: dev",
+];
+
+const epicMergeGuardStatusMarkers = [
+  "name: Epic merge guard status",
+  "push:",
+  "branches: [dev]",
+  "workflow_dispatch:",
+  "ref: ${{ github.sha }}",
+  'test "$GITHUB_REF" = "refs/heads/dev"',
+  'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',
+  "node --check quality/epic-merge-adapter.mjs",
+  "node --check quality/epic-merge-broker.mjs",
+  "node --check quality/epic-merge-composition.mjs",
+  "node --check quality/epic-merge-evidence.mjs",
+  "node --check quality/epic-merge-github.mjs",
+  "node --check quality/epic-merge-graphql.mjs",
+  "node --check quality/epic-merge-operation.mjs",
+  "node --check quality/epic-merge-policy.mjs",
+  "node --check quality/epic-merge-policy-schema.mjs",
+  "node --check quality/epic-merge-store.mjs",
+  "node quality/epic-merge-policy.mjs status",
 ];
 
 const activationRunbookMarkers = [
@@ -1700,6 +1739,7 @@ function inertControlWorkflowFailures(
   expectedJob,
   expectedGuard,
   expectedCommands,
+  expectedRef = "ref: dev",
 ) {
   const markerFailures = [...inertWorkflowMarkers, ...markers]
     .filter((marker) => !workflow.includes(marker))
@@ -1723,7 +1763,7 @@ function inertControlWorkflowFailures(
         .split(/\r?\n/u)
         .map((line) => line.trim())
         .filter((line) => line.startsWith("if:")),
-      [expectedGuard],
+      expectedGuard === undefined ? [] : [expectedGuard],
       "job guard",
     ],
     [
@@ -1731,7 +1771,7 @@ function inertControlWorkflowFailures(
         .split(/\r?\n/u)
         .map((line) => line.trim())
         .filter((line) => line.startsWith("ref:")),
-      ["ref: dev"],
+      [expectedRef],
       "checkout ref",
     ],
     [
@@ -1826,7 +1866,37 @@ function mergeGroupWorkflowFailures(workflow) {
     [
       "node --check quality/merge-group.mjs",
       "node --check quality/epic-merge-broker.mjs",
+      "node --check quality/epic-merge-operation.mjs",
+      "node --check quality/epic-merge-policy.mjs",
+      "node quality/epic-merge-policy.mjs status",
     ],
+  );
+}
+
+function epicMergeGuardStatusWorkflowFailures(workflow) {
+  return inertControlWorkflowFailures(
+    "Epic merge guard status",
+    workflow,
+    epicMergeGuardStatusMarkers,
+    ["push", "workflow_dispatch"],
+    "status",
+    undefined,
+    [
+      'test "$GITHUB_REF" = "refs/heads/dev"',
+      'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',
+      "node --check quality/epic-merge-adapter.mjs",
+      "node --check quality/epic-merge-broker.mjs",
+      "node --check quality/epic-merge-composition.mjs",
+      "node --check quality/epic-merge-evidence.mjs",
+      "node --check quality/epic-merge-github.mjs",
+      "node --check quality/epic-merge-graphql.mjs",
+      "node --check quality/epic-merge-operation.mjs",
+      "node --check quality/epic-merge-policy.mjs",
+      "node --check quality/epic-merge-policy-schema.mjs",
+      "node --check quality/epic-merge-store.mjs",
+      "node quality/epic-merge-policy.mjs status",
+    ],
+    "ref: ${{ github.sha }}",
   );
 }
 
@@ -1881,6 +1951,9 @@ async function workflowFailures(root, manifest) {
       workflows.get("contract-publication.yml") ?? "",
     ),
     ...mergeGroupWorkflowFailures(workflows.get("merge-group.yml") ?? ""),
+    ...epicMergeGuardStatusWorkflowFailures(
+      workflows.get("epic-merge-guard-status.yml") ?? "",
+    ),
     ...internalReleaseWorkflowFailures(
       workflows.get("internal-release.yml") ?? "",
     ),
@@ -1922,6 +1995,81 @@ async function providerFailures(root) {
   return failures;
 }
 
+async function epicMergePolicyFailures(root) {
+  const policy = await readJson(
+    join(root, "quality", "epic-merge-policy.json"),
+  );
+  const failures = [];
+  if (!validateEpicMergePolicy(policy, { allowUnresolvedRevision: true }))
+    failures.push("Epic merge policy schema is invalid.");
+  const keys = (value) =>
+    value && typeof value === "object"
+      ? Object.keys(value).toSorted(compareCodeUnits)
+      : [];
+  const expectedTopLevel = [
+    "activation",
+    "expectedProducers",
+    "liveProof",
+    "probeManifest",
+    "repository",
+    "requiredChecks",
+    "requiredEvidence",
+    "schema",
+    "source",
+  ].toSorted(compareCodeUnits);
+  if (JSON.stringify(keys(policy)) !== JSON.stringify(expectedTopLevel))
+    failures.push("Epic merge policy top-level contract is invalid.");
+  if (
+    policy?.schema !== 2 ||
+    policy?.repository !== "oscharko-dev/Keiko-Native" ||
+    JSON.stringify(policy?.source) !==
+      JSON.stringify({ protected: true, ref: "refs/heads/dev" }) ||
+    JSON.stringify(policy?.activation) !==
+      JSON.stringify({ state: "inactive" }) ||
+    policy?.probeManifest !== null ||
+    policy?.liveProof !== null
+  )
+    failures.push(
+      "Epic merge policy must remain protected-dev sourced and inactive before activation.",
+    );
+  if (
+    policy?.expectedProducers?.activation !==
+      "contract-activation@protected-dev" ||
+    policy?.expectedProducers?.proof !==
+      "epic-merge-live-proof@protected-dev" ||
+    policy?.expectedProducers?.status !==
+      "epic-merge-guard-status@protected-dev"
+  )
+    failures.push("Epic merge policy expected producers drifted.");
+  const checks = policy?.requiredChecks;
+  const evidence = policy?.requiredEvidence;
+  const requiredEvidenceProducers = Object.fromEntries(
+    Array.isArray(evidence)
+      ? evidence.map((item) => [item?.name, item?.producer])
+      : [],
+  );
+  if (
+    !Array.isArray(checks) ||
+    checks.length === 0 ||
+    new Set(checks.map((item) => item?.context)).size !== checks.length ||
+    !checks.every(
+      (item) =>
+        typeof item?.context === "string" &&
+        typeof item?.producer === "string" &&
+        item.producer.length > 0,
+    ) ||
+    !Array.isArray(evidence) ||
+    evidence.length === 0 ||
+    new Set(evidence.map((item) => item?.name)).size !== evidence.length ||
+    requiredEvidenceProducers.acceptance !== "github-actions[bot]@41898282" ||
+    requiredEvidenceProducers.audit !== "maintainer-audit@adr-0009"
+  )
+    failures.push(
+      "Epic merge policy gate and evidence requirements are invalid.",
+    );
+  return failures;
+}
+
 export async function validateRepository(root) {
   const files = await repositoryFiles(root);
   const manifest = await readJson(join(root, "quality", "project.json"));
@@ -1929,6 +2077,7 @@ export async function validateRepository(root) {
   const failures = [
     ...contract.failures,
     ...(await workflowFailures(root, manifest)),
+    ...(await epicMergePolicyFailures(root)),
     ...(await providerFailures(root)),
   ];
   return {

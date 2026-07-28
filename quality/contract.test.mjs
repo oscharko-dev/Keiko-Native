@@ -183,7 +183,17 @@ const repositoryControlPlaneModules = Object.freeze([
   "quality/lifecycle-handoff-publication.mjs",
   "quality/lifecycle-handoff.mjs",
   "quality/merge-group.mjs",
+  "quality/epic-merge-adapter.mjs",
+  "quality/epic-merge-authorization.mjs",
   "quality/epic-merge-broker.mjs",
+  "quality/epic-merge-composition.mjs",
+  "quality/epic-merge-evidence.mjs",
+  "quality/epic-merge-github.mjs",
+  "quality/epic-merge-graphql.mjs",
+  "quality/epic-merge-operation.mjs",
+  "quality/epic-merge-policy.mjs",
+  "quality/epic-merge-policy-schema.mjs",
+  "quality/epic-merge-store.mjs",
 ]);
 
 const coverageScript = canonicalCoverageCommand;
@@ -1368,6 +1378,7 @@ async function fixtureRepository() {
     ".github/workflows/codeql.yml",
     ".github/workflows/contract-publication.yml",
     ".github/workflows/dependency-review.yml",
+    ".github/workflows/epic-merge-guard-status.yml",
     ".github/workflows/issue-lifecycle.yml",
     ".github/workflows/issue-readiness.yml",
     ".github/workflows/merge-group.yml",
@@ -1382,6 +1393,7 @@ async function fixtureRepository() {
     "CONTRIBUTING.md",
     "SECURITY.md",
     "docs/planning/agent-planning-baseline.md",
+    "docs/qa/guarded-epic-merge.md",
     "docs/product/source-baseline.md",
     "docs/qa/issue-lifecycle.md",
     "docs/qa/repository-activation.md",
@@ -1396,6 +1408,7 @@ async function fixtureRepository() {
     "quality/issue-lifecycle.mjs",
     "quality/issue-lifecycle.test.mjs",
     "quality/issue-readiness-action.mjs",
+    "quality/epic-merge-policy.json",
     "quality/internal-release.mjs",
     "quality/internal-release-workflow.mjs",
     "quality/attestation-policy.mjs",
@@ -1426,6 +1439,10 @@ async function fixtureRepository() {
   await writeFile(
     join(root, "quality/project.json"),
     JSON.stringify(validManifest),
+  );
+  await writeFile(
+    join(root, "quality/epic-merge-policy.json"),
+    await readFile(join(import.meta.dirname, "epic-merge-policy.json"), "utf8"),
   );
   await writeFile(
     join(root, "docs/product/source-baseline.md"),
@@ -1623,6 +1640,45 @@ async function fixtureRepository() {
     ].join("\n"),
   );
   await writeFile(
+    join(root, ".github/workflows/epic-merge-guard-status.yml"),
+    [
+      "name: Epic merge guard status",
+      "on:",
+      "  push:",
+      "    branches: [dev]",
+      "  workflow_dispatch:",
+      "permissions: {}",
+      "jobs:",
+      "  status:",
+      "    permissions:",
+      "      contents: read",
+      "    steps:",
+      "      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+      "        with:",
+      "          persist-credentials: false",
+      "          ref: ${{ github.sha }}",
+      "      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
+      "        with:",
+      '          node-version: "24.18.0"',
+      "          package-manager-cache: false",
+      "      - name: Produce the protected guard status",
+      "        run: |",
+      '          test "$GITHUB_REF" = "refs/heads/dev"',
+      '          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',
+      "          node --check quality/epic-merge-adapter.mjs",
+      "          node --check quality/epic-merge-broker.mjs",
+      "          node --check quality/epic-merge-composition.mjs",
+      "          node --check quality/epic-merge-evidence.mjs",
+      "          node --check quality/epic-merge-github.mjs",
+      "          node --check quality/epic-merge-graphql.mjs",
+      "          node --check quality/epic-merge-operation.mjs",
+      "          node --check quality/epic-merge-policy.mjs",
+      "          node --check quality/epic-merge-policy-schema.mjs",
+      "          node --check quality/epic-merge-store.mjs",
+      "          node quality/epic-merge-policy.mjs status",
+    ].join("\n"),
+  );
+  await writeFile(
     join(root, ".github/workflows/merge-group.yml"),
     [
       "name: Merge group policy (inert)",
@@ -1652,6 +1708,9 @@ async function fixtureRepository() {
       "        run: |",
       "          node --check quality/merge-group.mjs",
       "          node --check quality/epic-merge-broker.mjs",
+      "          node --check quality/epic-merge-operation.mjs",
+      "          node --check quality/epic-merge-policy.mjs",
+      "          node quality/epic-merge-policy.mjs status",
     ].join("\n"),
   );
   await writeFile(
@@ -2474,6 +2533,7 @@ test("requires every repository control-plane module and inert workflow", async 
   for (const path of [
     ...repositoryControlPlaneModules,
     ".github/workflows/contract-publication.yml",
+    ".github/workflows/epic-merge-guard-status.yml",
     ".github/workflows/merge-group.yml",
   ]) {
     const root = await fixtureRepository();
@@ -2490,6 +2550,51 @@ test("requires every repository control-plane module and inert workflow", async 
     } finally {
       await rm(root, { force: true, recursive: true });
     }
+  }
+});
+
+test("keeps checked-in epic merge policy inactive and producer-bound", async () => {
+  const root = await fixtureRepository();
+  try {
+    const path = join(root, "quality/epic-merge-policy.json");
+    const policy = JSON.parse(await readFile(path, "utf8"));
+    policy.activation = {
+      commit: "a".repeat(40),
+      producer: policy.expectedProducers.activation,
+      signed: true,
+      state: "active",
+    };
+    await writeFile(path, JSON.stringify(policy));
+    const result = await validateRepository(root);
+    assert.match(
+      result.failures.join("\n"),
+      /must remain protected-dev sourced and inactive before activation/u,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("guard status producer stays protected-dev, read-only, and caller-free", async () => {
+  const root = await fixtureRepository();
+  try {
+    const path = join(root, ".github/workflows/epic-merge-guard-status.yml");
+    const workflow = await readFile(path, "utf8");
+    await writeFile(
+      path,
+      workflow
+        .replace("      contents: read", "      contents: write")
+        .replace(
+          "          ref: ${{ github.sha }}",
+          "          ref: caller-selected",
+        ),
+    );
+    const result = await validateRepository(root);
+    const failures = result.failures.join("\n");
+    assert.match(failures, /must not request write permissions/u);
+    assert.match(failures, /missing marker: ref: \$\{\{ github\.sha \}\}/u);
+  } finally {
+    await rm(root, { force: true, recursive: true });
   }
 });
 

@@ -1,0 +1,86 @@
+{
+  "activation": {
+    "state": "inactive"
+  },
+  "expectedProducers": {
+    "activation": "contract-activation@protected-dev",
+    "proof": "epic-merge-live-proof@protected-dev",
+    "status": "epic-merge-guard-status@protected-dev"
+  },
+  "liveProof": null,
+  "probeManifest": null,
+  "repository": "oscharko-dev/Keiko-Native",
+  "requiredChecks": [
+    {
+      "context": "PR contract",
+      "producer": "github-actions[bot]@41898282"
+    },
+    {
+      "context": "Issue contract current",
+      "producer": "github-actions[bot]@41898282"
+    },
+    {
+      "context": "ci",
+      "producer": "github-actions@15368"
+    },
+    {
+      "context": "actionlint",
+      "producer": "github-actions@15368"
+    },
+    {
+      "context": "Verify pinned action SHAs",
+      "producer": "github-actions@15368"
+    },
+    {
+      "context": "zizmor",
+      "producer": "github-actions@15368"
+    },
+    {
+      "context": "Analyze (actions)",
+      "producer": "github-actions@15368"
+    },
+    {
+      "context": "Analyze (javascript-typescript)",
+      "producer": "github-actions@15368"
+    },
+    {
+      "context": "Build, scan, SBOM, smoke",
+      "producer": "github-actions@15368"
+    },
+    {
+      "context": "Review dependency diff (dev/main)",
+      "producer": "github-actions@15368"
+    },
+    {
+      "context": "native",
+      "producer": "github-actions@15368"
+    },
+    {
+      "context": "Scan dependency lockfiles",
+      "producer": "github-actions@15368"
+    },
+    {
+      "context": "Socket Security: Project Report",
+      "producer": "socket-security@156372"
+    },
+    {
+      "context": "Socket Security: Pull Request Alerts",
+      "producer": "socket-security@156372"
+    }
+  ],
+  "requiredEvidence": [
+    {
+      "name": "acceptance",
+      "producer": "github-actions[bot]@41898282"
+    },
+    {
+      "name": "audit",
+      "producer": "maintainer-audit@adr-0009"
+    }
+  ],
+  "schema": 2,
+  "source": {
+    "protected": true,
+    "ref": "refs/heads/dev"
+  }
+}
