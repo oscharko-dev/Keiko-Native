@@ -1923,6 +1923,10 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
     ),
     lifecycleStates,
   );
+  assert.match(
+    adr,
+    /request-payload digest preimage contains exactly these five fields in order:[\s\S]{0,100}`request_kind`[\s\S]{0,120}`requested_state`[\s\S]{0,120}`request_owner`[\s\S]{0,140}`recovery_target_identity`[\s\S]{0,140}`reason_code`/iu,
+  );
 
   const nestedSchemas = adr.match(
     /The nested `candidate-entry` schema is exactly ([\s\S]+?), in that order\. The nested\s+`producer-result-reference` schema is exactly ([\s\S]+?), in that order\./u,
@@ -2047,7 +2051,11 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   );
   assert.match(
     adr,
-    /empty-history bootstrap[\s\S]{0,600}zero relevant lifecycle record comments[\s\S]{0,300}zero exact-name anchor artifacts[\s\S]{0,500}explicit null[\s\S]{0,300}checkpoint sequence starts at one/iu,
+    /empty-history bootstrap[\s\S]{0,300}any issue comment of any author[\s\S]{0,180}reserved[\s\S]{0,80}keiko-native-lifecycle-[\s\S]{0,500}whether or not[\s\S]{0,300}valid/iu,
+  );
+  assert.match(
+    adr,
+    /zero lifecycle-marked comments[\s\S]{0,120}zero exact-name anchor artifacts[\s\S]{0,400}malformed[\s\S]{0,80}edited[\s\S]{0,80}duplicated[\s\S]{0,120}unanchored[\s\S]{0,300}both evidence sets are completely absent[\s\S]{0,300}predecessor fields explicit null[\s\S]{0,200}checkpoint sequence starts at one/iu,
   );
   const genesisNullRootSection = adr.match(
     /The sequence-one null-root compacted-prefix values are:\n\n([\s\S]+?)\n\nA crash before/u,

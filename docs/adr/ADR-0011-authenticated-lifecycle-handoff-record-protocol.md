@@ -239,10 +239,12 @@ Fixed fields, in order:
 
 The generation identity is independently recomputed from ADR-0004's complete trusted input. The
 request identity binds the repository, issue, pull request, exact head, generation, attempt,
-request-payload digest, expected-producer set, and predecessor. The request-payload digest is
-domain-separated and contains only normalized identifiers, the optional recovery-target identity,
-and a closed reason code. A raw reason, issue body, provider payload, endpoint, credential, customer
-content, or private-source content is never stored.
+request-payload digest, expected-producer set, and predecessor. After the shared domain, schema, and
+algorithm envelope, the request-payload digest preimage contains exactly these five fields in order:
+`request_kind` as its closed enum, `requested_state` as its closed enum or explicit null,
+`request_owner` as its closed enum, `recovery_target_identity` as validated SHA-256 or explicit
+null, and `reason_code` as its closed enum. A raw reason, issue body, provider payload, endpoint,
+credential, customer content, or private-source content is never stored.
 
 ### Producer result v1
 
@@ -491,13 +493,19 @@ mismatch, fork, cycle, gap, duplicate fence sequence, multiple terminal claims, 
 generation/attempt, or truncation. It repeats the complete checkpoint-and-suffix read and requires
 exact equality before using the chain.
 
-An empty-history bootstrap is distinct from truncated-history recovery. A complete bounded stable
-double-read must prove zero relevant lifecycle record comments and zero exact-name anchor artifacts
-for the issue. The coordinator may then append the first generation request with both predecessor
-fields explicit null; for the first transition/read-back, checkpoint sequence starts at one and
-both prior checkpoint fields are explicit null. Successful bootstrap continues through the same
-producers, fences, stable read-backs, and activation guard as every later generation, so an issue
-with no comments or artifacts does not remain effect-disabled merely because no checkpoint exists.
+An empty-history bootstrap is distinct from truncated-history recovery. A lifecycle-marked comment
+is any issue comment of any author whose exact body bytes contain the reserved
+`<!-- keiko-native-lifecycle-` prefix, whether or not its marker, envelope, record, digest, anchor,
+attestation, predecessor, or authentication is valid. A complete bounded stable double-read must
+prove zero lifecycle-marked comments and zero exact-name anchor artifacts for the issue. Any
+malformed, edited, duplicated, unauthenticated, or unanchored lifecycle-marked comment; any
+exact-name anchor; or any pagination beyond the complete bounded proof makes history non-empty and
+fails closed rather than selecting bootstrap. Only when both evidence sets are completely absent
+may the coordinator append the first generation request with both predecessor fields explicit null;
+for the first transition/read-back, checkpoint sequence starts at one and both prior checkpoint
+fields are explicit null. Successful bootstrap continues through the same producers, fences, stable
+read-backs, and activation guard as every later generation, so an issue with no comments or
+artifacts does not remain effect-disabled merely because no checkpoint exists.
 
 The sequence-one null-root compacted-prefix values are:
 
