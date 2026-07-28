@@ -1407,6 +1407,8 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
           .trim()}`,
     );
   };
+  const asCrLf = (source) =>
+    source.replaceAll("\r\n", "\n").replaceAll("\n", "\r\n");
   const expectedRecordFields = {
     "Generation request v1": [
       "record_type",
@@ -1490,6 +1492,9 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       "source_observation_identity",
       "claim_outcome",
       "recovery_scan_identity",
+      "recovery_scanned_page_count",
+      "recovery_scanned_comment_count",
+      "recovery_accumulated_suffix_identity",
       "recovery_provider_cursor",
       "recovery_scan_complete",
       "recovery_settlement_identity",
@@ -1542,7 +1547,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
         "|",
       ),
     "Phase/fence claim v1":
-      "record_type:enum phase-fence-claim|schema_version:uint 1|digest_algorithm:enum sha-256|digest_domain:enum keiko-native.lifecycle-record.phase-fence-claim|repository:string|issue_number:uint|pull_request_number:uint or explicit null|exact_head_sha:commit or explicit null|generation_identity:SHA-256|attempt:uint|request_identity:SHA-256|phase:enum request, phase-one, mutation, phase-two, terminal, or recovery|fence_sequence:uint|fence_identity:SHA-256|owner_workflow_path:closed protected coordinator path|owner_run_id:uint|owner_run_attempt:uint|source_observation_identity:SHA-256|claim_outcome:enum claimed, settled, abandoned, ambiguous, or superseded|recovery_scan_identity:SHA-256 or explicit null|recovery_provider_cursor:string or explicit null|recovery_scan_complete:bool|recovery_settlement_identity:SHA-256 or explicit null|predecessor_comment_id:uint or explicit null|predecessor_record_digest:SHA-256 or explicit null|protected_dev_sha:commit|recorded_at:timestamp".split(
+      "record_type:enum phase-fence-claim|schema_version:uint 1|digest_algorithm:enum sha-256|digest_domain:enum keiko-native.lifecycle-record.phase-fence-claim|repository:string|issue_number:uint|pull_request_number:uint or explicit null|exact_head_sha:commit or explicit null|generation_identity:SHA-256|attempt:uint|request_identity:SHA-256|phase:enum request, phase-one, mutation, phase-two, terminal, or recovery|fence_sequence:uint|fence_identity:SHA-256|owner_workflow_path:closed protected coordinator path|owner_run_id:uint|owner_run_attempt:uint|source_observation_identity:SHA-256|claim_outcome:enum claimed, settled, abandoned, ambiguous, or superseded|recovery_scan_identity:SHA-256 or explicit null|recovery_scanned_page_count:uint|recovery_scanned_comment_count:uint|recovery_accumulated_suffix_identity:SHA-256 or explicit null|recovery_provider_cursor:string or explicit null|recovery_scan_complete:bool|recovery_settlement_identity:SHA-256 or explicit null|predecessor_comment_id:uint or explicit null|predecessor_record_digest:SHA-256 or explicit null|protected_dev_sha:commit|recorded_at:timestamp".split(
         "|",
       ),
     "Transition/read-back v1":
@@ -1562,8 +1567,10 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       expectedRecordSchemas[heading],
       `${heading} types`,
     );
+    const crlfAdr = asCrLf(adr);
+    assert.equal(asCrLf(crlfAdr), crlfAdr, `${heading} CRLF fixture`);
     assert.deepEqual(
-      recordSchema(heading, nextHeading, adr.replaceAll("\n", "\r\n")),
+      recordSchema(heading, nextHeading, crlfAdr),
       expectedRecordSchemas[heading],
       `${heading} CRLF types`,
     );
@@ -1610,6 +1617,8 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
     "publication candidate set": "keiko-native.lifecycle-candidate-set",
     "compacted prefix": "keiko-native.lifecycle-compacted-prefix-identity",
     "checkpoint identity": "keiko-native.lifecycle-checkpoint-identity",
+    "recovery suffix accumulator":
+      "keiko-native.lifecycle-recovery-suffix-identity",
     "recovery scan identity": "keiko-native.lifecycle-recovery-scan-identity",
     "recovery target": "keiko-native.lifecycle-recovery-target-identity",
     "recovery settlement":
@@ -1794,6 +1803,19 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       "chain_tip_comment_id:uint",
       "chain_tip_record_digest:sha256",
     ],
+    "recovery suffix accumulator": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "checkpoint_sequence:uint",
+      "scan_direction:enum(backward)",
+      "accumulator_step:uint",
+      "prior_accumulated_suffix_identity:sha256-or-null",
+      "page_members:list<recovery-suffix-member>",
+      "cumulative_member_count:uint",
+      "next_provider_cursor:string-or-null",
+      "complete:bool",
+    ],
     "recovery scan identity": [
       "schema_version:uint=1",
       "repository:string",
@@ -1921,6 +1943,24 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
     ),
     ["comment_id:uint", "record_digest:sha256"],
   );
+  const recoverySuffixMemberSchema = adr.match(
+    /The nested `recovery-suffix-member` schema is exactly ([\s\S]+?),\s+in\s+that\s+order\./u,
+  );
+  assert.ok(recoverySuffixMemberSchema, "nested recovery-suffix-member schema");
+  assert.deepEqual(
+    [...recoverySuffixMemberSchema[1].matchAll(/`([^`]+)`/gu)].map(
+      (match) => match[1],
+    ),
+    [
+      "comment_id:uint",
+      "comment_body_sha256:sha256",
+      "classification:enum(irrelevant,authenticated-record)",
+      "record_digest:sha256-or-null",
+      "artifact_anchor_identity:sha256-or-null",
+      "predecessor_comment_id:uint-or-null",
+      "predecessor_record_digest:sha256-or-null",
+    ],
+  );
 
   assert.match(
     adr,
@@ -2033,6 +2073,9 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       ["phase", "recovery"],
       ["claim_outcome", "settled"],
       ["recovery_scan_identity", "null"],
+      ["recovery_scanned_page_count", "0"],
+      ["recovery_scanned_comment_count", "0"],
+      ["recovery_accumulated_suffix_identity", "null"],
       ["recovery_provider_cursor", "null"],
       ["recovery_scan_complete", "false"],
       [
@@ -2041,6 +2084,40 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       ],
       ["predecessor", "last authenticated record or null root"],
       ["orphan_authority", "quarantined-only"],
+    ],
+  );
+  const recoveryAccumulatorSection = adr.match(
+    /The recovery suffix accumulator update is exactly:\n\n([\s\S]+?)\n\nA resumed recovery run/u,
+  );
+  assert.ok(
+    recoveryAccumulatorSection,
+    "recovery suffix accumulator update matrix",
+  );
+  assert.deepEqual(
+    [
+      ...recoveryAccumulatorSection[1].matchAll(
+        /^\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|$/gmu,
+      ),
+    ].map((match) => [match[1], match[2], match[3]]),
+    [
+      ["accumulator_step", "1", "prior step + 1"],
+      ["prior_accumulated_suffix_identity", "null", "exact prior digest"],
+      [
+        "page_members",
+        "stable provider edge order",
+        "stable provider edge order",
+      ],
+      [
+        "cumulative_member_count",
+        "page member count",
+        "prior count + page member count",
+      ],
+      [
+        "next_provider_cursor",
+        "exact next cursor or null",
+        "exact next cursor or null",
+      ],
+      ["complete", "false unless root found", "false unless root found"],
     ],
   );
   assert.match(adr, /missing predecessor[\s\S]{0,160}fork[\s\S]{0,80}cycle/iu);

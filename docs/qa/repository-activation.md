@@ -120,10 +120,11 @@ The activation probe authenticates the exact bot user, GitHub Actions App ID `15
 workflow path/ref/commit, run, attempt, job, result, and a post-publication GitHub-native
 attestation over an immutable anchor binding provider comment ID, exact body digest, record digest,
 and run. It proves exact per-issue anchors, checkpoint rollover, normal two-page loading,
-effect-disabled cursor recovery, empty-history bootstrap, every pre-checkpoint crash outcome,
-missing-suffix detection, strict full-body parsing, exact predecessor chains, one shared per-issue
-`queue: max` domain and fence, the repository-wide provider-budget group, hard request ceilings,
-stable double-reads, same-generation producer results, explicit crash recovery, and no retry after
+effect-disabled cursor recovery with exact accumulator root, resume, page-order, count, and cursor
+discontinuity fixtures, empty-history bootstrap, every pre-checkpoint crash outcome, missing-suffix
+detection, strict full-body parsing, exact predecessor chains, one shared per-issue `queue: max`
+domain and fence, the repository-wide provider-budget group, hard request ceilings, stable
+double-reads, same-generation producer results, explicit crash recovery, and no retry after
 ambiguity. Deleted, edited, duplicated, conflicting, truncated, stale, wrong-generation,
 wrong-producer, rate-limited, or unavailable record evidence must fail closed.
 

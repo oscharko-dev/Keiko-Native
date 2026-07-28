@@ -69,8 +69,9 @@ fence, predecessor chain, and a cryptographically verified post-publication GitH
 attestation over an immutable anchor binding the provider comment ID, exact body digest, record
 digest, and protected writer run. An exact-name per-issue anchor detects an unreferenced suffix
 deletion. Attested transition/read-back checkpoints bound the effect-capable live suffix to 15
-records, and effect-disabled cursor recovery handles deeper comment history. A login, marker,
-author association, context name, details URL, or event timing alone is never sufficient.
+records, and effect-disabled cursor recovery handles deeper comment history through exact
+domain-separated accumulator root and resumed-step identities. A login, marker, author
+association, context name, details URL, or event timing alone is never sufficient.
 
 Sequence-one bootstrap proves the exact compacted-prefix domain, schema, null prior-checkpoint
 identity, and complete ordered genesis member list. Forward orphan settlement requires a

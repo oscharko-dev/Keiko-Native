@@ -244,9 +244,10 @@ phase/fence claims, and transition read-backs. Post-publication GitHub-native at
 provider comment ID, exact body digest, record digest, and protected writer run in an immutable
 per-issue artifact anchor that detects an unreferenced suffix deletion. Attested
 transition/read-back checkpoints bound the live suffix to 15 records; cursor recovery advances
-without effects when comment history exceeds the normal two-page load. Per-issue `queue: max`
-serialization and the repository-wide lifecycle provider-budget group prevent lifecycle quota
-races. Empty history uses an exact sequence-one null-root compacted-prefix preimage. A protected
+without effects through authenticated, domain-separated root and resumed accumulator steps when
+comment history exceeds the normal two-page load. Per-issue `queue: max` serialization and the
+repository-wide lifecycle provider-budget group prevent lifecycle quota races. Empty history uses
+an exact sequence-one null-root compacted-prefix preimage. A protected
 forward recovery settlement can quarantine only one request-bound, independently verified
 comment-before-anchor orphan without treating it as a record or predecessor. Complete pagination,
 expected App/workflow/run authentication, stable rereads, and exact predecessor chains fail closed

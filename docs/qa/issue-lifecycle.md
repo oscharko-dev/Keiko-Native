@@ -169,8 +169,9 @@ Every writer and lifecycle effect shares the exact per-issue
 provider comment ID, exact body digest, record digest, and protected writer run in an immutable
 per-issue artifact anchor that detects an unreferenced suffix deletion. Transition/read-back
 checkpoints bound the effect-capable suffix to 15 records; cursor recovery is effect-disabled and
-advances when the normal two-page comment load cannot reach a checkpoint. Complete bounded
-pagination, full-body parsing, App/workflow/run/ref
+advances through authenticated, domain-separated root and resumed accumulator steps when the normal
+two-page comment load cannot reach a checkpoint. Complete bounded pagination, full-body parsing,
+App/workflow/run/ref
 authentication, exact predecessor chains, stable double-reads, and fencing reject deleted, edited,
 duplicated, conflicting, stale, truncated, wrong-generation, wrong-producer, rate-limited, or
 unavailable evidence. An ambiguous effect is never retried; explicit authorized recovery creates
