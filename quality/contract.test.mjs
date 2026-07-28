@@ -1363,7 +1363,8 @@ ${contradiction}
 
 test("pins the authenticated lifecycle handoff record decision", async () => {
   const root = join(import.meta.dirname, "..");
-  const [adr, index, agents, lifecycle, gates, activation] = await Promise.all([
+  const normalizeLf = (source) => source.replaceAll("\r\n", "\n");
+  const sources = await Promise.all([
     readFile(
       join(
         root,
@@ -1377,9 +1378,11 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
     readFile(join(root, "docs/qa/quality-gates.md"), "utf8"),
     readFile(join(root, "docs/qa/repository-activation.md"), "utf8"),
   ]);
+  const [adr, index, agents, lifecycle, gates, activation] =
+    sources.map(normalizeLf);
   const projections = [agents, lifecycle, gates, activation];
   const recordSection = (heading, nextHeading, source = adr) => {
-    const normalizedSource = source.replaceAll("\r\n", "\n");
+    const normalizedSource = normalizeLf(source);
     const start = normalizedSource.indexOf(`### ${heading}`);
     const end = normalizedSource.indexOf(`### ${nextHeading}`, start + 1);
     assert.notEqual(start, -1, heading);
@@ -1407,8 +1410,21 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
           .trim()}`,
     );
   };
-  const asCrLf = (source) =>
-    source.replaceAll("\r\n", "\n").replaceAll("\n", "\r\n");
+  const asCrLf = (source) => normalizeLf(source).replaceAll("\n", "\r\n");
+  for (const [name, source] of [
+    ["ADR-0011", adr],
+    ["ADR index", index],
+    ["AGENTS projection", agents],
+    ["lifecycle projection", lifecycle],
+    ["quality-gates projection", gates],
+    ["activation projection", activation],
+  ]) {
+    assert.equal(
+      normalizeLf(asCrLf(source)),
+      source,
+      `${name} CRLF normalization`,
+    );
+  }
   const expectedRecordFields = {
     "Generation request v1": [
       "record_type",
