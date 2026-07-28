@@ -179,7 +179,7 @@
     "systemEvents": {
       "mechanism": "bounded-system-events-extension",
       "evidenceStatus": "complete",
-      "absoluteFailures": [],
+      "absoluteFailures": ["authoritative-evidence-unavailable"],
       "matrixScores": {
         "checkpointCoverage": 5,
         "determinism": 5,
@@ -231,7 +231,7 @@
           "cleanupOwnedDescendants": 0
         }
       },
-      "diagnostics": "Closed AppleScript reason codes, UI-elements-enabled permission probing, two-second per-checkpoint subprocess bounds, a separate bounded five-second natural-quit observation, and zero-owned-descendant cleanup were verified physically on macOS 26.5.1 build 25F80, Mac16,1 arm64, Apple clang 21.0.0, Node 24.18.0. The retained 20-run distribution spans 8873-10237 ms per journey (mean 9050 ms), with an 1824 ms maximum checkpoint observation; AppleScript remains less typed than AXUIElement.",
+      "diagnostics": "The retained 20-run distribution spans 8873-10237 ms per journey (mean 9050 ms), with an 1824 ms maximum checkpoint observation, bounded waits, and zero owned descendants on macOS 26.5.1 build 25F80, Mac16,1 arm64, Apple clang 21.0.0, Node 24.18.0. Those runs used an already-authorized Apple Events Automation relationship to System Events. A clean runner may require separate Automation consent before Accessibility can be queried; Apple Event error -1743 is Automation denial, not Accessibility denial, and a script-level prompted=false field cannot prove that macOS showed no consent prompt. Because the evaluation did not preflight that separate boundary without prompting, System Events fails the authoritative-evidence-unavailable absolute gate and its permission evidence is not accepted for selection.",
       "dependencyInventory": ["macOS System Events system application"],
       "licenseInventory": [
         "macOS platform terms; no third-party repository dependency, redistribution, or notice"

@@ -25,13 +25,20 @@ repetitions against the same generated representative package. Each candidate pa
 checkpoint operations, used two-second per-checkpoint subprocess bounds plus a separate bounded
 five-second natural-quit observation, produced zero unexplained failures, and left zero owned
 descendants. AXUIElement journeys took 3032–3921 ms (3146 ms mean); System Events journeys took
-8873–10237 ms (9050 ms mean). Both also failed closed under denied and revoked Accessibility
-permission and recovered through fresh processes after permission was restored. The no-driver
-baseline cannot machine-evaluate the declared checkpoints.
+8873–10237 ms (9050 ms mean). AXUIElement also failed closed under denied and revoked Accessibility
+permission and recovered through a fresh process after permission was restored.
 
-The fixed weighted matrix selected AXUIElement with 490 points. System Events scored 485 and remains
-a viable but unselected alternative. The no-driver baseline scored 260 and failed the absolute
-`missing-automatable-checkpoint` gate.
+The System Events runs used an already-authorized Apple Events Automation relationship. A clean
+runner may encounter the separate Automation-consent boundary before System Events can report
+Accessibility state. Apple Event error `-1743` is Automation denial, not Accessibility denial, and
+an AppleScript result containing `prompted=false` cannot prove that macOS displayed no consent
+prompt before the script returned. The evaluation did not establish a non-prompting preflight for
+that boundary, so System Events fails the `authoritative-evidence-unavailable` absolute gate. The
+no-driver baseline cannot machine-evaluate the declared checkpoints.
+
+The fixed weighted matrix selected AXUIElement with 490 points. System Events scored 485 on the
+measured workload but is rejected by the `authoritative-evidence-unavailable` absolute gate. The
+no-driver baseline scored 260 and failed the absolute `missing-automatable-checkpoint` gate.
 
 The exact-head ADR-0006 package gate independently passed with closed acceptance evidence, normal
 shutdown, zero owned descendants, and no evaluation marker in the Foundation package. The
@@ -85,17 +92,21 @@ journey fixture retained for acceptance and must preserve this exclusion contrac
 
 ### Permission and diagnostics
 
-Physical macOS Accessibility permission remains an operator-controlled prerequisite. Automated
-probes request no prompt. Denied or revoked permission returns the closed
-`accessibility-permission-denied` reason and performs no journey operation. Recovery requires an
-explicit operator grant and a fresh process; no automation mutates the macOS privacy database.
+Physical macOS Accessibility permission remains an operator-controlled prerequisite for the
+selected AXUIElement adapter. Its automated probe requests no prompt. Denied or revoked
+Accessibility permission returns the closed `accessibility-permission-denied` reason and performs
+no journey operation. Recovery requires an explicit operator grant and a fresh process; no
+automation mutates the macOS privacy database.
 
-AXUIElement is selected over System Events because both passed all absolute gates, while
-AXUIElement supplies a typed API/error boundary and received the matrix's full permission and
-diagnostics score. System Events has the smaller build footprint, but its AppleScript boundary is
-less typed and required an explicit `UI elements enabled` check to distinguish process visibility
-from UI authority. That five-point difference is the complete selection margin; it is not evidence
-that System Events is unsafe or incapable.
+AXUIElement is selected because it passed every absolute gate, supplies a typed API/error boundary,
+and received the matrix's full permission and diagnostics score. System Events has the smaller
+build footprint, but its AppleScript boundary is less typed and crosses a separate Apple Events
+Automation-consent boundary. The retained Accessibility-state results remain measured dissenting
+evidence from an already-authorized environment; they do not authenticate clean-runner,
+non-prompting operation. This decision treats error `-1743` and an unknown Automation-consent state
+as `authoritative-evidence-unavailable`; it does not accept the rejected prototype's classification
+as Accessibility denial. The candidate is therefore rejected regardless of its five-point
+weighted-score difference.
 
 ### Platform and ownership boundary
 
@@ -149,6 +160,7 @@ authoritative physical execution. CI may run hermetic schema, generation, packag
 failure contracts, but it cannot substitute for required physical permission, VoiceOver, visual,
 contrast, scaling, or IME observations.
 
-System Events remains documented dissenting evidence. Replacing AXUIElement with System Events,
-adding a cross-platform driver, changing the trust boundary, or allowing adapter code into the
-product requires a superseding decision with fresh evidence.
+System Events remains rejected dissenting evidence. Replacing AXUIElement with System Events
+requires a superseding decision with a distinct, non-prompting Apple Events Automation permission
+model and fresh authoritative evidence. Adding a cross-platform driver, changing the trust
+boundary, or allowing adapter code into the product likewise requires a superseding decision.
