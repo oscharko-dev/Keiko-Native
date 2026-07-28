@@ -328,12 +328,20 @@ test("physical run summaries require all checkpoints, cleanup, and zero unexplai
   assert.equal(denied.reasonCode, "accessibility-permission-denied");
 });
 
-test("cleanup terminates and verifies a stubborn owned descendant tree", async () => {
-  const child = spawn(
-    process.execPath,
-    [
-      "-e",
-      `
+test(
+  "cleanup terminates and verifies a stubborn owned descendant tree",
+  {
+    skip:
+      process.platform === "darwin"
+        ? false
+        : "the bounded process-tree implementation is macOS-only",
+  },
+  async () => {
+    const child = spawn(
+      process.execPath,
+      [
+        "-e",
+        `
         const { spawn } = require("node:child_process");
         process.on("SIGTERM", () => {});
         const descendant = spawn(
@@ -344,29 +352,30 @@ test("cleanup terminates and verifies a stubborn owned descendant tree", async (
         descendant.once("spawn", () => process.send({ descendant: descendant.pid }));
         setInterval(() => {}, 1000);
       `,
-    ],
-    { stdio: ["ignore", "ignore", "ignore", "ipc"] },
-  );
-  let descendantPid;
-  try {
-    const [message] = await once(child, "message", {
-      signal: AbortSignal.timeout(5_000),
-    });
-    descendantPid = message.descendant;
-    assert.equal(await terminateOwnedProcess(child), 0);
-    for (const pid of [child.pid, descendantPid])
-      assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
-  } finally {
-    for (const pid of [descendantPid, child.pid]) {
-      if (!Number.isSafeInteger(pid)) continue;
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch (error) {
-        if (error?.code !== "ESRCH") throw error;
+      ],
+      { stdio: ["ignore", "ignore", "ignore", "ipc"] },
+    );
+    let descendantPid;
+    try {
+      const [message] = await once(child, "message", {
+        signal: AbortSignal.timeout(5_000),
+      });
+      descendantPid = message.descendant;
+      assert.equal(await terminateOwnedProcess(child), 0);
+      for (const pid of [child.pid, descendantPid])
+        assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+    } finally {
+      for (const pid of [descendantPid, child.pid]) {
+        if (!Number.isSafeInteger(pid)) continue;
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch (error) {
+          if (error?.code !== "ESRCH") throw error;
+        }
       }
     }
-  }
-});
+  },
+);
 
 test("operator phases retain one exact identity and run 20 allowed repetitions", async () => {
   const root = await mkdtemp(join(tmpdir(), "keiko-operator-seam-"));

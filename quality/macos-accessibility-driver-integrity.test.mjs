@@ -1,12 +1,29 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import test from "node:test";
 
 import { evaluateMacosAccessibilityDriver } from "./macos-accessibility-driver-evaluation.mjs";
+import { physicalEvaluationSourceNames } from "./macos-accessibility-driver-source.mjs";
 import {
   replaceRetainedArtifact,
   replaceRetainedPreparedArtifactEverywhere,
   retainedEvaluationInput,
 } from "./macos-accessibility-driver-test-fixture.mjs";
+
+const integrityBoundRepositoryPaths = Object.freeze([
+  "docs/evaluation/macos-accessibility-driver-capture-allowed.json",
+  "docs/evaluation/macos-accessibility-driver-capture-denied.json",
+  "docs/evaluation/macos-accessibility-driver-capture-recovered.json",
+  "docs/evaluation/macos-accessibility-driver-capture-revoked.json",
+  "docs/evaluation/macos-accessibility-driver-evidence.json",
+  "docs/evaluation/macos-accessibility-driver-foundation-acceptance.json",
+  "docs/evaluation/macos-accessibility-driver-foundation-package-manifest.json",
+  "docs/evaluation/macos-accessibility-driver-prepared.json",
+  "native/package-policy.json",
+  ...physicalEvaluationSourceNames.map((name) => `quality/${name}`),
+  "quality/fixtures/macos-accessibility-foundation-acceptance.json",
+  "quality/fixtures/macos-accessibility-foundation-package-manifest.json",
+]);
 
 async function equalWorkloadInput() {
   return retainedEvaluationInput();
@@ -15,6 +32,25 @@ async function equalWorkloadInput() {
 function replaceRetainedCapture(input, id, mutate) {
   replaceRetainedArtifact(input, id, mutate);
 }
+
+test("pins every integrity-bound repository text input to LF checkout bytes", () => {
+  const fields = execFileSync(
+    "git",
+    ["check-attr", "-z", "eol", "--", ...integrityBoundRepositoryPaths],
+    {
+      cwd: new URL("../", import.meta.url),
+      encoding: "utf8",
+    },
+  )
+    .split("\0")
+    .filter(Boolean);
+  assert.equal(fields.length, integrityBoundRepositoryPaths.length * 3);
+  for (let index = 0; index < fields.length; index += 3) {
+    assert.equal(fields[index], integrityBoundRepositoryPaths[index / 3]);
+    assert.equal(fields[index + 1], "eol");
+    assert.equal(fields[index + 2], "lf");
+  }
+});
 
 test("holds the rejected no-driver baseline to the same permission workload", async () => {
   const result = evaluateMacosAccessibilityDriver(await equalWorkloadInput());
