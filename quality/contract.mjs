@@ -308,6 +308,7 @@ const epicMergeGuardStatusMarkers = [
   "push:",
   "branches: [dev]",
   "workflow_dispatch:",
+  "runs-on: ubuntu-latest",
   "ref: ${{ github.sha }}",
   'test "$GITHUB_REF" = "refs/heads/dev"',
   'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',

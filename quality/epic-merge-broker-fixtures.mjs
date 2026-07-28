@@ -363,6 +363,8 @@ export function successfulPorts(events, options = {}) {
     },
     settleOperation: async (value) => {
       events.push(["settle", value]);
+      if (options.settleError)
+        throw new Error("sensitive settlement failure must stay redacted");
       const result = options.settleResult ?? { settled: true };
       if (operation && result.settled === true) operation.state = value.result;
       return result;

@@ -39,6 +39,26 @@ test("inert adapter reconstructs complete current authorization and protection",
   });
 });
 
+test("adapter rejects malformed protected policy documents with a bounded error", async () => {
+  for (const document of [null, [], "invalid"]) {
+    const adapter = createInertEpicMergeAdapter({
+      clock: () => "",
+      github: githubFixture({
+        policy: {
+          document,
+          protected: true,
+          ref: "refs/heads/dev",
+          revision: head,
+        },
+      }),
+      store: {},
+    });
+    await assert.rejects(adapter.loadProtectedPolicy(), {
+      message: "protected_policy_document_invalid",
+    });
+  }
+});
+
 test("adapter reads only the canonical execution-authority target field", async () => {
   const template = await readFile(
     new URL("../.github/ISSUE_TEMPLATE/feature_task.md", import.meta.url),

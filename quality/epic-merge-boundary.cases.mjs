@@ -94,6 +94,26 @@ test("code findings accept exact open, fixed, and dismissed alerts only", async 
   }
 });
 
+test("malformed protected policy payloads fail closed at the provider boundary", async () => {
+  for (const payload of ["null", "{"]) {
+    const boundary = createEpicMergeGitHubBoundary({
+      request: async ({ path }) =>
+        path.includes("/git/ref/")
+          ? response({ object: { sha: head } })
+          : response({
+              content: Buffer.from(payload).toString("base64"),
+              encoding: "base64",
+            }),
+    });
+    assert.deepEqual(await boundary.readPolicy(), {
+      document: null,
+      protected: false,
+      ref: "refs/heads/dev",
+      revision: head,
+    });
+  }
+});
+
 async function assertBodyShapedNon200FailsClosed(status) {
   const boundary = createEpicMergeGitHubBoundary({
     request: async ({ path }) => {

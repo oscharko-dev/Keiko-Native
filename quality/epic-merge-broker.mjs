@@ -314,21 +314,27 @@ async function performMerge(context, ports, operation) {
 
 async function indeterminateResult(ports, operation, submitted) {
   if (!operation) return denied("guard_unavailable");
+  let settlement = "unproven";
   try {
-    await settleAndVerify(
-      ports,
-      operation,
-      {
-        claimId: operation.claimId,
-        operationId: operation.operationId,
-        releaseSerialization: false,
-        result: "indeterminate",
-      },
-      submitted,
-    );
-  } catch {}
+    if (
+      await settleAndVerify(
+        ports,
+        operation,
+        {
+          claimId: operation.claimId,
+          operationId: operation.operationId,
+          releaseSerialization: false,
+          result: "indeterminate",
+        },
+        submitted,
+      )
+    )
+      settlement = "recorded";
+  } catch {
+    settlement = "unavailable";
+  }
   return {
-    receipt: receipt(operation, "indeterminate", submitted),
+    receipt: receipt(operation, "indeterminate", submitted, { settlement }),
     reason: submitted
       ? "human_reconciliation_required"
       : "prepared_operation_reconciliation_required",

@@ -121,6 +121,8 @@ target metadata never substitutes for provider read-back. The inert adapter clas
 403/404/409/422 as confirmed rejection, 429 and timeouts as
 ambiguous, and malformed responses as ambiguous without retaining provider bodies. Ambiguity or
 read-back mismatch is `indeterminate`; the operation remains durably blocked without release.
+Its redacted receipt classifies the attempted indeterminate settlement as `recorded`, `unproven`,
+or `unavailable` without exposing the underlying provider or persistence error.
 
 ## Human reconciliation
 

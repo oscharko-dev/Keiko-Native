@@ -56,6 +56,14 @@ const requestPath = (path, query = {}) => {
 };
 const encoded = (value) => encodeURIComponent(value);
 const commitSha = (value) => isEpicMergeCommit(value);
+const policyDocument = (value) =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+const invalidPolicySource = (revision) => ({
+  document: null,
+  protected: false,
+  ref: "refs/heads/dev",
+  revision,
+});
 
 function rulesetApplies(ruleset, target) {
   const includes = ruleset?.conditions?.ref_name?.include;
@@ -362,13 +370,21 @@ export function createEpicMergeGitHubBoundary({ request }) {
           ref: revision,
         }),
       );
-      let document = null;
-      if (ok(response) && response.body?.encoding === "base64")
-        try {
-          document = JSON.parse(
-            Buffer.from(response.body.content, "base64").toString("utf8"),
-          );
-        } catch {}
+      if (
+        !ok(response) ||
+        response.body?.encoding !== "base64" ||
+        typeof response.body?.content !== "string"
+      )
+        return invalidPolicySource(revision);
+      let document;
+      try {
+        document = JSON.parse(
+          Buffer.from(response.body.content, "base64").toString("utf8"),
+        );
+      } catch {
+        return invalidPolicySource(revision);
+      }
+      if (!policyDocument(document)) return invalidPolicySource(revision);
       return {
         document,
         protected: true,

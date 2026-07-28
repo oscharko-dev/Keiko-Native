@@ -184,6 +184,8 @@ if (
       "utf8",
     ),
   );
+  // This protected producer is contract-bound to ubuntu-latest. The fixed
+  // system executable prevents an untrusted PATH entry from replacing Git.
   policy.source.revision = execFileSync("/usr/bin/git", ["rev-parse", "HEAD"], {
     encoding: "utf8",
     maxBuffer: 128,

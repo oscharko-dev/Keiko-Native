@@ -73,6 +73,15 @@ function parse(row, key) {
   return row === undefined ? null : JSON.parse(row[key]);
 }
 
+function rollback(database) {
+  try {
+    database.exec("ROLLBACK");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function createEpicMergeOperationStore(path) {
   const database = new DatabaseSync(path);
   database.exec(`
@@ -146,9 +155,8 @@ export function createEpicMergeOperationStore(path) {
       database.exec("COMMIT");
       return structuredClone({ ...input, state: "prepared" });
     } catch (error) {
-      try {
-        database.exec("ROLLBACK");
-      } catch {}
+      if (!rollback(database))
+        throw new Error("epic_merge_store_rollback_failed");
       throw error;
     }
   }

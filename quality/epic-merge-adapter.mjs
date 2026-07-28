@@ -10,6 +10,8 @@ import { normalizeEpicMergeResults } from "./epic-merge-authorization.mjs";
 
 const PROTECTED_REF = "refs/heads/dev";
 const PAGE_LIMIT = 100;
+const policyDocument = (value) =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
 
 async function collect(method, input) {
   const items = [];
@@ -133,6 +135,8 @@ export function createInertEpicMergeAdapter({ clock, github, store }) {
       !isEpicMergeCommit(source.revision)
     )
       throw new Error("protected_policy_source_invalid");
+    if (!policyDocument(source.document))
+      throw new Error("protected_policy_document_invalid");
     const policy = structuredClone(source.document);
     policy.source = {
       protected: true,

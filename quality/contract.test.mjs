@@ -1650,6 +1650,7 @@ async function fixtureRepository() {
       "permissions: {}",
       "jobs:",
       "  status:",
+      "    runs-on: ubuntu-latest",
       "    permissions:",
       "      contents: read",
       "    steps:",
@@ -2607,6 +2608,7 @@ test("guard status producer stays protected-dev, read-only, and caller-free", as
       path,
       workflow
         .replace("      contents: read", "      contents: write")
+        .replace("    runs-on: ubuntu-latest", "    runs-on: windows-latest")
         .replace(
           "          ref: ${{ github.sha }}",
           "          ref: caller-selected",
@@ -2615,6 +2617,7 @@ test("guard status producer stays protected-dev, read-only, and caller-free", as
     const result = await validateRepository(root);
     const failures = result.failures.join("\n");
     assert.match(failures, /must not request write permissions/u);
+    assert.match(failures, /missing marker: runs-on: ubuntu-latest/u);
     assert.match(failures, /missing marker: ref: \$\{\{ github\.sha \}\}/u);
   } finally {
     await rm(root, { force: true, recursive: true });

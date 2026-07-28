@@ -29,6 +29,17 @@ test("failed terminal settlement cannot report a terminal result", async () => {
   );
   assert.equal(result.result, "indeterminate");
   assert.notEqual(result.receipt?.result, "merged");
+  assert.equal(result.receipt?.settlement, "unproven");
+});
+
+test("settlement exceptions produce a bounded indeterminate receipt", async () => {
+  const result = await runGuardedEpicMerge(
+    request(),
+    successfulPorts([], { settleError: true }),
+  );
+  assert.equal(result.result, "indeterminate");
+  assert.equal(result.receipt?.settlement, "unavailable");
+  assert.equal(JSON.stringify(result).includes("sensitive settlement"), false);
 });
 
 test("failed pre-submit settlements preserve a recoverable operation", async () => {
