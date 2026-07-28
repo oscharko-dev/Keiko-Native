@@ -1387,13 +1387,14 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       ...adr.slice(start, end).matchAll(/^\d+\. `([a-z0-9_]+)`: /gmu),
     ].map((match) => match[1]);
   };
-  const recordSchema = (heading, nextHeading) => {
-    const start = adr.indexOf(`### ${heading}`);
-    const end = adr.indexOf(`### ${nextHeading}`, start + 1);
+  const recordSchema = (heading, nextHeading, source = adr) => {
+    const normalizedSource = source.replaceAll("\r\n", "\n");
+    const start = normalizedSource.indexOf(`### ${heading}`);
+    const end = normalizedSource.indexOf(`### ${nextHeading}`, start + 1);
     assert.notEqual(start, -1, heading);
     assert.notEqual(end, -1, nextHeading);
     return [
-      ...adr
+      ...normalizedSource
         .slice(start, end)
         .matchAll(/^\d+\. `([a-z0-9_]+)`: ([\s\S]*?)(?=^\d+\. `|^\n)/gmu),
     ].map(
@@ -1557,6 +1558,11 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       recordSchema(heading, nextHeading),
       expectedRecordSchemas[heading],
       `${heading} types`,
+    );
+    assert.deepEqual(
+      recordSchema(heading, nextHeading, adr.replaceAll("\n", "\r\n")),
+      expectedRecordSchemas[heading],
+      `${heading} CRLF types`,
     );
   }
 
