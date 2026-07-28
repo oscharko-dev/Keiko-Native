@@ -12,6 +12,11 @@ import {
 } from "./epic-merge-broker-fixtures.mjs";
 
 const response = (body, status = 200) => ({ body, headers: {}, status });
+const syntheticUser = Object.freeze({
+  id: 424_242,
+  login: "synthetic-merge-operator",
+  type: "User",
+});
 
 test("merged readback accepts provider-null eligibility fields", async () => {
   const boundary = createEpicMergeGitHubBoundary({
@@ -69,7 +74,7 @@ test("code findings accept exact open, fixed, and dismissed alerts only", async 
         alert(2, "fixed"),
         alert(3, "dismissed", {
           dismissed_at: "2026-07-28T00:00:00Z",
-          dismissed_by: { login: "oscharko" },
+          dismissed_by: { login: "synthetic-reviewer" },
           dismissed_reason: "false positive",
         }),
       ]),
@@ -138,8 +143,7 @@ test("protected policy source requires independent dev protection proof", async 
 test("permission proof uses provider branch applicability and actor bypass", async () => {
   const boundary = createEpicMergeGitHubBoundary({
     request: async ({ path }) => {
-      if (path === "/user")
-        return response({ id: 59687448, login: "oscharko", type: "User" });
+      if (path === "/user") return response(syntheticUser);
       if (path.includes("/collaborators/"))
         return response({ permission: "maintain" });
       if (path.includes("/rules/branches/"))
@@ -158,7 +162,13 @@ test("permission proof uses provider branch applicability and actor bypass", asy
       if (path.endsWith("/rulesets/49"))
         return response({
           bypass_actors: [
-            { actor: { id: 59687448, name: "oscharko", type: "User" } },
+            {
+              actor: {
+                id: syntheticUser.id,
+                name: syntheticUser.login,
+                type: syntheticUser.type,
+              },
+            },
           ],
           conditions: { ref_name: { exclude: [], include: ["~ALL"] } },
           enforcement: "active",
@@ -178,8 +188,7 @@ test("permission proof uses provider branch applicability and actor bypass", asy
 test("classic review bypass allowance is bound to authenticated user id", async () => {
   const boundary = createEpicMergeGitHubBoundary({
     request: async ({ path }) => {
-      if (path === "/user")
-        return response({ id: 59687448, login: "oscharko", type: "User" });
+      if (path === "/user") return response(syntheticUser);
       if (path.includes("/collaborators/"))
         return response({ permission: "maintain" });
       if (path.includes("/rules/branches/")) return response([]);
@@ -190,7 +199,7 @@ test("classic review bypass allowance is bound to authenticated user id", async 
             bypass_pull_request_allowances: {
               apps: [],
               teams: [],
-              users: [{ id: 59687448, login: "oscharko", type: "User" }],
+              users: [syntheticUser],
             },
           },
         });
