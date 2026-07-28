@@ -8,6 +8,8 @@ deterministic and independent compliance evidence. Passing a gate does not excus
 Quality Plan, an untested changed behavior, or a violated architecture or trust boundary.
 Manual label, ruleset, identity, provider, and live-probe sequencing follows
 [`repository-activation.md`](repository-activation.md).
+The guarded child-to-epic implementation, durable settlement rules, and reconciliation procedure
+are specified in [`guarded-epic-merge.md`](guarded-epic-merge.md).
 
 ## Required exact-head checks
 

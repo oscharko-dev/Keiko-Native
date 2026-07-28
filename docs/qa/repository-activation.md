@@ -104,6 +104,11 @@ defense in depth, not an atomic base compare-and-swap.
 
 ## 6. Run the activation probes
 
+Use the exact protected policy, request, durable-claim, provider, read-back, and
+human-reconciliation procedure in
+[`guarded-epic-merge.md`](guarded-epic-merge.md). Before Issue #55 freezes its manifest, confirm
+that the checked-in policy status is `disabled` and bound to the exact protected `dev` revision.
+
 ADR-0010 assigns Issue #50 only the inert guard, protected policy/status producer, hermetic proof,
 and corrected v2 live-probe harness. The canonical `status: ready for human review` state cannot
 truthfully exist as merge authority before the signed Contract-as-Code activation. The guarded
