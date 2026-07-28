@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -16,24 +16,6 @@ const acceptanceStep = [
   '          KEIKO_NATIVE_REQUIRE_MACOS: "1"',
 ].join("\n");
 const portableQualityStep = "      - run: npm run quality:control";
-const cleanArchiveAdditions = [
-  ".github/workflows/epic-merge-guard-status.yml",
-  ".github/workflows/merge-group.yml",
-  "docs/qa/guarded-epic-merge.md",
-  "package.json",
-  "quality/epic-merge-adapter.mjs",
-  "quality/epic-merge-authorization.mjs",
-  "quality/epic-merge-broker.mjs",
-  "quality/epic-merge-composition.mjs",
-  "quality/epic-merge-evidence.mjs",
-  "quality/epic-merge-github.mjs",
-  "quality/epic-merge-graphql.mjs",
-  "quality/epic-merge-operation.mjs",
-  "quality/epic-merge-policy-schema.mjs",
-  "quality/epic-merge-policy.json",
-  "quality/epic-merge-policy.mjs",
-  "quality/epic-merge-store.mjs",
-];
 
 test("clean repository requires exact native command step identity and order", async () => {
   const mutations = [
@@ -371,8 +353,6 @@ async function cleanArchive() {
     maxBuffer: 32 * 1024 * 1024,
   });
   assert.equal(extract.status, 0, String(extract.stderr));
-  for (const path of cleanArchiveAdditions)
-    await copyFile(join(repositoryRoot, path), join(root, path));
   return root;
 }
 
