@@ -225,6 +225,12 @@ async function revalidatePrepared(context, safeRequest, ports, operation) {
     return cancelPrepared(ports, operation, "target_protection_changed");
   if (!isDeepStrictEqual(await ports.loadProtectedPolicy(), policy))
     return cancelPrepared(ports, operation, "protected_policy_changed");
+  const currentAuthorization = await ports.loadAuthorization(safeRequest);
+  if (
+    !epicMergeAuthorizationCurrent(currentAuthorization, safeRequest, policy) ||
+    !isDeepStrictEqual(currentAuthorization, authorization)
+  )
+    return cancelPrepared(ports, operation, "authorization_changed");
   if (
     !isDeepStrictEqual(
       await ports.loadPullRequest(safeRequest),

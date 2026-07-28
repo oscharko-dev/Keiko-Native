@@ -73,7 +73,8 @@ function validManifest(manifest, activationCommit) {
     manifest.operations.length === 0
   )
     return false;
-  const identities = new Set();
+  const operationIds = new Set();
+  const requestIds = new Set();
   for (const operation of manifest.operations) {
     if (
       !exactKeys(operation, [
@@ -94,9 +95,13 @@ function validManifest(manifest, activationCommit) {
       !/^epic\/[A-Za-z0-9][A-Za-z0-9._/-]*$/u.test(operation.target)
     )
       return false;
-    const identity = `${operation.operationId}:${operation.requestId}`;
-    if (identities.has(identity)) return false;
-    identities.add(identity);
+    if (
+      operationIds.has(operation.operationId) ||
+      requestIds.has(operation.requestId)
+    )
+      return false;
+    operationIds.add(operation.operationId);
+    requestIds.add(operation.requestId);
   }
   return true;
 }

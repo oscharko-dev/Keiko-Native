@@ -33,7 +33,7 @@ test("evidence uses exact-head bot acceptance and immutable maintainer audit", a
 test("audit evidence rejects edits, duplicates, wrong actor, workflow, head, or digest", async () => {
   const mutations = [
     (comment) => (comment.updated_at = "2026-07-28T00:00:01Z"),
-    (comment) => (comment.user.login = "other-admin"),
+    (comment) => (comment.user.id = 1),
     (comment) =>
       (comment.body = comment.body.replace(
         "adr-0009-maintainer-audit-v1",
@@ -65,6 +65,32 @@ test("audit evidence rejects edits, duplicates, wrong actor, workflow, head, or 
   });
   assert.equal(
     (await adapter(duplicate).loadAuthorization(request())).evidence.audit
+      .current,
+    false,
+  );
+});
+
+test("audit evidence pins immutable maintainer id instead of mutable login", async () => {
+  const renamed = auditComment();
+  renamed.user.login = "renamed-maintainer";
+  const renamedFixture = githubFixture({
+    listIssueComments: async ({ issue }) =>
+      page(issue === 150 ? [renamed] : []),
+  });
+  assert.equal(
+    (await adapter(renamedFixture).loadAuthorization(request())).evidence.audit
+      .current,
+    true,
+  );
+
+  const recycled = auditComment();
+  recycled.user.id = 1;
+  const recycledFixture = githubFixture({
+    listIssueComments: async ({ issue }) =>
+      page(issue === 150 ? [recycled] : []),
+  });
+  assert.equal(
+    (await adapter(recycledFixture).loadAuthorization(request())).evidence.audit
       .current,
     false,
   );

@@ -114,6 +114,96 @@ test("malformed protected policy payloads fail closed at the provider boundary",
   }
 });
 
+test("protected policy source requires independent dev protection proof", async () => {
+  const boundary = createEpicMergeGitHubBoundary({
+    request: async ({ path }) => {
+      if (path.includes("/git/ref/heads/dev"))
+        return response({ object: { sha: head } });
+      if (path.includes("/contents/"))
+        return response({
+          content: Buffer.from("{}").toString("base64"),
+          encoding: "base64",
+        });
+      return response({}, 404);
+    },
+  });
+  assert.deepEqual(await boundary.readPolicy(), {
+    document: null,
+    protected: false,
+    ref: "refs/heads/dev",
+    revision: head,
+  });
+});
+
+test("permission proof uses provider branch applicability and actor bypass", async () => {
+  const boundary = createEpicMergeGitHubBoundary({
+    request: async ({ path }) => {
+      if (path === "/user")
+        return response({ id: 59687448, login: "oscharko", type: "User" });
+      if (path.includes("/collaborators/"))
+        return response({ permission: "maintain" });
+      if (path.includes("/rules/branches/"))
+        return response([{ ruleset_id: 49, type: "pull_request" }]);
+      if (path.includes("/branches/"))
+        return response({
+          enforce_admins: { enabled: true },
+          required_pull_request_reviews: {
+            bypass_pull_request_allowances: {
+              apps: [],
+              teams: [],
+              users: [],
+            },
+          },
+        });
+      if (path.endsWith("/rulesets/49"))
+        return response({
+          bypass_actors: [
+            { actor: { id: 59687448, name: "oscharko", type: "User" } },
+          ],
+          conditions: { ref_name: { exclude: [], include: ["~ALL"] } },
+          enforcement: "active",
+          id: 49,
+          rules: [{ type: "pull_request" }],
+        });
+      if (path.includes("/rulesets?")) return response([{ id: 49 }]);
+      return response({}, 404);
+    },
+  });
+  assert.deepEqual(await boundary.readPermission({ target }), {
+    bypass: true,
+    permission: "maintain",
+  });
+});
+
+test("classic review bypass allowance is bound to authenticated user id", async () => {
+  const boundary = createEpicMergeGitHubBoundary({
+    request: async ({ path }) => {
+      if (path === "/user")
+        return response({ id: 59687448, login: "oscharko", type: "User" });
+      if (path.includes("/collaborators/"))
+        return response({ permission: "maintain" });
+      if (path.includes("/rules/branches/")) return response([]);
+      if (path.includes("/branches/"))
+        return response({
+          enforce_admins: { enabled: true },
+          required_pull_request_reviews: {
+            bypass_pull_request_allowances: {
+              apps: [],
+              teams: [],
+              users: [{ id: 59687448, login: "oscharko", type: "User" }],
+            },
+          },
+        });
+      if (path.includes("/rulesets?")) return response([]);
+      return response({}, 404);
+    },
+  });
+  assert.deepEqual(await boundary.readPermission({ target }), {
+    bypass: true,
+    permission: "maintain",
+  });
+});
+
 async function assertBodyShapedNon200FailsClosed(status) {
   const boundary = createEpicMergeGitHubBoundary({
     request: async ({ path }) => {

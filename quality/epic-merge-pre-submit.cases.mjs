@@ -36,6 +36,25 @@ test("final canonical PR reload blocks a post-claim retarget to dev", async () =
   );
 });
 
+test("final authorization reload blocks stale evidence before submission", async () => {
+  const current = authorization();
+  const stale = structuredClone(current);
+  stale.evidence.audit.current = false;
+  const events = [];
+  const result = await runGuardedEpicMerge(
+    request(),
+    successfulPorts(events, {
+      snapshots: [current, current, stale],
+    }),
+  );
+  assert.equal(result.result, "denied");
+  assert.equal(result.reason, "authorization_changed");
+  assert.equal(
+    events.some(([name]) => name === "merge"),
+    false,
+  );
+});
+
 test("provider readback must report actual persisted PR topology", async () => {
   for (const substitution of [
     { target: "dev" },

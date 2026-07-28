@@ -126,6 +126,16 @@ test("active policy rejects malformed, empty, duplicate, or unknown authority", 
     (policy) => (policy.requiredEvidence = []),
     (policy) => policy.requiredChecks.push(policy.requiredChecks[0]),
     (policy) => policy.requiredEvidence.push(policy.requiredEvidence[0]),
+    (policy) => {
+      const duplicate = structuredClone(policy.probeManifest.operations[0]);
+      duplicate.requestId = `req_${"f".repeat(64)}`;
+      policy.probeManifest.operations.push(duplicate);
+    },
+    (policy) => {
+      const duplicate = structuredClone(policy.probeManifest.operations[0]);
+      duplicate.operationId = `op_${"f".repeat(64)}`;
+      policy.probeManifest.operations.push(duplicate);
+    },
     (policy) => (policy.callerOverride = true),
     (policy) => (policy.probeManifest.operations = []),
     (policy) => (policy.probeManifest.issue = 50),

@@ -32,7 +32,9 @@ Protected policy derives exactly:
 
 One central exact schema validator is used by status, guard, adapter, and repository contract.
 Unknown fields, empty or duplicate active requirements, a missing or non-Issue-#55 manifest,
-malformed operations, and invalid bindings fail closed.
+malformed operations, duplicate operation or request identities, and invalid bindings fail closed.
+The adapter accepts the policy only when the exact `dev` revision and independently read classic
+branch protection both remain current; resolving the ref alone never establishes protection.
 
 ## Guarded request
 
@@ -54,7 +56,10 @@ persistence, settlement, reconciliation, or receipts. The guard performs two equ
 substitution deny before persistence or provider submission. The guard reads exact refs and
 complete target protection twice before claiming. Protection must prove active pull-request,
 signature, status-check, deletion, and force-push controls, maintainer merge permission, and no
-bypass actor or bypass authority. The current live repository has no accepted epic-target
+bypass actor or bypass authority. Ruleset applicability comes from GitHub's active rules-for-branch
+projection rather than local pattern emulation. Classic review-bypass allowances are checked
+against the authenticated user's immutable numeric id; unresolved team or App applicability
+denies. The current live repository has no accepted epic-target
 protection, so it correctly denies until activation work installs and proves it.
 
 Check Runs are queried with `filter=latest`, bound to the exact queried head and canonical pull
@@ -68,9 +73,10 @@ name, and pull request number; malformed page information, cursor cycles, or tru
 The guard uses no synthetic GitHub App, bot account, or additional repository credential. Acceptance
 evidence is the latest exact-head successful `PR contract` commit status from the existing
 `github-actions[bot]@41898282` producer. Audit evidence is exactly one fully paginated, immutable
-pull-request issue comment authored by existing allowlisted maintainer `niko4417` or `oscharko`. The
-comment uses workflow `adr-0009-maintainer-audit-v1`, records zero findings, and binds the exact head
-and a SHA-256 digest over that head, workflow, and finding count. Its normalized producer is
+pull-request issue comment authored by the immutable GitHub user id of existing allowlisted
+maintainer `niko4417` or `oscharko`; mutable login text is attribution only. The comment uses
+workflow `adr-0009-maintainer-audit-v1`, records zero findings, and binds the exact head and a
+SHA-256 digest over that head, workflow, and finding count. Its normalized producer is
 `maintainer-audit@adr-0009`. An edited or duplicate marker, wrong actor, workflow, head or digest,
 incomplete pagination, or newer failed contract status denies.
 
@@ -85,13 +91,16 @@ The serialization key is the digest of repository, exact accepted target, and ob
 base only. Issue, pull request, head, readiness, operation, and request identities cannot partition
 it. A durable SQLite transaction atomically creates the claim and immutable operation or returns
 contended/replayed; a successful claim can never exist without its recoverable operation. The
-guard reads the complete preparation back exactly, then immediately re-reads refs and target
+connection uses a bounded lock timeout so a briefly contended writer can reach the modeled
+transaction result rather than failing immediately. The guard reads the complete preparation back
+exactly, then immediately re-reads refs and target
 protection. Any change cancels the unsubmitted operation and releases serialization.
 
-Immediately before the provider request, the guard performs the final protected-policy read and then
-reloads the canonical pull request. Any source, head, base, target, eligibility, or contract
-change—including a retarget to `dev`—cancels before submission. This canonical pull-request reload
-is the last provider metadata read before the marker and effect.
+Immediately before the provider request, the guard performs the final protected-policy read,
+reloads the complete authorization snapshot, and reloads the canonical pull request. Any readiness,
+lifecycle, evidence, finding, conversation, source, head, base, target, eligibility, or contract
+change—including a retarget to `dev`—cancels before submission. This complete reload is the last
+provider metadata read before the marker and effect.
 
 The guard then durably marks the operation submitted and reads that marker back exactly. The
 submitted boundary is crossed conservatively before invoking the marker port, so marker-call or
@@ -118,7 +127,7 @@ read-back proves the canonical pull request is merged; the provider-reported act
 head, base, and target equal the persisted topology; target tip equals the reported squash commit;
 and that commit has the observed base as its sole parent and the observed head tree. Caller-supplied
 target metadata never substitutes for provider read-back. The inert adapter classifies
-403/404/409/422 as confirmed rejection, 429 and timeouts as
+403/404/409/422 as confirmed rejection, and 429, explicit timeout, and request-abort results as
 ambiguous, and malformed responses as ambiguous without retaining provider bodies. Ambiguity or
 read-back mismatch is `indeterminate`; the operation remains durably blocked without release.
 Its redacted receipt classifies the attempted indeterminate settlement as `recorded`, `unproven`,

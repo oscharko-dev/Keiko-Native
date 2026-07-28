@@ -10,6 +10,7 @@ import { normalizeEpicMergeResults } from "./epic-merge-authorization.mjs";
 
 const PROTECTED_REF = "refs/heads/dev";
 const PAGE_LIMIT = 100;
+const MERGE_TIMEOUT_MS = 30_000;
 const policyDocument = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
@@ -86,7 +87,7 @@ function readiness(issue, comments) {
   };
 }
 
-function normalizedPullRequest(pullRequest, issue) {
+function normalizedPullRequest(pullRequest) {
   return {
     base: pullRequest?.base?.sha,
     draft: pullRequest?.draft,
@@ -233,7 +234,7 @@ export function createInertEpicMergeAdapter({ clock, github, store }) {
         target: planningField(issue?.body, "Exact delivery target"),
       },
       pagination: { complete, truncated: !complete },
-      pullRequest: normalizedPullRequest(pullRequest, issue),
+      pullRequest: normalizedPullRequest(pullRequest),
       repository: request.repository,
     };
   }
@@ -272,9 +273,17 @@ export function createInertEpicMergeAdapter({ clock, github, store }) {
 
   async function mergePullRequest(input) {
     try {
-      return providerResult(await github.merge(input));
+      return providerResult(
+        await github.merge({
+          ...input,
+          signal: AbortSignal.timeout(MERGE_TIMEOUT_MS),
+        }),
+      );
     } catch (error) {
-      return error?.code === "ETIMEDOUT" || error?.status === 429
+      return error?.code === "ETIMEDOUT" ||
+        error?.code === "ABORT_ERR" ||
+        error?.name === "AbortError" ||
+        error?.status === 429
         ? { kind: "timeout" }
         : { kind: "malformed" };
     }

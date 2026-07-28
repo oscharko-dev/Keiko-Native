@@ -19,7 +19,7 @@ export function auditComment(overrides = {}) {
     created_at: "2026-07-28T00:00:00Z",
     id: 700,
     updated_at: "2026-07-28T00:00:00Z",
-    user: { id: 1, login: "oscharko", type: "User" },
+    user: { id: 59687448, login: "oscharko", type: "User" },
     ...overrides,
   };
 }

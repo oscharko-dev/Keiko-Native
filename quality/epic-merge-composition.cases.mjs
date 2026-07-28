@@ -135,10 +135,14 @@ function pullFixtureResponse(path, fixture) {
 }
 
 function protectionFixtureResponse(path, state) {
-  if (path === "/user") return response({ login: "oscharko" });
+  if (path === "/user")
+    return response({ id: 59687448, login: "oscharko", type: "User" });
   if (path.includes("/collaborators/oscharko/permission"))
     return response({ permission: "maintain" });
-  if (path.includes(`/branches/${encodeURIComponent(target)}/protection`))
+  if (
+    path.includes(`/branches/${encodeURIComponent(target)}/protection`) ||
+    path.includes("/branches/dev/protection")
+  )
     return response({
       allow_deletions: { enabled: false },
       allow_force_pushes: { enabled: false },
@@ -147,6 +151,8 @@ function protectionFixtureResponse(path, state) {
       required_signatures: { enabled: true },
       required_status_checks: { strict: true },
     });
+  if (path.includes(`/rules/branches/${encodeURIComponent(target)}`))
+    return response([{ ruleset_id: 49, type: "pull_request" }]);
   if (path.startsWith(`/repos/${repository}/rulesets?`))
     return response([{ id: 49, name: "Epic protection" }]);
   if (path === `/repos/${repository}/rulesets/49`)
@@ -256,7 +262,7 @@ test("production composition is inert until run and normalizes GitHub boundaries
   }
 });
 
-test("ruleset discovery requires complete detail and honors exact exclusion", async () => {
+test("ruleset discovery requires complete detail and provider applicability", async () => {
   const protection = response({
     allow_deletions: { enabled: false },
     allow_force_pushes: { enabled: false },
@@ -283,9 +289,13 @@ test("ruleset discovery requires complete detail and honors exact exclusion", as
       },
     ],
   };
-  const boundary = (mutate) =>
+  const boundary = (mutate, applicable = true) =>
     createEpicMergeGitHubBoundary({
       request: async ({ path }) => {
+        if (path.includes("/rules/branches/"))
+          return response(
+            applicable ? [{ ruleset_id: 49, type: "pull_request" }] : [],
+          );
         if (path.includes("/branches/")) return protection;
         if (path.includes("/rulesets?"))
           return response([{ id: 49, name: "summary-only" }]);
@@ -294,7 +304,8 @@ test("ruleset discovery requires complete detail and honors exact exclusion", as
           mutate(value);
           return response(value);
         }
-        if (path === "/user") return response({ login: "oscharko" });
+        if (path === "/user")
+          return response({ id: 59687448, login: "oscharko", type: "User" });
         if (path.includes("/collaborators/"))
           return response({ permission: "maintain" });
         return response({}, 404);
@@ -306,9 +317,7 @@ test("ruleset discovery requires complete detail and honors exact exclusion", as
     nextPage: undefined,
   });
   assert.equal(await missingBypass.readPermission({ target }), null);
-  const excluded = boundary((value) =>
-    value.conditions.ref_name.exclude.push(`refs/heads/${target}`),
-  );
+  const excluded = boundary(() => {}, false);
   assert.deepEqual(await excluded.listTargetRules({ page: 1, target }), {
     items: [],
     nextPage: null,

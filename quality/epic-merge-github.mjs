@@ -9,6 +9,7 @@ import {
 import { listEpicMergeReviewThreads } from "./epic-merge-graphql.mjs";
 
 const prefix = `/repos/${EPIC_MERGE_REPOSITORY}`;
+const PAGE_LIMIT = 100;
 const closingIssue =
   /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#([1-9]\d*)/iu;
 const ok = (response) =>
@@ -65,17 +66,49 @@ const invalidPolicySource = (revision) => ({
   revision,
 });
 
-function rulesetApplies(ruleset, target) {
-  const includes = ruleset?.conditions?.ref_name?.include;
-  const excludes = ruleset?.conditions?.ref_name?.exclude;
-  const exact = `refs/heads/${target}`;
-  return (
-    ruleset?.enforcement === "active" &&
-    Array.isArray(includes) &&
-    Array.isArray(excludes) &&
-    includes.includes(exact) &&
-    !excludes.includes(exact)
-  );
+function authenticatedUser(response) {
+  const user = response?.body;
+  return ok(response) &&
+    Number.isSafeInteger(user?.id) &&
+    user.id > 0 &&
+    typeof user.login === "string" &&
+    user.type === "User"
+    ? { id: user.id, login: user.login }
+    : null;
+}
+
+function classicBypass(protection, user) {
+  const allowances =
+    protection?.required_pull_request_reviews?.bypass_pull_request_allowances;
+  if (allowances === undefined || allowances === null) return false;
+  const users = allowances.users;
+  const teams = allowances.teams;
+  const apps = allowances.apps;
+  if (
+    !Array.isArray(users) ||
+    !Array.isArray(teams) ||
+    !Array.isArray(apps) ||
+    users.some(
+      (candidate) =>
+        !Number.isSafeInteger(candidate?.id) ||
+        candidate.id <= 0 ||
+        candidate.type !== "User",
+    )
+  )
+    return null;
+  if (users.some((candidate) => candidate.id === user.id)) return true;
+  return teams.length === 0 && apps.length === 0 ? false : null;
+}
+
+function rulesetBypass(rulesets, user) {
+  const actors = rulesets.flatMap((ruleset) => ruleset.bypass_actors);
+  if (
+    actors.some(
+      (actor) => actor?.actor_id === user.id || actor?.actor?.id === user.id,
+    )
+  )
+    return true;
+  return actors.length === 0 ? false : null;
 }
 
 function normalizedRule(ruleset, protection, target) {
@@ -146,16 +179,48 @@ export function createEpicMergeGitHubBoundary({ request }) {
     return get(`${prefix}/branches/${encoded(target)}/protection`);
   }
 
+  async function applicableRuleSetIds(target) {
+    const ids = new Set();
+    let number = 1;
+    for (let count = 0; count < PAGE_LIMIT; count += 1) {
+      const result = page(
+        await get(
+          requestPath(`${prefix}/rules/branches/${encoded(target)}`, {
+            page: number,
+            per_page: 100,
+          }),
+        ),
+        number,
+      );
+      if (
+        result.nextPage === undefined ||
+        result.items.some(
+          (rule) =>
+            !Number.isSafeInteger(rule?.ruleset_id) || rule.ruleset_id <= 0,
+        )
+      )
+        return null;
+      for (const rule of result.items) ids.add(rule.ruleset_id);
+      if (result.nextPage === null) return ids;
+      number = result.nextPage;
+    }
+    return null;
+  }
+
   async function rulesets(target, number) {
-    const response = await get(
-      requestPath(`${prefix}/rulesets`, {
-        includes_parents: true,
-        page: number,
-        per_page: 100,
-      }),
-    );
+    const [response, applicableIds] = await Promise.all([
+      get(
+        requestPath(`${prefix}/rulesets`, {
+          includes_parents: true,
+          page: number,
+          per_page: 100,
+        }),
+      ),
+      applicableRuleSetIds(target),
+    ]);
     const result = page(response, number);
     if (
+      applicableIds === null ||
       result.nextPage === undefined ||
       result.items.some(
         (item) => !Number.isSafeInteger(item?.id) || item.id <= 0,
@@ -180,7 +245,9 @@ export function createEpicMergeGitHubBoundary({ request }) {
     return {
       items: details
         .map((detail) => detail.body)
-        .filter((item) => rulesetApplies(item, target)),
+        .filter(
+          (item) => item.enforcement === "active" && applicableIds.has(item.id),
+        ),
       nextPage: result.nextPage,
       valid: true,
     };
@@ -308,6 +375,7 @@ export function createEpicMergeGitHubBoundary({ request }) {
         },
         method: "PUT",
         path: `${prefix}/pulls/${String(input.pullRequest)}/merge`,
+        signal: input.signal,
       }),
     readIssue: async ({ issue }) => {
       const response = await get(`${prefix}/issues/${String(issue)}`);
@@ -322,12 +390,16 @@ export function createEpicMergeGitHubBoundary({ request }) {
         : null;
     },
     readPermission: async ({ actor, target }) => {
-      const user =
-        actor === undefined
-          ? await request({ method: "GET", path: "/user" })
-          : null;
-      const login = actor ?? (ok(user) ? user.body?.login : null);
-      if (typeof login !== "string") return null;
+      const userResponse = await request({ method: "GET", path: "/user" });
+      const user = authenticatedUser(userResponse);
+      if (
+        user === null ||
+        (actor !== undefined &&
+          (typeof actor !== "string" ||
+            actor.toLowerCase() !== user.login.toLowerCase()))
+      )
+        return null;
+      const login = actor ?? user.login;
       const [permission, protectedBranch, applicable] = await Promise.all([
         get(`${prefix}/collaborators/${encoded(login)}/permission`),
         protection(target),
@@ -342,28 +414,35 @@ export function createEpicMergeGitHubBoundary({ request }) {
         applicable.valid !== true
       )
         return null;
+      const classic = classicBypass(protectedBranch.body, user);
+      const ruleset = rulesetBypass(applicable.items, user);
       return {
         bypass:
-          ok(protectedBranch) &&
-          protectedBranch.body?.enforce_admins?.enabled === true &&
-          applicable.valid === true &&
-          applicable.items.every(
-            (ruleset) => (ruleset?.bypass_actors ?? []).length === 0,
-          )
-            ? false
-            : null,
+          protectedBranch.body?.enforce_admins?.enabled !== true ||
+          classic === null ||
+          ruleset === null
+            ? null
+            : classic || ruleset,
         permission: permission?.body?.permission,
       };
     },
     readPolicy: async () => {
-      const ref = await get(`${prefix}/git/ref/heads/dev`);
+      const [ref, protectedDev] = await Promise.all([
+        get(`${prefix}/git/ref/heads/dev`),
+        protection("dev"),
+      ]);
       const revision = ref?.body?.object?.sha;
-      if (!ok(ref) || !commitSha(revision))
+      if (
+        !ok(ref) ||
+        !commitSha(revision) ||
+        !ok(protectedDev) ||
+        protectedDev.body?.enforce_admins?.enabled !== true
+      )
         return {
           document: null,
           protected: false,
-          ref: null,
-          revision: null,
+          ref: commitSha(revision) ? "refs/heads/dev" : null,
+          revision: commitSha(revision) ? revision : null,
         };
       const response = await get(
         requestPath(`${prefix}/contents/quality/epic-merge-policy.json`, {

@@ -6,7 +6,7 @@ import {
 const MARKER = "<!-- keiko-native-epic-merge-audit -->";
 const PRODUCER = "maintainer-audit@adr-0009";
 const WORKFLOW = "adr-0009-maintainer-audit-v1";
-const maintainers = new Set(["niko4417", "oscharko"]);
+const maintainerIds = new Set([159039192, 59687448]);
 
 function receipt(comment, head) {
   const match =
@@ -28,7 +28,7 @@ function receipt(comment, head) {
     Number.isSafeInteger(comment?.user?.id) &&
     comment.user.id > 0 &&
     comment.user.type === "User" &&
-    maintainers.has(actor) &&
+    maintainerIds.has(comment.user.id) &&
     comment.created_at === comment.updated_at &&
     match?.[1] === "accepted" &&
     match?.[2] === head &&

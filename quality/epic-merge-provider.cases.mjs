@@ -33,6 +33,7 @@ test("provider adapter classifies rejection and ambiguity without raw data", asy
   for (const error of [
     Object.assign(new Error("secret"), { code: "ETIMEDOUT" }),
     Object.assign(new Error("secret"), { status: 429 }),
+    Object.assign(new Error("secret"), { name: "AbortError" }),
   ])
     assert.deepEqual(
       await adapter(async () => {
@@ -40,4 +41,22 @@ test("provider adapter classifies rejection and ambiguity without raw data", asy
       }).mergePullRequest({}),
       { kind: "timeout" },
     );
+});
+
+test("provider adapter bounds the merge request with an abort signal", async () => {
+  let observed;
+  const result = await adapter(async (input) => {
+    observed = input;
+    return {
+      body: { merged: true, sha: "4".repeat(40) },
+      status: 200,
+    };
+  }).mergePullRequest({
+    merge_method: "squash",
+    pullRequest: 150,
+    repository,
+    sha: head,
+  });
+  assert.equal(result.kind, "accepted");
+  assert.equal(observed.signal instanceof AbortSignal, true);
 });

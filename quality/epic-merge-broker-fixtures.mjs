@@ -242,6 +242,7 @@ export function successfulPorts(events, options = {}) {
   const snapshots = options.snapshots ?? [
     currentAuthorization,
     currentAuthorization,
+    currentAuthorization,
   ];
   const protections = options.protections?.map((value) =>
     structuredClone(value),

@@ -12,8 +12,14 @@ export function createInertEpicMergeComposition({
   request,
 }) {
   const store = createEpicMergeOperationStore(databasePath);
-  const github = createEpicMergeGitHubBoundary({ request });
-  const ports = createInertEpicMergeAdapter({ clock, github, store });
+  let ports;
+  try {
+    const github = createEpicMergeGitHubBoundary({ request });
+    ports = createInertEpicMergeAdapter({ clock, github, store });
+  } catch (error) {
+    store.close();
+    throw error;
+  }
   return Object.freeze({
     close: store.close,
     reconcile: (input) => reconcileEpicMergeOperation(input, ports),

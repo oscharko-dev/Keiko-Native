@@ -83,7 +83,7 @@ function rollback(database) {
 }
 
 export function createEpicMergeOperationStore(path) {
-  const database = new DatabaseSync(path);
+  const database = new DatabaseSync(path, { timeout: 5_000 });
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = FULL;
