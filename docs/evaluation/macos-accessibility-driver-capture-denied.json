@@ -3,8 +3,8 @@
   "phase": "denied",
   "prepared": {
     "schemaVersion": "keiko-native-macos-accessibility-driver-prepared/v1",
-    "sourceHead": "fbb805ba971c20417d826b90d70b2f5c17c86bdd",
-    "sourceDigest": "c9aafd2e52846b20f16c03a9925ab1261b751052f1b0501fda187d209db739c5",
+    "sourceHead": "826f456df60cb5da6a5c8e814005836dc1fc78b1",
+    "sourceDigest": "cca20f5a35d41c89b2bce0f28960b1ac66404df957fa5aa7b39f2b40d975d9ee",
     "bundleIdentifier": "dev.oscharko.keiko-native.evaluation.accessibility",
     "representativePackageSha256": "9221319c3d37bdd7c2e36c0558f039d60d1aa3b3223f49668c3b4fa7aedf3e0c",
     "representativeInspection": {
@@ -56,7 +56,7 @@
     "systemEvents": [
       {
         "checkpoints": [],
-        "elapsedMs": 118,
+        "elapsedMs": 111,
         "repetition": 1
       }
     ]
