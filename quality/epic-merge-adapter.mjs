@@ -47,8 +47,8 @@ function labelNames(issue) {
 
 function planningField(body, name) {
   if (typeof body !== "string") return undefined;
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-  return new RegExp(`^- ${escaped}: \\x60([^\\x60]+)\\x60$`, "mu").exec(
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, String.raw`\$&`);
+  return new RegExp(String.raw`^- ${escaped}: \x60([^\x60]+)\x60$`, "mu").exec(
     body,
   )?.[1];
 }

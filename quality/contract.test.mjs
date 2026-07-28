@@ -2239,6 +2239,29 @@ test("reports provider and workflow drift without leaking file contents", async 
   }
 });
 
+test("Sonar classifies epic merge support modules as test code", async () => {
+  const lines = new Set(
+    (
+      await readFile(
+        join(import.meta.dirname, "..", "sonar-project.properties"),
+        "utf8",
+      )
+    ).split(/\r?\n/u),
+  );
+  assert.equal(
+    lines.has(
+      "sonar.test.inclusions=quality/*.test.mjs,quality/epic-merge-*.cases.mjs,quality/epic-merge-*-fixtures.mjs",
+    ),
+    true,
+  );
+  assert.equal(
+    lines.has(
+      "sonar.exclusions=quality/*.test.mjs,quality/epic-merge-*.cases.mjs,quality/epic-merge-*-fixtures.mjs,coverage/**,node_modules/**",
+    ),
+    true,
+  );
+});
+
 test("rejects undeclared Gitar rules and configuration surfaces", async () => {
   const root = await fixtureRepository();
   try {

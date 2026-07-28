@@ -17,7 +17,6 @@ import {
   operationIdentity,
   repository,
   requestIdentity,
-  sha,
   successfulPorts,
   target,
 } from "./epic-merge-broker-fixtures.mjs";

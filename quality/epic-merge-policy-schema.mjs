@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
+import { compareCodeUnits } from "./deterministic-order.mjs";
+
 export const EPIC_MERGE_REPOSITORY = "oscharko-dev/Keiko-Native";
 const PROTECTED_REF = "refs/heads/dev";
 const EXPECTED_PRODUCERS = Object.freeze({
@@ -15,7 +17,10 @@ const exactKeys = (value, keys) =>
   value !== null &&
   typeof value === "object" &&
   !Array.isArray(value) &&
-  isDeepStrictEqual(Object.keys(value).toSorted(), keys.toSorted());
+  isDeepStrictEqual(
+    Object.keys(value).toSorted(compareCodeUnits),
+    keys.toSorted(compareCodeUnits),
+  );
 const safeIdentity = (prefix, value) =>
   typeof value === "string" &&
   new RegExp(`^${prefix}_[0-9a-f]{64}$`, "u").test(value);
@@ -28,7 +33,7 @@ function canonical(value) {
   if (value !== null && typeof value === "object")
     return Object.fromEntries(
       Object.keys(value)
-        .toSorted()
+        .toSorted(compareCodeUnits)
         .map((key) => [key, canonical(value[key])]),
     );
   return value;

@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 
+import { compareCodeUnits } from "./deterministic-order.mjs";
 import {
   epicMergeAuthorizationCurrent,
   epicMergeManifestMatches,
@@ -37,7 +38,10 @@ const exactKeys = (value, keys) =>
   value !== null &&
   typeof value === "object" &&
   !Array.isArray(value) &&
-  isDeepStrictEqual(Object.keys(value).toSorted(), keys.toSorted());
+  isDeepStrictEqual(
+    Object.keys(value).toSorted(compareCodeUnits),
+    keys.toSorted(compareCodeUnits),
+  );
 
 const denied = (reason) => ({
   mode: "agent-credentialed",
@@ -116,6 +120,222 @@ function operationRecord(
   };
 }
 
+const refsCurrent = (refs, pullRequest) =>
+  refs?.base === pullRequest.base && refs?.head === pullRequest.head;
+
+async function loadInitialContext(safeRequest, ports) {
+  const policy = await ports.loadProtectedPolicy();
+  if (!isDeepStrictEqual(policy, await ports.loadProtectedPolicy()))
+    return { denial: denied("protected_policy_unstable") };
+  const availability = deriveEpicMergeAvailability(policy);
+  if (availability.state === "disabled")
+    return { denial: denied(availability.reason) };
+  const manifest =
+    availability.state === "probe-only"
+      ? findProbeManifestOperation(
+          safeRequest,
+          policy.probeManifest,
+          policy.activation.commit,
+        )
+      : undefined;
+  if (availability.state === "probe-only" && manifest === undefined)
+    return { denial: denied("probe_manifest_mismatch") };
+  const authorization = await ports.loadAuthorization(safeRequest);
+  const stableAuthorization = await ports.loadAuthorization(safeRequest);
+  if (
+    !epicMergeAuthorizationCurrent(authorization, safeRequest, policy) ||
+    !isDeepStrictEqual(authorization, stableAuthorization)
+  )
+    return { denial: denied("authorization_unproven") };
+  if (manifest && !epicMergeManifestMatches(manifest, authorization))
+    return { denial: denied("probe_manifest_mismatch") };
+  const protection = await ports.loadTargetProtection(
+    authorization.issue.target,
+    authorization.pullRequest.base,
+  );
+  const stableProtection = await ports.loadTargetProtection(
+    authorization.issue.target,
+    authorization.pullRequest.base,
+  );
+  if (
+    !epicMergeProtectionCurrent(protection, authorization) ||
+    !isDeepStrictEqual(protection, stableProtection)
+  )
+    return { denial: denied("target_protection_unproven") };
+  const refs = await ports.readRefs(
+    authorization.issue.target,
+    authorization.pullRequest.source,
+  );
+  return refsCurrent(refs, authorization.pullRequest)
+    ? { authorization, policy, protection }
+    : { denial: denied("refs_changed") };
+}
+
+async function persistPreparation(ports, claim, operation) {
+  const expected = { claim, operation, state: "prepared" };
+  if (
+    !isDeepStrictEqual(
+      await ports.prepareOperation({ claim, operation }),
+      expected,
+    )
+  )
+    return denied("serialization_prepare_unavailable");
+  if (
+    !isDeepStrictEqual(
+      await ports.readPreparation(operation.operationId),
+      expected,
+    )
+  )
+    throw new Error("durable_readback_mismatch");
+  return undefined;
+}
+
+async function cancelPrepared(ports, operation, reason) {
+  const settled = await settleAndVerify(
+    ports,
+    operation,
+    {
+      claimId: operation.claimId,
+      operationId: operation.operationId,
+      releaseSerialization: true,
+      result: "cancelled",
+    },
+    false,
+  );
+  if (!settled) throw new Error("settlement_unproven");
+  return denied(reason);
+}
+
+async function revalidatePrepared(context, safeRequest, ports, operation) {
+  const { authorization, policy, protection } = context;
+  const refs = await ports.readRefs(
+    authorization.issue.target,
+    authorization.pullRequest.source,
+  );
+  if (!refsCurrent(refs, authorization.pullRequest))
+    return cancelPrepared(ports, operation, "refs_changed");
+  const currentProtection = await ports.loadTargetProtection(
+    authorization.issue.target,
+    authorization.pullRequest.base,
+  );
+  if (
+    !epicMergeProtectionCurrent(currentProtection, authorization) ||
+    !isDeepStrictEqual(currentProtection, protection)
+  )
+    return cancelPrepared(ports, operation, "target_protection_changed");
+  if (!isDeepStrictEqual(await ports.loadProtectedPolicy(), policy))
+    return cancelPrepared(ports, operation, "protected_policy_changed");
+  if (
+    !isDeepStrictEqual(
+      await ports.loadPullRequest(safeRequest),
+      authorization.pullRequest,
+    )
+  )
+    return cancelPrepared(ports, operation, "canonical_pull_request_changed");
+  return undefined;
+}
+
+async function markSubmitted(ports, operation) {
+  const marked = await ports.markOperationSubmitted({
+    claimId: operation.claimId,
+    operationId: operation.operationId,
+    state: "submitted",
+  });
+  const readback = await ports.readOperation(operation.operationId);
+  if (
+    !isDeepStrictEqual(marked, { submitted: true }) ||
+    !isDeepStrictEqual(readback, {
+      ...operation,
+      state: "submitted",
+      submitted: true,
+    })
+  )
+    throw new Error("submission_marker_unproven");
+}
+
+async function performMerge(context, ports, operation) {
+  const { authorization } = context;
+  const response = await ports.mergePullRequest({
+    merge_method: "squash",
+    pullRequest: authorization.pullRequest.number,
+    repository: REPOSITORY,
+    sha: authorization.pullRequest.head,
+  });
+  if (response?.kind === "rejected") {
+    const settled = await settleAndVerify(
+      ports,
+      operation,
+      {
+        claimId: operation.claimId,
+        operationId: operation.operationId,
+        releaseSerialization: true,
+        result: "rejected",
+      },
+      true,
+    );
+    if (!settled) throw new Error("settlement_unproven");
+    return {
+      ...denied("provider_rejected"),
+      receipt: receipt(operation, "denied", true),
+    };
+  }
+  if (response?.kind !== "accepted" || !isEpicMergeCommit(response.mergeCommit))
+    throw new Error("indeterminate");
+  const outcome = await ports.readMergeOutcome({
+    pullRequest: authorization.pullRequest.number,
+    repository: REPOSITORY,
+    target: authorization.issue.target,
+  });
+  if (!verifiedOutcome(outcome, authorization.pullRequest, response))
+    throw new Error("indeterminate");
+  const settled = await settleAndVerify(
+    ports,
+    operation,
+    {
+      claimId: operation.claimId,
+      mergeCommit: response.mergeCommit,
+      operationId: operation.operationId,
+      releaseSerialization: true,
+      result: "merged",
+    },
+    true,
+  );
+  if (!settled) throw new Error("settlement_unproven");
+  return {
+    receipt: receipt(operation, "merged", true, {
+      mergeCommit: response.mergeCommit,
+      parents: [authorization.pullRequest.base],
+      targetTip: outcome.targetTip,
+      tree: outcome.commit.tree,
+    }),
+    result: "merged",
+  };
+}
+
+async function indeterminateResult(ports, operation, submitted) {
+  if (!operation) return denied("guard_unavailable");
+  try {
+    await settleAndVerify(
+      ports,
+      operation,
+      {
+        claimId: operation.claimId,
+        operationId: operation.operationId,
+        releaseSerialization: false,
+        result: "indeterminate",
+      },
+      submitted,
+    );
+  } catch {}
+  return {
+    receipt: receipt(operation, "indeterminate", submitted),
+    reason: submitted
+      ? "human_reconciliation_required"
+      : "prepared_operation_reconciliation_required",
+    result: "indeterminate",
+  };
+}
+
 export async function runGuardedEpicMerge(request, ports) {
   let submitted = false;
   let operation;
@@ -126,256 +346,34 @@ export async function runGuardedEpicMerge(request, ports) {
       operationId: canonicalEpicMergeIdentity("operation", request.operationId),
       requestId: canonicalEpicMergeIdentity("request", request.requestId),
     };
-    const policy = await ports.loadProtectedPolicy();
-    const stablePolicy = await ports.loadProtectedPolicy();
-    if (!isDeepStrictEqual(policy, stablePolicy))
-      return denied("protected_policy_unstable");
-    const availability = deriveEpicMergeAvailability(policy);
-    if (availability.state === "disabled") return denied(availability.reason);
-    const manifest =
-      availability.state === "probe-only"
-        ? findProbeManifestOperation(
-            safeRequest,
-            policy.probeManifest,
-            policy.activation.commit,
-          )
-        : undefined;
-    if (availability.state === "probe-only" && manifest === undefined)
-      return denied("probe_manifest_mismatch");
-    const first = await ports.loadAuthorization(safeRequest);
-    const second = await ports.loadAuthorization(safeRequest);
-    if (
-      !epicMergeAuthorizationCurrent(first, safeRequest, policy) ||
-      !isDeepStrictEqual(first, second)
-    ) {
-      return denied("authorization_unproven");
-    }
-    if (manifest && !epicMergeManifestMatches(manifest, first))
-      return denied("probe_manifest_mismatch");
-    const firstProtection = await ports.loadTargetProtection(
-      first.issue.target,
-      first.pullRequest.base,
-    );
-    const secondProtection = await ports.loadTargetProtection(
-      first.issue.target,
-      first.pullRequest.base,
-    );
-    if (
-      !epicMergeProtectionCurrent(firstProtection, first) ||
-      !isDeepStrictEqual(firstProtection, secondProtection)
-    ) {
-      return denied("target_protection_unproven");
-    }
-    const refs = await ports.readRefs(
-      first.issue.target,
-      first.pullRequest.source,
-    );
-    if (
-      refs?.base !== first.pullRequest.base ||
-      refs?.head !== first.pullRequest.head
-    ) {
-      return denied("refs_changed");
-    }
-    const claim = claimInput(first, safeRequest);
+    const context = await loadInitialContext(safeRequest, ports);
+    if (context.denial) return context.denial;
+    const claim = claimInput(context.authorization, safeRequest);
     operation = operationRecord(
-      first,
-      firstProtection,
-      policy,
+      context.authorization,
+      context.protection,
+      context.policy,
       safeRequest,
       claim,
       ports.clock,
     );
-    const expectedPreparation = { claim, operation, state: "prepared" };
-    const prepared = await ports.prepareOperation({ claim, operation });
-    if (!isDeepStrictEqual(prepared, expectedPreparation))
-      return denied("serialization_prepare_unavailable");
-    const readback = await ports.readPreparation(safeRequest.operationId);
-    if (!isDeepStrictEqual(readback, expectedPreparation))
-      throw new Error("durable_readback_mismatch");
-    const preSubmitRefs = await ports.readRefs(
-      first.issue.target,
-      first.pullRequest.source,
+    const persistenceFailure = await persistPreparation(
+      ports,
+      claim,
+      operation,
     );
-    if (
-      preSubmitRefs?.base !== first.pullRequest.base ||
-      preSubmitRefs?.head !== first.pullRequest.head
-    ) {
-      if (
-        !(await settleAndVerify(
-          ports,
-          operation,
-          {
-            claimId: operation.claimId,
-            operationId: safeRequest.operationId,
-            releaseSerialization: true,
-            result: "cancelled",
-          },
-          false,
-        ))
-      )
-        throw new Error("settlement_unproven");
-      return denied("refs_changed");
-    }
-    const preSubmitProtection = await ports.loadTargetProtection(
-      first.issue.target,
-      first.pullRequest.base,
+    if (persistenceFailure) return persistenceFailure;
+    const revalidationFailure = await revalidatePrepared(
+      context,
+      safeRequest,
+      ports,
+      operation,
     );
-    if (
-      !epicMergeProtectionCurrent(preSubmitProtection, first) ||
-      !isDeepStrictEqual(preSubmitProtection, firstProtection)
-    ) {
-      if (
-        !(await settleAndVerify(
-          ports,
-          operation,
-          {
-            claimId: operation.claimId,
-            operationId: safeRequest.operationId,
-            releaseSerialization: true,
-            result: "cancelled",
-          },
-          false,
-        ))
-      )
-        throw new Error("settlement_unproven");
-      return denied("target_protection_changed");
-    }
-    const preSubmitPolicy = await ports.loadProtectedPolicy();
-    if (!isDeepStrictEqual(preSubmitPolicy, policy)) {
-      if (
-        !(await settleAndVerify(
-          ports,
-          operation,
-          {
-            claimId: operation.claimId,
-            operationId: operation.operationId,
-            releaseSerialization: true,
-            result: "cancelled",
-          },
-          false,
-        ))
-      )
-        throw new Error("settlement_unproven");
-      return denied("protected_policy_changed");
-    }
-    const finalPullRequest = await ports.loadPullRequest(safeRequest);
-    if (!isDeepStrictEqual(finalPullRequest, first.pullRequest)) {
-      if (
-        !(await settleAndVerify(
-          ports,
-          operation,
-          {
-            claimId: operation.claimId,
-            operationId: operation.operationId,
-            releaseSerialization: true,
-            result: "cancelled",
-          },
-          false,
-        ))
-      )
-        throw new Error("settlement_unproven");
-      return denied("canonical_pull_request_changed");
-    }
+    if (revalidationFailure) return revalidationFailure;
     submitted = true;
-    const marked = await ports.markOperationSubmitted({
-      claimId: operation.claimId,
-      operationId: operation.operationId,
-      state: "submitted",
-    });
-    if (
-      !isDeepStrictEqual(marked, { submitted: true }) ||
-      !isDeepStrictEqual(await ports.readOperation(operation.operationId), {
-        ...operation,
-        state: "submitted",
-        submitted: true,
-      })
-    )
-      throw new Error("submission_marker_unproven");
-    const response = await ports.mergePullRequest({
-      merge_method: "squash",
-      pullRequest: first.pullRequest.number,
-      repository: REPOSITORY,
-      sha: first.pullRequest.head,
-    });
-    if (response?.kind === "rejected") {
-      if (
-        !(await settleAndVerify(
-          ports,
-          operation,
-          {
-            claimId: operation.claimId,
-            operationId: safeRequest.operationId,
-            releaseSerialization: true,
-            result: "rejected",
-          },
-          true,
-        ))
-      )
-        throw new Error("settlement_unproven");
-      return {
-        ...denied("provider_rejected"),
-        receipt: receipt(operation, "denied", true),
-      };
-    }
-    if (
-      response?.kind !== "accepted" ||
-      !isEpicMergeCommit(response.mergeCommit)
-    )
-      throw new Error("indeterminate");
-    const outcome = await ports.readMergeOutcome({
-      pullRequest: first.pullRequest.number,
-      repository: REPOSITORY,
-      target: first.issue.target,
-    });
-    if (!verifiedOutcome(outcome, first.pullRequest, response))
-      throw new Error("indeterminate");
-    if (
-      !(await settleAndVerify(
-        ports,
-        operation,
-        {
-          claimId: operation.claimId,
-          mergeCommit: response.mergeCommit,
-          operationId: safeRequest.operationId,
-          releaseSerialization: true,
-          result: "merged",
-        },
-        true,
-      ))
-    )
-      throw new Error("settlement_unproven");
-    return {
-      receipt: receipt(operation, "merged", true, {
-        mergeCommit: response.mergeCommit,
-        parents: [first.pullRequest.base],
-        targetTip: outcome.targetTip,
-        tree: outcome.commit.tree,
-      }),
-      result: "merged",
-    };
+    await markSubmitted(ports, operation);
+    return await performMerge(context, ports, operation);
   } catch {
-    if (operation) {
-      try {
-        await settleAndVerify(
-          ports,
-          operation,
-          {
-            claimId: operation.claimId,
-            operationId: operation.operationId,
-            releaseSerialization: false,
-            result: "indeterminate",
-          },
-          submitted,
-        );
-      } catch {}
-      return {
-        receipt: receipt(operation, "indeterminate", submitted),
-        reason: submitted
-          ? "human_reconciliation_required"
-          : "prepared_operation_reconciliation_required",
-        result: "indeterminate",
-      };
-    }
-    return denied("guard_unavailable");
+    return indeterminateResult(ports, operation, submitted);
   }
 }

@@ -1,6 +1,8 @@
 import { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 
+import { compareCodeUnits } from "./deterministic-order.mjs";
+
 const operationIdentity = (value) =>
   typeof value === "string" && /^op_[0-9a-f]{64}$/u.test(value);
 const claimIdentity = (value) =>
@@ -11,7 +13,10 @@ const exactKeys = (value, keys) =>
   value !== null &&
   typeof value === "object" &&
   !Array.isArray(value) &&
-  isDeepStrictEqual(Object.keys(value).toSorted(), keys.toSorted());
+  isDeepStrictEqual(
+    Object.keys(value).toSorted(compareCodeUnits),
+    keys.toSorted(compareCodeUnits),
+  );
 
 function validPreparation(input) {
   const { claim, operation } = input ?? {};

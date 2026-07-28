@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 
+import { compareCodeUnits } from "./deterministic-order.mjs";
 import {
   EPIC_MERGE_REPOSITORY,
   isEpicMergeCommit,
@@ -25,7 +26,10 @@ function exactKeys(value, keys) {
     value !== null &&
     typeof value === "object" &&
     !Array.isArray(value) &&
-    isDeepStrictEqual(Object.keys(value).toSorted(), keys.toSorted())
+    isDeepStrictEqual(
+      Object.keys(value).toSorted(compareCodeUnits),
+      keys.toSorted(compareCodeUnits),
+    )
   );
 }
 

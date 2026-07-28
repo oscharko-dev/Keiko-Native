@@ -9,15 +9,34 @@ import {
 import { listEpicMergeReviewThreads } from "./epic-merge-graphql.mjs";
 
 const prefix = `/repos/${EPIC_MERGE_REPOSITORY}`;
+const closingIssue =
+  /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#([1-9]\d*)/iu;
 const ok = (response) =>
   response?.status === 200 &&
   response.body !== null &&
   typeof response.body === "object";
 const pageNumber = (response, current) => {
   const link = response?.headers?.link;
-  if (typeof link !== "string" || !link.includes('rel="next"')) return null;
-  const match = /[?&]page=([1-9][0-9]*)[^>]*>;\s*rel="next"/u.exec(link);
-  const next = Number(match?.[1]);
+  if (typeof link !== "string") return null;
+  const nextLink = link
+    .split(",")
+    .find((value) =>
+      value.split(";").some((attribute) => attribute.trim() === 'rel="next"'),
+    );
+  if (nextLink === undefined) return null;
+  const start = nextLink.indexOf("<");
+  const end = nextLink.indexOf(">");
+  if (start < 0 || end <= start + 1) return undefined;
+  let pageValue;
+  try {
+    pageValue = new URL(nextLink.slice(start + 1, end)).searchParams.get(
+      "page",
+    );
+  } catch {
+    return undefined;
+  }
+  if (!/^[1-9]\d*$/u.test(pageValue ?? "")) return undefined;
+  const next = Number(pageValue);
   return Number.isSafeInteger(next) && next > current ? next : undefined;
 };
 const page = (response, current, select = (body) => body) => {
@@ -33,7 +52,7 @@ const requestPath = (path, query = {}) => {
   const search = new URLSearchParams(
     Object.entries(query).map(([key, value]) => [key, String(value)]),
   );
-  return `${path}${search.size > 0 ? `?${search}` : ""}`;
+  return search.size > 0 ? `${path}?${search}` : path;
 };
 const encoded = (value) => encodeURIComponent(value);
 const commitSha = (value) => isEpicMergeCommit(value);
@@ -97,6 +116,7 @@ export function createEpicMergeGitHubBoundary({ request }) {
     if (!ok(response)) return null;
     const raw = response.body;
     if (!validPull(raw, pullRequest)) return null;
+    const issueMatch = closingIssue.exec(raw.body);
     const commit = await get(`${prefix}/git/commits/${raw.head?.sha}`);
     if (
       !ok(commit) ||
@@ -110,16 +130,7 @@ export function createEpicMergeGitHubBoundary({ request }) {
         ...raw.head,
         tree: ok(commit) ? commit.body.tree?.sha : null,
       },
-      issue:
-        /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#([1-9][0-9]*)/iu.exec(
-          raw.body ?? "",
-        )?.[1]
-          ? Number(
-              /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#([1-9][0-9]*)/iu.exec(
-                raw.body,
-              )[1],
-            )
-          : null,
+      issue: issueMatch === null ? null : Number(issueMatch[1]),
     };
   }
 

@@ -2,7 +2,6 @@ import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import {
-  canonicalEpicMergeIdentity,
   digestEpicMergeProbeManifest,
   EPIC_MERGE_REPOSITORY,
   isEpicMergeCommit,
@@ -185,7 +184,7 @@ if (
       "utf8",
     ),
   );
-  policy.source.revision = execFileSync("git", ["rev-parse", "HEAD"], {
+  policy.source.revision = execFileSync("/usr/bin/git", ["rev-parse", "HEAD"], {
     encoding: "utf8",
     maxBuffer: 128,
   }).trim();

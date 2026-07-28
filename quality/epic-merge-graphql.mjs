@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 
+import { compareCodeUnits } from "./deterministic-order.mjs";
 import { EPIC_MERGE_REPOSITORY } from "./epic-merge-policy.mjs";
 
 const [owner, name] = EPIC_MERGE_REPOSITORY.split("/");
@@ -25,7 +26,10 @@ const exactKeys = (value, keys) =>
   value !== null &&
   typeof value === "object" &&
   !Array.isArray(value) &&
-  isDeepStrictEqual(Object.keys(value).toSorted(), keys.toSorted());
+  isDeepStrictEqual(
+    Object.keys(value).toSorted(compareCodeUnits),
+    keys.toSorted(compareCodeUnits),
+  );
 
 function validPage(response) {
   const threads = response?.body?.data?.repository?.pullRequest?.reviewThreads;

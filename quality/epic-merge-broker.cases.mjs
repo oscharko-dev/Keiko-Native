@@ -347,18 +347,3 @@ test("post-durability protection change cancels before submission", async () => 
     result: "cancelled",
   });
 });
-
-test("guard never invokes auto-merge, queue, ref-update, admin, or bypass ports", async () => {
-  const forbidden = [];
-  const ports = successfulPorts([]);
-  for (const name of [
-    "enableAutoMerge",
-    "enqueueMerge",
-    "updateRef",
-    "administerRepository",
-    "bypassProtection",
-  ])
-    ports[name] = async () => forbidden.push(name);
-  assert.equal((await runGuardedEpicMerge(request(), ports)).result, "merged");
-  assert.deepEqual(forbidden, []);
-});

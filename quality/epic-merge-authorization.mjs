@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 
+import { compareCodeUnits } from "./deterministic-order.mjs";
 import {
   EPIC_MERGE_REPOSITORY,
   isEpicMergeCommit,
@@ -10,7 +11,15 @@ const exactKeys = (value, keys) =>
   value !== null &&
   typeof value === "object" &&
   !Array.isArray(value) &&
-  isDeepStrictEqual(Object.keys(value).toSorted(), keys.toSorted());
+  isDeepStrictEqual(
+    Object.keys(value).toSorted(compareCodeUnits),
+    keys.toSorted(compareCodeUnits),
+  );
+
+function statusConclusion(state) {
+  if (state === "success") return "success";
+  return state === "pending" ? null : "failure";
+}
 
 function requiredResultsCurrent(snapshot, policy) {
   if (
@@ -125,12 +134,7 @@ function commitStatuses(statuses, pullRequest) {
   return {
     items: latest.map((status) => ({
       base: pullRequest?.base?.sha,
-      conclusion:
-        status.state === "success"
-          ? "success"
-          : status.state === "pending"
-            ? null
-            : "failure",
+      conclusion: statusConclusion(status.state),
       context: status.context,
       head: pullRequest?.head?.sha,
       producer: statusProducer(status),
@@ -203,7 +207,7 @@ export function epicMergeAuthorizationCurrent(snapshot, request, policy) {
     /^epic\/[A-Za-z0-9][A-Za-z0-9._/-]*$/u.test(issue?.target ?? ""),
     readiness?.accepted === true,
     readiness?.current === true,
-    /^v[1-9][0-9]*$/u.test(readiness?.version ?? ""),
+    /^v[1-9]\d*$/u.test(readiness?.version ?? ""),
     /^[0-9a-f]{64}$/u.test(readiness?.fingerprint ?? ""),
     readiness?.producer === "github-actions[bot]",
     readiness?.producerId === 41898282,

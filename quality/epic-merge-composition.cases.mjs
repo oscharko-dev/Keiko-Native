@@ -22,6 +22,170 @@ import {
 
 const response = (body, status = 200) => ({ body, headers: {}, status });
 
+function contractFixtureResponse(path, fixture) {
+  if (path === `/repos/${repository}/git/ref/heads/dev`)
+    return response({ object: { sha: sha("a") } });
+  if (path.startsWith(`/repos/${repository}/contents/`))
+    return response({
+      content: Buffer.from(JSON.stringify(fixture.policy)).toString("base64"),
+      encoding: "base64",
+    });
+  if (path === `/repos/${repository}/issues/50`)
+    return response({
+      body: fixture.body,
+      labels: [{ name: "status: ready for human review" }],
+      number: 50,
+      state: "open",
+      title: fixture.title,
+    });
+  if (path === `/repos/${repository}/issues/50/comments?page=1&per_page=100`)
+    return response([
+      {
+        body: [
+          "<!-- keiko-native-readiness -->",
+          "- Status: `accepted`",
+          "- Contract version: `v5`",
+          `- Fingerprint: \`${fixture.fingerprint}\``,
+        ].join("\n"),
+        id: 500,
+        user: {
+          id: 41898282,
+          login: "github-actions[bot]",
+          type: "Bot",
+        },
+      },
+    ]);
+  if (path === `/repos/${repository}/issues/150/comments?page=1&per_page=100`)
+    return response([auditComment()]);
+  return undefined;
+}
+
+function pullFixtureResponse(path, fixture) {
+  if (path === `/repos/${repository}/pulls/150`)
+    return response({
+      base: { ref: target, sha: base },
+      body: "Closes #50",
+      draft: false,
+      head: {
+        ref: "codex/50-inert-epic-merge-guard-v5",
+        sha: head,
+      },
+      merge_commit_sha: fixture.state.merged ? mergeCommit : null,
+      mergeable: true,
+      merged: fixture.state.merged,
+      number: 150,
+      state: fixture.state.merged ? "closed" : "open",
+    });
+  if (path === `/repos/${repository}/git/commits/${head}`)
+    return response({
+      parents: [{ sha: base }],
+      sha: head,
+      tree: { sha: headTree },
+    });
+  if (path === `/repos/${repository}/git/commits/${mergeCommit}`)
+    return response({
+      parents: [{ sha: base }],
+      sha: mergeCommit,
+      tree: { sha: headTree },
+    });
+  if (path.startsWith(`/repos/${repository}/commits/${head}/check-runs`))
+    return response({
+      check_runs: [
+        {
+          app: { id: 15368, slug: "github-actions" },
+          conclusion: "success",
+          head_sha: head,
+          id: 100,
+          name: "ci",
+          pull_requests: [],
+          status: "completed",
+        },
+      ],
+    });
+  if (path.startsWith(`/repos/${repository}/commits/${head}/statuses`))
+    return response([
+      {
+        context: "PR contract",
+        creator: {
+          id: 41898282,
+          login: "github-actions[bot]",
+          type: "Bot",
+        },
+        id: 20,
+        sha: null,
+        state: "success",
+      },
+    ]);
+  if (path.startsWith(`/repos/${repository}/code-scanning/alerts`))
+    return response([]);
+  if (path === "/graphql")
+    return response({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              nodes: [],
+              pageInfo: { endCursor: null, hasNextPage: false },
+            },
+          },
+        },
+      },
+    });
+  return undefined;
+}
+
+function protectionFixtureResponse(path, state) {
+  if (path === "/user") return response({ login: "oscharko" });
+  if (path.includes("/collaborators/oscharko/permission"))
+    return response({ permission: "maintain" });
+  if (path.includes(`/branches/${encodeURIComponent(target)}/protection`))
+    return response({
+      allow_deletions: { enabled: false },
+      allow_force_pushes: { enabled: false },
+      enforce_admins: { enabled: true },
+      required_pull_request_reviews: {},
+      required_signatures: { enabled: true },
+      required_status_checks: { strict: true },
+    });
+  if (path.startsWith(`/repos/${repository}/rulesets?`))
+    return response([{ id: 49, name: "Epic protection" }]);
+  if (path === `/repos/${repository}/rulesets/49`)
+    return response({
+      bypass_actors: [],
+      conditions: {
+        ref_name: { exclude: [], include: [`refs/heads/${target}`] },
+      },
+      enforcement: "active",
+      id: 49,
+      rules: [
+        { type: "deletion" },
+        { type: "non_fast_forward" },
+        { type: "pull_request" },
+        { type: "required_signatures" },
+        {
+          parameters: { strict_required_status_checks_policy: true },
+          type: "required_status_checks",
+        },
+      ],
+    });
+  if (
+    path === `/repos/${repository}/git/ref/heads/${encodeURIComponent(target)}`
+  )
+    return response({ object: { sha: state.merged ? mergeCommit : base } });
+  if (
+    path ===
+    `/repos/${repository}/git/ref/heads/${encodeURIComponent(
+      "codex/50-inert-epic-merge-guard-v5",
+    )}`
+  )
+    return response({ object: { sha: head } });
+  if (path === `/repos/${repository}/pulls/150/merge`) {
+    state.merged = true;
+    return response({ merged: true, sha: mergeCommit });
+  }
+  return undefined;
+}
+
 test("production composition is inert until run and normalizes GitHub boundaries", async () => {
   const directory = await mkdtemp(join(tmpdir(), "keiko-epic-composition-"));
   const template = await readFile(
@@ -37,171 +201,17 @@ test("production composition is inert until run and normalizes GitHub boundaries
   const title = "Guarded epic merge";
   const fingerprint = semanticIssueFingerprint(body, title);
   const policy = guardedPolicy();
-  let merged = false;
+  const state = { merged: false };
   const calls = [];
+  const fixture = { body, fingerprint, policy, state, title };
   const rawRequest = async (input) => {
     calls.push(structuredClone(input));
-    const path = input.path;
-    if (path === `/repos/${repository}/git/ref/heads/dev`)
-      return response({ object: { sha: sha("a") } });
-    if (path.startsWith(`/repos/${repository}/contents/`))
-      return response({
-        content: Buffer.from(JSON.stringify(policy)).toString("base64"),
-        encoding: "base64",
-      });
-    if (path === `/repos/${repository}/issues/50`)
-      return response({
-        body,
-        labels: [{ name: "status: ready for human review" }],
-        number: 50,
-        state: "open",
-        title,
-      });
-    if (path === `/repos/${repository}/issues/50/comments?page=1&per_page=100`)
-      return response([
-        {
-          body: [
-            "<!-- keiko-native-readiness -->",
-            "- Status: `accepted`",
-            "- Contract version: `v5`",
-            `- Fingerprint: \`${fingerprint}\``,
-          ].join("\n"),
-          id: 500,
-          user: {
-            id: 41898282,
-            login: "github-actions[bot]",
-            type: "Bot",
-          },
-        },
-      ]);
-    if (path === `/repos/${repository}/issues/150/comments?page=1&per_page=100`)
-      return response([auditComment()]);
-    if (path === `/repos/${repository}/pulls/150`)
-      return response({
-        base: { ref: target, sha: base },
-        body: "Closes #50",
-        draft: false,
-        head: {
-          ref: "codex/50-inert-epic-merge-guard-v5",
-          sha: head,
-        },
-        merge_commit_sha: merged ? mergeCommit : null,
-        mergeable: true,
-        merged,
-        number: 150,
-        state: merged ? "closed" : "open",
-      });
-    if (path === `/repos/${repository}/git/commits/${head}`)
-      return response({
-        parents: [{ sha: base }],
-        sha: head,
-        tree: { sha: headTree },
-      });
-    if (path === `/repos/${repository}/git/commits/${mergeCommit}`)
-      return response({
-        parents: [{ sha: base }],
-        sha: mergeCommit,
-        tree: { sha: headTree },
-      });
-    if (path.startsWith(`/repos/${repository}/commits/${head}/check-runs`))
-      return response({
-        check_runs: [
-          {
-            app: { id: 15368, slug: "github-actions" },
-            conclusion: "success",
-            head_sha: head,
-            id: 100,
-            name: "ci",
-            pull_requests: [],
-            status: "completed",
-          },
-        ],
-      });
-    if (path.startsWith(`/repos/${repository}/commits/${head}/statuses`))
-      return response([
-        {
-          context: "PR contract",
-          creator: {
-            id: 41898282,
-            login: "github-actions[bot]",
-            type: "Bot",
-          },
-          id: 20,
-          sha: null,
-          state: "success",
-        },
-      ]);
-    if (path.startsWith(`/repos/${repository}/code-scanning/alerts`))
-      return response([]);
-    if (path === "/graphql")
-      return response({
-        data: {
-          repository: {
-            pullRequest: {
-              reviewThreads: {
-                nodes: [],
-                pageInfo: { endCursor: null, hasNextPage: false },
-              },
-            },
-          },
-        },
-      });
-    if (path === "/user") return response({ login: "oscharko" });
-    if (path.includes("/collaborators/oscharko/permission"))
-      return response({ permission: "maintain" });
-    if (path.includes(`/branches/${encodeURIComponent(target)}/protection`))
-      return response({
-        allow_deletions: { enabled: false },
-        allow_force_pushes: { enabled: false },
-        enforce_admins: { enabled: true },
-        required_pull_request_reviews: {},
-        required_signatures: { enabled: true },
-        required_status_checks: { strict: true },
-      });
-    if (path.startsWith(`/repos/${repository}/rulesets?`))
-      return response([{ id: 49, name: "Epic protection" }]);
-    if (path === `/repos/${repository}/rulesets/49`)
-      return response(
-        [
-          {
-            bypass_actors: [],
-            conditions: {
-              ref_name: { exclude: [], include: [`refs/heads/${target}`] },
-            },
-            enforcement: "active",
-            id: 49,
-            rules: [
-              { type: "deletion" },
-              { type: "non_fast_forward" },
-              { type: "pull_request" },
-              { type: "required_signatures" },
-              {
-                parameters: {
-                  strict_required_status_checks_policy: true,
-                },
-                type: "required_status_checks",
-              },
-            ],
-          },
-        ][0],
-      );
-    if (
-      path ===
-      `/repos/${repository}/git/ref/heads/${encodeURIComponent(target)}`
-    )
-      return response({ object: { sha: merged ? mergeCommit : base } });
-    if (
-      path ===
-      `/repos/${repository}/git/ref/heads/${encodeURIComponent(
-        "codex/50-inert-epic-merge-guard-v5",
-      )}`
-    )
-      return response({ object: { sha: head } });
-    if (path === `/repos/${repository}/pulls/150/merge`) {
-      merged = true;
-      return response({ merged: true, sha: mergeCommit });
-    }
-    return response({}, 404);
+    return (
+      contractFixtureResponse(input.path, fixture) ??
+      pullFixtureResponse(input.path, fixture) ??
+      protectionFixtureResponse(input.path, state) ??
+      response({}, 404)
+    );
   };
   const composition = createInertEpicMergeComposition({
     clock: () => "2026-07-28T12:00:00.000Z",
