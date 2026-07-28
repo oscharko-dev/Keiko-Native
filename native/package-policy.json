@@ -3345,7 +3345,10 @@
       "generic-ping",
       "secret-value",
       "test-listener",
-      "remote-debugging"
+      "remote-debugging",
+      "evaluate:macos-accessibility-driver",
+      "dev.oscharko.keiko-native.evaluation.accessibility",
+      "KeikoAccessibilityEvaluation"
     ],
     "prohibitedPathFragments": [
       "node_modules",

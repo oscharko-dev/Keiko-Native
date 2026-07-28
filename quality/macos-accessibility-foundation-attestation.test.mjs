@@ -5,6 +5,7 @@ import test from "node:test";
 
 import {
   authenticateFoundationPackage,
+  foundationPackagePolicyIsolated,
   isAuthenticatedFoundationPackage,
 } from "./macos-accessibility-foundation-attestation.mjs";
 
@@ -55,9 +56,9 @@ test("authenticates the retained closed Foundation package evidence", () => {
   assert.deepEqual(authenticated, {
     authenticated: true,
     packageManifestSha256:
-      "19a8fc126777f219717dc68832e94db72f53afb1957268ee77399d64ed28bc88",
+      "939a6873fb73734855e4970af1605dd962966097d1db21aa80ef6d38649e0fa8",
     packagePolicySha256:
-      "58ecd89c8b869b20a80bb87efc8dc15ef5d5aa916889b6a2b65dd63a8cce2307",
+      "6e8578f2b0c2aef38306c0e1d9ea2de6c25741b0a0aff2ab33dbe181a71de3af",
     reasonCode: null,
     sourceRevision: "8f09eed3b0726207bc27132556c3174bba1abe60",
   });
@@ -167,4 +168,21 @@ test("fails closed when the current package policy no longer authenticates the m
   });
   assert.equal(result.authenticated, false);
   assert.equal(result.reasonCode, "foundation-package-policy-invalid");
+});
+
+test("requires distinctive accessibility evaluation markers in package policy", () => {
+  const policy = JSON.parse(packagePolicyRaw);
+  assert.equal(foundationPackagePolicyIsolated(policy), true);
+  for (const marker of [
+    "evaluate:macos-accessibility-driver",
+    "dev.oscharko.keiko-native.evaluation.accessibility",
+    "KeikoAccessibilityEvaluation",
+  ]) {
+    const changed = structuredClone(policy);
+    changed.security.prohibitedMarkers =
+      changed.security.prohibitedMarkers.filter(
+        (candidate) => candidate !== marker,
+      );
+    assert.equal(foundationPackagePolicyIsolated(changed), false);
+  }
 });

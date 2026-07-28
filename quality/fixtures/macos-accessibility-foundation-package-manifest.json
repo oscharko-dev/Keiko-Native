@@ -3,7 +3,7 @@
   "sourceRevision": "8f09eed3b0726207bc27132556c3174bba1abe60",
   "target": "keiko-native-desktop",
   "platform": "macos-arm64",
-  "policySha256": "58ecd89c8b869b20a80bb87efc8dc15ef5d5aa916889b6a2b65dd63a8cce2307",
+  "policySha256": "6e8578f2b0c2aef38306c0e1d9ea2de6c25741b0a0aff2ab33dbe181a71de3af",
   "inventory": [
     {
       "mode": "0644",

@@ -127,6 +127,7 @@ const CHECKPOINT_TIMEOUT_MS = 2_000;
 const SURFACE_STARTUP_TIMEOUT_MS = 5_000;
 const NATURAL_EXIT_TIMEOUT_MS = 5_000;
 const PROCESS_CLEANUP_TIMEOUT_MS = 2_000;
+const authenticatedProcessGroups = new WeakSet();
 
 export const evaluationArtifactRoot =
   "/private/tmp/keiko-native-macos-accessibility-driver/issue-111-v3";
@@ -719,6 +720,72 @@ const informationPropertyList = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `;
 
+const processGroupLauncherSource = `#include <libproc.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/proc_info.h>
+#include <unistd.h>
+
+static int Inspect(void) {
+  int capacity = proc_listallpids(NULL, 0);
+  if (capacity <= 0 || capacity > 131072) return 70;
+  int *pids = calloc((size_t)capacity, sizeof(int));
+  if (pids == NULL) return 71;
+  int count = proc_listallpids(pids, capacity * (int)sizeof(int));
+  if (count < 0 || count > capacity) {
+    free(pids);
+    return 72;
+  }
+  for (int index = 0; index < count; index += 1) {
+    struct proc_bsdinfo info;
+    int bytes = proc_pidinfo(
+        pids[index],
+        PROC_PIDTBSDINFO,
+        0,
+        &info,
+        (int)sizeof(info));
+    if (bytes != (int)sizeof(info)) continue;
+    printf(
+        "%d %u %llu %llu\\n",
+        info.pbi_pid,
+        info.pbi_pgid,
+        (unsigned long long)info.pbi_start_tvsec,
+        (unsigned long long)info.pbi_start_tvusec);
+  }
+  free(pids);
+  return ferror(stdout) == 0 ? 0 : 73;
+}
+
+int main(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "--inspect") == 0) return Inspect();
+  if (argc < 2) return 64;
+  if (setpgid(0, 0) != 0) return 65;
+  struct proc_bsdinfo info;
+  int bytes = proc_pidinfo(
+      getpid(),
+      PROC_PIDTBSDINFO,
+      0,
+      &info,
+      (int)sizeof(info));
+  if (bytes != (int)sizeof(info)) return 66;
+  printf(
+      "%d %u %llu %llu\\n",
+      info.pbi_pid,
+      info.pbi_pgid,
+      (unsigned long long)info.pbi_start_tvsec,
+      (unsigned long long)info.pbi_start_tvusec);
+  if (fflush(stdout) != 0 || close(STDOUT_FILENO) != 0) return 67;
+  char acknowledgement = 0;
+  if (read(STDIN_FILENO, &acknowledgement, 1) != 1 ||
+      acknowledgement != '1') return 68;
+  if (close(STDIN_FILENO) != 0) return 69;
+  execv(argv[1], &argv[1]);
+  return 74;
+}
+`;
+
 async function filesBelow(root) {
   const files = [];
   for (const entry of await readdir(root, { withFileTypes: true })) {
@@ -744,17 +811,20 @@ export async function createEvaluationArtifacts(root) {
   const surfaceSource = join(sourceRoot, "RepresentativeSurface.m");
   const axSource = join(sourceRoot, "AXUIElementCandidate.m");
   const eventsSource = join(sourceRoot, "SystemEventsCandidate.applescript");
+  const launcherSource = join(sourceRoot, "ProcessGroupLauncher.c");
   await Promise.all([
     writeFile(join(packageRoot, "Info.plist"), informationPropertyList, "utf8"),
     writeFile(surfaceSource, representativeSurfaceSource(), "utf8"),
     writeFile(axSource, axuielementSource, "utf8"),
     writeFile(eventsSource, systemEventsSource, "utf8"),
+    writeFile(launcherSource, processGroupLauncherSource, "utf8"),
   ]);
 
   return {
     axuielementSource: axSource,
     candidates: ["axuielement", "systemEvents"],
     packageRoot: join(root, "KeikoAccessibilityEvaluation.app"),
+    processGroupLauncherSource: launcherSource,
     surfaceSource,
     systemEventsSource: eventsSource,
   };
@@ -903,21 +973,34 @@ export function classifyCandidateSubprocessOutcome(result) {
   return parseClosedCandidateOutput(result);
 }
 
+export function executeCandidateCheckpoint({
+  candidate,
+  checkpoint,
+  runCandidate,
+  surfacePid,
+}) {
+  if (!new Set(["axuielement", "systemEvents"]).has(candidate))
+    throw new TypeError("unknown-candidate");
+  if (!Object.hasOwn(checkpointBehaviorContract, checkpoint))
+    throw new TypeError("unknown-checkpoint");
+  if (!Number.isSafeInteger(surfacePid) || surfacePid < 1)
+    throw new TypeError("surface-identity-invalid");
+  if (typeof runCandidate !== "function")
+    throw new TypeError("candidate-runner-invalid");
+  return classifyCandidateSubprocessOutcome(
+    runCandidate({
+      candidate,
+      checkpoint,
+      expectedBehavior: checkpointBehaviorContract[checkpoint],
+      surfacePid,
+    }),
+  );
+}
+
 function waitForEventLoopTurn(milliseconds) {
   return new Promise((resolve) => {
     setTimeout(resolve, milliseconds);
   });
-}
-
-function directChildPids(parentPid) {
-  const result = runClosed("/usr/bin/pgrep", ["-P", String(parentPid)], 1_000);
-  if (result.exitCode === 1) return [];
-  if (result.exitCode !== 0 || result.timedOut)
-    throw new Error("process-cleanup-inspection-failed");
-  return result.stdout
-    .split("\n")
-    .filter(Boolean)
-    .map((value) => Number.parseInt(value, 10));
 }
 
 function processExists(pid) {
@@ -931,56 +1014,271 @@ function processExists(pid) {
   }
 }
 
-function discoverOwnedProcessTree(rootPid) {
-  if (!processExists(rootPid)) return [];
-  const discovered = [];
-  const pending = [rootPid];
-  while (pending.length > 0) {
-    const parentPid = pending.pop();
-    for (const childPid of directChildPids(parentPid)) {
-      if (!discovered.includes(childPid)) {
-        discovered.push(childPid);
-        pending.push(childPid);
+function processTable(processInspector) {
+  const result = spawnSync(processInspector, ["--inspect"], {
+    encoding: "utf8",
+    shell: false,
+    timeout: 1_000,
+  });
+  if (
+    result.status !== 0 ||
+    result.signal !== null ||
+    result.error !== undefined
+  )
+    throw new Error("process-cleanup-inspection-failed");
+  return result.stdout
+    .split("\n")
+    .map((line) => line.match(/^(\d+) (\d+) (\d+) (\d+)$/u))
+    .filter((match) => match !== null)
+    .map((match) =>
+      Object.freeze({
+        pid: Number.parseInt(match[1], 10),
+        processGroupId: Number.parseInt(match[2], 10),
+        startIdentity: `${match[3]}:${match[4]}`,
+      }),
+    );
+}
+
+function defaultCleanupDependencies(root = evaluationArtifactRoot) {
+  const processInspector = join(root, "ProcessGroupLauncher");
+  return {
+    listProcessGroup: (processGroupId) =>
+      processTable(processInspector).filter(
+        (identity) => identity.processGroupId === processGroupId,
+      ),
+    monotonicNow: () => performance.now(),
+    readProcessIdentity: (pid) =>
+      processTable(processInspector).find((identity) => identity.pid === pid) ??
+      null,
+    signalProcess: (identity, signal) => {
+      try {
+        process.kill(identity.pid, signal);
+      } catch (error) {
+        if (error?.code !== "ESRCH") throw error;
       }
-    }
-  }
-  return discovered;
+    },
+    waitForTurn: waitForEventLoopTurn,
+  };
 }
 
-function signalOwnedProcesses(pids, signal) {
-  for (const pid of pids.toReversed()) {
-    try {
-      process.kill(pid, signal);
-    } catch (error) {
-      if (error?.code !== "ESRCH") throw error;
-    }
-  }
+function validProcessIdentity(identity, processGroupId) {
+  return (
+    identity !== null &&
+    typeof identity === "object" &&
+    Number.isSafeInteger(identity.pid) &&
+    identity.pid > 0 &&
+    identity.processGroupId === processGroupId &&
+    typeof identity.startIdentity === "string" &&
+    identity.startIdentity.length > 0
+  );
 }
 
-export async function terminateOwnedProcess(child) {
-  if (!Number.isSafeInteger(child.pid) || child.pid < 1)
+function sameProcessIdentity(left, right) {
+  return (
+    left !== null &&
+    right !== null &&
+    left.pid === right.pid &&
+    left.processGroupId === right.processGroupId &&
+    left.startIdentity === right.startIdentity
+  );
+}
+
+export async function terminateOwnedProcess(
+  child,
+  dependencies = defaultCleanupDependencies(),
+) {
+  if (
+    child === null ||
+    typeof child !== "object" ||
+    !authenticatedProcessGroups.has(child) ||
+    typeof dependencies?.listProcessGroup !== "function" ||
+    typeof dependencies.monotonicNow !== "function" ||
+    typeof dependencies.readProcessIdentity !== "function" ||
+    typeof dependencies.signalProcess !== "function" ||
+    typeof dependencies.waitForTurn !== "function"
+  )
     throw new Error("process-cleanup-identity-invalid");
-  const ownedPids = new Set([
-    child.pid,
-    ...discoverOwnedProcessTree(child.pid),
-  ]);
-  if (![...ownedPids].some(processExists)) return 0;
-  signalOwnedProcesses([...ownedPids], "SIGTERM");
-  let deadline = performance.now() + PROCESS_CLEANUP_TIMEOUT_MS;
-  while (performance.now() < deadline) {
-    for (const pid of discoverOwnedProcessTree(child.pid)) ownedPids.add(pid);
-    if (![...ownedPids].some(processExists)) return 0;
-    await waitForEventLoopTurn(20);
+  const processGroupId = child.processGroupId;
+  const ownedIdentities = new Map([[child.pid, child]]);
+  const deliveredSignals = new Set();
+  const refresh = () => {
+    const current = dependencies.listProcessGroup(processGroupId);
+    if (
+      !Array.isArray(current) ||
+      current.some(
+        (identity) => !validProcessIdentity(identity, processGroupId),
+      )
+    )
+      throw new Error("process-cleanup-inspection-failed");
+    for (const identity of current) {
+      const prior = ownedIdentities.get(identity.pid);
+      if (prior !== undefined && !sameProcessIdentity(prior, identity))
+        throw new Error("process-cleanup-identity-conflict");
+      ownedIdentities.set(identity.pid, Object.freeze({ ...identity }));
+    }
+    return current;
+  };
+  const signalCurrent = (identities, signal) => {
+    for (const identity of identities.toReversed()) {
+      const signalIdentity = `${signal}:${identity.pid}:${identity.startIdentity}`;
+      if (deliveredSignals.has(signalIdentity)) continue;
+      const current = dependencies.readProcessIdentity(identity.pid);
+      if (!sameProcessIdentity(identity, current)) continue;
+      dependencies.signalProcess(identity, signal);
+      deliveredSignals.add(signalIdentity);
+    }
+  };
+  const converge = async (signal) => {
+    const deadline = dependencies.monotonicNow() + PROCESS_CLEANUP_TIMEOUT_MS;
+    let consecutiveEmptyScans = 0;
+    while (dependencies.monotonicNow() < deadline) {
+      const current = refresh();
+      if (current.length === 0) {
+        consecutiveEmptyScans += 1;
+        if (consecutiveEmptyScans === 2) return true;
+      } else {
+        consecutiveEmptyScans = 0;
+        signalCurrent(current, signal);
+      }
+      await dependencies.waitForTurn(20);
+    }
+    return false;
+  };
+
+  if (await converge("SIGTERM")) return 0;
+  if (await converge("SIGKILL")) return 0;
+  throw new Error("process-cleanup-non-convergent");
+}
+
+export async function authenticateOwnedProcessGroup(
+  child,
+  dependencies = defaultCleanupDependencies(),
+) {
+  if (
+    !Number.isSafeInteger(child?.pid) ||
+    child.pid < 1 ||
+    typeof dependencies?.monotonicNow !== "function" ||
+    typeof dependencies.readProcessIdentity !== "function" ||
+    typeof dependencies.waitForTurn !== "function"
+  )
+    throw new Error("process-cleanup-identity-invalid");
+  const deadline = dependencies.monotonicNow() + PROCESS_CLEANUP_TIMEOUT_MS;
+  while (dependencies.monotonicNow() < deadline) {
+    const identity = dependencies.readProcessIdentity(child.pid);
+    if (
+      validProcessIdentity(identity, child.pid) &&
+      identity.pid === child.pid
+    ) {
+      const authenticated = Object.freeze({ ...identity });
+      authenticatedProcessGroups.add(authenticated);
+      return authenticated;
+    }
+    await dependencies.waitForTurn(20);
   }
-  signalOwnedProcesses([...ownedPids], "SIGKILL");
-  deadline = performance.now() + PROCESS_CLEANUP_TIMEOUT_MS;
-  while (performance.now() < deadline) {
-    if (![...ownedPids].some(processExists)) return 0;
-    await waitForEventLoopTurn(20);
+  throw new Error("process-group-establishment-failed");
+}
+
+function authenticateLauncherHandshake(child) {
+  return new Promise((resolve, reject) => {
+    let raw = "";
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      child.stdout.off("data", onData);
+      child.stdout.off("end", onEnd);
+      child.stdout.off("error", onError);
+      child.off("error", onError);
+      if (error !== null) {
+        reject(error);
+        return;
+      }
+      const match = raw.match(/^(\d+) (\d+) (\d+) (\d+)\n$/u);
+      if (
+        match === null ||
+        Number.parseInt(match[1], 10) !== child.pid ||
+        Number.parseInt(match[2], 10) !== child.pid
+      ) {
+        reject(new Error("process-group-handshake-invalid"));
+        return;
+      }
+      const identity = Object.freeze({
+        pid: child.pid,
+        processGroupId: child.pid,
+        startIdentity: `${match[3]}:${match[4]}`,
+      });
+      authenticatedProcessGroups.add(identity);
+      child.stdin.end("1");
+      resolve(identity);
+    };
+    const onData = (chunk) => {
+      raw += chunk.toString("utf8");
+      if (Buffer.byteLength(raw, "utf8") > 128)
+        finish(new Error("process-group-handshake-invalid"));
+    };
+    const onEnd = () => finish(null);
+    const onError = () =>
+      finish(new Error("process-group-handshake-unavailable"));
+    const timeout = setTimeout(
+      () => finish(new Error("process-group-handshake-expired")),
+      PROCESS_CLEANUP_TIMEOUT_MS,
+    );
+    child.stdout.on("data", onData);
+    child.stdout.once("end", onEnd);
+    child.stdout.once("error", onError);
+    child.once("error", onError);
+  });
+}
+
+function waitForChildClose(child, timeoutMs) {
+  if (child.exitCode !== null || child.signalCode !== null)
+    return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const finish = (closed) => {
+      clearTimeout(timeout);
+      child.off("close", onClose);
+      resolve(closed);
+    };
+    const onClose = () => finish(true);
+    const timeout = setTimeout(() => finish(false), timeoutMs);
+    child.once("close", onClose);
+  });
+}
+
+export async function rejectUnauthenticatedLauncher(
+  child,
+  { waitForClose = waitForChildClose } = {},
+) {
+  if (typeof waitForClose !== "function")
+    throw new TypeError("launcher-rejection-boundary-invalid");
+  child.stdin?.end();
+  child.stdout?.destroy();
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  if (await waitForClose(child, PROCESS_CLEANUP_TIMEOUT_MS)) return;
+  if (!child.kill("SIGKILL"))
+    throw new Error("launcher-rejection-signal-failed");
+  if (await waitForClose(child, PROCESS_CLEANUP_TIMEOUT_MS)) return;
+  throw new Error("launcher-rejection-non-convergent");
+}
+
+export async function establishOwnedProcess({ authenticate, launch, reject }) {
+  if (
+    typeof authenticate !== "function" ||
+    typeof launch !== "function" ||
+    typeof reject !== "function"
+  )
+    throw new TypeError("owned-process-boundary-invalid");
+  const child = launch();
+  try {
+    return Object.freeze({
+      child,
+      ownership: await authenticate(child),
+    });
+  } catch (error) {
+    await reject(child);
+    throw error;
   }
-  const remaining = [...ownedPids].filter(processExists).length;
-  if (remaining !== 0) throw new Error("process-cleanup-non-convergent");
-  return 0;
 }
 
 export async function runPhysicalCandidate({
@@ -1023,17 +1321,23 @@ export async function runPhysicalCandidate({
   }
 
   const startedAt = performance.now();
-  const surface = spawn(
-    join(
-      root,
-      "KeikoAccessibilityEvaluation.app",
-      "Contents",
-      "MacOS",
-      "KeikoAccessibilityEvaluation",
-    ),
-    [],
-    { stdio: "ignore" },
+  const surfaceExecutable = join(
+    root,
+    "KeikoAccessibilityEvaluation.app",
+    "Contents",
+    "MacOS",
+    "KeikoAccessibilityEvaluation",
   );
+  const cleanupDependencies = defaultCleanupDependencies(root);
+  const { child: surface, ownership: surfaceOwnership } =
+    await establishOwnedProcess({
+      authenticate: authenticateLauncherHandshake,
+      launch: () =>
+        spawn(join(root, "ProcessGroupLauncher"), [surfaceExecutable], {
+          stdio: ["pipe", "pipe", "ignore"],
+        }),
+      reject: rejectUnauthenticatedLauncher,
+    });
   const startupDeadline = performance.now() + SURFACE_STARTUP_TIMEOUT_MS;
   const checkpointTimings = [];
   let parsed = {
@@ -1056,9 +1360,18 @@ export async function runPhysicalCandidate({
                 String(surface.pid),
                 checkpoint,
               ];
-        const result = runClosed(command, args, CHECKPOINT_TIMEOUT_MS);
-        attemptDurationMs += result.durationMs;
-        parsed = classifyCandidateSubprocessOutcome(result);
+        let durationMs = 0;
+        parsed = executeCandidateCheckpoint({
+          candidate,
+          checkpoint,
+          runCandidate: () => {
+            const result = runClosed(command, args, CHECKPOINT_TIMEOUT_MS);
+            durationMs = result.durationMs;
+            return result;
+          },
+          surfacePid: surface.pid,
+        });
+        attemptDurationMs += durationMs;
         if (
           parsed.status === "passed" ||
           parsed.status === "permission-denied" ||
@@ -1107,7 +1420,10 @@ export async function runPhysicalCandidate({
     }
   } finally {
     try {
-      cleanupOwnedDescendants = await terminateOwnedProcess(surface);
+      cleanupOwnedDescendants = await terminateOwnedProcess(
+        surfaceOwnership,
+        cleanupDependencies,
+      );
     } catch {
       parsed = {
         checkpointPasses: 0,
@@ -1185,6 +1501,7 @@ export async function compileAndProbeEvaluation(root) {
     "KeikoAccessibilityEvaluation",
   );
   const axBinary = join(root, "AXUIElementCandidate");
+  const launcherBinary = join(root, "ProcessGroupLauncher");
   const surfaceCompile = runClosed("/usr/bin/xcrun", [
     "clang",
     "-fobjc-arc",
@@ -1205,12 +1522,23 @@ export async function compileAndProbeEvaluation(root) {
     "-o",
     axBinary,
   ]);
-  if (surfaceCompile.exitCode !== 0 || axCompile.exitCode !== 0) {
+  const launcherCompile = runClosed("/usr/bin/xcrun", [
+    "clang",
+    artifacts.processGroupLauncherSource,
+    "-o",
+    launcherBinary,
+  ]);
+  if (
+    surfaceCompile.exitCode !== 0 ||
+    axCompile.exitCode !== 0 ||
+    launcherCompile.exitCode !== 0
+  ) {
     return {
       compileStatus: "failed",
       reasonCode: "apple-clang-compile-failed",
       surfaceExitCode: surfaceCompile.exitCode,
       axuielementExitCode: axCompile.exitCode,
+      launcherExitCode: launcherCompile.exitCode,
     };
   }
 

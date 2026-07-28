@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 
 import {
   checkpointBehaviorContract,
   classifyCandidateSubprocessOutcome,
-  createEvaluationArtifacts,
+  establishOwnedProcess,
+  executeCandidateCheckpoint,
+  rejectUnauthenticatedLauncher,
 } from "./macos-accessibility-driver-harness.mjs";
 
 const expectedCheckpoints = [
@@ -59,76 +58,60 @@ test("representative checkpoint contract keeps 16 behavioral semantics", () => {
   );
 });
 
-test("generated candidates observe behavioral states rather than identifier echo", async () => {
-  const root = await mkdtemp(join(tmpdir(), "keiko-behavior-contract-"));
-  try {
-    const artifacts = await createEvaluationArtifacts(root);
-    const [surface, axuielement, systemEvents] = await Promise.all([
-      readFile(artifacts.surfaceSource, "utf8"),
-      readFile(artifacts.axuielementSource, "utf8"),
-      readFile(artifacts.systemEventsSource, "utf8"),
-    ]);
+test("candidate execution exposes a closed behavioral checkpoint boundary", () => {
+  const calls = [];
+  const passed = executeCandidateCheckpoint({
+    candidate: "axuielement",
+    checkpoint: "crash-recovery",
+    runCandidate: (request) => {
+      calls.push(request);
+      return {
+        exitCode: 0,
+        signal: null,
+        stderrEmpty: true,
+        stdout:
+          '{"status":"passed","reasonCode":null,"prompted":false,"checkpointPasses":1}',
+        timedOut: false,
+      };
+    },
+    surfacePid: 4100,
+  });
+  assert.deepEqual(calls, [
+    {
+      candidate: "axuielement",
+      checkpoint: "crash-recovery",
+      expectedBehavior: checkpointBehaviorContract["crash-recovery"],
+      surfacePid: 4100,
+    },
+  ]);
+  assert.deepEqual(passed, {
+    checkpointPasses: 1,
+    prompted: false,
+    reasonCode: null,
+    status: "passed",
+  });
 
-    assert.doesNotMatch(surface, /journeyState\.stringValue = identifier/u);
-    assert.match(surface, /completeLateTaskState/u);
-    assert.match(surface, /completeCancellationRace/u);
-    assert.match(surface, /completeRuntimeRecovery/u);
-    assert.equal(surface.match(/self\.window\.title =/gu)?.length, 1);
-    assert.match(
-      surface,
-      /self\.window\.accessibilityHelp =\s+\[@"Keiko Accessibility Evaluation state:" stringByAppendingString:state\];/u,
-    );
-    for (const expected of [
-      "workspace:permission-denied",
-      "task:submitted-after-late-state",
-      "run:cancelled-late-result-discarded",
-      "runtime:recovered",
-      "appearance:increase-contrast",
-      "motion:reduced",
-    ]) {
-      assert.match(axuielement, new RegExp(expected, "u"));
-      assert.match(systemEvents, new RegExp(expected, "u"));
-    }
-    assert.match(
-      surface,
-      /isEqualToString:@"crash-recovery"\]\) \{\s+\[self setSemanticState:@"runtime:crashed"\];\s+\[self performSelector:@selector\(completeRuntimeRecovery\)\s+withObject:nil\s+afterDelay:0\.75\];/u,
-    );
-    const axActionBlock = axuielement.match(
-      /\} else if \(IsActionCheckpoint\(identifier\)\) \{(?<body>[\s\S]*?)\n    \} else \{/u,
-    )?.groups?.body;
-    assert.equal(axActionBlock?.match(/AXUIElementPerformAction/g)?.length, 2);
-    assert.match(
-      axActionBlock,
-      /^\s+if \(IsSinglePressTransition\(identifier\)\) \{\s+action = AXUIElementPerformAction\(element, kAXPressAction\);\s+\}\s+for \(NSString \*expectedState in expectedObservations\) \{\s+if \(!IsSinglePressTransition\(identifier\)\) \{\s+action = AXUIElementPerformAction\(element, kAXPressAction\);/u,
-    );
-    const systemEventsActionBlock = systemEvents.match(
-      /else if actionIdentifiers contains identifierValue then(?<body>[\s\S]*?)\n      else\n        return my closed\("failed", "checkpoint-action-failed", 0\)/u,
-    )?.groups?.body;
-    assert.equal(
-      systemEventsActionBlock?.match(
-        /perform action "AXPress" of targetElement/g,
-      )?.length,
-      2,
-    );
-    assert.match(
-      systemEventsActionBlock,
-      /if singlePressIdentifiers contains identifierValue then\s+perform action "AXPress" of targetElement\s+end if\s+repeat with expectedState in expectedStates\s+if singlePressIdentifiers does not contain identifierValue then\s+perform action "AXPress" of targetElement/u,
-    );
-    assert.doesNotMatch(
-      systemEventsActionBlock,
-      /set journeyStateElement to item 1 of journeyStateElements/u,
-    );
-    assert.doesNotMatch(
-      systemEventsActionBlock,
-      /entire contents of item 1 of \(value of attribute "AXWindows" of targetProcess\)/u,
-    );
-    assert.match(
-      systemEventsActionBlock,
-      /set expectedWindowHelp to "Keiko Accessibility Evaluation state:" & \(contents of expectedState\)\s+set deadlineDate to \(current date\) \+ 2\s+repeat\s+try\s+set refreshedWindows to value of attribute "AXWindows" of targetProcess\s+if \(count of refreshedWindows\) is 1 and \(value of attribute "AXHelp" of item 1 of refreshedWindows\) is expectedWindowHelp then[\s\S]*?end try\s+if \(current date\) is greater than or equal to deadlineDate then exit repeat\s+delay 0\.02\s+end repeat\s+if stateObserved is false then\s+return my closed\("failed", "checkpoint-observation-failed", 0\)/u,
-    );
-  } finally {
-    await rm(root, { force: true, recursive: true });
-  }
+  assert.deepEqual(
+    executeCandidateCheckpoint({
+      candidate: "systemEvents",
+      checkpoint: "task-submit",
+      runCandidate: () => ({
+        exitCode: 0,
+        signal: null,
+        stderrEmpty: true,
+        stdout:
+          '{"status":"failed","reasonCode":"checkpoint-observation-failed","prompted":false,"checkpointPasses":0}',
+        timedOut: false,
+      }),
+      surfacePid: 4100,
+    }),
+    {
+      checkpointPasses: 0,
+      prompted: false,
+      reasonCode: "checkpoint-observation-failed",
+      status: "failed",
+    },
+  );
 });
 
 test("candidate subprocess results fail closed on process-level anomalies", () => {
@@ -217,4 +200,72 @@ test("candidate subprocess results fail closed on process-level anomalies", () =
       },
     );
   }
+});
+
+test("owned process establishment rejects the launcher before propagating authentication failure", async () => {
+  const launcher = { pid: 4100 };
+  const events = [];
+  let releaseCleanup;
+  const cleanupReleased = new Promise((resolve) => {
+    releaseCleanup = resolve;
+  });
+  let settled = false;
+  const establishment = establishOwnedProcess({
+    authenticate: async (child) => {
+      events.push(["authenticate", child.pid]);
+      throw new Error("handshake-invalid");
+    },
+    launch: () => {
+      events.push(["launch", launcher.pid]);
+      return launcher;
+    },
+    reject: async (child) => {
+      await cleanupReleased;
+      events.push(["reject", child.pid]);
+    },
+  }).finally(() => {
+    settled = true;
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(settled, false);
+  releaseCleanup();
+  await assert.rejects(establishment, /handshake-invalid/u);
+  assert.deepEqual(events, [
+    ["launch", 4100],
+    ["authenticate", 4100],
+    ["reject", 4100],
+  ]);
+});
+
+test("launcher rejection confirms close after bounded kill escalation", async () => {
+  const events = [];
+  const waits = [false, true];
+  const child = {
+    exitCode: null,
+    signalCode: null,
+    stdin: {
+      end: () => events.push("stdin-end"),
+    },
+    stdout: {
+      destroy: () => events.push("stdout-destroy"),
+    },
+    kill: (signal) => {
+      events.push(`kill-${signal}`);
+      return true;
+    },
+  };
+  await rejectUnauthenticatedLauncher(child, {
+    waitForClose: async (_child, timeoutMs) => {
+      events.push(`wait-${timeoutMs}`);
+      return waits.shift();
+    },
+  });
+  assert.deepEqual(events, [
+    "stdin-end",
+    "stdout-destroy",
+    "wait-2000",
+    "kill-SIGKILL",
+    "wait-2000",
+  ]);
 });

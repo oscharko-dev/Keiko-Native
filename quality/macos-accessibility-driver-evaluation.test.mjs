@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { once } from "node:events";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +10,7 @@ import {
   scoreOption,
 } from "./macos-accessibility-driver-evaluation.mjs";
 import {
+  authenticateOwnedProcessGroup,
   capturePhysicalMatrixPhase,
   compileAndProbeEvaluation,
   createEvaluationArtifacts,
@@ -328,54 +327,110 @@ test("physical run summaries require all checkpoints, cleanup, and zero unexplai
   assert.equal(denied.reasonCode, "accessibility-permission-denied");
 });
 
-test(
-  "cleanup terminates and verifies a stubborn owned descendant tree",
-  {
-    skip:
-      process.platform === "darwin"
-        ? false
-        : "the bounded process-tree implementation is macOS-only",
-  },
-  async () => {
-    const child = spawn(
-      process.execPath,
-      [
-        "-e",
-        `
-        const { spawn } = require("node:child_process");
-        process.on("SIGTERM", () => {});
-        const descendant = spawn(
-          process.execPath,
-          ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"],
-          { stdio: "ignore" },
+test("cleanup deterministically terminates a surviving owned process after its root exits", async () => {
+  const rootIdentity = Object.freeze({
+    processGroupId: 4100,
+    pid: 4100,
+    startIdentity: "root-start",
+  });
+  const descendant = Object.freeze({
+    processGroupId: 4100,
+    pid: 4101,
+    startIdentity: "descendant-start",
+  });
+  let members = [rootIdentity];
+  let monotonicMs = 0;
+  const signals = [];
+  const dependencies = {
+    listProcessGroup: () => structuredClone(members),
+    monotonicNow: () => monotonicMs,
+    readProcessIdentity: (pid) =>
+      members.find((entry) => entry.pid === pid) ?? null,
+    signalProcess: (identity, signal) => {
+      signals.push({ identity, signal });
+      if (signal !== "SIGKILL") return;
+      members = members.filter((entry) => entry.pid !== identity.pid);
+      if (identity.pid === 4101)
+        members.push(
+          Object.freeze({
+            processGroupId: 4100,
+            pid: 4102,
+            startIdentity: "late-descendant-start",
+          }),
         );
-        descendant.once("spawn", () => process.send({ descendant: descendant.pid }));
-        setInterval(() => {}, 1000);
-      `,
-      ],
-      { stdio: ["ignore", "ignore", "ignore", "ipc"] },
-    );
-    let descendantPid;
-    try {
-      const [message] = await once(child, "message", {
-        signal: AbortSignal.timeout(5_000),
-      });
-      descendantPid = message.descendant;
-      assert.equal(await terminateOwnedProcess(child), 0);
-      for (const pid of [child.pid, descendantPid])
-        assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
-    } finally {
-      for (const pid of [descendantPid, child.pid]) {
-        if (!Number.isSafeInteger(pid)) continue;
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch (error) {
-          if (error?.code !== "ESRCH") throw error;
-        }
-      }
-    }
-  },
-);
+    },
+    waitForTurn: async (milliseconds) => {
+      monotonicMs += milliseconds;
+    },
+  };
+  const ownership = await authenticateOwnedProcessGroup(
+    { pid: 4100 },
+    dependencies,
+  );
+  members = [descendant];
+
+  assert.equal(await terminateOwnedProcess(ownership, dependencies), 0);
+  assert.deepEqual(signals, [
+    {
+      identity: descendant,
+      signal: "SIGTERM",
+    },
+    {
+      identity: descendant,
+      signal: "SIGKILL",
+    },
+    {
+      identity: {
+        processGroupId: 4100,
+        pid: 4102,
+        startIdentity: "late-descendant-start",
+      },
+      signal: "SIGKILL",
+    },
+  ]);
+  assert.ok(monotonicMs >= 2_040);
+});
+
+test("cleanup rejects unauthenticated and reused process identities without signaling", async () => {
+  const signals = [];
+  const original = Object.freeze({
+    processGroupId: 4200,
+    pid: 4200,
+    startIdentity: "original-start",
+  });
+  let members = [original];
+  let monotonicMs = 0;
+  const dependencies = {
+    listProcessGroup: () => structuredClone(members),
+    monotonicNow: () => monotonicMs,
+    readProcessIdentity: (pid) =>
+      members.find((entry) => entry.pid === pid) ?? null,
+    signalProcess: (identity, signal) => {
+      signals.push({ identity, signal });
+    },
+    waitForTurn: async (milliseconds) => {
+      monotonicMs += milliseconds;
+    },
+  };
+
+  await assert.rejects(
+    terminateOwnedProcess(
+      { pid: 4200, processGroupId: 4200, startIdentity: "forged" },
+      dependencies,
+    ),
+    /process-cleanup-identity-invalid/u,
+  );
+  const ownership = await authenticateOwnedProcessGroup(
+    { pid: 4200 },
+    dependencies,
+  );
+  members = [{ ...original, startIdentity: "reused-start" }];
+  await assert.rejects(
+    terminateOwnedProcess(ownership, dependencies),
+    /process-cleanup-identity-conflict/u,
+  );
+  assert.deepEqual(signals, []);
+});
 
 test("operator phases retain one exact identity and run 20 allowed repetitions", async () => {
   const root = await mkdtemp(join(tmpdir(), "keiko-operator-seam-"));

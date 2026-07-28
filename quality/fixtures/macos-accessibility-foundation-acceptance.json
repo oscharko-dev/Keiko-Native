@@ -2,7 +2,7 @@
   "schema": "keiko-native-packaged-shell-evidence/v1",
   "sourceRevision": "8f09eed3b0726207bc27132556c3174bba1abe60",
   "readinessFingerprint": "da2459bd3becc6cbf651a24ef1b64d1b11a8ed642bfddc92923f0d6ed6dc8e5e",
-  "packageManifestSha256": "19a8fc126777f219717dc68832e94db72f53afb1957268ee77399d64ed28bc88",
+  "packageManifestSha256": "939a6873fb73734855e4970af1605dd962966097d1db21aa80ef6d38649e0fa8",
   "cargoLockSha256": "5e0a3945e58dcb5269868409f1910e2a63bf5a3a272e9d888d22acfd340541d5",
   "npmLockSha256": "b94bdc5c3c163fe39eecb11458df2e47c470c7cd5059c9ebd2673c54ed3d0252",
   "runner": "local-macos",

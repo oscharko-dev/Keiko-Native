@@ -31,6 +31,9 @@ const expectedPackageModes = Object.freeze({
 const requiredProhibitedMarkers = Object.freeze([
   "remote-debugging",
   "test-listener",
+  "evaluate:macos-accessibility-driver",
+  "dev.oscharko.keiko-native.evaluation.accessibility",
+  "KeikoAccessibilityEvaluation",
 ]);
 const requiredProhibitedPathFragments = Object.freeze([
   "driver",
@@ -151,6 +154,19 @@ function packageManifestValid(manifest) {
   );
 }
 
+export function foundationPackagePolicyIsolated(policy) {
+  return (
+    Array.isArray(policy?.security?.prohibitedMarkers) &&
+    requiredProhibitedMarkers.every((marker) =>
+      policy.security.prohibitedMarkers.includes(marker),
+    ) &&
+    Array.isArray(policy?.security?.prohibitedPathFragments) &&
+    requiredProhibitedPathFragments.every((fragment) =>
+      policy.security.prohibitedPathFragments.includes(fragment),
+    )
+  );
+}
+
 function packagePolicyValid(policy, manifest, evidence) {
   return (
     policy?.schema === "keiko-native-package-policy/v1" &&
@@ -163,14 +179,7 @@ function packagePolicyValid(policy, manifest, evidence) {
     exactKeys(policy.expectedLocks, ["cargoSha256", "npmSha256"]) &&
     policy.expectedLocks.cargoSha256 === evidence.cargoLockSha256 &&
     policy.expectedLocks.npmSha256 === evidence.npmLockSha256 &&
-    Array.isArray(policy.security?.prohibitedMarkers) &&
-    requiredProhibitedMarkers.every((marker) =>
-      policy.security.prohibitedMarkers.includes(marker),
-    ) &&
-    Array.isArray(policy.security?.prohibitedPathFragments) &&
-    requiredProhibitedPathFragments.every((fragment) =>
-      policy.security.prohibitedPathFragments.includes(fragment),
-    )
+    foundationPackagePolicyIsolated(policy)
   );
 }
 

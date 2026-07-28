@@ -3,7 +3,10 @@
 import { readFile } from "node:fs/promises";
 
 import { evaluateMacosAccessibilityDriver } from "./macos-accessibility-driver-evaluation.mjs";
-import { physicalEvaluationSourceDigest } from "./macos-accessibility-driver-source.mjs";
+import {
+  authenticateCurrentEvaluationCheckout,
+  physicalEvaluationSourceDigest,
+} from "./macos-accessibility-driver-source.mjs";
 import { authenticateFoundationPackage } from "./macos-accessibility-foundation-attestation.mjs";
 
 const evidenceUrl = new URL(
@@ -58,6 +61,10 @@ function closedInvalid(reasonCode) {
 
 async function run() {
   const evidence = JSON.parse(await readFile(evidenceUrl, "utf8"));
+  const checkout = authenticateCurrentEvaluationCheckout(
+    evidence.bindings?.evaluationHead,
+  );
+  if (!checkout.authenticated) return closedInvalid(checkout.reasonCode);
   const [acceptanceEvidenceRaw, packageManifestRaw, packagePolicyRaw] =
     await Promise.all([
       readFile(foundationAcceptanceUrl, "utf8"),
