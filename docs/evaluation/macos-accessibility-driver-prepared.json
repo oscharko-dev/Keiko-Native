@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "keiko-native-macos-accessibility-driver-prepared/v1",
+  "sourceHead": "fbb805ba971c20417d826b90d70b2f5c17c86bdd",
+  "sourceDigest": "c9aafd2e52846b20f16c03a9925ab1261b751052f1b0501fda187d209db739c5",
+  "bundleIdentifier": "dev.oscharko.keiko-native.evaluation.accessibility",
+  "representativePackageSha256": "9221319c3d37bdd7c2e36c0558f039d60d1aa3b3223f49668c3b4fa7aedf3e0c",
+  "representativeInspection": {
+    "candidateFilesInsidePackage": 0,
+    "missingCheckpoints": [],
+    "packageFiles": [
+      "Contents/Info.plist",
+      "Contents/MacOS/KeikoAccessibilityEvaluation"
+    ],
+    "privateApis": 0,
+    "productHooks": 0,
+    "status": "prepared"
+  },
+  "candidateDigests": {
+    "axuielement": "067860e0e034bea56c66816302fc7ceb76a93696b246a4a743a63db7ddc4ab6b",
+    "systemEvents": "b547fe7c6e1bf0eea063ea40552fce1363aa1982556179a903fd13c49775fa7a"
+  }
+}

@@ -4,6 +4,7 @@ import test from "node:test";
 import { evaluateMacosAccessibilityDriver } from "./macos-accessibility-driver-evaluation.mjs";
 import {
   replaceRetainedArtifact,
+  replaceRetainedPreparedArtifactEverywhere,
   retainedEvaluationInput,
 } from "./macos-accessibility-driver-test-fixture.mjs";
 
@@ -46,7 +47,7 @@ test("does not award package isolation to forged Foundation attestations", async
   }
 });
 
-test("derives representative package isolation from retained inspection", async () => {
+test("derives representative package isolation from every retained inspection invariant", async () => {
   const proseOnly = await equalWorkloadInput();
   proseOnly.evidence.packageBindings.representative.selfAssertedProductExclusion = false;
   assert.equal(
@@ -54,13 +55,37 @@ test("derives representative package isolation from retained inspection", async 
     "complete",
   );
 
-  const contaminated = await equalWorkloadInput();
-  replaceRetainedCapture(contaminated, "prepared", (prepared) => {
-    prepared.representativeInspection.candidateFilesInsidePackage = 1;
-  });
-  const result = evaluateMacosAccessibilityDriver(contaminated);
-  assert.equal(result.exitCode, 2);
-  assert.equal(result.output.status, "invalid");
+  for (const mutateInspection of [
+    (inspection) => {
+      inspection.candidateFilesInsidePackage = 1;
+    },
+    (inspection) => {
+      inspection.missingCheckpoints.push("workspace-select");
+    },
+    (inspection) => {
+      inspection.packageFiles.push("Contents/MacOS/AXUIElementCandidate");
+    },
+    (inspection) => {
+      inspection.privateApis = 1;
+    },
+    (inspection) => {
+      inspection.productHooks = 1;
+    },
+    (inspection) => {
+      inspection.status = "contaminated";
+    },
+  ]) {
+    const contaminated = await equalWorkloadInput();
+    replaceRetainedPreparedArtifactEverywhere(
+      contaminated,
+      ({ representativeInspection }) => {
+        mutateInspection(representativeInspection);
+      },
+    );
+    const result = evaluateMacosAccessibilityDriver(contaminated);
+    assert.equal(result.exitCode, 2);
+    assert.equal(result.output.status, "invalid");
+  }
 });
 
 test("reports an incomplete no-driver workload instead of silently omitting it", async () => {

@@ -1,0 +1,226 @@
+{
+  "schemaVersion": "keiko-native-macos-accessibility-driver-capture/v1",
+  "phase": "recovered",
+  "prepared": {
+    "schemaVersion": "keiko-native-macos-accessibility-driver-prepared/v1",
+    "sourceHead": "fbb805ba971c20417d826b90d70b2f5c17c86bdd",
+    "sourceDigest": "c9aafd2e52846b20f16c03a9925ab1261b751052f1b0501fda187d209db739c5",
+    "bundleIdentifier": "dev.oscharko.keiko-native.evaluation.accessibility",
+    "representativePackageSha256": "9221319c3d37bdd7c2e36c0558f039d60d1aa3b3223f49668c3b4fa7aedf3e0c",
+    "representativeInspection": {
+      "candidateFilesInsidePackage": 0,
+      "missingCheckpoints": [],
+      "packageFiles": [
+        "Contents/Info.plist",
+        "Contents/MacOS/KeikoAccessibilityEvaluation"
+      ],
+      "privateApis": 0,
+      "productHooks": 0,
+      "status": "prepared"
+    },
+    "candidateDigests": {
+      "axuielement": "067860e0e034bea56c66816302fc7ceb76a93696b246a4a743a63db7ddc4ab6b",
+      "systemEvents": "b547fe7c6e1bf0eea063ea40552fce1363aa1982556179a903fd13c49775fa7a"
+    }
+  },
+  "options": {
+    "axuielement": {
+      "status": "allowed",
+      "repetitions": 1,
+      "successfulRepetitions": 1,
+      "checkpointPasses": 16,
+      "boundedWaits": true,
+      "unexplainedFailures": 0,
+      "reasonCode": null,
+      "cleanupOwnedDescendants": 0
+    },
+    "systemEvents": {
+      "status": "allowed",
+      "repetitions": 1,
+      "successfulRepetitions": 1,
+      "checkpointPasses": 16,
+      "boundedWaits": true,
+      "unexplainedFailures": 0,
+      "reasonCode": null,
+      "cleanupOwnedDescendants": 0
+    }
+  },
+  "timings": {
+    "axuielement": [
+      {
+        "checkpoints": [
+          {
+            "checkpoint": "workspace-select",
+            "elapsedMs": 249,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "workspace-cancel",
+            "elapsedMs": 176,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "workspace-permission-deny",
+            "elapsedMs": 151,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "task-submit",
+            "elapsedMs": 251,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "streaming",
+            "elapsedMs": 69,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "normal-completion",
+            "elapsedMs": 144,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "run-cancellation",
+            "elapsedMs": 176,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "crash-recovery",
+            "elapsedMs": 807,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "terminal-summary",
+            "elapsedMs": 38,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "keyboard-focus",
+            "elapsedMs": 35,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "voiceover-semantics",
+            "elapsedMs": 34,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "appearance-contrast",
+            "elapsedMs": 351,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "reduce-motion-applicability",
+            "elapsedMs": 262,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "scaling",
+            "elapsedMs": 60,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "unicode-ime",
+            "elapsedMs": 41,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "quit-zero-descendants",
+            "elapsedMs": 314,
+            "status": "passed"
+          }
+        ],
+        "elapsedMs": 3184,
+        "repetition": 1
+      }
+    ],
+    "systemEvents": [
+      {
+        "checkpoints": [
+          {
+            "checkpoint": "workspace-select",
+            "elapsedMs": 580,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "workspace-cancel",
+            "elapsedMs": 529,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "workspace-permission-deny",
+            "elapsedMs": 510,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "task-submit",
+            "elapsedMs": 526,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "streaming",
+            "elapsedMs": 402,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "normal-completion",
+            "elapsedMs": 523,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "run-cancellation",
+            "elapsedMs": 524,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "crash-recovery",
+            "elapsedMs": 1178,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "terminal-summary",
+            "elapsedMs": 435,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "keyboard-focus",
+            "elapsedMs": 403,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "voiceover-semantics",
+            "elapsedMs": 401,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "appearance-contrast",
+            "elapsedMs": 808,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "reduce-motion-applicability",
+            "elapsedMs": 683,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "scaling",
+            "elapsedMs": 429,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "unicode-ime",
+            "elapsedMs": 407,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "quit-zero-descendants",
+            "elapsedMs": 656,
+            "status": "passed"
+          }
+        ],
+        "elapsedMs": 8995,
+        "repetition": 1
+      }
+    ]
+  }
+}

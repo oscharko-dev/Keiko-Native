@@ -1,0 +1,25 @@
+{
+  "schema": "keiko-native-package-manifest/v1",
+  "sourceRevision": "fbb805ba971c20417d826b90d70b2f5c17c86bdd",
+  "target": "keiko-native-desktop",
+  "platform": "macos-arm64",
+  "policySha256": "58ecd89c8b869b20a80bb87efc8dc15ef5d5aa916889b6a2b65dd63a8cce2307",
+  "inventory": [
+    {
+      "mode": "0644",
+      "path": "Contents/Info.plist",
+      "sha256": "f6a383f9cbe7427166f37f7e9fdadfd7ac7a31b662ae07b27c5785798f490f79"
+    },
+    {
+      "mode": "0755",
+      "path": "Contents/MacOS/keiko-native-desktop",
+      "sha256": "932952569a586e8ad5ed5e738e7adc8ba5c9da2ad1acadfd9b262555453b5f5b"
+    },
+    {
+      "mode": "0644",
+      "path": "Contents/Resources/THIRD-PARTY-NOTICES.json",
+      "sha256": "98713fae4f47907e9a137c53462a10b5668f89903664c814d8765ae00a01ac04"
+    }
+  ],
+  "redaction": "closed"
+}

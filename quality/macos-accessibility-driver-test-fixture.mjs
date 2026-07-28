@@ -187,3 +187,23 @@ export function replaceRetainedArtifact(input, id, mutate) {
     }[id]
   ] = sha256(input.retainedArtifacts[id]);
 }
+
+export function replaceRetainedPreparedArtifactEverywhere(input, mutate) {
+  const prepared = JSON.parse(input.retainedArtifacts.prepared);
+  mutate(prepared);
+  input.retainedArtifacts.prepared = `${JSON.stringify(prepared, null, 2)}\n`;
+  input.evidence.bindings.preparedEvidenceSha256 = sha256(
+    input.retainedArtifacts.prepared,
+  );
+  for (const [id, binding] of Object.entries({
+    allowed: "allowedCaptureSha256",
+    denied: "deniedCaptureSha256",
+    revoked: "revokedCaptureSha256",
+    recovered: "recoveredCaptureSha256",
+  })) {
+    const capture = JSON.parse(input.retainedArtifacts[id]);
+    capture.prepared = structuredClone(prepared);
+    input.retainedArtifacts[id] = `${JSON.stringify(capture, null, 2)}\n`;
+    input.evidence.bindings[binding] = sha256(input.retainedArtifacts[id]);
+  }
+}
