@@ -1734,12 +1734,7 @@ function pullRequestContractWorkflowFailures(workflow) {
 function inertControlWorkflowFailures(
   name,
   workflow,
-  markers,
-  expectedEvents,
-  expectedJob,
-  expectedGuard,
-  expectedCommands,
-  expectedRef = "ref: dev",
+  { markers, events, job, guard, commands, checkoutRef = "ref: dev" },
 ) {
   const markerFailures = [...inertWorkflowMarkers, ...markers]
     .filter((marker) => !workflow.includes(marker))
@@ -1750,8 +1745,8 @@ function inertControlWorkflowFailures(
       `${name} workflow must not request write permissions: ${writePermissions.join(", ")}.`,
     );
   const exactShape = [
-    [workflowEvents(workflow), expectedEvents, "event set"],
-    [workflowJobs(workflow), [expectedJob], "job set"],
+    [workflowEvents(workflow), events, "event set"],
+    [workflowJobs(workflow), [job], "job set"],
     [
       workflowPermissionDeclarations(workflow),
       ["permissions: {}", "    permissions:"],
@@ -1763,7 +1758,7 @@ function inertControlWorkflowFailures(
         .split(/\r?\n/u)
         .map((line) => line.trim())
         .filter((line) => line.startsWith("if:")),
-      expectedGuard === undefined ? [] : [expectedGuard],
+      guard === undefined ? [] : [guard],
       "job guard",
     ],
     [
@@ -1771,7 +1766,7 @@ function inertControlWorkflowFailures(
         .split(/\r?\n/u)
         .map((line) => line.trim())
         .filter((line) => line.startsWith("ref:")),
-      [expectedRef],
+      [checkoutRef],
       "checkout ref",
     ],
     [
@@ -1793,7 +1788,7 @@ function inertControlWorkflowFailures(
       ],
       "action set",
     ],
-    [workflowRunCommands(workflow), expectedCommands, "command set"],
+    [workflowRunCommands(workflow), commands, "command set"],
   ];
   markerFailures.push(
     ...exactShape
@@ -1841,47 +1836,38 @@ function inertControlWorkflowFailures(
 }
 
 function contractPublicationWorkflowFailures(workflow) {
-  return inertControlWorkflowFailures(
-    "Contract publication",
-    workflow,
-    contractPublicationWorkflowMarkers,
-    ["workflow_dispatch"],
-    "validate",
-    "if: ${{ vars.KEIKO_CONTRACT_PUBLICATION_ACTIVATION == 'enabled' }}",
-    [
+  return inertControlWorkflowFailures("Contract publication", workflow, {
+    commands: [
       "node --check quality/publication-contract.mjs",
       "node --check quality/lifecycle-handoff-publication.mjs",
     ],
-  );
+    events: ["workflow_dispatch"],
+    guard: "if: ${{ vars.KEIKO_CONTRACT_PUBLICATION_ACTIVATION == 'enabled' }}",
+    job: "validate",
+    markers: contractPublicationWorkflowMarkers,
+  });
 }
 
 function mergeGroupWorkflowFailures(workflow) {
-  return inertControlWorkflowFailures(
-    "Merge group",
-    workflow,
-    mergeGroupWorkflowMarkers,
-    ["merge_group", "workflow_dispatch"],
-    "evaluate",
-    "if: ${{ vars.KEIKO_MERGE_GROUP_ACTIVATION == 'enabled' }}",
-    [
+  return inertControlWorkflowFailures("Merge group", workflow, {
+    commands: [
       "node --check quality/merge-group.mjs",
       "node --check quality/epic-merge-broker.mjs",
       "node --check quality/epic-merge-operation.mjs",
       "node --check quality/epic-merge-policy.mjs",
       "node quality/epic-merge-policy.mjs status",
     ],
-  );
+    events: ["merge_group", "workflow_dispatch"],
+    guard: "if: ${{ vars.KEIKO_MERGE_GROUP_ACTIVATION == 'enabled' }}",
+    job: "evaluate",
+    markers: mergeGroupWorkflowMarkers,
+  });
 }
 
 function epicMergeGuardStatusWorkflowFailures(workflow) {
-  return inertControlWorkflowFailures(
-    "Epic merge guard status",
-    workflow,
-    epicMergeGuardStatusMarkers,
-    ["push", "workflow_dispatch"],
-    "status",
-    undefined,
-    [
+  return inertControlWorkflowFailures("Epic merge guard status", workflow, {
+    checkoutRef: "ref: ${{ github.sha }}",
+    commands: [
       'test "$GITHUB_REF" = "refs/heads/dev"',
       'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',
       "node --check quality/epic-merge-adapter.mjs",
@@ -1896,8 +1882,10 @@ function epicMergeGuardStatusWorkflowFailures(workflow) {
       "node --check quality/epic-merge-store.mjs",
       "node quality/epic-merge-policy.mjs status",
     ],
-    "ref: ${{ github.sha }}",
-  );
+    events: ["push", "workflow_dispatch"],
+    job: "status",
+    markers: epicMergeGuardStatusMarkers,
+  });
 }
 
 async function workflowFailures(root, manifest) {
