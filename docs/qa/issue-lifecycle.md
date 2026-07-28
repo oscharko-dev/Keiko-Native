@@ -167,7 +167,7 @@ Every writer and lifecycle effect shares the exact per-issue
 `cancel-in-progress` key. The provider-intensive job also uses the repository-wide
 `issue-lifecycle-provider-budget` group. Post-publication GitHub-native attestations bind each
 provider comment ID, exact body digest, record digest, and protected writer run in an immutable
-per-issue artifact anchor that detects an unreferenced deleted suffix. Transition/read-back
+per-issue artifact anchor that detects an unreferenced suffix deletion. Transition/read-back
 checkpoints bound the effect-capable suffix to 15 records; cursor recovery is effect-disabled and
 advances when the normal two-page comment load cannot reach a checkpoint. Complete bounded
 pagination, full-body parsing, App/workflow/run/ref
@@ -175,6 +175,12 @@ authentication, exact predecessor chains, stable double-reads, and fencing rejec
 duplicated, conflicting, stale, truncated, wrong-generation, wrong-producer, rate-limited, or
 unavailable evidence. An ambiguous effect is never retried; explicit authorized recovery creates
 the next attempt and binds the settled predecessor.
+
+Stable proof of zero relevant record comments and zero exact-name anchors selects empty-history
+bootstrap, not truncated-history recovery. The first request uses null predecessors and checkpoint
+numbering begins at one. A pre-checkpoint crash either remains empty, resumes a completely
+authenticated genesis suffix, or fails closed for explicit authorized recovery when publication is
+partial or ambiguous.
 
 The record protocol preserves all nine states and the exact allowed edge graph above.
 `no-lifecycle` is an outside-graph observation only for creation, reopen, and non-completed closure,

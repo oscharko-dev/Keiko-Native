@@ -67,8 +67,8 @@ requires the exact built-in bot user, GitHub Actions App ID `15368`, expected pr
 path, `refs/heads/dev`, workflow commit, run, attempt, job, result, canonical generation, current
 fence, predecessor chain, and a cryptographically verified post-publication GitHub-native
 attestation over an immutable anchor binding the provider comment ID, exact body digest, record
-digest, and protected writer run. An exact-name per-issue anchor detects an unreferenced missing
-suffix. Attested transition/read-back checkpoints bound the effect-capable live suffix to 15
+digest, and protected writer run. An exact-name per-issue anchor detects an unreferenced suffix
+deletion. Attested transition/read-back checkpoints bound the effect-capable live suffix to 15
 records, and effect-disabled cursor recovery handles deeper comment history. A login, marker,
 author association, context name, details URL, or event timing alone is never sufficient.
 

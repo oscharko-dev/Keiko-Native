@@ -1378,25 +1378,26 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
     readFile(join(root, "docs/qa/repository-activation.md"), "utf8"),
   ]);
   const projections = [agents, lifecycle, gates, activation];
-  const recordFields = (heading, nextHeading) => {
-    const start = adr.indexOf(`### ${heading}`);
-    const end = adr.indexOf(`### ${nextHeading}`, start + 1);
-    assert.notEqual(start, -1, heading);
-    assert.notEqual(end, -1, nextHeading);
-    return [
-      ...adr.slice(start, end).matchAll(/^\d+\. `([a-z0-9_]+)`: /gmu),
-    ].map((match) => match[1]);
-  };
-  const recordSchema = (heading, nextHeading, source = adr) => {
+  const recordSection = (heading, nextHeading, source = adr) => {
     const normalizedSource = source.replaceAll("\r\n", "\n");
     const start = normalizedSource.indexOf(`### ${heading}`);
     const end = normalizedSource.indexOf(`### ${nextHeading}`, start + 1);
     assert.notEqual(start, -1, heading);
     assert.notEqual(end, -1, nextHeading);
+    return normalizedSource.slice(start, end);
+  };
+  const recordFields = (heading, nextHeading) => {
     return [
-      ...normalizedSource
-        .slice(start, end)
-        .matchAll(/^\d+\. `([a-z0-9_]+)`: ([\s\S]*?)(?=^\d+\. `|^\n)/gmu),
+      ...recordSection(heading, nextHeading).matchAll(
+        /^\d+\. `([a-z0-9_]+)`: /gmu,
+      ),
+    ].map((match) => match[1]);
+  };
+  const recordSchema = (heading, nextHeading, source = adr) => {
+    return [
+      ...recordSection(heading, nextHeading, source).matchAll(
+        /^\d+\. `([a-z0-9_]+)`: ([\s\S]*?)(?=^\d+\. `|^\n)/gmu,
+      ),
     ].map(
       (match) =>
         `${match[1]}:${match[2]
@@ -1548,11 +1549,12 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
         "|",
       ),
   };
+  const recordHeadings = Object.keys(expectedRecordFields);
   for (const [heading, fields] of Object.entries(expectedRecordFields)) {
-    const headings = Object.keys(expectedRecordFields);
-    const index = headings.indexOf(heading);
+    const headingIndex = recordHeadings.indexOf(heading);
     const nextHeading =
-      headings[index + 1] ?? "Record authentication and chain reconstruction";
+      recordHeadings[headingIndex + 1] ??
+      "Record authentication and chain reconstruction";
     assert.deepEqual(recordFields(heading, nextHeading), fields, heading);
     assert.deepEqual(
       recordSchema(heading, nextHeading),
@@ -1612,7 +1614,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   const auxiliaryDomainSection = adr.match(
     /Every auxiliary identity[\s\S]+?fixed domain:\n\n([\s\S]+?)\n\nThat list is/u,
   );
-  assert.ok(auxiliaryDomainSection);
+  assert.ok(auxiliaryDomainSection, "auxiliary identity domain list");
   const actualAuxiliaryDomains = [
     ...auxiliaryDomainSection[1].matchAll(/^- ([^:]+): `([^`]+)`$/gmu),
   ].map((match) => [match[1], match[2]]);
@@ -1657,7 +1659,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   const reasonParagraph = adr.match(
     /The closed reason-code enum is exactly ([\s\S]+?)\. Provider status/u,
   );
-  assert.ok(reasonParagraph);
+  assert.ok(reasonParagraph, "closed reason-code enum");
   assert.deepEqual(
     [...reasonParagraph[1].matchAll(/`([^`]+)`/gu)].map((match) => match[1]),
     expectedReasonCodes,
@@ -1681,7 +1683,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
     "request payload": [
       "schema_version:uint=1",
       "request_kind:enum(event-reconciliation,planner-request,pause-request,recovery-request,scheduled-reconciliation)",
-      "requested_state:lifecycle-observation-or-null",
+      "requested_state:requested-lifecycle-state-or-null",
       "request_owner:enum(planner,assignment,pull-request,handoff,closure,reopen,invalidation,recovery,schedule)",
       "reason_code:closed-reason-code",
     ],
@@ -1807,9 +1809,9 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
     ],
   };
   const auxiliarySection = adr.match(
-    /The exact auxiliary v1 schemas are:\n\n([\s\S]+?)\n\n`lifecycle-observation`/u,
+    /The exact auxiliary v1 schemas are:\n\n([\s\S]+?)\n\n`requested-lifecycle-state`/u,
   );
-  assert.ok(auxiliarySection);
+  assert.ok(auxiliarySection, "auxiliary v1 schema table");
   const actualAuxiliarySchemas = Object.fromEntries(
     [
       ...auxiliarySection[1].matchAll(
@@ -1825,10 +1827,21 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   );
   assert.deepEqual(actualAuxiliarySchemas, expectedAuxiliarySchemas);
 
+  const requestedStateDefinition = adr.match(
+    /`requested-lifecycle-state` is exactly ([\s\S]+?); it excludes `no-lifecycle`\./u,
+  );
+  assert.ok(requestedStateDefinition, "request-specific lifecycle-state enum");
+  assert.deepEqual(
+    [...requestedStateDefinition[1].matchAll(/`([^`]+)`/gu)].map(
+      (match) => match[1],
+    ),
+    lifecycleStates,
+  );
+
   const nestedSchemas = adr.match(
     /The nested `candidate-entry` schema is exactly ([\s\S]+?), in that order\. The nested\s+`producer-result-reference` schema is exactly ([\s\S]+?), in that order\./u,
   );
-  assert.ok(nestedSchemas);
+  assert.ok(nestedSchemas, "nested candidate and producer-reference schemas");
   assert.deepEqual(
     [...nestedSchemas[1].matchAll(/`([^`]+)`/gu)].map((match) => match[1]),
     [
@@ -1866,7 +1879,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   const attestationSubject = adr.match(
     /name is exactly\n`([^`]+)`\nand whose digest is exactly `([^`]+)`/u,
   );
-  assert.ok(attestationSubject);
+  assert.ok(attestationSubject, "post-publication attestation subject");
   assert.deepEqual(attestationSubject.slice(1), [
     "keiko-native/lifecycle-comment/v1/{repository}/{decimal-issue}/{decimal-comment-id}/{generation-identity}/{decimal-attempt}/{record-type}/{decimal-run-id}/{decimal-run-attempt}",
     "sha256:{artifact-anchor-identity}",
@@ -1882,7 +1895,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   const permissionSet = adr.match(
     /The exact writer permission set is ([\s\S]+?); every other permission/u,
   );
-  assert.ok(permissionSet);
+  assert.ok(permissionSet, "protected writer permission set");
   assert.deepEqual(
     [...permissionSet[1].matchAll(/`([^`]+)`/gu)].map((match) => match[1]),
     [
@@ -1896,7 +1909,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   const claimSet = adr.match(
     /The exact verified attestation claim set is ([\s\S]+?)\. Claims map/u,
   );
-  assert.ok(claimSet);
+  assert.ok(claimSet, "verified attestation claim set");
   assert.deepEqual(
     [...claimSet[1].matchAll(/`([^`]+)`/gu)].map((match) => match[1]),
     [
@@ -1915,7 +1928,15 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   );
   assert.match(
     adr,
-    /100 comments\s+per page and at most two pages[\s\S]{0,2500}scans at most 100 more pages/iu,
+    /100 comments\s+per page and at most two pages[\s\S]{0,5000}scans at most 100 more pages/iu,
+  );
+  assert.match(
+    adr,
+    /empty-history bootstrap[\s\S]{0,600}zero relevant lifecycle record comments[\s\S]{0,300}zero exact-name anchor artifacts[\s\S]{0,500}explicit null[\s\S]{0,300}checkpoint sequence starts at one/iu,
+  );
+  assert.match(
+    adr,
+    /crash before the first checkpoint[\s\S]{0,700}authenticated genesis suffix[\s\S]{0,500}publication[\s\S]{0,40}interrupted[\s\S]{0,300}explicit authorized recovery/iu,
   );
   assert.match(adr, /missing predecessor[\s\S]{0,160}fork[\s\S]{0,80}cycle/iu);
   assert.match(
@@ -1925,6 +1946,14 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   assert.match(
     adr,
     /issue-lifecycle-\$\{decimal issue number\}[\s\S]{0,180}queue:\s*max[\s\S]{0,180}no `cancel-in-progress`/iu,
+  );
+  assert.match(
+    adr,
+    /GitHub Actions workflow syntax[\s\S]{0,300}retrieved 2026-07-28/iu,
+  );
+  assert.match(
+    adr,
+    /Waiting start and dispatch order are provider scheduling\s+facts, not authority/iu,
   );
   assert.match(
     adr,
@@ -1983,7 +2012,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   const edgeSection = adr.match(
     /The allowed directed edges are exactly[\s\S]+?\n\nA source equal to target/u,
   );
-  assert.ok(edgeSection);
+  assert.ok(edgeSection, "complete nine-state edge policy");
   assert.deepEqual(
     [...edgeSection[0].matchAll(/^- (.+)$/gmu)].map((match) => match[1]),
     expectedEdges,

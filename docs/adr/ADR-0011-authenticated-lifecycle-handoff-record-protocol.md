@@ -138,7 +138,7 @@ The exact auxiliary v1 schemas are:
 | Identity                  | Fixed fields, in order                                                                                                                                                                                                                                                                                                                                                                                         |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | request identity          | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `pull_request_number:uint-or-null`, `exact_head_sha:commit-or-null`, `exact_target:string-or-null`, `generation_identity:sha256`, `attempt:uint`, `request_payload_digest:sha256`, `expected_producers:set<producer>`, `predecessor_comment_id:uint-or-null`, `predecessor_record_digest:sha256-or-null`                                    |
-| request payload           | `schema_version:uint=1`, `request_kind:enum(event-reconciliation,planner-request,pause-request,recovery-request,scheduled-reconciliation)`, `requested_state:lifecycle-observation-or-null`, `request_owner:enum(planner,assignment,pull-request,handoff,closure,reopen,invalidation,recovery,schedule)`, `reason_code:closed-reason-code`                                                                     |
+| request payload           | `schema_version:uint=1`, `request_kind:enum(event-reconciliation,planner-request,pause-request,recovery-request,scheduled-reconciliation)`, `requested_state:requested-lifecycle-state-or-null`, `request_owner:enum(planner,assignment,pull-request,handoff,closure,reopen,invalidation,recovery,schedule)`, `reason_code:closed-reason-code`                                                                 |
 | source observation        | `schema_version:uint=1`, `generation_bytes_sha256:sha256`, `observed_state:lifecycle-observation`, `issue_updated_at:timestamp`, `readiness_identity:sha256-or-null`, `assignment_identity:sha256`, `pr_topology_identity:sha256`, `reviews_identity:sha256`, `conversations_identity:sha256`, `checks_identity:sha256`, `evidence_identity:sha256`, `activation_identity:sha256`                              |
 | fence identity            | `schema_version:uint=1`, `generation_identity:sha256`, `attempt:uint`, `phase:phase-enum`, `fence_sequence:uint`, `owner_workflow_path:coordinator-path`, `owner_run_id:uint`, `owner_run_attempt:uint`, `source_observation_identity:sha256`, `predecessor_comment_id:uint-or-null`, `predecessor_record_digest:sha256-or-null`                                                                               |
 | result identity           | `schema_version:uint=1`, `expected_producer:producer`, `producer_contract_version:uint`, `generation_identity:sha256`, `attempt:uint`, `phase_fence_digest:sha256`, `workflow_path:producer-path`, `workflow_id:uint`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `workflow_job_id:uint`, `provider_observation_identity:sha256`, `conclusion:producer-conclusion`, `reason_code:closed-reason-code` |
@@ -150,7 +150,10 @@ The exact auxiliary v1 schemas are:
 | recovery scan identity    | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `scan_direction:enum(backward)`, `provider_cursor:string-or-null`, `scanned_page_count:uint`, `scanned_comment_count:uint`, `accumulated_suffix_identity:sha256`, `complete:bool`                                                                                                                               |
 | artifact anchor           | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `record_type:record-type`, `record_digest:sha256`, `comment_id:uint`, `comment_body_sha256:sha256`, `generation_identity:sha256`, `attempt:uint`, `workflow_path:protected-writer-path`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `protected_dev_sha:commit`                                                                    |
 
-`lifecycle-observation` is exactly the nine canonical lifecycle values plus `no-lifecycle`.
+`requested-lifecycle-state` is exactly `status: new`, `status: triaged`, `status: ready`,
+`status: in progress`, `status: pr open`, `status: ready for human review`, `status: blocked`,
+`status: waiting for user`, and `status: done`; it excludes `no-lifecycle`.
+`lifecycle-observation` is exactly those nine canonical lifecycle values plus `no-lifecycle`.
 `phase-enum`, `producer-conclusion`, and `transition-owner` are the closed enums declared by the
 record fields below. `closed-producer-result-name` maps the three producers one-to-one to `Issue
 contract current`, `PR contract`, and `Contract publication`; another name rejects the observation.
@@ -214,7 +217,7 @@ Fixed fields, in order:
 The generation identity is independently recomputed from ADR-0004's complete trusted input. The
 request identity binds the repository, issue, pull request, exact head, generation, attempt,
 request-payload digest, expected-producer set, and predecessor. The request-payload digest is
-domain-separated and contains only normalized identifiers and a reason-code digest. A raw reason,
+domain-separated and contains only normalized identifiers and a closed reason code. A raw reason,
 issue body, provider payload, endpoint, credential, customer content, or private-source content is
 never stored.
 
@@ -300,23 +303,25 @@ Fixed fields, in order:
 
 The three recovery fields are respectively non-null, non-null, and `false` only for an incomplete
 `recovery` scan; the cursor becomes explicit null and completion becomes `true` for its final scan
-claim. Every non-recovery claim uses null, null, and `false`. A cursor is accepted only after issue
+claim. Every non-recovery claim uses null, null, and `false`. A cursor is accepted only after Issue
 #55's live probe proves GitHub's backward GraphQL timeline cursor preserves the exact stable page
 boundary under the held per-issue group. It is an opaque provider locator, never authority.
 
 For each issue, the unique serialization domain is exactly
 `issue-lifecycle-${decimal issue number}` with `queue: max` and no `cancel-in-progress` key. Every
 writer and every lifecycle effect uses that group. GitHub therefore runs one member and retains up
-to 100 pending members in FIFO waiting order instead of replacing the previous pending member. A
-pull request, head, readiness identity, request identity, lane, workflow path, or record type can
-never partition the group. A queue-full cancellation is visible in provider queue state and the
-generation request's missing expected result, makes that generation abandoned, and requires
-explicit recovery; it is never silently redispatched. A cancelled duplicate wake-up carries no
-authority and scheduled reconciliation reloads current state. Provider queue order is not
-authority: the canonical fence is the sole
-latest valid claim in the complete record chain for one generation and attempt. Its identity binds
-the generation, attempt, phase, sequence, owning run/attempt, predecessor comment/digest, and
-current provider observation.
+to 100 pending members in FIFO order by the time each member started waiting, rather than by
+workflow dispatch time. This is the behavior documented by the GitHub Actions workflow syntax
+concurrency reference below, retrieved 2026-07-28;
+`queue: max` cannot be combined with `cancel-in-progress: true`. A pull request, head, readiness
+identity, request identity, lane, workflow path, or record type can never partition the group. A
+queue-full cancellation is visible in provider queue state and the generation request's missing
+expected result, makes that generation abandoned, and requires explicit recovery; it is never
+silently redispatched. A cancelled duplicate wake-up carries no authority and scheduled
+reconciliation reloads current state. Waiting start and dispatch order are provider scheduling
+facts, not authority: the canonical fence is the sole latest valid claim in the complete record
+chain for one generation and attempt. Its identity binds the generation, attempt, phase, sequence,
+owning run/attempt, predecessor comment/digest, and current provider observation.
 
 ### Transition/read-back v1
 
@@ -455,15 +460,32 @@ mismatch, fork, cycle, gap, duplicate fence sequence, multiple terminal claims, 
 generation/attempt, or truncation. It repeats the complete checkpoint-and-suffix read and requires
 exact equality before using the chain.
 
+An empty-history bootstrap is distinct from truncated-history recovery. A complete bounded stable
+double-read must prove zero relevant lifecycle record comments and zero exact-name anchor artifacts
+for the issue. The coordinator may then append the first generation request with both predecessor
+fields explicit null; for the first transition/read-back, checkpoint sequence starts at one and
+both prior checkpoint fields are explicit null. Successful bootstrap continues through the same
+producers, fences, stable read-backs, and activation guard as every later generation, so an issue
+with no comments or artifacts does not remain effect-disabled merely because no checkpoint exists.
+
+A crash before the first checkpoint has three closed outcomes. If it occurred before any record
+publication, the empty-history bootstrap rule applies. If all published records are authenticated,
+the loader reconstructs the bounded authenticated genesis suffix from its unique null-predecessor
+generation request and the next serialized run resumes or settles that generation. If publication
+was interrupted, or any comment, anchor, attestation, predecessor, or provider fact is missing or
+ambiguous, the workflow performs no effect and requires explicit authorized recovery; it never
+reclassifies partial history as empty.
+
 If two comment pages do not reach the checkpoint, the workflow performs no lifecycle or status
-effect and enters recovery mode. A recovery-phase claim records the provider's backward cursor,
-exact counts, and accumulated recovery-scan identity. The next serialized recovery run resumes from
-that cursor and scans at most 100 more pages, but remains effect-disabled. Each progress claim
-supersedes only the prior scan cursor and grants no authority. When the prior checkpoint is found,
-the final recovery claim sets `recovery_scan_complete` to true, revalidates the compacted prefix and
-complete suffix, and emits a fresh transition/read-back checkpoint. If the #55 live probe cannot
-prove stable backward-cursor continuation, cursor recovery remains unavailable and the protocol
-cannot activate.
+effect and enters recovery mode only when the stable reads prove that relevant non-empty history
+continues beyond those pages. A recovery-phase claim records the provider's backward cursor, exact
+counts, and accumulated recovery-scan identity. The next serialized recovery run resumes from that
+cursor and scans at most 100 more pages, but remains effect-disabled. Each progress claim supersedes
+only the prior scan cursor and grants no authority. When the prior checkpoint or the unique
+null-predecessor genesis is found, the final recovery claim sets `recovery_scan_complete` to true,
+revalidates the compacted prefix or complete genesis suffix, and emits a fresh
+transition/read-back checkpoint. If the #55 live probe cannot prove stable backward-cursor
+continuation, cursor recovery remains unavailable and the protocol cannot activate.
 
 Every lifecycle workflow first holds its per-issue group and then acquires the additional
 repository-wide job concurrency group `issue-lifecycle-provider-budget` with `queue: max` and no
@@ -686,7 +708,8 @@ SHA under the refreshed #51 contract, and receives only the permissions declared
 The selected design reuses the same built-in Actions identity as the repository's existing PR
 checkers. There is no new account or installation step. Records are visible, append-only by policy,
 and recoverable across workflow runs. GitHub-native attestations bind each surviving record to its
-exact protected writer run, while exact-name per-issue artifact anchors detect a missing suffix.
+exact protected writer run, while exact-name per-issue artifact anchors detect an unreferenced
+suffix deletion.
 Attested checkpoints bound live reconstruction, effect-disabled cursor recovery advances deep
 history, and the repository-wide provider-budget group prevents lifecycle quota races. Strict
 producer/run/ref authentication, bounded queued serialization, complete pagination, fencing, and
@@ -709,8 +732,9 @@ bot/App/workflow/ref/run authentication, post-publication artifact-anchor attest
 exact per-issue artifact anchors, checkpoint compaction, referenced and unreferenced-suffix
 deletion, the 15-record live-suffix bound, normal and cursor-resumed pagination boundaries, exact
 request-budget accounting, stable double-reads, edit, fork, cycle, gap, truncation,
-duplicate/conflict, fencing, `queue: max` saturation, crash points, replay, explicit recovery, and
-every provider failure class.
+duplicate/conflict, fencing, `queue: max` saturation and FIFO-by-wait-start behavior, empty-history
+bootstrap, every pre-checkpoint crash outcome, replay, explicit recovery, and every provider failure
+class.
 
 Producer tests must prove independent generation recomputation, same-generation/fence binding,
 one start per producer, closed conclusions, least privilege, protected-`dev` loading, no pull-request
