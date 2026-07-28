@@ -569,18 +569,24 @@ continues beyond those pages. A recovery-phase claim records the provider's back
 counts, accumulated-suffix identity, and recovery-scan identity. Every scanned timeline comment,
 including an irrelevant comment, contributes one `recovery-suffix-member`; members retain the exact
 stable GraphQL edge order returned for that backward page. Provider order is evidence of complete
-pagination, never lifecycle or predecessor authority.
+pagination, never lifecycle or predecessor authority. Recovery starts its accumulator at the first
+of the two normal-load pages and computes exactly one accumulator step per stably double-read page.
+The `checkpoint_sequence` is `0` on every incomplete step. On the complete step it remains `0` for
+the unique genesis root or becomes the exact sequence from the authenticated checkpoint that ended
+the scan. The recovery-scan identity uses that same value. The fresh transition/read-back
+checkpoint is sequence `1` after genesis or the authenticated prior checkpoint's sequence plus one.
 
 The recovery suffix accumulator update is exactly:
 
-| Field                               | Root step                    | Resumed step                      |
-| ----------------------------------- | ---------------------------- | --------------------------------- |
-| `accumulator_step`                  | `1`                          | `prior step + 1`                  |
-| `prior_accumulated_suffix_identity` | `null`                       | `exact prior digest`              |
-| `page_members`                      | `stable provider edge order` | `stable provider edge order`      |
-| `cumulative_member_count`           | `page member count`          | `prior count + page member count` |
-| `next_provider_cursor`              | `exact next cursor or null`  | `exact next cursor or null`       |
-| `complete`                          | `false unless root found`    | `false unless root found`         |
+| Field                               | Root step                    | Resumed step                                        |
+| ----------------------------------- | ---------------------------- | --------------------------------------------------- |
+| `checkpoint_sequence`               | `0`                          | `0 until root; then exact checkpoint sequence or 0` |
+| `accumulator_step`                  | `1`                          | `prior step + 1`                                    |
+| `prior_accumulated_suffix_identity` | `null`                       | `exact prior digest`                                |
+| `page_members`                      | `stable provider edge order` | `stable provider edge order`                        |
+| `cumulative_member_count`           | `page member count`          | `prior count + page member count`                   |
+| `next_provider_cursor`              | `exact non-null cursor`      | `exact cursor; null iff root found`                 |
+| `complete`                          | `false`                      | `false until root found; then true`                 |
 
 A resumed recovery run first authenticates the prior progress claim and its comment, artifact,
 attestation, protected writer run, and predecessor. It recomputes that claim's recovery-scan
@@ -594,8 +600,13 @@ progress and emits no accumulator identity.
 
 The next serialized recovery run scans at most 100 more pages and remains effect-disabled. Each
 authenticated progress claim supersedes only the prior scan cursor and grants no authority. Its
-`recovery_scanned_comment_count` equals the accumulator's cumulative member count. When the prior
-checkpoint or the unique null-predecessor genesis is found, the final recovery claim sets
+`recovery_scanned_page_count` equals the accumulator's `accumulator_step`, and its
+`recovery_scanned_comment_count` equals the accumulator's `cumulative_member_count`. A resumed
+claim's page count equals the prior authenticated claim's page count plus the number of new
+accumulator page steps, and its first new step is exactly the prior page count plus one. A provider
+cursor that becomes null before an authenticated checkpoint or unique genesis is found proves
+truncation and emits no progress claim. When the prior checkpoint or the unique null-predecessor
+genesis is found, the final recovery claim sets
 `recovery_scan_complete` to true and the accumulator's `complete` to true, replays every
 authenticated accumulator step and page, revalidates the compacted prefix or complete genesis
 suffix in predecessor order, and emits a fresh transition/read-back checkpoint. If the #55 live

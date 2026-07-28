@@ -2100,6 +2100,11 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       ),
     ].map((match) => [match[1], match[2], match[3]]),
     [
+      [
+        "checkpoint_sequence",
+        "0",
+        "0 until root; then exact checkpoint sequence or 0",
+      ],
       ["accumulator_step", "1", "prior step + 1"],
       ["prior_accumulated_suffix_identity", "null", "exact prior digest"],
       [
@@ -2114,11 +2119,27 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       ],
       [
         "next_provider_cursor",
-        "exact next cursor or null",
-        "exact next cursor or null",
+        "exact non-null cursor",
+        "exact cursor; null iff root found",
       ],
-      ["complete", "false unless root found", "false unless root found"],
+      ["complete", "false", "false until root found; then true"],
     ],
+  );
+  assert.match(
+    adr,
+    /starts its accumulator at the first[\s\S]{0,100}two normal-load pages[\s\S]{0,140}exactly one accumulator step per[\s\S]{0,80}page/iu,
+  );
+  assert.match(
+    adr,
+    /`checkpoint_sequence` is `0` on every incomplete step[\s\S]{0,240}exact sequence from the authenticated checkpoint/iu,
+  );
+  assert.match(
+    adr,
+    /fresh transition\/read-back\s+checkpoint is sequence `1` after genesis[\s\S]{0,120}sequence plus one/iu,
+  );
+  assert.match(
+    adr,
+    /`recovery_scanned_page_count` equals the accumulator's `accumulator_step`[\s\S]{0,120}`recovery_scanned_comment_count` equals the accumulator's `cumulative_member_count`[\s\S]{0,260}first new step is exactly the prior page count plus one/iu,
   );
   assert.match(adr, /missing predecessor[\s\S]{0,160}fork[\s\S]{0,80}cycle/iu);
   assert.match(
