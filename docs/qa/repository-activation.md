@@ -109,6 +109,29 @@ human-reconciliation procedure in
 [`guarded-epic-merge.md`](guarded-epic-merge.md). Before Issue #55 freezes its manifest, confirm
 that the checked-in policy status is `disabled` and bound to the exact protected `dev` revision.
 
+ADR-0011's lifecycle handoff records must also remain inert until Issue #55. Protected workflows
+use only the built-in `github-actions[bot]` and short-lived `GITHUB_TOKEN`; no account, installed
+App, PAT, broker, database, hosted service, application/runtime dependency, or second credential is
+provisioned. Any GitHub-maintained attestation transport is full-SHA pinned under the refreshed #51
+contract. Before activation, a generation may emit only sanitized non-applied observations and must
+not change a lifecycle label, commit status, branch, pull request, queue, or merge.
+
+The activation probe authenticates the exact bot user, GitHub Actions App ID `15368`, protected
+workflow path/ref/commit, run, attempt, job, result, and a post-publication GitHub-native
+attestation over an immutable anchor binding provider comment ID, exact body digest, record digest,
+and run. It proves exact per-issue anchors, checkpoint rollover, normal two-page loading,
+effect-disabled cursor recovery, missing-suffix detection, strict full-body parsing, exact
+predecessor chains, one shared per-issue `queue: max` domain and fence, the repository-wide
+provider-budget group, hard request ceilings, stable double-reads, same-generation producer results,
+explicit crash recovery, and no retry after ambiguity. Deleted, edited, duplicated, conflicting,
+truncated, stale, wrong-generation, wrong-producer, rate-limited, or unavailable record evidence
+must fail closed.
+
+Publication proof loads the exact candidate commit, requires a complete recursive Git tree with
+`truncated === false`, and verifies exact regular-file path, mode, blob object, byte count, and
+SHA-256 equality through a stable reread. Pull-request file metadata alone cannot satisfy the
+adapter.
+
 ADR-0010 assigns Issue #50 only the inert guard, protected policy/status producer, hermetic proof,
 and corrected v2 live-probe harness. The canonical `status: ready for human review` state cannot
 truthfully exist as merge authority before the signed Contract-as-Code activation. The guarded

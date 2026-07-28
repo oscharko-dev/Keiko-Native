@@ -154,3 +154,31 @@ all lifecycle labels. Reopen always enters new and requires fresh readiness befo
 The label mutation path uses set-to-desired reconciliation: remove undesired `status:*` labels,
 apply the sole desired label, then read back and verify exact issue identity plus exactly one
 matching lifecycle label.
+
+## Protected Handoff Records
+
+ADR-0011 defines the versioned protected handoff protocol. Protected workflows loaded from `dev`
+use the built-in `github-actions[bot]` and short-lived `GITHUB_TOKEN` to append strict canonical
+generation-request, producer-result, phase/fence-claim, and transition/read-back issue records.
+Records are body-free operational evidence, not readiness, lifecycle, or merge authority.
+
+Every writer and lifecycle effect shares the exact per-issue
+`issue-lifecycle-${decimal issue number}` serialization domain with `queue: max` and no
+`cancel-in-progress` key. The provider-intensive job also uses the repository-wide
+`issue-lifecycle-provider-budget` group. Post-publication GitHub-native attestations bind each
+provider comment ID, exact body digest, record digest, and protected writer run in an immutable
+per-issue artifact anchor that detects an unreferenced deleted suffix. Transition/read-back
+checkpoints bound the effect-capable suffix to 15 records; cursor recovery is effect-disabled and
+advances when the normal two-page comment load cannot reach a checkpoint. Complete bounded
+pagination, full-body parsing, App/workflow/run/ref
+authentication, exact predecessor chains, stable double-reads, and fencing reject deleted, edited,
+duplicated, conflicting, stale, truncated, wrong-generation, wrong-producer, rate-limited, or
+unavailable evidence. An ambiguous effect is never retried; explicit authorized recovery creates
+the next attempt and binds the settled predecessor.
+
+The record protocol preserves all nine states and the exact allowed edge graph above.
+`no-lifecycle` is an outside-graph observation only for creation, reopen, and non-completed closure,
+not a tenth label. A self-state observation is a no-op; every unlisted source/target pair is denied.
+Producers never select lane, target, activation, transition, or merge authority. Before Issue #55's
+signed activation, records may describe only non-applied outcomes and no lifecycle, status, branch,
+pull-request, queue, or merge effect is permitted.

@@ -62,6 +62,28 @@ head. Restoring issue readiness does not restore those pull requests; their upda
 evidence must pass again. Readiness records are accepted only from the canonical GitHub Actions bot
 identity; copied or user-authored marker comments have no authority.
 
+ADR-0011 applies the same protected producer model to lifecycle handoff records. Authentication
+requires the exact built-in bot user, GitHub Actions App ID `15368`, expected protected workflow
+path, `refs/heads/dev`, workflow commit, run, attempt, job, result, canonical generation, current
+fence, predecessor chain, and a cryptographically verified post-publication GitHub-native
+attestation over an immutable anchor binding the provider comment ID, exact body digest, record
+digest, and protected writer run. An exact-name per-issue anchor detects an unreferenced missing
+suffix. Attested transition/read-back checkpoints bound the effect-capable live suffix to 15
+records, and effect-disabled cursor recovery handles deeper comment history. A login, marker,
+author association, context name, details URL, or event timing alone is never sufficient.
+
+Generation-request, producer-result, phase/fence-claim, and transition/read-back records use strict
+version-1 canonical bytes and domain-separated SHA-256 digests. The loader performs full-body
+parsing, bounded complete pagination, and stable double-reads. Deletion, edits, forks, cycles, gaps,
+conflicts, truncation, wrong producer/generation/fence, or unavailable evidence fail closed.
+Protected producers independently recompute the generation and evaluate only their owned predicate;
+they cannot choose lifecycle lane, target, activation, transition, or merge authority.
+
+Publication evidence uses the exact candidate commit's complete, non-truncated recursive Git tree
+and exact regular-file blob bytes, modes, object IDs, sizes, and SHA-256 digests. The pull-request
+files API is not complete tree authority. Candidate-set drift, non-regular entries, malformed blobs,
+changed rereads, or unavailable provider evidence fail closed.
+
 Zizmor's `dangerous-triggers` finding is dispositioned only for this one metadata workflow. The
 repository contract enforces its protected-`dev` checkout, fixed script, pinned actions,
 least-privilege permissions, absence of PR checkout or build commands, and exact branch filters. No
@@ -122,6 +144,16 @@ mismatched, incomplete, or ambiguous evidence remains `probe-only` or `disabled`
 or repository variable promotes it. The live harness derives each disposable `epic/**` target from
 its provider-assigned parent issue, uses a separate parent for stale-base concurrency, reads every
 prohibited target's actual tip, and records an absent `main` ref as denial without creating it.
+
+ADR-0011's record protocol is also inert before activation. It adds no account, installed App, PAT,
+broker, service, database, application/runtime dependency, or second credential. Its
+GitHub-maintained attestation transport is provider composition and must be full-SHA pinned under
+the refreshed #51 contract. Before Issue #55, it cannot produce an applied lifecycle, status,
+branch, pull-request, queue, or merge result. Issue #55 alone owns activation and disposable live
+proof; missing, stale, ambiguous, or wrong-producer record evidence cannot promote availability.
+The per-issue and repository-wide provider-budget groups use `queue: max`; a hard local request
+counter and fail-closed provider responses, not a racy remaining-quota read, protect the shared
+repository token boundary.
 
 This shared identity means GitHub attribution cannot distinguish an agent operation from a
 deliberate human action, and repository identity rules cannot technically constrain the credential
