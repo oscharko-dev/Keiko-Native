@@ -2,13 +2,14 @@
 
 ## Status
 
-Proposed, 2026-07-29. Decision issue #131 v6 selected this outcome. The record becomes accepted
+Proposed, 2026-07-29. Decision issue #131 v8 selected this outcome. The record becomes accepted
 only when an authorized maintainer manually merges its pull request to `dev`.
 
 This record narrowly amends ADR-0011's coordinator and producer authentication, invocation,
-recovery, and serialization topology. It does not change ADR-0011's version-1 record or auxiliary
-schemas, producer identities, coordinator ownership, lifecycle state graph, activation boundary,
-or the human-only `dev` merge rule.
+recovery, and serialization topology. It adds one ADR-0012-owned auxiliary identity for the
+existing recovery-settlement `authorized_request_identity` field. It does not change ADR-0011's
+version-1 record schemas, any existing auxiliary identity schema, producer identities, coordinator
+ownership, lifecycle state graph, activation boundary, or the human-only `dev` merge rule.
 
 ## Context
 
@@ -37,8 +38,10 @@ one protected run chain.
 Review of the first published ADR-0012 draft at PR #132 found three incomplete paths. It did not say
 how the coordinator starts generation-bound producers without dispatch, did not expose an
 authority-bearing forward-recovery request after removing caller dispatch, and excluded resolver
-provider reads from ADR-0011's repository-wide budget. Decision issue #131 v6 resolves those gaps
-without adding an identity or restoring Actions-write authority.
+provider reads from ADR-0011's repository-wide budget. A later exact-head review found that recovery
+did not reject a command edited before validation and required an unbounded history-wide
+cardinality proof. Decision issue #131 v8 resolves those gaps without adding an identity, exceeding
+ADR-0011's request ceilings, or restoring Actions-write authority.
 
 ## Decision
 
@@ -81,8 +84,8 @@ The caller's direct event allowlist is:
 | ------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | `issues`                        | `assigned`, `closed`, `edited`, `labeled`, `reopened`, `unassigned`, `unlabeled`                  | canonical event issue number                                  |
 | `pull_request_target`           | `opened`, `edited`, `reopened`, `synchronize`, `ready_for_review`, `converted_to_draft`, `closed` | canonical event pull request followed by a stable read        |
-| `issue_comment` (plain issue)   | `created`, `edited`, `deleted`                                                                    | canonical event issue number                                  |
-| `issue_comment` (pull request)  | `created`, `edited`, `deleted`                                                                    | canonical event pull request followed by a stable read        |
+| `issue_comment` (plain issue)   | `created`, `edited`, `deleted`                                                                    | canonical issue number and untrusted numeric comment ID       |
+| `issue_comment` (pull request)  | `created`, `edited`, `deleted`                                                                    | canonical pull request, comment ID, and stable read           |
 | `check_run` (external provider) | `completed`, `rerequested`                                                                        | exactly one associated pull request followed by a stable read |
 | `workflow_run`                  | `completed`                                                                                       | one closed source run and its exact locator facts             |
 | `schedule`                      | hourly at minute 17                                                                               | bounded stable enumeration of open issue locators             |
@@ -151,9 +154,15 @@ A direct-event resolver emits only:
 - repository;
 - canonical decimal issue number;
 - pull request number or explicit null;
+- recovery comment ID for `issue_comment`, otherwise explicit null;
 - source event kind;
 - source run ID and attempt or explicit null; and
 - the resolver's protected caller SHA.
+
+The recovery comment ID is an untrusted positive safe integer copied from the canonical event
+payload. It is not a comment body, actor, command conclusion, target, or authority fact. A missing
+ID on `issue_comment`, a non-null ID on another event, a non-canonical decimal encoding, zero,
+negative, fractional, or unsafe integer rejects the complete direct locator.
 
 The protected source-workflow locator uses domain
 `keiko-native.lifecycle-wake-locator`, schema version `1`, digest algorithm `sha-256`, and the
@@ -173,6 +182,8 @@ twice and must remain identical. The resolver rejects a missing, extra, repeated
 oversized, non-canonical, wrong-run, wrong-path, wrong-ref, wrong-SHA, or unstable locator. The
 artifact contains no issue body, pull-request body, comment, reason, credential, provider payload,
 requested state, lane, readiness result, producer result, activation value, or merge value.
+Source-workflow and scheduled locators always normalize `recovery_comment_id` to explicit null;
+only a direct canonical `issue_comment` event can carry it.
 
 This locator artifact is deliberately not attested and is not an ADR-0011 record. It only selects
 a concurrency key. Compromise or staleness can cause one bounded coordinator call for a canonical
@@ -241,20 +252,32 @@ to make a decision. Any staleness is resolved only by the complete read inside t
 
 ### Per-issue caller lock and reusable coordinator
 
-The resolver outputs only canonical positive safe decimal issue numbers. The caller creates one
-job per unique number with:
+The resolver outputs only canonical matrix items
+`{issue_number, recovery_comment_id-or-null}`. Items sort by issue number and then comment ID, and
+duplicates must be byte-identical before deduplication. A scheduled or source-workflow item always
+has a null comment ID. The caller creates one job per item with:
 
 ```yaml
 concurrency:
-  group: issue-lifecycle-${{ matrix.issue_number }}
+  group: issue-lifecycle-${{ matrix.locator.issue_number }}
   queue: max
 uses: ./.github/workflows/issue-lifecycle.yml
+with:
+  issue_number: ${{ matrix.locator.issue_number }}
+  recovery_comment_id: ${{ matrix.locator.recovery_comment_id || '' }}
 ```
 
 There is no `cancel-in-progress` key. GitHub acquires this job-level group before starting the
 reusable call and holds it until every called job completes. The called workflow has only
 `workflow_call`; it has no direct event, manual dispatch, workflow-level per-issue group, or path
 by which another caller can bypass this job.
+
+The coordinator's exact `workflow_call` locator inputs are required `issue_number` of type
+`number` and required `recovery_comment_id` of type `string`. The latter is either the empty string
+for explicit null or one canonical positive safe decimal integer. The coordinator rejects every
+other encoding before provider access. Neither input grants authority; the locked coordinator
+independently reloads all lifecycle, actor, comment, recovery-target, and record facts. No other
+caller input may select a recovery request.
 
 The calling job has no runner, checkout, action, shell, service, environment, secret, or sibling
 workflow call. Its exact permission ceiling is:
@@ -425,27 +448,78 @@ trailing whitespace, second line, omitted or alternate algorithm, uppercase hexa
 requested state, lane, conclusion, or free-form payload. The digest is the exact ADR-0011
 recovery-target identity.
 
-Only these current repository-maintainer principals may author the request:
+The implementation owns one protected repository allowlist constant shared by lifecycle recovery
+and the existing maintainer-bound governance guard. Its entries are exactly the two immutable
+numeric `User` identities frozen by accepted decision issue #131 v8. Each use additionally requires
+a live repository permission of `maintain` or `admin`. Implementations must import that one
+constant; copied numeric identities, mutable-login authorization, actor association, and displayed
+roles are denied. Public provider principal IDs are authorization configuration, not evidence
+payload: no email, private profile field, credential, or customer identity may be joined to or
+emitted with them.
 
-| Login      | Numeric user ID | Type   | Required live repository permission |
-| ---------- | --------------- | ------ | ----------------------------------- |
-| `Niko4417` | `159039192`     | `User` | `maintain` or `admin`               |
-| `oscharko` | `59687448`      | `User` | `maintain` or `admin`               |
+For `issue_comment`, the resolver emits only the canonical issue number and the event's positive
+safe-integer comment ID. Both values are untrusted locators. Inside the per-issue lock, the
+coordinator fetches that exact comment twice and requires both complete reads to agree on comment
+ID, exact NFC body bytes, `createdAt`, `updatedAt`, `lastEditedAt`, `editor`, `includesCreatedEdit`,
+author login, immutable numeric author ID, actor type, and live repository permission.
+`createdAt` must equal `updatedAt`, `lastEditedAt` and `editor` must be null, and
+`includesCreatedEdit` must be false. Those predicates reject a command edited before validation
+even when its current body matches exactly. The mutable login is retained only for attribution.
 
-The `issue_comment` event remains only a locator wake. Inside the per-issue lock, the coordinator
-enumerates current candidate recovery comments and accepts exactly one unconsumed command whose
-digest matches exactly one independently reconstructed ADR-0011 recovery target. Two complete
-stable reads must agree on comment ID, exact body bytes, `updated_at`, author login, numeric ID,
-type, live repository permission, orphan comment/body/record digest, last authenticated
-predecessor, and current record chain. The event payload, author association, displayed role,
-comment timing, or digest text alone grants no authority.
+One complete authentication read is exactly three provider requests:
 
-Zero or multiple commands or targets, a changed or deleted comment, wrong author or permission,
-already consumed request, target mismatch, unstable read, unavailable actor lookup, or any
-ADR-0011 recovery precondition produces no record or effect. A valid request creates exactly the
-next attempt, binds the recovery-target identity and settled predecessor through ADR-0011's
-existing version-1 request fields, and becomes a duplicate no-op after its authenticated recovery
-record is present.
+1. REST `GET /repos/{owner}/{repo}/issues/comments/{comment_id}` by the numeric database ID obtains
+   the comment's global GraphQL `node_id` and REST facts;
+2. one GraphQL `node(id: $node_id)` query requires an `IssueComment` whose database ID,
+   repository, issue number, body, author, creation/update timestamps, and edit fields agree with
+   the REST response; and
+3. one REST collaborator-permission request for the same stable author login verifies current
+   `maintain` or `admin` permission.
+
+The coordinator repeats that complete three-request route independently, so exact-comment
+authentication consumes six requests. The second REST response must return the same global node
+ID, and both GraphQL nodes and permission results must agree. Missing or changed node identity,
+resource association, actor, permission, or field fails closed.
+
+Recovery-command discovery and authentication reserve at most ten requests inside ADR-0011's
+existing 150-request recovery-mode counter: at most four GraphQL requests for two complete stable
+reads of the two-page normal fallback window, plus the exact six-request authentication above.
+The remaining 140 requests are reserved for ADR-0011's existing record-chain, target, orphan,
+provider, settlement-publication, and read-back verification. Direct-event recovery omits the
+fallback reads but does not expand any other allowance. Recovery never enters normal effect mode,
+no request is hidden from the counter, unused allowance is not transferred to another invocation,
+and the 151st total request produces no record or effect.
+
+ADR-0012 adds exactly one auxiliary identity to ADR-0011's exact domain-to-schema mapping:
+`authorized recovery request` maps only to the fixed domain
+`keiko-native.lifecycle-recovery-authorized-request`. Its version-1 schema fields, in order, are
+`schema_version:uint=1`, `repository_id:uint`, `issue_number:uint`, `comment_id:uint`,
+`command_body_sha256:sha256`, `comment_created_at:timestamp`, `author_id:uint`,
+`author_type:enum(User)`, and `recovery_target_identity:sha256`. Its SHA-256 preimage follows
+ADR-0011's existing auxiliary rule exactly: one top-level ADR-0004 canonical `record` node with
+`digest_domain`, schema version `1`, digest algorithm `sha-256`, and then the remaining schema
+fields in that order. All existing domain-to-schema mappings remain unchanged.
+
+The coordinator recomputes that identity only after the stable reads and then independently
+reconstructs the exact orphan comment/body/record digest, last authenticated predecessor, current
+authority, and recovery target required by ADR-0011. The event payload, comment ID, timing, digest
+text, or scheduling order alone grants no authority.
+
+At most one authenticated recovery record may consume a recovery-target identity. The new request
+binds the derived identity through ADR-0011's existing version-1
+`authorized_request_identity` field; no record schema changes. Duplicate or reordered commands
+serialize under the issue lock. The first valid settlement consumes the target, and every command
+for an already consumed target is a replay no-op regardless of provider order.
+
+The direct comment locator takes precedence and the coordinator considers only that candidate.
+Other wakes may inspect only ADR-0011's existing stable newest-first normal window of at most two
+100-comment pages. They process at most one eligible recovery candidate per invocation,
+deterministically selecting the lowest numeric comment ID. They never start history-wide or
+cursor-resumed recovery-command enumeration. If an event is lost and its command has moved outside
+the bounded window, an authorized maintainer posts a fresh never-edited command. A changed or
+deleted comment, wrong actor or permission, unstable read, malformed command, target mismatch,
+unavailable actor lookup, already consumed target, more than one attempted candidate, or any other
+ADR-0011 recovery-precondition failure produces no record or effect.
 
 ### Inert rollout
 
@@ -456,10 +530,12 @@ effect.
 
 Issue #51 must prove the exact source closure, zero Actions-write permission, locator rejection
 matrix, provider-budget-only resolver serialization, caller-held lock duration, nested producer
-inputs and authentication, provider-budget lock order, explicit recovery allowlist and rejection
-matrix, complete caller/coordinator/producer authentication, and disposable guarded-off GitHub
-behavior. Issue #55 must repeat the live proof after activation and cover all nine lifecycle states
-and the complete rejected-edge complement.
+inputs and authentication, provider-budget lock order, the single protected recovery allowlist,
+exact-comment edit predicates, authorized-request identity, at-most-once target consumption,
+duplicate and reordered replay behavior, bounded fallback selection, complete
+caller/coordinator/producer authentication, and disposable guarded-off GitHub behavior. Issue #55
+must repeat the live proof after activation and cover all nine lifecycle states and the complete
+rejected-edge complement.
 
 ## Alternatives
 
@@ -513,6 +589,10 @@ Complete caller/coordinator/producer workflow/run/job/ref/SHA verification, immu
 OIDC attestations distinguish the caller, reusable writer, and producer roles without another
 account.
 
+Recovery is bounded by exact-comment authentication and target idempotency, not by scanning all
+historical commands. This removes the infeasible request-bound/cardinality coupling while keeping
+duplicate commands harmless and preserving ADR-0011's version-1 records.
+
 There is no added account, App installation, PAT, secret, broker, database, hosted service, or
 human credential in automation. No agent receives `dev` merge, auto-merge, enqueue, push, update,
 administration, or bypass authority.
@@ -553,11 +633,15 @@ merge it, enable auto-merge, enqueue it, or use a human credential to bypass the
   [30393476770](https://github.com/oscharko-dev/Keiko-Native/actions/runs/30393476770)
 - PR #132 post-publication review
   [finding record](https://github.com/oscharko-dev/Keiko-Native/pull/132#issuecomment-5111921934)
+- PR #132 exact-head recovery [finding record][rr]
+- [GitHub GraphQL `IssueComment` fields][issue-comment]
 
 [artifacts]: https://docs.github.com/en/rest/actions/artifacts
 [concurrency]: https://docs.github.com/actions/using-jobs/using-concurrency
 [oidc]: https://docs.github.com/en/actions/reference/security/oidc
+[issue-comment]: https://docs.github.com/en/graphql/reference/objects#issuecomment
 [permissions]: https://docs.github.com/actions/using-jobs/assigning-permissions-to-jobs
+[rr]: https://github.com/oscharko-dev/Keiko-Native/pull/132#pullrequestreview-4803653313
 [reuse]: https://docs.github.com/actions/using-workflows/reusing-workflows
 [runs]: https://docs.github.com/en/rest/actions/workflow-runs
 [workflow-run]: https://docs.github.com/actions/using-workflows/events-that-trigger-workflows

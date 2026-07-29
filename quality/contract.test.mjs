@@ -2285,6 +2285,73 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   }
 });
 
+test("pins the protected lifecycle recovery wake decision", async () => {
+  const adr = (
+    await readFile(
+      join(
+        import.meta.dirname,
+        "..",
+        "docs/adr/ADR-0012-protected-lifecycle-wake-dispatch.md",
+      ),
+      "utf8",
+    )
+  ).replaceAll("\r\n", "\n");
+
+  assert.match(adr, /Decision issue #131 v8 selected this outcome/u);
+  assert.match(
+    adr,
+    /adds one ADR-0012-owned auxiliary identity[\s\S]{0,260}does not change ADR-0011's\s+version-1 record schemas/iu,
+  );
+  assert.match(
+    adr,
+    /recovery comment ID for `issue_comment`, otherwise explicit null/iu,
+  );
+  assert.match(
+    adr,
+    /recovery_comment_id:\s*\$\{\{\s*matrix\.locator\.recovery_comment_id \|\| ''\s*\}\}/u,
+  );
+  assert.match(
+    adr,
+    /required `recovery_comment_id` of type `string`[\s\S]{0,220}empty string[\s\S]{0,220}positive safe decimal integer/iu,
+  );
+
+  for (const predicate of [
+    "`createdAt` must equal `updatedAt`",
+    "`lastEditedAt` and `editor` must be null",
+    "`includesCreatedEdit` must be false",
+    "keiko-native.lifecycle-recovery-authorized-request",
+    "`command_body_sha256:sha256`",
+    "`recovery_target_identity:sha256`",
+  ])
+    assert.ok(adr.includes(predicate), predicate);
+
+  assert.match(
+    adr,
+    /REST `GET \/repos\/\{owner\}\/\{repo\}\/issues\/comments\/\{comment_id\}`[\s\S]{0,500}GraphQL `node\(id: \$node_id\)`[\s\S]{0,500}collaborator-permission/iu,
+  );
+  assert.match(
+    adr,
+    /authentication consumes six requests[\s\S]{0,500}at most ten requests[\s\S]{0,500}remaining 140 requests[\s\S]{0,500}151st total request/iu,
+  );
+  assert.match(
+    adr,
+    /At most one authenticated recovery record may consume a recovery-target identity[\s\S]{0,400}replay no-op/iu,
+  );
+  assert.match(
+    adr,
+    /at most two\s+100-comment pages[\s\S]{0,400}never start history-wide or\s+cursor-resumed recovery-command enumeration/iu,
+  );
+  assert.match(
+    adr,
+    /one protected repository allowlist constant[\s\S]{0,260}two immutable\s+numeric `User` identities/iu,
+  );
+  assert.doesNotMatch(adr, /159039192|59687448/u);
+  assert.match(
+    adr,
+    /This needs no workflow dispatch and no Actions-write\s+permission/iu,
+  );
+});
+
 async function fixtureRepository() {
   const root = await mkdtemp(join(tmpdir(), "keiko-native-quality-"));
   const files = [
