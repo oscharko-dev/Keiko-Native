@@ -1443,9 +1443,27 @@ mod tests {
     fn retired_process_group_refuses_every_late_signal() {
         let active = ActiveRuntime::default();
         *active.process_group.lock().expect("process-group state") = Some(i32::MAX);
+        retire_active_process_group(&active, i32::MAX - 1);
+        assert_eq!(
+            *active.process_group.lock().expect("process-group state"),
+            Some(i32::MAX)
+        );
         retire_active_process_group(&active, i32::MAX);
         assert!(!signal_active_process_group(&active, i32::MAX, SIGTERM));
         assert!(!signal_active_process_group(&active, i32::MAX, SIGKILL));
+
+        let poisoned = Arc::new(ActiveRuntime::default());
+        let poison_target = Arc::clone(&poisoned);
+        let _ = thread::spawn(move || {
+            let _guard = poison_target
+                .process_group
+                .lock()
+                .expect("process group before poisoning");
+            panic!("poison process group");
+        })
+        .join();
+        assert!(!signal_active_process_group(&poisoned, i32::MAX, SIGTERM));
+        retire_active_process_group(&poisoned, i32::MAX);
     }
 
     #[test]
@@ -1462,6 +1480,7 @@ mod tests {
             unavailable.check("unconfigured", None).state,
             RuntimeReadinessState::Unavailable
         );
+        unavailable.cancel_all();
 
         let fixture = Fixture::new();
         let unspawnable = RuntimeHost::for_test(
@@ -1630,6 +1649,54 @@ while :; do /bin/sleep 1; done
             started.elapsed()
         );
         assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
+    }
+
+    #[test]
+    fn already_expired_deadline_never_creates_runtime_work() {
+        let fixture = Fixture::new();
+        let host = fixture.scripted_host("#!/bin/sh\nexit 0\n");
+        let result = perform_check(
+            host.configuration.as_ref().expect("configuration"),
+            None,
+            &ActiveRuntime::default(),
+            &AtomicU64::new(0),
+            Instant::now() - Duration::from_millis(1),
+        );
+        assert_eq!(result.state, RuntimeReadinessState::TimedOut);
+        assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
+    }
+
+    #[test]
+    fn cleanup_escalates_then_retires_a_stubborn_process_group() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("trap '' TERM; printf 'ready\\n'; while :; do /bin/sleep 1; done")
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("stubborn process group");
+        let process_group = child.id() as i32;
+        let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+        let mut ready = String::new();
+        stdout.read_line(&mut ready).expect("readiness handshake");
+        assert_eq!(ready, "ready\n");
+
+        let active = ActiveRuntime::default();
+        *active.process_group.lock().expect("process-group state") = Some(process_group);
+        assert!(stop_process_group(
+            &mut child,
+            process_group,
+            &active,
+            Instant::now() + Duration::from_secs(1),
+        ));
+        assert_eq!(
+            *active.process_group.lock().expect("process-group state"),
+            None
+        );
+        assert!(!process_group_exists(process_group));
     }
 
     struct Fixture {
