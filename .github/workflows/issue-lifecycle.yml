@@ -3,27 +3,96 @@ name: Issue lifecycle
 on:
   issues:
     types: [assigned, closed, edited, labeled, reopened, unassigned, unlabeled]
+  workflow_dispatch:
+    inputs:
+      schema:
+        description: Versioned request schema
+        required: true
+        type: choice
+        options:
+          - keiko-native.issue-lifecycle-request/v1
+      issue_number:
+        description: Governed issue number
+        required: true
+        type: string
+      expected_source:
+        description: Exact sole lifecycle source
+        required: true
+        type: choice
+        options:
+          - "status: new"
+          - "status: triaged"
+          - "status: ready"
+          - "status: in progress"
+          - "status: pr open"
+          - "status: ready for human review"
+          - "status: blocked"
+          - "status: waiting for user"
+      requested_target:
+        description: Permitted requested lifecycle target
+        required: true
+        type: choice
+        options:
+          - "status: triaged"
+          - "status: ready"
+          - "status: blocked"
+          - "status: waiting for user"
+      request_identity:
+        description: Unique caller request identity
+        required: true
+        type: string
+      reason:
+        description: Required only for blocked or waiting requests
+        required: false
+        type: string
+      ordering_attestation:
+        description: confirmed for triage, otherwise not-applicable
+        required: true
+        type: choice
+        options:
+          - confirmed
+          - not-applicable
   workflow_call:
     inputs:
       issue_number:
         required: true
         type: string
-      pr_contract_result:
+      wake_event:
         required: true
         type: string
+      pull_request_number:
+        required: false
+        type: string
+      exact_head_sha:
+        required: false
+        type: string
+    outputs:
+      observation:
+        description: Sanitized authenticated lifecycle observation identity
+        value: ${{ jobs.write-record.outputs.observation }}
 
 permissions: {}
 
 concurrency:
   group: issue-lifecycle-${{ inputs.issue_number || github.event.issue.number }}
-  cancel-in-progress: false
+  queue: max
 
 jobs:
-  classify:
-    name: Classify inert lifecycle transition
+  evaluate:
+    name: Evaluate protected lifecycle request
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    concurrency:
+      group: issue-lifecycle-provider-budget
+      queue: max
+    outputs:
+      issue-number: ${{ steps.evaluate.outputs.issue-number }}
+      record-plan: ${{ steps.evaluate.outputs.record-plan }}
+      should-record: ${{ steps.evaluate.outputs.should-record }}
     permissions:
+      actions: read
+      attestations: read
+      checks: read
       contents: read
       issues: read
       pull-requests: read
@@ -39,9 +108,68 @@ jobs:
         with:
           node-version: "24.18.0"
           package-manager-cache: false
-      - name: Compute the inert lifecycle decision
+      - name: Evaluate current provider state without effects
+        id: evaluate
         env:
           GITHUB_TOKEN: ${{ github.token }}
           KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled
-          KEIKO_PR_CONTRACT_RESULT: ${{ inputs.pr_contract_result }}
+          KEIKO_ROUTED_EXACT_HEAD: ${{ inputs.exact_head_sha }}
+          KEIKO_ROUTED_ISSUE_NUMBER: ${{ inputs.issue_number }}
+          KEIKO_ROUTED_PULL_REQUEST: ${{ inputs.pull_request_number }}
+          KEIKO_ROUTED_WAKE_EVENT: ${{ inputs.wake_event }}
         run: node quality/issue-lifecycle-action.mjs
+
+  write-record:
+    name: Publish authenticated lifecycle record
+    needs: evaluate
+    if: ${{ needs.evaluate.outputs.should-record == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: issue-lifecycle-provider-budget
+      queue: max
+    outputs:
+      observation: ${{ steps.verify.outputs.observation }}
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+      issues: write
+    steps:
+      - name: Check out the protected governance contract
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: dev
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24.18.0"
+          package-manager-cache: false
+      - name: Publish and read back the canonical comment
+        id: prepare
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          KEIKO_LIFECYCLE_RECORD_PLAN: ${{ needs.evaluate.outputs.record-plan }}
+        run: node quality/lifecycle-record-writer.mjs prepare
+      - name: Upload immutable per-issue anchor
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: keiko-lifecycle-anchor-v1-issue-${{ needs.evaluate.outputs.issue-number }}
+          path: ${{ steps.prepare.outputs.anchor-path }}
+          if-no-files-found: error
+          retention-days: 90
+      - name: Attest exact lifecycle anchor identity
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-checksums: ${{ steps.prepare.outputs.subject-checksums }}
+          create-storage-record: true
+      - name: Verify stable comment, anchor, attestation, run, and job
+        id: verify
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          KEIKO_LIFECYCLE_ANCHOR_IDENTITY: ${{ steps.prepare.outputs.anchor-identity }}
+          KEIKO_LIFECYCLE_COMMENT_ID: ${{ steps.prepare.outputs.comment-id }}
+          KEIKO_LIFECYCLE_RECORD_PLAN: ${{ needs.evaluate.outputs.record-plan }}
+        run: node quality/lifecycle-record-writer.mjs verify

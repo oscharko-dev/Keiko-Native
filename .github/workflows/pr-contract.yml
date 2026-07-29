@@ -58,7 +58,7 @@ jobs:
     if: ${{ always() && needs.contract.outputs.issue-number != '' }}
     permissions:
       contents: read
-      issues: read
+      issues: write
       pull-requests: read
       statuses: read
     uses: ./.github/workflows/issue-lifecycle.yml

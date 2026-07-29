@@ -161,6 +161,15 @@ or repository variable promotes it.
 
 Record the issue, pull request, exact head, actor, result, and timestamp for each probe:
 
+Before activation, dispatch a version-1 lifecycle request against a disposable issue. Require a
+GitHub-Actions-authored, anchored, and attested `planned` transition/read-back record bound to the
+exact actor, source, target, request digest, protected run, and timestamp, and prove the issue's
+lifecycle label is unchanged. Replay the request identity, change its payload, use a stale source,
+omit the pause reason, and use an unauthorized actor; each case must fail closed without a
+lifecycle or branch effect. A copied, human-authored, malformed, unanchored, unattested, or
+raw-content observation has no replay or transition authority. The retained record contains no
+request reason, issue body, provider body, endpoint, or credential-shaped value.
+
 1. An incomplete template cannot retain `status: ready`; a complete template can, and receives a
    GitHub-Actions-authored readiness record.
 2. A copied or human-authored readiness marker has no authority.

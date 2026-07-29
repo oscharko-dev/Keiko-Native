@@ -42,6 +42,7 @@ const repositoryControlPlaneModules = Object.freeze([
   "quality/epic-merge-policy.mjs",
   "quality/epic-merge-policy-schema.mjs",
   "quality/epic-merge-store.mjs",
+  "quality/issue-lifecycle-request.mjs",
 ]);
 
 const requiredFiles = [
@@ -172,6 +173,9 @@ const issueReadinessMarkers = [
   "issues: write",
   "pull-requests: read",
   "statuses: write",
+  "group: issue-lifecycle-${{ github.event.issue.number }}",
+  "ref: dev",
+  "KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
   "node quality/issue-readiness-action.mjs",
 ];
 
@@ -187,23 +191,33 @@ const issueLifecycleTriggerTypes = [
 
 const issueLifecycleMarkers = [
   "name: Issue lifecycle",
+  "workflow_dispatch:",
   "workflow_call:",
+  "keiko-native.issue-lifecycle-request/v1",
+  "request_identity:",
+  "ordering_attestation:",
+  "description: Sanitized authenticated lifecycle observation identity",
   "group: issue-lifecycle-${{ inputs.issue_number || github.event.issue.number }}",
-  "cancel-in-progress: false",
+  "group: issue-lifecycle-provider-budget",
+  "queue: max",
   "ref: dev",
   "persist-credentials: false",
   "KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
-  "KEIKO_PR_CONTRACT_RESULT: ${{ inputs.pr_contract_result }}",
   "node quality/issue-lifecycle-action.mjs",
+  "node quality/lifecycle-record-writer.mjs prepare",
+  "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+  "actions/attest@a1948c3f048ba23858d222213b7c278aabede763",
+  "node quality/lifecycle-record-writer.mjs verify",
 ];
 
 const issueLifecyclePermissionMarkers = [
   "permissions: {}",
   "    permissions:",
+  "      actions: read",
+  "      attestations: write",
   "      contents: read",
-  "      issues: read",
-  "      pull-requests: read",
-  "      statuses: read",
+  "      id-token: write",
+  "      issues: write",
 ];
 
 const pullRequestContractMarkers = [
@@ -221,6 +235,7 @@ const pullRequestContractMarkers = [
   "ref: dev",
   "statuses: read",
   "statuses: write",
+  "issues: write",
   "KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
   "node quality/pr-contract-action.mjs",
   "uses: ./.github/workflows/issue-lifecycle.yml",
@@ -326,6 +341,9 @@ const epicMergeGuardStatusMarkers = [
 ];
 
 const activationRunbookMarkers = [
+  "dispatch a version-1 lifecycle request",
+  "planned` observation",
+  "without a lifecycle or branch effect",
   "## Pending contract-publication controls",
   "Contract publication remains disabled",
   "The `Contract publication` context is not enrolled as",
@@ -1695,9 +1713,22 @@ function issueLifecycleWorkflowFailures(workflow) {
   if (workflow.includes("pull_request_target"))
     failures.push("Issue lifecycle must not use pull_request_target.");
   const writePermissions = [...new Set(workflowWritePermissions(workflow))];
-  if (writePermissions.length > 0)
+  if (
+    JSON.stringify(writePermissions.toSorted()) !==
+    JSON.stringify(["attestations", "id-token", "issues"])
+  )
     failures.push(
-      `Issue lifecycle must not request write permissions: ${writePermissions.join(", ")}.`,
+      `Issue lifecycle write permissions drifted: ${writePermissions.join(", ")}.`,
+    );
+  if (workflow.includes("cancel-in-progress:"))
+    failures.push("Issue lifecycle must retain every queued request.");
+  const events = workflowEvents(workflow);
+  if (
+    JSON.stringify(events) !==
+    JSON.stringify(["issues", "workflow_dispatch", "workflow_call"])
+  )
+    failures.push(
+      `Issue lifecycle workflow event set drifted: ${events.join(", ")}.`,
     );
   return failures;
 }

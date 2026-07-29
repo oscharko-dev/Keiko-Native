@@ -26,6 +26,7 @@ const pausedLifecycleLabels = new Set([
   "status: waiting for user",
 ]);
 const githubRequest = githubRequestFor("keiko-native-issue-readiness");
+const lifecycleActivationModes = new Set(["disabled", "enabled"]);
 
 function labelNames(labels) {
   return (Array.isArray(labels) ? labels : []).map((label) =>
@@ -374,6 +375,12 @@ export async function runIssueReadinessAction({ event, now = new Date() }) {
   const repository = process.env.GITHUB_REPOSITORY;
   if (typeof repository !== "string" || !repository.includes("/"))
     throw new Error("GITHUB_REPOSITORY is missing or invalid.");
+  const lifecycleActivation =
+    process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION ?? "disabled";
+  if (!lifecycleActivationModes.has(lifecycleActivation))
+    throw new Error("KEIKO_ISSUE_LIFECYCLE_ACTIVATION is invalid.");
+  if (lifecycleActivation === "enabled")
+    return { outcome: "ignore", reason: "lifecycle_owner_enabled" };
   let issue = event.issue;
   if (issue?.pull_request !== undefined) return { outcome: "ignore" };
   if (event.action === "reopened") {

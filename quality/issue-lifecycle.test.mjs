@@ -58,6 +58,8 @@ function expectedPermittedRequests() {
   return new Set([
     pairKey("status: new", "status: triaged"),
     pairKey("status: triaged", "status: ready"),
+    pairKey("status: blocked", "status: ready"),
+    pairKey("status: waiting for user", "status: ready"),
     ...activeSources
       .filter((source) => source !== "status: blocked")
       .map((source) => pairKey(source, "status: blocked")),
@@ -69,7 +71,9 @@ function expectedPermittedRequests() {
 
 function validRequest(source, target) {
   const planningTarget =
-    target === "status: triaged" || target === "status: ready";
+    target === "status: triaged" ||
+    (target === "status: ready" &&
+      !["status: blocked", "status: waiting for user"].includes(source));
   return {
     actorRole: planningTarget ? "planner" : "implementer",
     blockingCondition: "dependency unavailable",

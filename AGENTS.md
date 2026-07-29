@@ -50,6 +50,13 @@ switch, that expanded lifecycle is inert: readiness is requested directly from `
 rejected or invalidated work returns to new, and `status: ready` with its exact matching accepted
 record remains the only executable state.
 
+The protected lifecycle dispatch is the only stable external transition-request interface.
+Callers provide its versioned request, exact expected source, permitted target, and unique request
+identity; protected code authenticates actor role and current repository evidence. Until #55
+activation it records only bounded sanitized `planned` observations and performs no lifecycle,
+status, closure, or branch effect. Agent skills and external orchestration remain callers and must
+not duplicate transition policy.
+
 The planning actor requests readiness by applying `status: ready`. The repository workflow keeps
 that label only after validating the contract and recording its version and fingerprint; otherwise
 it restores `status: new`. Only `status: ready` with a matching readiness record makes an epic or

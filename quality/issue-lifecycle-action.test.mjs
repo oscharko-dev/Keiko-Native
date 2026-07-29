@@ -12,6 +12,7 @@ import {
   runIssueLifecycleAction,
   runIssueLifecycleCli,
 } from "./issue-lifecycle-action.mjs";
+import { LIFECYCLE_REQUEST_SCHEMA } from "./issue-lifecycle-request.mjs";
 
 const issueBody = [
   "## Planning contract\n\n- Contract version: `v2`",
@@ -89,6 +90,12 @@ function requestMock(
       if (permission === "error") throw new Error("GitHub API failed with 503");
       return { permission };
     }
+    if (path.endsWith("/comments") && (options.method ?? "GET") === "POST")
+      return {
+        body: options.payload?.body,
+        id: 202,
+        user: { id: 41898282, login: "github-actions[bot]", type: "Bot" },
+      };
     if (path.includes("/comments?")) return comments;
     if (path.includes("/commits/") && path.endsWith("/status"))
       return {
@@ -185,7 +192,7 @@ async function actionOutcome(event, request) {
   return (await runIssueLifecycleAction({ event, request })).outcome;
 }
 
-test("workflow loads protected dev code with read-only credentials", async () => {
+test("workflow loads protected dev code with guarded least-privileged writes", async () => {
   const workflow = await readFile(
     ".github/workflows/issue-lifecycle.yml",
     "utf8",
@@ -195,17 +202,35 @@ test("workflow loads protected dev code with read-only credentials", async () =>
     /types: \[assigned, closed, edited, labeled, reopened, unassigned, unlabeled\]/u,
   );
   assert.match(workflow, /workflow_call:/u);
+  assert.match(workflow, /workflow_dispatch:/u);
+  assert.match(workflow, /keiko-native\.issue-lifecycle-request\/v1/u);
   assert.match(
     workflow,
     /group: issue-lifecycle-\$\{\{ inputs\.issue_number \|\| github\.event\.issue\.number \}\}/u,
   );
-  assert.match(workflow, /cancel-in-progress: false/u);
+  assert.match(workflow, /queue: max/u);
+  assert.doesNotMatch(workflow, /cancel-in-progress:/u);
+  assert.match(
+    workflow,
+    /group: issue-lifecycle-provider-budget[\s\S]{0,80}queue: max/u,
+  );
   assert.match(workflow, /ref: dev/u);
   assert.match(workflow, /persist-credentials: false/u);
+  assert.match(workflow, /actions: read/u);
+  assert.match(workflow, /attestations: write/u);
   assert.match(workflow, /contents: read/u);
-  assert.match(workflow, /statuses: read/u);
+  assert.match(workflow, /id-token: write/u);
+  assert.match(workflow, /issues: write/u);
+  assert.match(workflow, /actions\/attest@a1948c3f048ba23858d222213b7c278aabede763/u);
+  assert.match(workflow, /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/u);
   assert.doesNotMatch(workflow, /contents: write/u);
+  assert.doesNotMatch(workflow, /pull-requests: write/u);
+  assert.doesNotMatch(workflow, /statuses: write/u);
   assert.doesNotMatch(workflow, /pull_request_target/u);
+  assert.match(workflow, /KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled/u);
+  assert.match(workflow, /node quality\/issue-lifecycle-action\.mjs/u);
+  assert.match(workflow, /node quality\/lifecycle-record-writer\.mjs prepare/u);
+  assert.match(workflow, /node quality\/lifecycle-record-writer\.mjs verify/u);
 
   const pullRequestWorkflow = await readFile(
     ".github/workflows/pr-contract.yml",
@@ -235,6 +260,75 @@ test("workflow loads protected dev code with read-only credentials", async () =>
   );
   assert.match(pullRequestWorkflow, /closed/u);
   assert.match(pullRequestWorkflow, /statuses: read/u);
+  assert.match(pullRequestWorkflow, /issues: write/u);
+});
+
+test("authenticates dispatch ingress and records an inert planned observation", async (t) => {
+  const fixture = requestMock(t, {
+    issueLabels: ["type: task", "status: ready"],
+    permission: "write",
+  });
+  const event = {
+    inputs: {
+      expected_source: "status: ready",
+      issue_number: "27",
+      ordering_attestation: "not-applicable",
+      reason: "blocked by exact-head evidence",
+      request_identity: "request-27-0001",
+      requested_target: "status: blocked",
+      schema: LIFECYCLE_REQUEST_SCHEMA,
+    },
+    ref: "dev",
+    repository: { full_name: "keiko/Keiko-Native" },
+    sender: { login: "implementer" },
+  };
+  const result = await runIssueLifecycleAction({
+    dispatchContext: {
+      actor: "implementer",
+      protectedRef: "refs/heads/dev",
+      runAttempt: "1",
+      runId: "30350729504",
+    },
+    event,
+    now: new Date("2026-07-28T10:30:00Z"),
+    request: fixture.request,
+  });
+  assert.equal(result.outcome, "planned");
+  assert.equal(result.desiredState, "status: blocked");
+  assert.equal(result.observation.activation, "disabled");
+  assert.equal(result.observation.sourceState, "status: ready");
+  assert.equal(
+    fixture.calls.filter((call) => call.method === "POST").length,
+    1,
+  );
+  assert.ok(
+    fixture.calls.some(
+      (call) =>
+        call.path.endsWith("/issues/27/comments") &&
+        !call.payload.body.includes("blocked by exact-head evidence"),
+    ),
+  );
+
+  const unauthorized = requestMock(t, {
+    issueLabels: ["type: task", "status: ready"],
+    permission: "read",
+  });
+  const rejected = await runIssueLifecycleAction({
+    dispatchContext: {
+      actor: "implementer",
+      protectedRef: "refs/heads/dev",
+      runAttempt: "1",
+      runId: "30350729505",
+    },
+    event: {
+      ...event,
+      inputs: { ...event.inputs, request_identity: "request-27-0002" },
+    },
+    request: unauthorized.request,
+  });
+  assert.equal(rejected.outcome, "failed");
+  assert.deepEqual(rejected.failures, ["actor_not_authorized"]);
+  assert.equal(rejected.observation.outcome, "failed");
 });
 
 test("reloads trusted issue state and plans reconciliation with activation disabled", async (t) => {
@@ -263,7 +357,7 @@ test("applies and verifies reconciliation only when activation is enabled", asyn
   const wrappedRequest = async (path, options) => {
     if (path.includes("/issues/27") && reloaded) return issue(["status: new"]);
     const response = await request(path, options);
-    if (options?.method === "POST") reloaded = true;
+    if (options?.method === "PATCH") reloaded = true;
     return response;
   };
   process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = "enabled";
@@ -275,11 +369,14 @@ test("applies and verifies reconciliation only when activation is enabled", asyn
   });
 
   assert.equal(result.outcome, "applied");
-  assert.ok(calls.some((call) => call.method === "DELETE"));
-  assert.ok(calls.some((call) => call.method === "POST"));
+  assert.ok(calls.some((call) => call.method === "PATCH"));
+  assert.equal(
+    calls.some((call) => call.method === "DELETE"),
+    false,
+  );
 });
 
-test("treats an already-removed lifecycle label as an idempotent delete", async (t) => {
+test("replaces lifecycle labels atomically without a delete/add gap", async (t) => {
   let reloaded = false;
   const { calls, request } = requestMock(t, {
     failures: { DELETE: 404 },
@@ -294,26 +391,28 @@ test("treats an already-removed lifecycle label as an idempotent delete", async 
       if (path.includes("/issues/27") && reloaded)
         return issue(["status: new"]);
       const response = await request(path, options);
-      if (options?.method === "POST") reloaded = true;
+      if (options?.method === "PATCH") reloaded = true;
       return response;
     },
   });
 
   assert.equal(result.outcome, "applied");
-  assert.ok(calls.some((call) => call.method === "DELETE"));
-  assert.ok(calls.some((call) => call.method === "POST"));
+  assert.ok(calls.some((call) => call.method === "PATCH"));
+  assert.equal(
+    calls.some((call) => call.method === "DELETE"),
+    false,
+  );
 
   const forbidden = requestMock(t, {
-    failures: { DELETE: 403 },
+    failures: { PATCH: 403 },
     issueLabels: ["status: ready"],
   });
-  await assert.rejects(
-    runIssueLifecycleAction({
-      event: reopenedEvent,
-      request: forbidden.request,
-    }),
-    /403/u,
-  );
+  const forbiddenResult = await runIssueLifecycleAction({
+    event: reopenedEvent,
+    request: forbidden.request,
+  });
+  assert.equal(forbiddenResult.outcome, "failed");
+  assert.match(forbiddenResult.failures.join("\n"), /replacement failed/u);
 });
 
 test("fails closed on provider errors and malformed provider state", async (t) => {
@@ -396,12 +495,12 @@ test("ignores events without a lifecycle destination and fails bad read-back", a
       if (path.includes("/issues/27") && reloaded)
         return { ...issue(["status: blocked"]), node_id: "issue-node-42" };
       const response = await active.request(path, options);
-      if (options?.method === "POST") reloaded = true;
+      if (options?.method === "PATCH") reloaded = true;
       return response;
     },
   });
   assert.equal(result.outcome, "failed");
-  assert.match(result.failures.join("\n"), /does not equal the desired state/u);
+  assert.match(result.failures.join("\n"), /could not be restored/u);
 });
 
 test("plans validated assignment claim and release transitions", async (t) => {
@@ -696,10 +795,17 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
         issueLabels: ["status: ready for human review"],
         pullRequestDetails: {
           40: {
-            base: { ref: "dev" },
+            base: {
+              ref: "dev",
+              repo: { full_name: "keiko/Keiko-Native" },
+            },
             body: deliveryBody,
             draft: action === "converted_to_draft",
-            head: { ref: "codex/27-lifecycle", sha: "c".repeat(40) },
+            head: {
+              ref: "codex/27-lifecycle",
+              repo: { full_name: "keiko/Keiko-Native" },
+              sha: "c".repeat(40),
+            },
             node_id: "pr-node-40",
             number: 40,
             state: "open",
@@ -712,30 +818,34 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
         event: {
           action,
           pull_request: {
-            base: { ref: "dev" },
+            base: {
+              ref: "dev",
+              repo: { full_name: "keiko/Keiko-Native" },
+            },
             body: deliveryBody,
             draft: action === "converted_to_draft",
-            head: { ref: "codex/27-lifecycle", sha: "c".repeat(40) },
+            head: {
+              ref: "codex/27-lifecycle",
+              repo: { full_name: "keiko/Keiko-Native" },
+              sha: "c".repeat(40),
+            },
             node_id: "pr-node-40",
             number: 40,
             updated_at: "2026-07-17T12:00:01Z",
           },
+          sender: { login: "maintainer" },
         },
         request: async (path, options = {}) => {
-          if (path.endsWith("/issues/27") && mutationCount === 2)
+          if (path.endsWith("/issues/27") && mutationCount === 1)
             return issue(["status: pr open"]);
           const response = await failedContract.request(path, options);
-          if (
-            options.method === "DELETE" ||
-            (options.method === "POST" && path.endsWith("/labels"))
-          )
-            mutationCount += 1;
+          if (options.method === "PATCH") mutationCount += 1;
           return response;
         },
       });
       assert.equal(failedContractResult.outcome, "applied");
       assert.equal(failedContractResult.desiredState, "status: pr open");
-      assert.equal(mutationCount, 2);
+      assert.equal(mutationCount, 1);
     }
 
     for (const stale of [
@@ -975,7 +1085,7 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
     );
 
     const partialMutation = requestMock(t, {
-      failures: { POST: 422 },
+      failures: { PATCH: 422 },
       issueLabels: ["status: ready for human review"],
       pullRequestDetails: {
         40: {
@@ -990,25 +1100,26 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
         },
       },
     });
-    await assert.rejects(
-      runIssueLifecycleAction({
-        event: {
-          action: "synchronize",
-          pull_request: {
-            base: { ref: "dev" },
-            body: deliveryBody,
-            draft: false,
-            head: { ref: "codex/27-lifecycle", sha: "c".repeat(40) },
-            node_id: "pr-node-40",
-            number: 40,
-            updated_at: "2026-07-17T12:00:01Z",
-          },
+    const partialMutationResult = await runIssueLifecycleAction({
+      event: {
+        action: "synchronize",
+        pull_request: {
+          base: { ref: "dev" },
+          body: deliveryBody,
+          draft: false,
+          head: { ref: "codex/27-lifecycle", sha: "c".repeat(40) },
+          node_id: "pr-node-40",
+          number: 40,
+          updated_at: "2026-07-17T12:00:01Z",
         },
-        request: partialMutation.request,
-      }),
-      /failed with 422/u,
+      },
+      request: partialMutation.request,
+    });
+    assert.equal(partialMutationResult.outcome, "failed");
+    assert.equal(
+      partialMutation.calls.some((call) => call.method === "DELETE"),
+      false,
     );
-    assert.ok(partialMutation.calls.some((call) => call.method === "DELETE"));
   } finally {
     if (previousActivation === undefined)
       delete process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
@@ -1192,9 +1303,16 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
     "- Actual source branch: `codex/27-lifecycle`",
   ].join("\n");
   const mergedPullRequest = {
-    base: { ref: "dev" },
+    base: {
+      ref: "dev",
+      repo: { full_name: "keiko/Keiko-Native" },
+    },
     body: mergedBody,
-    head: { ref: "codex/27-lifecycle", sha: mergedHead },
+    head: {
+      ref: "codex/27-lifecycle",
+      repo: { full_name: "keiko/Keiko-Native" },
+      sha: mergedHead,
+    },
     merged: true,
     merged_by: { login: "Niko4417" },
     node_id: "pr-node-merged",
@@ -1206,6 +1324,7 @@ test("plans pull request lifecycle topology from trusted PR events", async (t) =
     action: "closed",
     prContract: { validated: true },
     pull_request: mergedPullRequest,
+    sender: { login: "Niko4417" },
   };
   const mergedClose = requestMock(t, {
     issueLabels: ["status: ready for human review"],
@@ -1897,7 +2016,7 @@ test("fails closed when provider issue identity is unavailable", async (t) => {
           return withoutIdentity;
         }
         const response = await missingReadbackIdentity.request(path, options);
-        if (options?.method === "POST") reloaded = true;
+        if (options?.method === "PATCH") reloaded = true;
         return response;
       },
     }),
@@ -2321,7 +2440,7 @@ test("covers alternate fail-closed and no-op lifecycle branches", async (t) => {
     assert.equal(enabledRawResult.outcome, "failed");
     assert.match(
       enabledRawResult.failures.join("\n"),
-      /explicit transition authority/u,
+      /unauthorized_raw_lifecycle_gesture_repaired/u,
     );
   } finally {
     if (previousRawActivation === undefined)
@@ -2393,7 +2512,7 @@ test("covers alternate fail-closed and no-op lifecycle branches", async (t) => {
       if (path.includes("/issues/27") && reloaded)
         return issue(["status: new"]);
       const response = await noop.request(path, options);
-      if (options?.method === "POST") reloaded = true;
+      if (options?.method === "PATCH") reloaded = true;
       return response;
     },
   });

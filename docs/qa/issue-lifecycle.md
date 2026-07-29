@@ -136,6 +136,32 @@ Direct label gestures for new, in progress, PR open, ready for human review, or 
 authority. Workflow-authored reconciliation mutations are effects carrying trusted transition
 identity, not user requests.
 
+## Protected Request Ingress
+
+The protected `Issue lifecycle` workflow is the versioned external request surface. A manual or
+optional orchestrator dispatch supplies schema `keiko-native.issue-lifecycle-request/v1`, the issue
+number, exact expected sole source, one permitted requested target, a unique bounded request
+identity, the required blocked/waiting reason, and the triage ordering attestation. The workflow
+authenticates the GitHub actor against current repository permission, reloads issue identity,
+labels, readiness, and provider label inventory, and serializes every request by issue. The caller
+cannot supply an actor role, a derived active state, an activation value, or a repository target.
+
+The stable result is the authenticated ADR-0011 transition/read-back record and its artifact-anchor
+identity. It contains only canonical digests, provider event identity, actor login, source,
+requested and desired state, activation class, closed outcome, and timestamp. The protected writer
+records the bounded canonical envelope for duplicate, replay, and conflicting-identity detection;
+it never records the request reason, issue body, provider response, endpoint, or credential
+material. Missing, stale, malformed, unauthorized, replayed, or conflicting requests fail closed.
+
+Until Issue #55's signed activation, the workflow keeps
+`KEIKO_ISSUE_LIFECYCLE_ACTIVATION=disabled`: it may append only authenticated non-applied ADR-0011
+records but does not add, remove, or replace a lifecycle label, close an issue, publish a lifecycle
+status, or perform any branch effect. Event-derived assignment and pull-request topology use the
+same owner and guard. The read-only wake-up router derives only the current pull request, linked
+issue, exact head, and event class before invoking the sole protected coordinator; it cannot select
+lane, target, activation, transition, producer, or record outcome. External skills and agents may
+invoke or observe this interface but never copy or override its transition policy.
+
 ## Preconditions And Recovery
 
 The lifecycle owner reloads the issue, comments, provider label inventory, current readiness, PR

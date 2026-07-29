@@ -63,6 +63,8 @@ function pair(source, target) {
 export const PERMITTED_LABEL_REQUESTS = Object.freeze([
   pair("status: new", "status: triaged"),
   pair("status: triaged", "status: ready"),
+  pair("status: blocked", "status: ready"),
+  pair("status: waiting for user", "status: ready"),
   ...activeRequestSources
     .filter((source) => source !== "status: blocked")
     .map((source) => pair(source, "status: blocked")),
@@ -150,7 +152,12 @@ function hasReason(value) {
   return typeof value === "string" && value.trim() !== "";
 }
 
-function roleAllowed(target, actorRole) {
+function roleAllowed(source, target, actorRole) {
+  if (
+    target === "status: ready" &&
+    ["status: blocked", "status: waiting for user"].includes(source)
+  )
+    return deliveryActorRoles.has(actorRole);
   if (target === "status: triaged" || target === "status: ready")
     return planningActorRoles.has(actorRole);
   return deliveryActorRoles.has(actorRole);
@@ -187,7 +194,9 @@ export function validateTransitionRequest(input) {
   const requestKey = `${input.requestedSource}->${input.requestedTarget}`;
   if (!permittedRequestKeys.has(requestKey))
     return failure(["The source and requested-target pair is not permitted."]);
-  if (!roleAllowed(input.requestedTarget, input.actorRole))
+  if (
+    !roleAllowed(input.requestedSource, input.requestedTarget, input.actorRole)
+  )
     return failure(["The actor role is not authorized for this request."]);
 
   const reasonResult = reasonFailures(input);

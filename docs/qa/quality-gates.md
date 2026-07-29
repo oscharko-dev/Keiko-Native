@@ -92,6 +92,16 @@ and exact regular-file blob bytes, modes, object IDs, sizes, and SHA-256 digests
 files API is not complete tree authority. Candidate-set drift, non-regular entries, malformed blobs,
 changed rereads, or unavailable provider evidence fail closed.
 
+Lifecycle requests use the protected workflow-dispatch schema
+`keiko-native.issue-lifecycle-request/v1`; external tools are callers, not policy owners. The
+workflow authenticates the current actor, exact sole source, requested target, current readiness,
+request identity, reason class, provider event, and complete label inventory. It serializes by
+issue and publishes the exact authenticated ADR-0011 transition/read-back plus artifact-anchor
+identity as its bounded observation. Digests provide replay/conflict evidence without retaining
+the request reason, issue body, provider payload, endpoint, or credential material. Before signed
+Issue #55 activation, the exact workflow remains guarded `disabled`: only non-applied records are
+permitted, while lifecycle/status writes, closure, and branch effects remain prohibited.
+
 Zizmor's `dangerous-triggers` finding is dispositioned only for this one metadata workflow. The
 repository contract enforces its protected-`dev` checkout, fixed script, pinned actions,
 least-privilege permissions, absence of PR checkout or build commands, and exact branch filters. No

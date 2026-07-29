@@ -194,6 +194,7 @@ const repositoryControlPlaneModules = Object.freeze([
   "quality/epic-merge-policy.mjs",
   "quality/epic-merge-policy-schema.mjs",
   "quality/epic-merge-store.mjs",
+  "quality/issue-lifecycle-request.mjs",
 ]);
 
 const coverageScript = canonicalCoverageCommand;
@@ -2620,6 +2621,7 @@ async function fixtureRepository() {
     [
       "# Repository activation checklist",
       lifecycleList(),
+      "Before activation, dispatch a version-1 lifecycle request and require a `planned` observation without a lifecycle or branch effect.",
       "## Pending contract-publication controls",
       "Contract publication remains disabled until the human activation probes pass.",
       "The `Contract publication` context is not enrolled as required.",
@@ -2713,15 +2715,10 @@ async function fixtureRepository() {
   }
   await writeFile(
     join(root, ".github/workflows/issue-readiness.yml"),
-    [
-      "name: Issue readiness",
-      "types: [closed, edited, labeled, reopened, unlabeled]",
-      "name: Validate implementation readiness",
-      "issues: write",
-      "pull-requests: read",
-      "statuses: write",
-      "node quality/issue-readiness-action.mjs",
-    ].join("\n"),
+    await readFile(
+      join(import.meta.dirname, "../.github/workflows/issue-readiness.yml"),
+      "utf8",
+    ),
   );
   await writeFile(
     join(root, ".github/workflows/contract-publication.yml"),
@@ -2829,37 +2826,10 @@ async function fixtureRepository() {
   );
   await writeFile(
     join(root, ".github/workflows/issue-lifecycle.yml"),
-    [
-      "name: Issue lifecycle",
-      "on:",
-      "  issues:",
-      "    types: [assigned, closed, edited, labeled, reopened, unassigned, unlabeled]",
-      "  workflow_call:",
-      "    inputs:",
-      "      issue_number:",
-      "      pr_contract_result:",
-      "permissions: {}",
-      "concurrency:",
-      "  group: issue-lifecycle-${{ inputs.issue_number || github.event.issue.number }}",
-      "  cancel-in-progress: false",
-      "jobs:",
-      "  classify:",
-      "    permissions:",
-      "      contents: read",
-      "      issues: read",
-      "      pull-requests: read",
-      "      statuses: read",
-      "    steps:",
-      "      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "        with:",
-      "          persist-credentials: false",
-      "          ref: dev",
-      "      - name: Compute the inert lifecycle decision",
-      "        env:",
-      "          KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
-      "          KEIKO_PR_CONTRACT_RESULT: ${{ inputs.pr_contract_result }}",
-      "        run: node quality/issue-lifecycle-action.mjs",
-    ].join("\n"),
+    await readFile(
+      join(import.meta.dirname, "../.github/workflows/issue-lifecycle.yml"),
+      "utf8",
+    ),
   );
   await writeFile(
     join(root, ".github/workflows/pr-contract.yml"),
@@ -2877,6 +2847,7 @@ async function fixtureRepository() {
       "ref: dev",
       "statuses: read",
       "statuses: write",
+      "issues: write",
       "  KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
       "node quality/pr-contract-action.mjs",
       "uses: ./.github/workflows/issue-lifecycle.yml",
@@ -3633,17 +3604,17 @@ test("fails closed when lifecycle workflow permissions drift", async () => {
     const workflow = await readFile(workflowPath, "utf8");
     await writeFile(
       workflowPath,
-      workflow.replace("      issues: read", "      issues: write"),
+      workflow.replace("      issues: write", "      issues: read"),
     );
     const result = await validateRepository(root);
     const failures = result.failures.join("\n");
     assert.match(
       failures,
-      /Issue lifecycle workflow permission drift, missing marker:       issues: read/u,
+      /Issue lifecycle workflow permission drift, missing marker:       issues: write/u,
     );
     assert.match(
       failures,
-      /Issue lifecycle must not request write permissions: issues/u,
+      /Issue lifecycle write permissions drifted:/u,
     );
   } finally {
     await rm(root, { force: true, recursive: true });
