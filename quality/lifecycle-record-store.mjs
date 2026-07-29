@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { createHash } from "node:crypto";
 
 import { verifyLifecycleRecordTuple } from "./lifecycle-record-auth.mjs";
 import {
@@ -96,14 +97,27 @@ function assertArtifactInventory(inventory, issueNumber) {
   }
 }
 
-function parseMarkedComments(comments, parseEnvelope) {
-  return comments.filter(marked).map((comment) => {
+function parseMarkedComments(comments, parseEnvelope, ignoredOrphan) {
+  let ignored = false;
+  const records = comments.filter(marked).flatMap((comment) => {
+    if (comment.id === ignoredOrphan?.commentId) {
+      const bodyDigest = createHash("sha256")
+        .update(Buffer.from(comment.body, "utf8"))
+        .digest("hex");
+      if (bodyDigest !== ignoredOrphan.bodySha256)
+        fail("ignored-orphan-body-mismatch");
+      ignored = true;
+      return [];
+    }
     try {
-      return { comment, parsed: parseEnvelope(comment.body) };
+      return [{ comment, parsed: parseEnvelope(comment.body) }];
     } catch {
       fail("lifecycle-comment-malformed");
     }
   });
+  if (ignoredOrphan !== undefined && !ignored)
+    fail("ignored-orphan-unavailable");
+  return records;
 }
 
 function reconcileInventory(markedComments, artifacts, complete) {
@@ -132,7 +146,11 @@ async function loadSnapshot(input) {
     }),
   );
   assertArtifactInventory(inventory, input.issueNumber);
-  const records = parseMarkedComments(timeline.comments, input.parseEnvelope);
+  const records = parseMarkedComments(
+    timeline.comments,
+    input.parseEnvelope,
+    input.ignoredOrphan,
+  );
   const state = reconcileInventory(records, inventory.items, timeline.complete);
   return { timeline, inventory, records, state };
 }
@@ -158,6 +176,7 @@ export async function readStableLifecycleSnapshot({
   mode = "normal",
   budget = createLifecycleProviderBudget(mode),
   parseEnvelope = parseRecordEnvelope,
+  ignoredOrphan,
 }) {
   const input = {
     provider,
@@ -166,6 +185,7 @@ export async function readStableLifecycleSnapshot({
     mode,
     budget,
     parseEnvelope,
+    ignoredOrphan,
   };
   const first = await loadSnapshot(input);
   const second = await loadSnapshot(input);

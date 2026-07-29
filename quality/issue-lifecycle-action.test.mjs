@@ -197,17 +197,9 @@ test("workflow loads protected dev code with guarded least-privileged writes", a
     ".github/workflows/issue-lifecycle.yml",
     "utf8",
   );
-  assert.match(
-    workflow,
-    /types: \[assigned, closed, edited, labeled, reopened, unassigned, unlabeled\]/u,
-  );
   assert.match(workflow, /workflow_call:/u);
-  assert.match(workflow, /workflow_dispatch:/u);
-  assert.match(workflow, /keiko-native\.issue-lifecycle-request\/v1/u);
-  assert.match(
-    workflow,
-    /group: issue-lifecycle-\$\{\{ inputs\.issue_number \|\| github\.event\.issue\.number \}\}/u,
-  );
+  assert.match(workflow, /issue_number:[\s\S]{0,80}type: number/u);
+  assert.match(workflow, /recovery_comment_id:[\s\S]{0,80}type: string/u);
   assert.match(workflow, /queue: max/u);
   assert.doesNotMatch(workflow, /cancel-in-progress:/u);
   assert.match(
@@ -221,14 +213,21 @@ test("workflow loads protected dev code with guarded least-privileged writes", a
   assert.match(workflow, /contents: read/u);
   assert.match(workflow, /id-token: write/u);
   assert.match(workflow, /issues: write/u);
-  assert.match(workflow, /actions\/attest@a1948c3f048ba23858d222213b7c278aabede763/u);
-  assert.match(workflow, /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/u);
+  assert.match(workflow, /statuses: write/u);
+  assert.match(
+    workflow,
+    /actions\/attest@a1948c3f048ba23858d222213b7c278aabede763/u,
+  );
+  assert.match(
+    workflow,
+    /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/u,
+  );
   assert.doesNotMatch(workflow, /contents: write/u);
   assert.doesNotMatch(workflow, /pull-requests: write/u);
-  assert.doesNotMatch(workflow, /statuses: write/u);
   assert.doesNotMatch(workflow, /pull_request_target/u);
+  assert.doesNotMatch(workflow, /workflow_dispatch:/u);
   assert.match(workflow, /KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled/u);
-  assert.match(workflow, /node quality\/issue-lifecycle-action\.mjs/u);
+  assert.match(workflow, /node quality\/lifecycle-coordinator-action\.mjs/u);
   assert.match(workflow, /node quality\/lifecycle-record-writer\.mjs prepare/u);
   assert.match(workflow, /node quality\/lifecycle-record-writer\.mjs verify/u);
 
@@ -242,24 +241,20 @@ test("workflow loads protected dev code with guarded least-privileged writes", a
     pullRequestWorkflow,
     /KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled/u,
   );
+  assert.match(pullRequestWorkflow, /workflow_call:/u);
+  assert.match(pullRequestWorkflow, /schema_version:/u);
+  assert.match(pullRequestWorkflow, /generation_bytes_base64:/u);
+  assert.match(pullRequestWorkflow, /expected_producer:/u);
   assert.match(
+    pullRequestWorkflow,
+    /node quality\/lifecycle-producer-action\.mjs/u,
+  );
+  assert.doesNotMatch(
     pullRequestWorkflow,
     /uses: \.\/\.github\/workflows\/issue-lifecycle\.yml/u,
   );
-  assert.match(
-    pullRequestWorkflow,
-    /issue_number: \$\{\{ needs\.contract\.outputs\.issue-number \}\}/u,
-  );
-  assert.match(
-    pullRequestWorkflow,
-    /pr_contract_result: \$\{\{ needs\.contract\.result \}\}/u,
-  );
-  assert.match(
-    pullRequestWorkflow,
-    /if: \$\{\{ always\(\) && needs\.contract\.outputs\.issue-number != '' \}\}/u,
-  );
   assert.match(pullRequestWorkflow, /closed/u);
-  assert.match(pullRequestWorkflow, /statuses: read/u);
+  assert.match(pullRequestWorkflow, /statuses: write/u);
   assert.match(pullRequestWorkflow, /issues: write/u);
 });
 

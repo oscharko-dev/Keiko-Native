@@ -68,7 +68,9 @@ export const governedWorkflowJobSteps = Object.freeze({
       "          tar -xzf actionlint.tar.gz actionlint",
       "          chmod +x actionlint",
     ),
-    run("./actionlint -color .github/workflows/*.yml"),
+    run(
+      './actionlint -color -ignore \'unexpected key "queue" for "concurrency" section\' .github/workflows/*.yml',
+    ),
   ),
   "build-scan-sbom-smoke": sequence(
     checkout,

@@ -5,6 +5,7 @@ import {
   EPIC_MERGE_REPOSITORY,
   isEpicMergeCommit,
 } from "./epic-merge-policy.mjs";
+import { governanceMaintainerByLogin } from "./governance-maintainers.mjs";
 
 const actor = (value) =>
   typeof value === "string" &&
@@ -14,11 +15,9 @@ const operationIdentity = (value) =>
 const claimIdentity = (value) =>
   typeof value === "string" && /^clm_[0-9a-f]{64}$/u.test(value);
 const reconciliationKeys = ["actor", "operationId", "repository"];
-const maintainers = new Set(["niko4417", "oscharko"]);
 const maintainerLogin = (value) => {
   if (!actor(value)) return undefined;
-  const login = value.toLowerCase();
-  return maintainers.has(login) ? login : undefined;
+  return governanceMaintainerByLogin(value)?.login.toLowerCase();
 };
 
 function exactKeys(value, keys) {

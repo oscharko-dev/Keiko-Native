@@ -11,7 +11,7 @@ import {
 
 test("enforces separate normal and recovery hard ceilings", () => {
   for (const [mode, limit] of [
-    ["normal", 200],
+    ["normal", 136],
     ["recovery", 150],
   ]) {
     const budget = createLifecycleProviderBudget(mode);

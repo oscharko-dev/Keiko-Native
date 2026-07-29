@@ -42,7 +42,18 @@ const repositoryControlPlaneModules = Object.freeze([
   "quality/epic-merge-policy.mjs",
   "quality/epic-merge-policy-schema.mjs",
   "quality/epic-merge-store.mjs",
+  "quality/governance-maintainers.mjs",
   "quality/issue-lifecycle-request.mjs",
+  "quality/lifecycle-coordinator-action.mjs",
+  "quality/lifecycle-coordinator.mjs",
+  "quality/lifecycle-github-provider.mjs",
+  "quality/lifecycle-producer-action.mjs",
+  "quality/lifecycle-producer.mjs",
+  "quality/lifecycle-producer-wire.mjs",
+  "quality/lifecycle-wake-locator-writer.mjs",
+  "quality/lifecycle-wake.mjs",
+  "quality/lifecycle-wakeup-router.mjs",
+  "quality/single-file-zip.mjs",
 ]);
 
 const requiredFiles = [
@@ -64,6 +75,7 @@ const requiredFiles = [
   ".github/workflows/epic-merge-guard-status.yml",
   ".github/workflows/issue-lifecycle.yml",
   ".github/workflows/issue-readiness.yml",
+  ".github/workflows/lifecycle-wakeup.yml",
   ".github/workflows/merge-group.yml",
   ".github/workflows/internal-release.yml",
   ".github/workflows/mutation-security.yml",
@@ -179,35 +191,32 @@ const issueReadinessMarkers = [
   "node quality/issue-readiness-action.mjs",
 ];
 
-const issueLifecycleTriggerTypes = [
-  "assigned",
-  "closed",
-  "edited",
-  "labeled",
-  "reopened",
-  "unassigned",
-  "unlabeled",
-];
-
 const issueLifecycleMarkers = [
   "name: Issue lifecycle",
-  "workflow_dispatch:",
   "workflow_call:",
-  "keiko-native.issue-lifecycle-request/v1",
-  "request_identity:",
-  "ordering_attestation:",
+  "issue_number:",
+  "type: number",
+  "recovery_comment_id:",
+  "type: string",
   "description: Sanitized authenticated lifecycle observation identity",
-  "group: issue-lifecycle-${{ inputs.issue_number || github.event.issue.number }}",
   "group: issue-lifecycle-provider-budget",
   "queue: max",
   "ref: dev",
   "persist-credentials: false",
   "KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
-  "node quality/issue-lifecycle-action.mjs",
+  "node quality/lifecycle-coordinator-action.mjs",
   "node quality/lifecycle-record-writer.mjs prepare",
   "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
   "actions/attest@a1948c3f048ba23858d222213b7c278aabede763",
   "node quality/lifecycle-record-writer.mjs verify",
+  "uses: ./.github/workflows/pr-contract.yml",
+  "uses: ./.github/workflows/contract-publication.yml",
+  'schema_version: "1"',
+  'producer_contract_version: "1"',
+  "generation_bytes_base64:",
+  "expected_producer: issue-contract-current",
+  "expected_producer: pr-contract",
+  "expected_producer: contract-publication",
 ];
 
 const issueLifecyclePermissionMarkers = [
@@ -218,6 +227,7 @@ const issueLifecyclePermissionMarkers = [
   "      contents: read",
   "      id-token: write",
   "      issues: write",
+  "      statuses: write",
 ];
 
 const pullRequestContractMarkers = [
@@ -233,15 +243,42 @@ const pullRequestContractMarkers = [
   "name: Evaluate trusted PR metadata",
   "issue-number: ${{ steps.contract.outputs.issue-number }}",
   "ref: dev",
-  "statuses: read",
   "statuses: write",
   "issues: write",
   "KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
   "node quality/pr-contract-action.mjs",
+  "workflow_call:",
+  "schema_version:",
+  "producer_contract_version:",
+  "generation_bytes_base64:",
+  "expected_producer:",
+  "node quality/lifecycle-producer-action.mjs",
+  "name: keiko-lifecycle-wake-locator-v1",
+];
+
+const lifecycleWakeupMarkers = [
+  "name: Lifecycle wake-up",
+  "issues:",
+  "pull_request_target:",
+  "issue_comment:",
+  "check_run:",
+  "workflow_run:",
+  "schedule:",
+  'cron: "17 * * * *"',
+  "resolve-issue:",
+  "resolve-pull-request:",
+  "resolve-governance:",
+  "resolve-evidence:",
+  "resolve-schedule:",
+  "group: issue-lifecycle-provider-budget",
+  "group: issue-lifecycle-${{ matrix.locator.issue_number }}",
   "uses: ./.github/workflows/issue-lifecycle.yml",
-  "always() && needs.contract.outputs.issue-number != ''",
-  "issue_number: ${{ needs.contract.outputs.issue-number }}",
-  "pr_contract_result: ${{ needs.contract.result }}",
+  "issue_number: ${{ matrix.locator.issue_number }}",
+  "recovery_comment_id: ${{ matrix.locator.recovery_comment_id }}",
+  'ACTIONS_RUNTIME_TOKEN: ""',
+  'ACTIONS_RUNTIME_URL: ""',
+  'ACTIONS_RESULTS_URL: ""',
+  "node quality/lifecycle-wakeup-router.mjs",
 ];
 
 const canonicalLifecycleStates = Object.freeze([
@@ -267,6 +304,11 @@ const lifecycleCoverageIncludes = [
   "quality/issue-lifecycle.mjs",
   "quality/issue-lifecycle-readiness.mjs",
   "quality/issue-lifecycle-action.mjs",
+  "quality/lifecycle-producer-action.mjs",
+  "quality/lifecycle-producer-wire.mjs",
+  "quality/lifecycle-wake-locator-writer.mjs",
+  "quality/lifecycle-wake.mjs",
+  "quality/lifecycle-wakeup-router.mjs",
 ];
 
 const repositoryControlPlaneCoverageIncludes = repositoryControlPlaneModules;
@@ -295,7 +337,7 @@ const inertWorkflowMarkers = [
 const contractPublicationWorkflowMarkers = [
   "name: Contract publication (inert)",
   "workflow_dispatch:",
-  "if: ${{ vars.KEIKO_CONTRACT_PUBLICATION_ACTIVATION == 'enabled' }}",
+  "if: ${{ github.event_name == 'workflow_dispatch' && vars.KEIKO_CONTRACT_PUBLICATION_ACTIVATION == 'enabled' }}",
   "KEIKO_CONTRACT_PUBLICATION_ACTIVATION: disabled",
   "node --check quality/publication-contract.mjs",
   "node --check quality/lifecycle-handoff-publication.mjs",
@@ -341,8 +383,8 @@ const epicMergeGuardStatusMarkers = [
 ];
 
 const activationRunbookMarkers = [
-  "dispatch a version-1 lifecycle request",
-  "planned` observation",
+  "create an accepted event on a disposable issue",
+  "`planned` transition/read-back records",
   "without a lifecycle or branch effect",
   "## Pending contract-publication controls",
   "Contract publication remains disabled",
@@ -1703,32 +1745,68 @@ function issueLifecycleWorkflowFailures(workflow) {
           `Issue lifecycle workflow permission drift, missing marker: ${marker}.`,
       ),
   );
-  const triggerTypes = bracketList("types", workflow);
-  if (
-    JSON.stringify(triggerTypes) !== JSON.stringify(issueLifecycleTriggerTypes)
-  )
-    failures.push(
-      `Issue lifecycle workflow trigger types drifted: ${triggerTypes.join(", ")}.`,
-    );
-  if (workflow.includes("pull_request_target"))
-    failures.push("Issue lifecycle must not use pull_request_target.");
   const writePermissions = [...new Set(workflowWritePermissions(workflow))];
   if (
     JSON.stringify(writePermissions.toSorted()) !==
-    JSON.stringify(["attestations", "id-token", "issues"])
+    JSON.stringify(["attestations", "id-token", "issues", "statuses"])
   )
     failures.push(
       `Issue lifecycle write permissions drifted: ${writePermissions.join(", ")}.`,
     );
-  if (workflow.includes("cancel-in-progress:"))
-    failures.push("Issue lifecycle must retain every queued request.");
+  for (const forbidden of [
+    "\n  issues:",
+    "\n  pull_request_target:",
+    "\n  workflow_dispatch:",
+    "\n  repository_dispatch:",
+    "cancel-in-progress:",
+    "actions: write",
+  ])
+    if (workflow.includes(forbidden))
+      failures.push(`Issue lifecycle contains forbidden marker: ${forbidden}.`);
   const events = workflowEvents(workflow);
-  if (
-    JSON.stringify(events) !==
-    JSON.stringify(["issues", "workflow_dispatch", "workflow_call"])
-  )
+  if (JSON.stringify(events) !== JSON.stringify(["workflow_call"]))
     failures.push(
       `Issue lifecycle workflow event set drifted: ${events.join(", ")}.`,
+    );
+  return failures;
+}
+
+function lifecycleWakeupWorkflowFailures(workflow) {
+  const failures = lifecycleWakeupMarkers
+    .filter((marker) => !workflow.includes(marker))
+    .map(
+      (marker) => `Lifecycle wake-up workflow is missing marker: ${marker}.`,
+    );
+  const events = workflowEvents(workflow);
+  const expected = [
+    "issues",
+    "pull_request_target",
+    "issue_comment",
+    "check_run",
+    "workflow_run",
+    "schedule",
+  ];
+  if (JSON.stringify(events) !== JSON.stringify(expected))
+    failures.push(`Lifecycle wake-up event set drifted: ${events.join(", ")}.`);
+  for (const forbidden of [
+    "actions: write",
+    "workflow_dispatch:",
+    "repository_dispatch:",
+    "pull_request_review:",
+    "pull_request_review_comment:",
+    "actions/upload-artifact",
+  ])
+    if (workflow.includes(forbidden))
+      failures.push(
+        `Lifecycle wake-up contains forbidden marker: ${forbidden}.`,
+      );
+  const writePermissions = [...new Set(workflowWritePermissions(workflow))];
+  if (
+    JSON.stringify(writePermissions.toSorted()) !==
+    JSON.stringify(["attestations", "id-token", "issues", "statuses"])
+  )
+    failures.push(
+      `Lifecycle wake-up write permissions drifted: ${writePermissions.join(", ")}.`,
     );
   return failures;
 }
@@ -1868,16 +1946,116 @@ function inertControlWorkflowFailures(
 }
 
 function contractPublicationWorkflowFailures(workflow) {
-  return inertControlWorkflowFailures("Contract publication", workflow, {
-    commands: [
+  const markers = [
+    ...contractPublicationWorkflowMarkers,
+    "workflow_call:",
+    "schema_version:",
+    "producer_contract_version:",
+    "generation_bytes_base64:",
+    "expected_producer:",
+    "node quality/lifecycle-producer-action.mjs",
+    "name: keiko-lifecycle-wake-locator-v1",
+  ];
+  const failures = markers
+    .filter((marker) => !workflow.includes(marker))
+    .map(
+      (marker) => `Contract publication workflow is missing marker: ${marker}.`,
+    );
+  if (
+    JSON.stringify(workflowEvents(workflow)) !==
+    JSON.stringify(["workflow_dispatch", "workflow_call"])
+  )
+    failures.push("Contract publication workflow event set drifted.");
+  if (workflow.includes("actions: write"))
+    failures.push("Contract publication must not request actions: write.");
+  const writePermissions = [...new Set(workflowWritePermissions(workflow))];
+  const unexpectedWritePermissions = writePermissions.filter(
+    (permission) =>
+      !["attestations", "id-token", "issues"].includes(permission),
+  );
+  if (unexpectedWritePermissions.length > 0)
+    failures.push(
+      `Contract publication workflow must not request write permissions: ${unexpectedWritePermissions.join(", ")}.`,
+    );
+  if (
+    JSON.stringify(writePermissions.toSorted()) !==
+    JSON.stringify(["attestations", "id-token", "issues"])
+  )
+    failures.push(
+      `Contract publication workflow write permissions drifted: ${writePermissions.join(", ")}.`,
+    );
+  const permissionDeclarations = workflowPermissionDeclarations(workflow);
+  if (
+    permissionDeclarations.length !== 4 ||
+    permissionDeclarations[0] !== "permissions: {}" ||
+    permissionDeclarations
+      .slice(1)
+      .some((declaration) => declaration !== "    permissions:")
+  )
+    failures.push(
+      "Contract publication workflow has unexpected permission declarations.",
+    );
+  if (
+    (workflow.match(/ {4}permissions:\r?\n/gu) ?? []).length !== 3 ||
+    !/ {4}permissions:\r?\n {6}contents: read\r?\n {4}steps:/u.test(workflow)
+  )
+    failures.push(
+      "Contract publication workflow is missing the exact job permission block.",
+    );
+  if (
+    JSON.stringify(workflowJobs(workflow)) !==
+    JSON.stringify(["validate", "publish-locator", "producer"])
+  )
+    failures.push("Contract publication workflow has an unexpected job set.");
+  const actions = workflow
+    .split(/\r?\n/u)
+    .map(actionReference)
+    .filter((reference) => reference !== undefined);
+  if (
+    JSON.stringify(actions) !==
+    JSON.stringify([
+      "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+      "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
+      "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+      "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
+      "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+      "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+      "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
+      "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+      "actions/attest@a1948c3f048ba23858d222213b7c278aabede763",
+    ])
+  )
+    failures.push(
+      "Contract publication workflow has an unexpected action set.",
+    );
+  if (
+    JSON.stringify(workflowRunCommands(workflow)) !==
+    JSON.stringify([
       "node --check quality/publication-contract.mjs",
       "node --check quality/lifecycle-handoff-publication.mjs",
-    ],
-    events: ["workflow_dispatch"],
-    guard: "if: ${{ vars.KEIKO_CONTRACT_PUBLICATION_ACTIVATION == 'enabled' }}",
-    job: "validate",
-    markers: contractPublicationWorkflowMarkers,
-  });
+      "node quality/lifecycle-wake-locator-writer.mjs",
+      "node quality/lifecycle-producer-action.mjs",
+      "node quality/lifecycle-record-writer.mjs prepare",
+      "node quality/lifecycle-record-writer.mjs verify",
+    ])
+  )
+    failures.push(
+      "Contract publication workflow has an unexpected command set.",
+    );
+  for (const marker of [
+    "github.event.pull_request",
+    "github.head_ref",
+    "persist-credentials: true",
+    "permissions: read-all",
+    "permissions: write-all",
+    "secrets.",
+    "uses: ./local-action",
+  ])
+    if (workflow.includes(marker))
+      failures.push(
+        `Contract publication workflow contains unsafe marker: ${marker}.`,
+      );
+  return failures;
 }
 
 function mergeGroupWorkflowFailures(workflow) {
@@ -1960,6 +2138,9 @@ async function workflowFailures(root, manifest) {
       : []),
     ...issueReadinessWorkflowFailures(
       workflows.get("issue-readiness.yml") ?? "",
+    ),
+    ...lifecycleWakeupWorkflowFailures(
+      workflows.get("lifecycle-wakeup.yml") ?? "",
     ),
     ...issueLifecycleWorkflowFailures(
       workflows.get("issue-lifecycle.yml") ?? "",

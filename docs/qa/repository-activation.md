@@ -161,14 +161,17 @@ or repository variable promotes it.
 
 Record the issue, pull request, exact head, actor, result, and timestamp for each probe:
 
-Before activation, dispatch a version-1 lifecycle request against a disposable issue. Require a
-GitHub-Actions-authored, anchored, and attested `planned` transition/read-back record bound to the
-exact actor, source, target, request digest, protected run, and timestamp, and prove the issue's
-lifecycle label is unchanged. Replay the request identity, change its payload, use a stale source,
-omit the pause reason, and use an unauthorized actor; each case must fail closed without a
-lifecycle or branch effect. A copied, human-authored, malformed, unanchored, unattested, or
-raw-content observation has no replay or transition authority. The retained record contains no
-request reason, issue body, provider body, endpoint, or credential-shaped value.
+Before activation, create an accepted event on a disposable issue and let the protected
+`lifecycle-wakeup.yml` caller advance the closed coordinator and producer chain over successive
+wakes or scheduled reconciliations. Require GitHub-Actions-authored, anchored, and attested
+generation, fence, producer, and `planned` transition/read-back records bound to the exact source,
+target, request digest, protected run, and timestamp, and prove the issue's lifecycle label is
+unchanged. Replay a wake, change authenticated provider facts, use a stale or excluded source, post
+a malformed or unauthorized recovery command, and attempt to inject producer policy through the
+caller; each case must fail closed without a lifecycle or branch effect. A copied, human-authored,
+malformed, unanchored, unattested, or raw-content observation has no replay or transition
+authority. The retained record contains no request reason, issue body, provider body, endpoint, or
+credential-shaped value.
 
 1. An incomplete template cannot retain `status: ready`; a complete template can, and receives a
    GitHub-Actions-authored readiness record.

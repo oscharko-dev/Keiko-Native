@@ -162,7 +162,7 @@ jobs:
           echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz" | sha256sum --check
           tar -xzf actionlint.tar.gz actionlint
           chmod +x actionlint
-      - run: ./actionlint -color .github/workflows/*.yml
+      - run: ./actionlint -color -ignore 'unexpected key "queue" for "concurrency" section' .github/workflows/*.yml
 
   verify-pinned-shas:
     name: Verify pinned action SHAs

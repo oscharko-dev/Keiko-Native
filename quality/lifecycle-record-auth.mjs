@@ -21,6 +21,8 @@ const BOT = Object.freeze({
 const DEV_REF = "refs/heads/dev";
 const ISSUER = "https://token.actions.githubusercontent.com";
 const ANCHOR_FILE = "artifact-anchor.bin";
+const CALLER = ".github/workflows/lifecycle-wakeup.yml";
+const COORDINATOR = ".github/workflows/issue-lifecycle.yml";
 
 export class LifecycleAuthenticationError extends Error {
   constructor(code) {
@@ -105,14 +107,28 @@ function verifyArtifact(artifact, download, expectedFields) {
 }
 
 function verifyRun(run, job, fields) {
+  const expectedReferenced = [
+    { path: COORDINATOR, ref: DEV_REF, sha: fields.protected_dev_sha },
+    ...(fields.workflow_path === COORDINATOR
+      ? []
+      : [
+          {
+            path: fields.workflow_path,
+            ref: DEV_REF,
+            sha: fields.protected_dev_sha,
+          },
+        ]),
+  ];
   if (
     run.id !== fields.workflow_run_id ||
     run.attempt !== fields.workflow_run_attempt ||
-    run.workflowPath !== fields.workflow_path ||
+    run.workflowPath !== CALLER ||
     run.ref !== DEV_REF ||
-    run.headSha !== fields.protected_dev_sha ||
+    run.workflowSha !== fields.protected_dev_sha ||
+    !isDeepStrictEqual(run.referencedWorkflows, expectedReferenced) ||
     job.runId !== run.id ||
-    job.workflowPath !== fields.workflow_path
+    job.workflowPath !== fields.workflow_path ||
+    job.workflowSha !== fields.protected_dev_sha
   )
     fail("record-workflow-run-mismatch");
 }
@@ -120,7 +136,10 @@ function verifyRun(run, job, fields) {
 function expectedClaims(repository, fields) {
   return {
     repository,
+    workflow_ref: `${repository}/${CALLER}@${DEV_REF}`,
+    workflow_sha: fields.protected_dev_sha,
     job_workflow_ref: `${repository}/${fields.workflow_path}@${DEV_REF}`,
+    job_workflow_sha: fields.protected_dev_sha,
     ref: DEV_REF,
     sha: fields.protected_dev_sha,
     run_id: fields.workflow_run_id,

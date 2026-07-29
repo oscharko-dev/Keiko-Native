@@ -212,6 +212,16 @@ const fixtures = {
     last_authenticated_record_digest: null,
     quarantine_reason: "anchor-publication-interrupted",
   },
+  "authorized recovery request": {
+    repository_id: 123,
+    issue_number: 51,
+    comment_id: 101,
+    command_body_sha256: s,
+    comment_created_at: "2026-07-29T10:00:00Z",
+    author_id: 159039192,
+    author_type: "User",
+    recovery_target_identity: s2,
+  },
   "artifact anchor": {
     repository: repo,
     issue_number: 51,

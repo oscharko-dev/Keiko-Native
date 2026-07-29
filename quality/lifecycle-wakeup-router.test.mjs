@@ -5,149 +5,206 @@ import test from "node:test";
 import { resolveLifecycleWakeup } from "./lifecycle-wakeup-router.mjs";
 
 const repository = "oscharko-dev/Keiko-Native";
-const head = "a".repeat(40);
+const workflowSha = "a".repeat(40);
 
-function environment(eventName = "pull_request_target") {
+function environment(resolver, eventName) {
   return {
     GITHUB_EVENT_NAME: eventName,
     GITHUB_REPOSITORY: repository,
+    GITHUB_WORKFLOW_SHA: workflowSha,
+    KEIKO_LIFECYCLE_RESOLVER: resolver,
   };
 }
 
-function event(overrides = {}) {
+function baseEvent(overrides = {}) {
   return {
-    pull_request: { number: 17 },
+    action: "edited",
     repository: { full_name: repository },
+    workflowSha,
     ...overrides,
   };
 }
 
-function provider(overrides = {}) {
+function provider(responses) {
   const calls = [];
-  const response = {
-    base: { ref: "dev" },
-    body: "## Scope\n\n- Accepted issue: #51\n",
-    head: { sha: head },
-    number: 17,
-    state: "open",
-    updated_at: "2026-07-28T20:00:00Z",
-    ...overrides,
-  };
   return {
     calls,
-    request: async (path) => {
+    binary: async (path) => {
       calls.push(path);
-      return structuredClone(response);
+      return Buffer.from(responses[path]);
+    },
+    json: async (path) => {
+      calls.push(path);
+      return structuredClone(responses[path]);
     },
   };
 }
 
-test("routes a stable provider-derived PR wake-up without policy fields", async () => {
-  const api = provider();
-  const result = await resolveLifecycleWakeup({
-    environment: environment(),
-    event: event(),
-    providerRequest: api.request,
+test("routes a direct issue and exact recovery comment with zero provider requests", async () => {
+  const direct = await resolveLifecycleWakeup({
+    environment: environment("issue", "issues"),
+    event: baseEvent({ issue: { number: 51 } }),
+    provider: provider({}),
   });
-  assert.deepEqual(result, {
-    exactHeadSha: head,
-    issueNumber: 51,
-    ok: true,
-    pullRequestNumber: 17,
-    wakeEvent: "pull_request_target",
+  assert.deepEqual(direct, {
+    locators: [{ issue_number: 51, recovery_comment_id: "" }],
+    requestCount: 0,
+    resolver: "issue",
   });
-  assert.equal(api.calls.length, 2);
-  assert.deepEqual(Object.keys(result).toSorted(), [
-    "exactHeadSha",
-    "issueNumber",
-    "ok",
-    "pullRequestNumber",
-    "wakeEvent",
+
+  const recovery = await resolveLifecycleWakeup({
+    environment: environment("issue", "issue_comment"),
+    event: baseEvent({
+      action: "created",
+      comment: { id: 9007199254740991 },
+      issue: { number: 51 },
+    }),
+    provider: provider({}),
+  });
+  assert.deepEqual(recovery.locators, [
+    { issue_number: 51, recovery_comment_id: "9007199254740991" },
   ]);
 });
 
-test("fails closed before or during unstable provider routing", async () => {
-  const unused = new Proxy(
-    {},
-    {
-      get() {
-        throw new Error("provider must not be called");
-      },
+test("maps one stable pull request to its accepted issue in exactly two reads", async () => {
+  const path = `/repos/${repository}/pulls/17`;
+  const api = provider({
+    [path]: {
+      base: { ref: "dev" },
+      body: "## Scope\n\n- Accepted issue: #51\n",
+      head: { sha: "b".repeat(40) },
+      number: 17,
+      state: "open",
+      updated_at: "2026-07-29T10:00:00Z",
     },
-  );
-  assert.equal(
-    (
-      await resolveLifecycleWakeup({
-        environment: environment("push"),
-        event: event(),
-        providerRequest: unused,
-      })
-    ).reason,
-    "unsupported_event",
-  );
-  assert.equal(
-    (
-      await resolveLifecycleWakeup({
-        environment: environment(),
-        event: event({ repository: { full_name: "attacker/repo" } }),
-        providerRequest: unused,
-      })
-    ).reason,
-    "repository_mismatch",
-  );
-
-  let reads = 0;
-  const unstable = provider();
-  unstable.request = async () => {
-    reads += 1;
-    const response = await provider({
-      updated_at: `2026-07-28T20:00:0${reads}Z`,
-    }).request("/ignored");
-    return response;
-  };
-  assert.equal(
-    (
-      await resolveLifecycleWakeup({
-        environment: environment(),
-        event: event(),
-        providerRequest: unstable.request,
-      })
-    ).reason,
-    "pull_request_unstable",
-  );
+  });
+  const result = await resolveLifecycleWakeup({
+    environment: environment("pull-request", "pull_request_target"),
+    event: baseEvent({
+      action: "synchronize",
+      pull_request: { number: 17 },
+    }),
+    provider: api,
+  });
+  assert.deepEqual(result.locators, [
+    { issue_number: 51, recovery_comment_id: "" },
+  ]);
+  assert.equal(result.requestCount, 2);
+  assert.deepEqual(api.calls, [path, path]);
 });
 
-test("router workflow is read-only transport into the sole coordinator", async () => {
+test("scheduled enumeration is stable, sorted, deduplicated, and bounded to eight reads", async () => {
+  const responses = {};
+  for (const page of [1, 2]) {
+    responses[
+      `/repos/${repository}/issues?state=open&per_page=100&page=${page}`
+    ] = page === 1 ? [{ number: 55 }, { number: 49 }] : [];
+    responses[
+      `/repos/${repository}/pulls?state=open&per_page=100&page=${page}`
+    ] =
+      page === 1
+        ? [
+            {
+              body: "## Scope\n\n- Accepted issue: #51\n",
+              number: 17,
+            },
+          ]
+        : [];
+  }
+  const result = await resolveLifecycleWakeup({
+    environment: environment("schedule", "schedule"),
+    event: baseEvent(),
+    provider: provider(responses),
+  });
+  assert.deepEqual(result.locators, [
+    { issue_number: 49, recovery_comment_id: "" },
+    { issue_number: 51, recovery_comment_id: "" },
+    { issue_number: 55, recovery_comment_id: "" },
+  ]);
+  assert.equal(result.requestCount, 8);
+});
+
+test("fails closed on caller mismatch, ambiguous PR association, and unstable reads", async () => {
+  await assert.rejects(
+    resolveLifecycleWakeup({
+      environment: environment("issue", "issues"),
+      event: baseEvent({
+        issue: { number: 51 },
+        repository: { full_name: "attacker/repo" },
+      }),
+      provider: provider({}),
+    }),
+    { code: "caller-environment-mismatch" },
+  );
+  await assert.rejects(
+    resolveLifecycleWakeup({
+      environment: environment("pull-request", "check_run"),
+      event: baseEvent({
+        action: "completed",
+        check_run: { pull_requests: [{ number: 17 }, { number: 18 }] },
+      }),
+      provider: provider({}),
+    }),
+    { code: "exact-pull-request-required" },
+  );
+  const path = `/repos/${repository}/pulls/17`;
+  let reads = 0;
+  const unstable = {
+    binary: async () => Buffer.alloc(0),
+    json: async () => ({
+      base: { ref: "dev" },
+      body: "## Scope\n\n- Accepted issue: #51\n",
+      head: { sha: "b".repeat(40) },
+      number: 17,
+      state: "open",
+      updated_at: `2026-07-29T10:00:0${reads++}Z`,
+    }),
+  };
+  await assert.rejects(
+    resolveLifecycleWakeup({
+      environment: environment("pull-request", "pull_request_target"),
+      event: baseEvent({
+        action: "edited",
+        pull_request: { number: 17 },
+      }),
+      provider: unstable,
+    }),
+    { code: "resolver-unstable" },
+  );
+  assert.equal(path.endsWith("/17"), true);
+});
+
+test("caller workflow freezes ADR-0012 source closure and has no Actions write or dispatch", async () => {
   const workflow = await readFile(
     new URL("../.github/workflows/lifecycle-wakeup.yml", import.meta.url),
     "utf8",
   );
   for (const marker of [
-    "name: Lifecycle wake-up router",
+    "name: Lifecycle wake-up",
+    "issues:",
     "pull_request_target:",
-    "pull_request_review:",
-    "pull_request_review_comment:",
     "issue_comment:",
     "check_run:",
     "workflow_run:",
-    "workflow_dispatch:",
-    "contents: read",
-    "issues: read",
-    "pull-requests: read",
-    "node quality/lifecycle-wakeup-router.mjs",
+    'cron: "17 * * * *"',
+    "resolve-issue:",
+    "resolve-pull-request:",
+    "resolve-governance:",
+    "resolve-evidence:",
+    "resolve-schedule:",
+    "group: issue-lifecycle-provider-budget",
+    "group: issue-lifecycle-${{ matrix.locator.issue_number }}",
     "uses: ./.github/workflows/issue-lifecycle.yml",
+    "recovery_comment_id: ${{ matrix.locator.recovery_comment_id }}",
   ])
-    assert.match(workflow, new RegExp(marker, "u"));
+    assert.ok(workflow.includes(marker), marker);
   for (const forbidden of [
-    "issues: write",
-    "statuses: write",
-    "attestations: write",
-    "id-token: write",
-    "KEIKO_ISSUE_LIFECYCLE_ACTIVATION",
-    "requested_target",
-    "expected_source",
-    "lifecycle-record-writer",
-    "keiko-native-lifecycle-generation-request",
+    "actions: write",
+    "workflow_dispatch:",
+    "repository_dispatch:",
+    "pull_request_review:",
+    "pull_request_review_comment:",
+    "upload-artifact",
   ])
-    assert.doesNotMatch(workflow, new RegExp(forbidden, "u"));
+    assert.equal(workflow.includes(forbidden), false, forbidden);
 });

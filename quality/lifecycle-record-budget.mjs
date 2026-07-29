@@ -1,5 +1,5 @@
 export const LIFECYCLE_PROVIDER_BUDGETS = Object.freeze({
-  normal: 200,
+  normal: 136,
   recovery: 150,
 });
 

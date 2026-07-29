@@ -19,6 +19,7 @@ const repository = "oscharko-dev/Keiko-Native";
 const commit = "a".repeat(40);
 const sha = (digit) => digit.repeat(64);
 const workflowPath = ".github/workflows/issue-lifecycle.yml";
+const callerPath = ".github/workflows/lifecycle-wakeup.yml";
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 function recordBody() {
@@ -97,7 +98,10 @@ function createProvider(body = recordBody()) {
       },
       claims: {
         repository,
+        workflow_ref: `${repository}/${callerPath}@refs/heads/dev`,
+        workflow_sha: commit,
         job_workflow_ref: `${repository}/${workflowPath}@refs/heads/dev`,
+        job_workflow_sha: commit,
         ref: "refs/heads/dev",
         sha: commit,
         run_id: 10,
@@ -146,13 +150,22 @@ function createProvider(body = recordBody()) {
       return {
         id: 10,
         attempt: 1,
-        workflowPath,
+        workflowPath: callerPath,
+        workflowSha: commit,
+        eventSha: commit,
+        referencedWorkflows: [
+          {
+            path: workflowPath,
+            ref: "refs/heads/dev",
+            sha: commit,
+          },
+        ],
         ref: "refs/heads/dev",
         headSha: commit,
       };
     },
     async getWorkflowJob() {
-      return { id: 11, runId: 10, workflowPath };
+      return { id: 11, runId: 10, workflowPath, workflowSha: commit };
     },
     async isCommitReachableFromDev() {
       return true;
@@ -205,7 +218,16 @@ test("rejects wrong bot, App, workflow ref, or unreachable dev commit", async ()
       provider.getWorkflowRun = async () => ({
         id: 10,
         attempt: 1,
-        workflowPath,
+        workflowPath: callerPath,
+        workflowSha: commit,
+        eventSha: commit,
+        referencedWorkflows: [
+          {
+            path: workflowPath,
+            ref: "refs/heads/dev",
+            sha: commit,
+          },
+        ],
         ref: "refs/heads/topic",
         headSha: commit,
       });
@@ -229,26 +251,23 @@ test("rejects wrong bot, App, workflow ref, or unreachable dev commit", async ()
   }
 });
 
-test("rejects a caller run even when its reusable-workflow reference matches", async () => {
+test("rejects a wrong caller or incomplete referenced-workflow identity", async () => {
   const provider = createProvider();
   provider.getWorkflowRun = async () => ({
     id: 10,
     attempt: 1,
     workflowPath: ".github/workflows/lifecycle-wakeup-dispatch.yml",
-    referencedWorkflows: [
-      {
-        path: workflowPath,
-        ref: "refs/heads/dev",
-        sha: commit,
-      },
-    ],
+    workflowSha: commit,
+    eventSha: commit,
+    referencedWorkflows: [],
     ref: "refs/heads/dev",
     headSha: commit,
   });
   provider.getWorkflowJob = async () => ({
     id: 11,
     runId: 10,
-    workflowPath: ".github/workflows/lifecycle-wakeup-dispatch.yml",
+    workflowPath,
+    workflowSha: commit,
   });
 
   await assert.rejects(

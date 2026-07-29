@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
@@ -164,6 +165,51 @@ test("detects unanchored comments and unreferenced suffix deletion", async () =>
       parseEnvelope: parser([]),
     }),
     { code: "lifecycle-suffix-deleted" },
+  );
+});
+
+test("recovery may quarantine only one exact request-bound orphan body", async () => {
+  const records = [
+    record(2, 1, "phase-fence-claim"),
+    record(1, null, "generation-request"),
+  ];
+  const provider = providerFor(records, {
+    artifacts: [
+      {
+        id: 1_001,
+        name: "keiko-lifecycle-anchor-v1-issue-51",
+        anchorIdentity: sha(1_001),
+        commentId: 1,
+      },
+    ],
+  });
+  const bodySha256 = createHash("sha256")
+    .update(records[0].comment.body)
+    .digest("hex");
+  const result = await reconstructLifecycleHistory({
+    ignoredOrphan: { bodySha256, commentId: 2 },
+    issueNumber: 51,
+    mode: "recovery",
+    parseEnvelope: parser(records),
+    provider,
+    repository: "oscharko-dev/Keiko-Native",
+    verifyTuple: verifier(records),
+  });
+  assert.deepEqual(
+    result.records.map(({ comment }) => comment.id),
+    [1],
+  );
+  await assert.rejects(
+    reconstructLifecycleHistory({
+      ignoredOrphan: { bodySha256: sha(9), commentId: 2 },
+      issueNumber: 51,
+      mode: "recovery",
+      parseEnvelope: parser(records),
+      provider,
+      repository: "oscharko-dev/Keiko-Native",
+      verifyTuple: verifier(records),
+    }),
+    { code: "ignored-orphan-body-mismatch" },
   );
 });
 

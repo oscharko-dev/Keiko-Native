@@ -4,6 +4,7 @@ const OWNER = "([A-Za-z0-9-]+)";
 const REPOSITORY = "([A-Za-z0-9_.-]+)";
 const INTEGER = "([1-9][0-9]*)";
 const SHA = "([0-9a-f]{40})";
+const SHA256 = "([0-9a-f]{64})";
 const ENCODED_SEGMENT = "((?:[A-Za-z0-9_.!~*'()-]|%[0-9A-F]{2})+)";
 const repositoryPrefix = `/repos/${OWNER}/${REPOSITORY}`;
 const completeTagEmoji = /\u{1F3F4}[\u{E0020}-\u{E007E}]+\u{E007F}/gu;
@@ -22,10 +23,24 @@ function route(method, suffix, types, build) {
 const routes = [
   route(
     "GET",
+    String.raw`/issues\?state=open&per_page=100&page=${INTEGER}`,
+    ["integer"],
+    ([owner, repository, page]) =>
+      `/repos/${owner}/${repository}/issues?state=open&per_page=100&page=${page}`,
+  ),
+  route(
+    "GET",
     String.raw`/issues/${INTEGER}/comments\?per_page=100&page=${INTEGER}`,
     ["integer", "integer"],
     ([owner, repository, issue, page]) =>
       `/repos/${owner}/${repository}/issues/${issue}/comments?per_page=100&page=${page}`,
+  ),
+  route(
+    "GET",
+    String.raw`/issues/${INTEGER}/comments\?sort=created&direction=desc&per_page=100&page=${INTEGER}`,
+    ["integer", "integer"],
+    ([owner, repository, issue, page]) =>
+      `/repos/${owner}/${repository}/issues/${issue}/comments?sort=created&direction=desc&per_page=100&page=${page}`,
   ),
   route(
     "GET",
@@ -61,6 +76,13 @@ const routes = [
     ["integer"],
     ([owner, repository, issue]) =>
       `/repos/${owner}/${repository}/issues/${issue}`,
+  ),
+  route(
+    "GET",
+    `/issues/comments/${INTEGER}`,
+    ["integer"],
+    ([owner, repository, comment]) =>
+      `/repos/${owner}/${repository}/issues/comments/${comment}`,
   ),
   route(
     "PATCH",
@@ -103,6 +125,62 @@ const routes = [
     ["integer"],
     ([owner, repository, pull]) =>
       `/repos/${owner}/${repository}/pulls/${pull}`,
+  ),
+  route(
+    "GET",
+    `/actions/runs/${INTEGER}`,
+    ["integer"],
+    ([owner, repository, run]) =>
+      `/repos/${owner}/${repository}/actions/runs/${run}`,
+  ),
+  route(
+    "GET",
+    String.raw`/actions/runs/${INTEGER}/artifacts\?per_page=100`,
+    ["integer"],
+    ([owner, repository, run]) =>
+      `/repos/${owner}/${repository}/actions/runs/${run}/artifacts?per_page=100`,
+  ),
+  route(
+    "GET",
+    String.raw`/actions/artifacts\?name=${ENCODED_SEGMENT}&per_page=100&page=${INTEGER}`,
+    ["label", "integer"],
+    ([owner, repository, name, page]) =>
+      `/repos/${owner}/${repository}/actions/artifacts?name=${name}&per_page=100&page=${page}`,
+  ),
+  route(
+    "GET",
+    String.raw`/actions/runs/${INTEGER}/jobs\?filter=all&per_page=100`,
+    ["integer"],
+    ([owner, repository, run]) =>
+      `/repos/${owner}/${repository}/actions/runs/${run}/jobs?filter=all&per_page=100`,
+  ),
+  route(
+    "GET",
+    `/actions/jobs/${INTEGER}`,
+    ["integer"],
+    ([owner, repository, job]) =>
+      `/repos/${owner}/${repository}/actions/jobs/${job}`,
+  ),
+  route(
+    "GET",
+    `/actions/artifacts/${INTEGER}/zip`,
+    ["integer"],
+    ([owner, repository, artifact]) =>
+      `/repos/${owner}/${repository}/actions/artifacts/${artifact}/zip`,
+  ),
+  route(
+    "GET",
+    `/attestations/${SHA256}`,
+    ["sha256"],
+    ([owner, repository, digest]) =>
+      `/repos/${owner}/${repository}/attestations/${digest}`,
+  ),
+  route(
+    "GET",
+    String.raw`/compare/${SHA}\.\.\.dev`,
+    ["sha"],
+    ([owner, repository, commit]) =>
+      `/repos/${owner}/${repository}/compare/${commit}...dev`,
   ),
 ];
 
@@ -175,6 +253,7 @@ const plainValueValidators = {
   pullState: (value) => ["open", "closed"].includes(value),
   repository: isRepository,
   sha: (value) => /^[0-9a-f]{40}$/u.test(value),
+  sha256: (value) => /^[0-9a-f]{64}$/u.test(value),
 };
 
 function hasValidSyntax(path) {
@@ -306,5 +385,78 @@ export function githubRequestFor(userAgent) {
     return response.status === 204
       ? undefined
       : parseResponseJson(response, method);
+  };
+}
+
+export function githubBinaryRequestFor(userAgent) {
+  return async function githubBinaryRequest(path) {
+    if (!hasValidSyntax(path))
+      throw new Error("GitHub API request target is invalid.");
+    const method = "GET";
+    const canonicalTarget = validateRequestTarget(path, method);
+    const response = await fetchResponse(
+      requestUrl(canonicalTarget),
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+          "User-Agent": userAgent,
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+        method,
+        redirect: "follow",
+      },
+      method,
+    );
+    if (!response.ok) {
+      const cleanupNote = await discardResponseBody(response);
+      throw new Error(
+        `GitHub API ${method} failed with ${response.status}.${cleanupNote}`,
+      );
+    }
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length > 65_536)
+      throw new Error("GitHub API artifact exceeds 65,536 bytes.");
+    return bytes;
+  };
+}
+
+export function githubGraphqlRequestFor(userAgent) {
+  return async function githubGraphqlRequest(query, variables) {
+    if (
+      typeof query !== "string" ||
+      query.length === 0 ||
+      query.length > 16_384 ||
+      variables === null ||
+      typeof variables !== "object" ||
+      Array.isArray(variables)
+    )
+      throw new Error("GitHub GraphQL request is invalid.");
+    const method = "POST";
+    const response = await fetchResponse(
+      `${githubApiUrl}/graphql`,
+      {
+        body: JSON.stringify({ query, variables }),
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+          "Content-Type": "application/json",
+          "User-Agent": userAgent,
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+        method,
+      },
+      method,
+    );
+    if (!response.ok) {
+      const cleanupNote = await discardResponseBody(response);
+      throw new Error(
+        `GitHub GraphQL request failed with ${response.status}.${cleanupNote}`,
+      );
+    }
+    const body = await parseResponseJson(response, method);
+    if (body?.errors !== undefined)
+      throw new Error("GitHub GraphQL response contains errors.");
+    return body;
   };
 }

@@ -195,6 +195,16 @@ const repositoryControlPlaneModules = Object.freeze([
   "quality/epic-merge-policy-schema.mjs",
   "quality/epic-merge-store.mjs",
   "quality/issue-lifecycle-request.mjs",
+  "quality/lifecycle-coordinator-action.mjs",
+  "quality/lifecycle-coordinator.mjs",
+  "quality/lifecycle-github-provider.mjs",
+  "quality/lifecycle-producer-action.mjs",
+  "quality/lifecycle-producer.mjs",
+  "quality/lifecycle-producer-wire.mjs",
+  "quality/lifecycle-wake-locator-writer.mjs",
+  "quality/lifecycle-wake.mjs",
+  "quality/lifecycle-wakeup-router.mjs",
+  "quality/single-file-zip.mjs",
 ]);
 
 const coverageScript = canonicalCoverageCommand;
@@ -2495,6 +2505,7 @@ async function fixtureRepository() {
     ".github/workflows/epic-merge-guard-status.yml",
     ".github/workflows/issue-lifecycle.yml",
     ".github/workflows/issue-readiness.yml",
+    ".github/workflows/lifecycle-wakeup.yml",
     ".github/workflows/merge-group.yml",
     ".github/workflows/internal-release.yml",
     ".github/workflows/mutation-security.yml",
@@ -2516,12 +2527,18 @@ async function fixtureRepository() {
     "quality/generate-native-vulnerability-inventory.mjs",
     "quality/github-api.mjs",
     "quality/github-reference.mjs",
+    "quality/governance-maintainers.mjs",
     "quality/issue-contract.mjs",
     "quality/issue-lifecycle-action.mjs",
     "quality/issue-lifecycle-readiness.mjs",
     "quality/issue-lifecycle.mjs",
     "quality/issue-lifecycle.test.mjs",
     "quality/issue-readiness-action.mjs",
+    "quality/lifecycle-producer-action.mjs",
+    "quality/lifecycle-producer-wire.mjs",
+    "quality/lifecycle-wake-locator-writer.mjs",
+    "quality/lifecycle-wake.mjs",
+    "quality/lifecycle-wakeup-router.mjs",
     "quality/epic-merge-policy.json",
     "quality/internal-release.mjs",
     "quality/internal-release-workflow.mjs",
@@ -2621,7 +2638,7 @@ async function fixtureRepository() {
     [
       "# Repository activation checklist",
       lifecycleList(),
-      "Before activation, dispatch a version-1 lifecycle request and require a `planned` observation without a lifecycle or branch effect.",
+      "Before activation, create an accepted event on a disposable issue and require `planned` transition/read-back records without a lifecycle or branch effect.",
       "## Pending contract-publication controls",
       "Contract publication remains disabled until the human activation probes pass.",
       "The `Contract publication` context is not enrolled as required.",
@@ -2721,33 +2738,21 @@ async function fixtureRepository() {
     ),
   );
   await writeFile(
+    join(root, ".github/workflows/lifecycle-wakeup.yml"),
+    await readFile(
+      join(import.meta.dirname, "../.github/workflows/lifecycle-wakeup.yml"),
+      "utf8",
+    ),
+  );
+  await writeFile(
     join(root, ".github/workflows/contract-publication.yml"),
-    [
-      "name: Contract publication (inert)",
-      "on:",
-      "  workflow_dispatch:",
-      "permissions: {}",
-      "jobs:",
-      "  validate:",
-      "    if: ${{ vars.KEIKO_CONTRACT_PUBLICATION_ACTIVATION == 'enabled' }}",
-      "    permissions:",
-      "      contents: read",
-      "    steps:",
-      "      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "        with:",
-      "          persist-credentials: false",
-      "          ref: dev",
-      "      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
-      "        with:",
-      '          node-version: "24.18.0"',
-      "          package-manager-cache: false",
-      "      - name: Validate protected publication policy",
-      "        env:",
-      "          KEIKO_CONTRACT_PUBLICATION_ACTIVATION: disabled",
-      "        run: |",
-      "          node --check quality/publication-contract.mjs",
-      "          node --check quality/lifecycle-handoff-publication.mjs",
-    ].join("\n"),
+    await readFile(
+      join(
+        import.meta.dirname,
+        "../.github/workflows/contract-publication.yml",
+      ),
+      "utf8",
+    ),
   );
   await writeFile(
     join(root, ".github/workflows/epic-merge-guard-status.yml"),
@@ -2833,28 +2838,10 @@ async function fixtureRepository() {
   );
   await writeFile(
     join(root, ".github/workflows/pr-contract.yml"),
-    [
-      "name: Pull request contract",
-      "on:",
-      "  pull_request_target:",
-      "    branches:",
-      "      - dev",
-      '      - "epic/**"',
-      "types: [opened, edited, reopened, synchronize, ready_for_review, converted_to_draft, closed]",
-      "cancel-in-progress: false",
-      "name: Evaluate trusted PR metadata",
-      "issue-number: ${{ steps.contract.outputs.issue-number }}",
-      "ref: dev",
-      "statuses: read",
-      "statuses: write",
-      "issues: write",
-      "  KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
-      "node quality/pr-contract-action.mjs",
-      "uses: ./.github/workflows/issue-lifecycle.yml",
-      "always() && needs.contract.outputs.issue-number != ''",
-      "  issue_number: ${{ needs.contract.outputs.issue-number }}",
-      "  pr_contract_result: ${{ needs.contract.result }}",
-    ].join("\n"),
+    await readFile(
+      join(import.meta.dirname, "../.github/workflows/pr-contract.yml"),
+      "utf8",
+    ),
   );
   await writeFile(
     join(root, "sonar-project.properties"),
@@ -3590,7 +3577,7 @@ test("fails closed when lifecycle workflow or coverage wiring drifts", async () 
     );
     const result = await validateRepository(root);
     const failures = result.failures.join("\n");
-    assert.match(failures, /Issue lifecycle workflow trigger types drifted/u);
+    assert.match(failures, /Issue lifecycle workflow event set drifted/u);
     assert.match(failures, /Coverage command must include/u);
   } finally {
     await rm(root, { force: true, recursive: true });
@@ -3604,7 +3591,7 @@ test("fails closed when lifecycle workflow permissions drift", async () => {
     const workflow = await readFile(workflowPath, "utf8");
     await writeFile(
       workflowPath,
-      workflow.replace("      issues: write", "      issues: read"),
+      workflow.replaceAll("      issues: write", "      issues: read"),
     );
     const result = await validateRepository(root);
     const failures = result.failures.join("\n");
@@ -3612,25 +3599,25 @@ test("fails closed when lifecycle workflow permissions drift", async () => {
       failures,
       /Issue lifecycle workflow permission drift, missing marker:       issues: write/u,
     );
-    assert.match(
-      failures,
-      /Issue lifecycle write permissions drifted:/u,
-    );
+    assert.match(failures, /Issue lifecycle write permissions drifted:/u);
   } finally {
     await rm(root, { force: true, recursive: true });
   }
 });
 
-test("fails closed when the PR lifecycle caller loses status read access", async () => {
+test("fails closed when the PR producer loses status write access", async () => {
   const root = await fixtureRepository();
   try {
     const workflowPath = join(root, ".github/workflows/pr-contract.yml");
     const workflow = await readFile(workflowPath, "utf8");
-    await writeFile(workflowPath, workflow.replace("statuses: read\n", ""));
+    await writeFile(
+      workflowPath,
+      workflow.replaceAll("      statuses: write\n", ""),
+    );
     const result = await validateRepository(root);
     assert.match(
       result.failures.join("\n"),
-      /Pull-request contract workflow is missing marker: statuses: read/u,
+      /Pull-request contract workflow is missing marker: statuses: write/u,
     );
   } finally {
     await rm(root, { force: true, recursive: true });

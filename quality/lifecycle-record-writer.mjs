@@ -21,6 +21,7 @@ const BOT = Object.freeze({
   type: "Bot",
 });
 const REPOSITORY = "oscharko-dev/Keiko-Native";
+const CALLER_PATH = ".github/workflows/lifecycle-wakeup.yml";
 const request = githubRequestFor("keiko-native-lifecycle-record-writer");
 
 function exactKeys(value, keys) {
@@ -177,9 +178,8 @@ export async function verifyLifecycleRecordPublication({
   );
   if (
     run?.run_attempt !== prepared.fields.workflow_run_attempt ||
-    run?.head_sha !== prepared.fields.protected_dev_sha ||
     run?.head_branch !== "dev" ||
-    run?.path !== prepared.fields.workflow_path
+    run?.path !== CALLER_PATH
   )
     throw new Error("record writer run mismatch");
   return Object.freeze({

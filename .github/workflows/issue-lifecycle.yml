@@ -1,81 +1,20 @@
 name: Issue lifecycle
 
 on:
-  issues:
-    types: [assigned, closed, edited, labeled, reopened, unassigned, unlabeled]
-  workflow_dispatch:
-    inputs:
-      schema:
-        description: Versioned request schema
-        required: true
-        type: choice
-        options:
-          - keiko-native.issue-lifecycle-request/v1
-      issue_number:
-        description: Governed issue number
-        required: true
-        type: string
-      expected_source:
-        description: Exact sole lifecycle source
-        required: true
-        type: choice
-        options:
-          - "status: new"
-          - "status: triaged"
-          - "status: ready"
-          - "status: in progress"
-          - "status: pr open"
-          - "status: ready for human review"
-          - "status: blocked"
-          - "status: waiting for user"
-      requested_target:
-        description: Permitted requested lifecycle target
-        required: true
-        type: choice
-        options:
-          - "status: triaged"
-          - "status: ready"
-          - "status: blocked"
-          - "status: waiting for user"
-      request_identity:
-        description: Unique caller request identity
-        required: true
-        type: string
-      reason:
-        description: Required only for blocked or waiting requests
-        required: false
-        type: string
-      ordering_attestation:
-        description: confirmed for triage, otherwise not-applicable
-        required: true
-        type: choice
-        options:
-          - confirmed
-          - not-applicable
   workflow_call:
     inputs:
       issue_number:
         required: true
-        type: string
-      wake_event:
+        type: number
+      recovery_comment_id:
         required: true
-        type: string
-      pull_request_number:
-        required: false
-        type: string
-      exact_head_sha:
-        required: false
         type: string
     outputs:
       observation:
         description: Sanitized authenticated lifecycle observation identity
-        value: ${{ jobs.write-record.outputs.observation }}
+        value: ${{ jobs.write-record.outputs.observation || jobs.issue-contract-current.outputs.observation || jobs.pr-contract.outputs.observation || jobs.contract-publication.outputs.observation || jobs.evaluate.outputs.observation }}
 
 permissions: {}
-
-concurrency:
-  group: issue-lifecycle-${{ inputs.issue_number || github.event.issue.number }}
-  queue: max
 
 jobs:
   evaluate:
@@ -86,8 +25,25 @@ jobs:
       group: issue-lifecycle-provider-budget
       queue: max
     outputs:
+      attempt: ${{ steps.evaluate.outputs.attempt }}
+      exact-head-sha: ${{ steps.evaluate.outputs.exact-head-sha }}
+      exact-target: ${{ steps.evaluate.outputs.exact-target }}
+      expected-producers: ${{ steps.evaluate.outputs.expected-producers }}
+      generation-bytes-base64: ${{ steps.evaluate.outputs.generation-bytes-base64 }}
+      generation-bytes-sha256: ${{ steps.evaluate.outputs.generation-bytes-sha256 }}
+      generation-identity: ${{ steps.evaluate.outputs.generation-identity }}
+      generation-request-comment-id: ${{ steps.evaluate.outputs.generation-request-comment-id }}
+      generation-request-digest: ${{ steps.evaluate.outputs.generation-request-digest }}
       issue-number: ${{ steps.evaluate.outputs.issue-number }}
+      phase-fence-comment-id: ${{ steps.evaluate.outputs.phase-fence-comment-id }}
+      phase-fence-digest: ${{ steps.evaluate.outputs.phase-fence-digest }}
+      pull-request-number: ${{ steps.evaluate.outputs.pull-request-number }}
       record-plan: ${{ steps.evaluate.outputs.record-plan }}
+      request-identity: ${{ steps.evaluate.outputs.request-identity }}
+      request-payload-digest: ${{ steps.evaluate.outputs.request-payload-digest }}
+      next-writer: ${{ steps.evaluate.outputs.next-writer }}
+      observation: ${{ steps.evaluate.outputs.observation }}
+      producer: ${{ steps.evaluate.outputs.producer }}
       should-record: ${{ steps.evaluate.outputs.should-record }}
     permissions:
       actions: read
@@ -113,16 +69,120 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled
-          KEIKO_ROUTED_EXACT_HEAD: ${{ inputs.exact_head_sha }}
           KEIKO_ROUTED_ISSUE_NUMBER: ${{ inputs.issue_number }}
-          KEIKO_ROUTED_PULL_REQUEST: ${{ inputs.pull_request_number }}
-          KEIKO_ROUTED_WAKE_EVENT: ${{ inputs.wake_event }}
-        run: node quality/issue-lifecycle-action.mjs
+          KEIKO_ROUTED_RECOVERY_COMMENT_ID: ${{ inputs.recovery_comment_id }}
+        run: node quality/lifecycle-coordinator-action.mjs
+
+  issue-contract-current:
+    name: Produce current issue-contract result
+    needs: evaluate
+    if: ${{ needs.evaluate.outputs.next-writer == 'producer' && needs.evaluate.outputs.producer == 'issue-contract-current' }}
+    concurrency:
+      group: issue-lifecycle-provider-budget
+      queue: max
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+      issues: write
+      pull-requests: read
+      statuses: write
+    uses: ./.github/workflows/pr-contract.yml
+    with:
+      schema_version: "1"
+      producer_contract_version: "1"
+      repository: oscharko-dev/Keiko-Native
+      issue_number: ${{ needs.evaluate.outputs.issue-number }}
+      pull_request_number: ${{ needs.evaluate.outputs.pull-request-number }}
+      exact_head_sha: ${{ needs.evaluate.outputs.exact-head-sha }}
+      exact_target: ${{ needs.evaluate.outputs.exact-target }}
+      generation_bytes_base64: ${{ needs.evaluate.outputs.generation-bytes-base64 }}
+      generation_bytes_sha256: ${{ needs.evaluate.outputs.generation-bytes-sha256 }}
+      generation_identity: ${{ needs.evaluate.outputs.generation-identity }}
+      attempt: ${{ needs.evaluate.outputs.attempt }}
+      phase_fence_comment_id: ${{ needs.evaluate.outputs.phase-fence-comment-id }}
+      phase_fence_digest: ${{ needs.evaluate.outputs.phase-fence-digest }}
+      generation_request_comment_id: ${{ needs.evaluate.outputs.generation-request-comment-id }}
+      generation_request_digest: ${{ needs.evaluate.outputs.generation-request-digest }}
+      request_identity: ${{ needs.evaluate.outputs.request-identity }}
+      request_payload_digest: ${{ needs.evaluate.outputs.request-payload-digest }}
+      expected_producer: issue-contract-current
+
+  pr-contract:
+    name: Produce pull-request contract result
+    needs: evaluate
+    if: ${{ needs.evaluate.outputs.next-writer == 'producer' && needs.evaluate.outputs.producer == 'pr-contract' }}
+    concurrency:
+      group: issue-lifecycle-provider-budget
+      queue: max
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+      issues: write
+      pull-requests: read
+      statuses: write
+    uses: ./.github/workflows/pr-contract.yml
+    with:
+      schema_version: "1"
+      producer_contract_version: "1"
+      repository: oscharko-dev/Keiko-Native
+      issue_number: ${{ needs.evaluate.outputs.issue-number }}
+      pull_request_number: ${{ needs.evaluate.outputs.pull-request-number }}
+      exact_head_sha: ${{ needs.evaluate.outputs.exact-head-sha }}
+      exact_target: ${{ needs.evaluate.outputs.exact-target }}
+      generation_bytes_base64: ${{ needs.evaluate.outputs.generation-bytes-base64 }}
+      generation_bytes_sha256: ${{ needs.evaluate.outputs.generation-bytes-sha256 }}
+      generation_identity: ${{ needs.evaluate.outputs.generation-identity }}
+      attempt: ${{ needs.evaluate.outputs.attempt }}
+      phase_fence_comment_id: ${{ needs.evaluate.outputs.phase-fence-comment-id }}
+      phase_fence_digest: ${{ needs.evaluate.outputs.phase-fence-digest }}
+      generation_request_comment_id: ${{ needs.evaluate.outputs.generation-request-comment-id }}
+      generation_request_digest: ${{ needs.evaluate.outputs.generation-request-digest }}
+      request_identity: ${{ needs.evaluate.outputs.request-identity }}
+      request_payload_digest: ${{ needs.evaluate.outputs.request-payload-digest }}
+      expected_producer: pr-contract
+
+  contract-publication:
+    name: Produce contract-publication result
+    needs: evaluate
+    if: ${{ needs.evaluate.outputs.next-writer == 'producer' && needs.evaluate.outputs.producer == 'contract-publication' }}
+    concurrency:
+      group: issue-lifecycle-provider-budget
+      queue: max
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+      issues: write
+    uses: ./.github/workflows/contract-publication.yml
+    with:
+      schema_version: "1"
+      producer_contract_version: "1"
+      repository: oscharko-dev/Keiko-Native
+      issue_number: ${{ needs.evaluate.outputs.issue-number }}
+      pull_request_number: ${{ needs.evaluate.outputs.pull-request-number }}
+      exact_head_sha: ${{ needs.evaluate.outputs.exact-head-sha }}
+      exact_target: ${{ needs.evaluate.outputs.exact-target }}
+      generation_bytes_base64: ${{ needs.evaluate.outputs.generation-bytes-base64 }}
+      generation_bytes_sha256: ${{ needs.evaluate.outputs.generation-bytes-sha256 }}
+      generation_identity: ${{ needs.evaluate.outputs.generation-identity }}
+      attempt: ${{ needs.evaluate.outputs.attempt }}
+      phase_fence_comment_id: ${{ needs.evaluate.outputs.phase-fence-comment-id }}
+      phase_fence_digest: ${{ needs.evaluate.outputs.phase-fence-digest }}
+      generation_request_comment_id: ${{ needs.evaluate.outputs.generation-request-comment-id }}
+      generation_request_digest: ${{ needs.evaluate.outputs.generation-request-digest }}
+      request_identity: ${{ needs.evaluate.outputs.request-identity }}
+      request_payload_digest: ${{ needs.evaluate.outputs.request-payload-digest }}
+      expected_producer: contract-publication
 
   write-record:
     name: Publish authenticated lifecycle record
     needs: evaluate
-    if: ${{ needs.evaluate.outputs.should-record == 'true' }}
+    if: ${{ needs.evaluate.outputs.next-writer == 'record' && needs.evaluate.outputs.should-record == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     concurrency:

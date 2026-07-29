@@ -83,10 +83,7 @@ test("publishes one canonical comment and prepares exact anchor inputs", async (
   );
   assert.equal(prepared.commentId, 99);
   assert.match(prepared.anchorIdentity, /^[0-9a-f]{64}$/u);
-  assert.equal(
-    prepared.artifactName,
-    "keiko-lifecycle-anchor-v1-issue-51",
-  );
+  assert.equal(prepared.artifactName, "keiko-lifecycle-anchor-v1-issue-51");
   assert.match(
     prepared.subject,
     /^keiko-native\/lifecycle-comment\/v1\/oscharko-dev\/Keiko-Native\/51\/99\//u,
@@ -124,7 +121,7 @@ test("verifies exact final provider records and rejects malformed plans", async 
       return {
         head_branch: "dev",
         head_sha: commit,
-        path: ".github/workflows/issue-lifecycle.yml",
+        path: ".github/workflows/lifecycle-wakeup.yml",
         run_attempt: 1,
       };
     },
