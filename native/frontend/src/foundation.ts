@@ -4,6 +4,7 @@ import {
   type FocusEvent,
   type ReactElement,
 } from "react";
+import type { WorkspaceState } from "./port";
 
 export const closedSurfaceKinds = [
   "welcome",
@@ -39,7 +40,17 @@ export interface FoundationController {
   quit(): Promise<void>;
 }
 
+export interface WorkspaceController {
+  selectWorkspace(): Promise<void>;
+  clearWorkspace(): Promise<void>;
+}
+
 const MAX_COMMITTED_TEXT_BYTES = 2048;
+const EMPTY_WORKSPACE: WorkspaceState = { kind: "empty", generation: 0 };
+const INERT_WORKSPACE_CONTROLLER: WorkspaceController = {
+  selectWorkspace: async () => undefined,
+  clearWorkspace: async () => undefined,
+};
 
 export class ImeHarnessState {
   committed: string;
@@ -78,6 +89,8 @@ export class ImeHarnessState {
 export function renderFoundation(
   view: FoundationView,
   controller: FoundationController,
+  workspace: WorkspaceState = EMPTY_WORKSPACE,
+  workspaceController: WorkspaceController = INERT_WORKSPACE_CONTROLLER,
 ): ReactElement {
   return createElement(
     "main",
@@ -106,7 +119,7 @@ export function renderFoundation(
     createElement(
       "section",
       { className: `surface surface-${view.kind}`, "aria-live": "polite" },
-      surface(view, controller),
+      surface(view, controller, workspace, workspaceController),
     ),
     createElement(
       "footer",
@@ -128,6 +141,8 @@ export function renderFoundation(
 function surface(
   view: FoundationView,
   controller: FoundationController,
+  workspace: WorkspaceState,
+  workspaceController: WorkspaceController,
 ): ReactElement {
   switch (view.kind) {
     case "welcome":
@@ -148,7 +163,7 @@ function surface(
         ),
       );
     case "canvas":
-      return canvasSurface(view, controller);
+      return canvasSurface(view, controller, workspace, workspaceController);
     case "about":
       return createElement(
         "div",
@@ -205,6 +220,8 @@ function surface(
 function canvasSurface(
   view: Extract<FoundationView, { kind: "canvas" }>,
   controller: FoundationController,
+  workspace: WorkspaceState,
+  workspaceController: WorkspaceController,
 ): ReactElement {
   const model = new ImeHarnessState(view.committedText);
   let composing = false;
@@ -251,6 +268,7 @@ function canvasSurface(
       { className: "lede" },
       "Keine Coding-, Wissens- oder Agentenfunktion ist in diesem internen Meilenstein enthalten.",
     ),
+    workspacePanel(workspace, workspaceController),
     createElement(
       "label",
       { htmlFor: "ime-harness" },
@@ -279,6 +297,95 @@ function canvasSurface(
       "Nur ein interner Eingabe-Test. Der Text startet keine Produktfunktion.",
     ),
   );
+}
+
+function workspacePanel(
+  workspace: WorkspaceState,
+  controller: WorkspaceController,
+): ReactElement {
+  const presentation = workspacePresentation(workspace);
+  const selecting = workspace.kind === "selecting";
+  return createElement(
+    "section",
+    {
+      className: "workspace-card",
+      "aria-labelledby": "workspace-title",
+    },
+    createElement("p", { className: "eyebrow" }, "ARBEITSBEREICH"),
+    createElement("h2", { id: "workspace-title" }, "Lokales Repository"),
+    createElement(
+      "p",
+      {
+        className: `workspace-status workspace-status-${workspace.kind}`,
+        role: "status",
+        "aria-live": "polite",
+        "data-workspace-state": workspace.kind,
+      },
+      presentation,
+    ),
+    createElement(
+      "p",
+      { className: "hint" },
+      "Nur die Sitzungsidentität bleibt in Keiko. Codex erhält weder Pfad noch Repository-Inhalte.",
+    ),
+    createElement(
+      "div",
+      { className: "button-row" },
+      createElement(
+        "button",
+        {
+          type: "button",
+          disabled: selecting,
+          onClick: () => observeWorkspaceAction(controller.selectWorkspace()),
+        },
+        selecting
+          ? "Systemdialog geöffnet"
+          : workspace.kind === "bound"
+            ? "Anderes Repository auswählen"
+            : "Repository auswählen",
+      ),
+      workspace.kind === "bound"
+        ? createElement(
+            "button",
+            {
+              type: "button",
+              className: "quiet",
+              onClick: () =>
+                observeWorkspaceAction(controller.clearWorkspace()),
+            },
+            "Auswahl aufheben",
+          )
+        : null,
+    ),
+  );
+}
+
+function observeWorkspaceAction(action: Promise<void>): void {
+  action.catch(() => {
+    console.error("Workspace action failed after controller recovery.");
+  });
+}
+
+function workspacePresentation(workspace: WorkspaceState): string {
+  switch (workspace.kind) {
+    case "empty":
+      return "Kein Repository ausgewählt.";
+    case "selecting":
+      return "Der macOS-Systemdialog wartet auf Ihre Auswahl.";
+    case "bound":
+      return `Ausgewählt: ${workspace.displayLabel}`;
+    case "closed":
+      return {
+        cancelled: "Auswahl abgebrochen. Es wurde kein Repository gebunden.",
+        "permission-denied":
+          "Zugriff verweigert. Wählen Sie das Repository erneut und erlauben Sie den Zugriff.",
+        invalid: "Der gewählte Ordner ist kein unterstütztes Git-Repository.",
+        unavailable:
+          "Das Repository ist nicht mehr verfügbar. Wählen Sie es erneut aus.",
+        unsafe:
+          "Die Auswahl wurde aus Sicherheitsgründen abgelehnt. Wählen Sie den echten Repository-Ordner.",
+      }[workspace.reason];
+  }
 }
 
 function navButton(

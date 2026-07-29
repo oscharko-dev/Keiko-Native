@@ -40,9 +40,41 @@ function fixture({ descendantCount = 0, descendantCounts, terminate } = {}) {
   return { calls, child, control };
 }
 
-function acknowledge(child) {
+function acknowledgeHealth(child) {
   child.stderr.emit("data", "keiko-native-health-ack/v1 sequence=2\n");
 }
+
+function acknowledge(child) {
+  acknowledgeHealth(child);
+  child.stderr.emit("data", "keiko-native-workspace-ack/v1 state=available\n");
+}
+
+test("packaged lifecycle waits for both health and workspace acknowledgements", async () => {
+  let now = 0;
+  const { child, control } = fixture();
+  const pending = runPackagedLifecycle({
+    clock: { now: () => now },
+    executable: "/package/app",
+    packageRoot: "/package",
+    processControl: control,
+  });
+  let settled = false;
+  void pending.then(() => {
+    settled = true;
+  });
+  now = 5;
+  acknowledgeHealth(child);
+  await Promise.resolve();
+  assert.equal(settled, false);
+  now = 8;
+  child.stderr.emit("data", "keiko-native-workspace-ack/v1 state=available\n");
+  assert.deepEqual(await pending, {
+    acknowledgementMs: 8,
+    cleanupOwnedDescendants: 0,
+    shutdownMs: 0,
+    workspaceAcknowledgementMs: 8,
+  });
+});
 
 test("functional acknowledgement and shutdown use separate exact budgets", async () => {
   assert.equal(FUNCTIONAL_ACKNOWLEDGEMENT_WATCHDOG_MS, 30_000);
@@ -72,6 +104,7 @@ test("functional acknowledgement and shutdown use separate exact budgets", async
       acknowledgementMs: acknowledgementAt,
       cleanupOwnedDescendants: 0,
       shutdownMs: 0,
+      workspaceAcknowledgementMs: acknowledgementAt,
     });
     assert.equal(scheduled[0], FUNCTIONAL_ACKNOWLEDGEMENT_WATCHDOG_MS);
     assert.ok(
@@ -118,6 +151,7 @@ test("lifecycle binds normal quit and cleanup to the spawned exact PID", async (
     acknowledgementMs: 0,
     cleanupOwnedDescendants: 0,
     shutdownMs: 0,
+    workspaceAcknowledgementMs: 0,
   });
   assert.ok(calls.some((call) => call[0] === "terminate" && call[1] === 42));
   assert.ok(!JSON.stringify(calls).includes("bundle"));

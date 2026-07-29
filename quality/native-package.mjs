@@ -59,9 +59,11 @@ function packagedShellEvidence({
   runner,
 }) {
   return {
-    schema: "keiko-native-packaged-shell-evidence/v1",
+    schema: "keiko-native-packaged-shell-evidence/v2",
     sourceRevision: revision,
     readinessFingerprint:
+      "9ffd5d0ff53857f35ff47f470a4661fdd89ddcba8d08a2b92cf9c36a4afd446e",
+    foundationReadinessFingerprint:
       "da2459bd3becc6cbf651a24ef1b64d1b11a8ed642bfddc92923f0d6ed6dc8e5e",
     packageManifestSha256,
     cargoLockSha256,
@@ -70,6 +72,7 @@ function packagedShellEvidence({
     architecture,
     outcomes: [
       "packaged-health-acknowledged",
+      "packaged-workspace-status-acknowledged",
       "normal-shutdown",
       "zero-owned-descendants",
       "package-policy",
@@ -83,6 +86,7 @@ function packagedShellEvidence({
       "shutting-down",
     ],
     acknowledgementMs: lifecycle.acknowledgementMs,
+    workspaceAcknowledgementMs: lifecycle.workspaceAcknowledgementMs,
     shutdownMs: lifecycle.shutdownMs,
     cleanupOwnedDescendants: lifecycle.cleanupOwnedDescendants,
     redaction: "closed",
@@ -311,6 +315,8 @@ export function createNativePackageGate({
         (path) => readOutputFile(path, packageRoot),
       ),
       readinessFingerprint:
+        "9ffd5d0ff53857f35ff47f470a4661fdd89ddcba8d08a2b92cf9c36a4afd446e",
+      foundationReadinessFingerprint:
         "da2459bd3becc6cbf651a24ef1b64d1b11a8ed642bfddc92923f0d6ed6dc8e5e",
       sourceRevision: revision,
     };

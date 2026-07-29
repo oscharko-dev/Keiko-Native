@@ -5,13 +5,24 @@ const authority = { documentNonce: "a".repeat(64), generation: 7 };
 
 const invoke = vi.fn(
   async (
-    _command: string,
+    command: string,
     arguments_: { documentNonce: string; generation: number; request: string },
   ) => {
     const request = JSON.parse(arguments_.request) as {
       requestId: string;
       operation: { kind: string };
     };
+    if (command === "workspace_request") {
+      const state =
+        request.operation.kind === "workspace-select"
+          ? { kind: "bound", generation: 1, displayLabel: "Keiko Native" }
+          : { kind: "empty", generation: 2 };
+      return JSON.stringify({
+        schemaVersion: 1,
+        requestId: request.requestId,
+        result: { kind: "workspace", state },
+      });
+    }
     if (request.operation.kind !== "application-health") {
       const result =
         request.operation.kind === "foundation-load"
@@ -92,7 +103,7 @@ describe("production renderer composition", () => {
 
     await startRenderer(invoke, async () => authority);
 
-    expect(invoke).toHaveBeenCalledTimes(3);
+    expect(invoke).toHaveBeenCalledTimes(4);
     expect(render).toHaveBeenCalled();
   });
 
@@ -106,7 +117,7 @@ describe("production renderer composition", () => {
 
     await startRenderer(invoke, async () => authority);
 
-    expect(invoke).toHaveBeenCalledTimes(3);
+    expect(invoke).toHaveBeenCalledTimes(4);
   });
 
   it("connects every visible action to its narrow typed port operation", async () => {
@@ -143,6 +154,8 @@ describe("production renderer composition", () => {
     };
 
     await click("Foundation öffnen");
+    await click("Repository auswählen");
+    await click("Auswahl aufheben");
     const canvas = all(render.mock.calls.at(-1)?.[0]).find(
       ({ type }) => type === "textarea",
     );
@@ -175,6 +188,17 @@ describe("production renderer composition", () => {
       "show-canvas",
       "quit-application",
     ]);
+    const workspaceKinds = invoke.mock.calls
+      .filter(([command]) => command === "workspace_request")
+      .map(([, arguments_]) =>
+        Reflect.get(JSON.parse(String(arguments_.request)), "operation"),
+      )
+      .map((operation) => Reflect.get(operation, "kind"));
+    expect(workspaceKinds).toEqual([
+      "workspace-status",
+      "workspace-select",
+      "workspace-clear",
+    ]);
   });
 
   it("renders a redacted recoverable welcome substate when the host is unavailable", async () => {
@@ -193,5 +217,69 @@ describe("production renderer composition", () => {
     const rendered = render.mock.calls.at(-1)?.[0];
     expect(JSON.stringify(rendered)).toContain("Foundation-Host");
     expect(JSON.stringify(rendered)).not.toContain("raw host detail");
+  });
+
+  it("isolates workspace-status failure from the foundation surface", async () => {
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: { getElementById: () => ({}) },
+    });
+    const { startRenderer } = await import("./main");
+    const workspaceUnavailable = vi.fn(
+      async (
+        command: string,
+        arguments_: {
+          documentNonce: string;
+          generation: number;
+          request: string;
+        },
+      ) => {
+        const operation = Reflect.get(
+          JSON.parse(arguments_.request),
+          "operation",
+        ) as { kind: string };
+        if (
+          command === "workspace_request" &&
+          operation.kind === "workspace-status"
+        ) {
+          throw new Error("raw workspace transport detail");
+        }
+        return invoke(command, arguments_);
+      },
+    );
+    render.mockClear();
+
+    await expect(
+      startRenderer(workspaceUnavailable, async () => authority),
+    ).resolves.toBeUndefined();
+
+    const initialRendered = JSON.stringify(render.mock.calls.at(-1)?.[0]);
+    expect(initialRendered).toContain("Willkommen bei Keiko Native");
+    expect(initialRendered).not.toContain("Foundation-Host");
+    const all = (
+      value: unknown,
+    ): Array<{ type: unknown; props: Record<string, unknown> }> => {
+      if (Array.isArray(value)) return value.flatMap(all);
+      if (typeof value !== "object" || value === null) return [];
+      const props = Reflect.get(value, "props") as
+        | Record<string, unknown>
+        | undefined;
+      if (props === undefined) return [];
+      return [
+        { type: Reflect.get(value, "type"), props },
+        ...all(props.children),
+      ];
+    };
+    const open = all(render.mock.calls.at(-1)?.[0]).find(
+      ({ type, props }) =>
+        type === "button" && props.children === "Foundation öffnen",
+    );
+    (open?.props.onClick as () => void)();
+    for (let index = 0; index < 6; index += 1) await Promise.resolve();
+
+    const rendered = JSON.stringify(render.mock.calls.at(-1)?.[0]);
+    expect(rendered).toContain("Die Grundlage läuft.");
+    expect(rendered).toContain("nicht mehr verfügbar");
+    expect(rendered).not.toContain("raw workspace transport detail");
   });
 });

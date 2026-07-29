@@ -17,11 +17,13 @@ mod request_adapter;
 mod request_timing;
 #[cfg(feature = "tauri-host")]
 pub mod tauri_adapter;
+mod workspace;
 use acknowledgement::AcknowledgementState;
 pub use foundation::{FoundationHost, FoundationRequestOutput, foundation_request};
 #[cfg(feature = "tauri-host")]
 pub use request_adapter::{ApplicationRequestOutput, application_cancel, application_request};
 use request_timing::{InFlight, MonotonicClock, terminal_reason};
+pub use workspace::{FolderPickerResult, WorkspaceHost, WorkspaceRequestOutput, workspace_request};
 
 const REPLAY_WINDOW: usize = 64;
 
@@ -235,6 +237,18 @@ impl HostLifecycle {
             .map(|response| encode_success(&response))
             .unwrap_or_else(|| encode_error("unknown-request", ReasonCode::UnknownOperation));
         self.complete_with_encoded(accepted, encoded)
+    }
+
+    fn resume_after_user_interaction(&mut self, accepted: &AcceptedRequest) -> bool {
+        let (request_id, _, _) = request_metadata(&accepted.request);
+        let now_ms = self.clock.now_ms();
+        self.in_flight.get_mut(request_id).is_some_and(|request| {
+            if request.generation != accepted.generation {
+                return false;
+            }
+            request.started_at_ms = now_ms;
+            true
+        })
     }
 
     pub fn cancel_application_request(&mut self, context: &SenderContext, bytes: &[u8]) -> String {

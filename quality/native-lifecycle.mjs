@@ -1,6 +1,9 @@
 import { spawn, spawnSync } from "node:child_process";
 
-const ACKNOWLEDGEMENT = "keiko-native-health-ack/v1 sequence=2";
+const ACKNOWLEDGEMENTS = Object.freeze({
+  health: "keiko-native-health-ack/v1 sequence=2",
+  workspace: "keiko-native-workspace-ack/v1 state=available",
+});
 export const FUNCTIONAL_ACKNOWLEDGEMENT_WATCHDOG_MS = 30_000;
 export const SHUTDOWN_BUDGET_MS = 5_000;
 
@@ -8,9 +11,10 @@ function boundedTail(value) {
   return value.slice(-1024);
 }
 
-function waitForAcknowledgement(child, timeoutMs, timers) {
+function waitForAcknowledgement(child, timeoutMs, timers, clock) {
   return new Promise((resolve, reject) => {
     let output = "";
+    const observedAt = new Map();
     const cleanup = () => {
       timers.clearTimeout(timer);
       child.stderr.off("data", onData);
@@ -23,9 +27,14 @@ function waitForAcknowledgement(child, timeoutMs, timers) {
     };
     const onData = (chunk) => {
       output = boundedTail(`${output}${chunk}`);
-      if (!output.includes(ACKNOWLEDGEMENT)) return;
+      for (const [name, marker] of Object.entries(ACKNOWLEDGEMENTS)) {
+        if (!observedAt.has(name) && output.includes(marker)) {
+          observedAt.set(name, clock.now());
+        }
+      }
+      if (observedAt.size !== Object.keys(ACKNOWLEDGEMENTS).length) return;
       cleanup();
-      resolve();
+      resolve(Object.fromEntries(observedAt));
     };
     const onExit = (code, signal) =>
       fail(
@@ -119,17 +128,22 @@ export async function runPackagedLifecycle({
   });
   const startedAt = clock.now();
   let acknowledgementMs;
+  let workspaceAcknowledgementMs;
   let shutdownMs;
   let failure;
   let cleanupFailureClass;
   try {
-    await waitForAcknowledgement(
+    const acknowledgements = await waitForAcknowledgement(
       child,
       FUNCTIONAL_ACKNOWLEDGEMENT_WATCHDOG_MS,
       timers,
+      clock,
     );
-    const acknowledgedAt = clock.now();
+    const acknowledgedAt = Math.max(...Object.values(acknowledgements));
     acknowledgementMs = Math.round(acknowledgedAt - startedAt);
+    workspaceAcknowledgementMs = Math.round(
+      acknowledgements.workspace - startedAt,
+    );
     const deadline = acknowledgedAt + SHUTDOWN_BUDGET_MS;
     const exited = waitForExit(child, SHUTDOWN_BUDGET_MS, timers);
     if (child.exitCode === null && child.signalCode === null) {
@@ -170,7 +184,12 @@ export async function runPackagedLifecycle({
   if (failure) throw failure;
   if (cleanupFailureClass)
     throw new Error(`Packaged shell cleanup failed (${cleanupFailureClass})`);
-  return { acknowledgementMs, cleanupOwnedDescendants: 0, shutdownMs };
+  return {
+    acknowledgementMs,
+    cleanupOwnedDescendants: 0,
+    shutdownMs,
+    workspaceAcknowledgementMs,
+  };
 }
 
 function terminateByPid(pid, timeoutMs) {

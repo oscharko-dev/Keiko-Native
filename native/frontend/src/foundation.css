@@ -45,6 +45,11 @@ button:hover {
   background: #887fff;
 }
 
+button:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
 button:focus-visible,
 textarea:focus-visible {
   outline: 3px solid #61e8c6;
@@ -145,6 +150,30 @@ h1 {
   gap: 0.65rem;
 }
 
+.workspace-card {
+  margin: 0 0 2rem;
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 18px;
+  padding: 1.25rem;
+  background: rgb(0 0 0 / 18%);
+}
+
+.workspace-card h2 {
+  margin: 0;
+  font-size: 1.35rem;
+}
+
+.workspace-status {
+  margin: 0.9rem 0 0;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.workspace-status-closed {
+  border-inline-start: 4px solid #ffbd66;
+  padding-inline-start: 0.8rem;
+}
+
 .metadata-row {
   display: grid;
   grid-template-columns: minmax(7rem, 0.35fr) 1fr;
@@ -237,6 +266,30 @@ footer {
     border-color: rgb(25 32 55 / 18%);
     background: #fff;
     color: #13182a;
+  }
+
+  .workspace-card {
+    border-color: rgb(25 32 55 / 16%);
+    background: rgb(238 240 248 / 72%);
+  }
+
+  .workspace-status-closed {
+    border-inline-start-color: #9a5200;
+  }
+}
+
+@media (prefers-contrast: more) {
+  button,
+  textarea,
+  .welcome-card,
+  .content-card,
+  .canvas-card,
+  .workspace-card {
+    border-width: 2px;
+  }
+
+  .workspace-status-closed {
+    border-inline-start-width: 6px;
   }
 }
 
