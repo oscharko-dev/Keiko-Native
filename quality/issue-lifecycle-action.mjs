@@ -1068,7 +1068,10 @@ async function replaceLifecycleLabels({
     } catch {
       recovered = undefined;
     }
-    if (recovered === undefined || !issueObservationMatches(issue, recovered))
+    if (
+      recovered === undefined ||
+      !issueLabelObservationMatches(issue, recovered)
+    )
       return {
         failures: [
           "Lifecycle mutation failed and original labels could not be restored.",
@@ -1222,13 +1225,25 @@ function issueIdentity(issue) {
   return undefined;
 }
 
+function issueLabelObservationMatches(expected, actual) {
+  const expectedLabelNames = labelNames(expected);
+  const actualLabelNames = labelNames(actual);
+  if (!Array.isArray(expectedLabelNames) || !Array.isArray(actualLabelNames))
+    return false;
+  const expectedLabels = [...expectedLabelNames].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  const actualLabels = [...actualLabelNames].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  return (
+    issueIdentity(actual) === issueIdentity(expected) &&
+    actual?.number === expected?.number &&
+    JSON.stringify(actualLabels) === JSON.stringify(expectedLabels)
+  );
+}
+
 function issueObservationMatches(expected, actual) {
-  const expectedLabels = [...(labelNames(expected) ?? [])].sort((left, right) =>
-    left.localeCompare(right),
-  );
-  const actualLabels = [...(labelNames(actual) ?? [])].sort((left, right) =>
-    left.localeCompare(right),
-  );
   const expectedAssignees = [...assignedLogins(expected)].sort((left, right) =>
     left.localeCompare(right),
   );
@@ -1236,15 +1251,13 @@ function issueObservationMatches(expected, actual) {
     left.localeCompare(right),
   );
   return (
-    issueIdentity(actual) === issueIdentity(expected) &&
-    actual?.number === expected?.number &&
+    issueLabelObservationMatches(expected, actual) &&
     actual?.state === expected?.state &&
     actual?.state_reason === expected?.state_reason &&
     actual?.updated_at === expected?.updated_at &&
     actual?.title === expected?.title &&
     semanticIssueFingerprint(actual?.body ?? "", actual?.title ?? "") ===
       semanticIssueFingerprint(expected?.body ?? "", expected?.title ?? "") &&
-    JSON.stringify(actualLabels) === JSON.stringify(expectedLabels) &&
     JSON.stringify(actualAssignees) === JSON.stringify(expectedAssignees)
   );
 }

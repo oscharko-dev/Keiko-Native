@@ -497,6 +497,39 @@ test("ignores events without a lifecycle destination and fails bad read-back", a
   assert.equal(result.outcome, "failed");
   assert.match(result.failures.join("\n"), /could not be restored/u);
 
+  let successfulRestorePatches = 0;
+  const successfulRestore = requestMock(t, {
+    issueLabels: ["status: ready"],
+  });
+  const restoredResult = await runIssueLifecycleAction({
+    event: reopenedEvent,
+    request: async (path, options) => {
+      if (options?.method === "PATCH") {
+        successfulRestorePatches += 1;
+        return {};
+      }
+      if (path.includes("/issues/27") && successfulRestorePatches === 1)
+        return issue(["status: blocked"], {
+          updated_at: "2026-07-17T12:00:01Z",
+        });
+      if (path.includes("/issues/27") && successfulRestorePatches === 2)
+        return issue(["status: ready"], {
+          updated_at: "2026-07-17T12:00:02Z",
+        });
+      return successfulRestore.request(path, options);
+    },
+  });
+  assert.equal(restoredResult.outcome, "failed");
+  assert.match(
+    restoredResult.failures.join("\n"),
+    /did not match desired state/u,
+  );
+  assert.doesNotMatch(
+    restoredResult.failures.join("\n"),
+    /could not be restored/u,
+  );
+  assert.equal(successfulRestorePatches, 2);
+
   let patches = 0;
   const rejectedRestore = requestMock(t, {
     issueLabels: ["status: ready"],
