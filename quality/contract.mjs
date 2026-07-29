@@ -1747,8 +1747,9 @@ function issueLifecycleWorkflowFailures(workflow) {
   );
   const writePermissions = [...new Set(workflowWritePermissions(workflow))];
   if (
-    JSON.stringify(writePermissions.toSorted()) !==
-    JSON.stringify(["attestations", "id-token", "issues", "statuses"])
+    JSON.stringify(
+      writePermissions.toSorted((left, right) => left.localeCompare(right)),
+    ) !== JSON.stringify(["attestations", "id-token", "issues", "statuses"])
   )
     failures.push(
       `Issue lifecycle write permissions drifted: ${writePermissions.join(", ")}.`,
@@ -1802,8 +1803,9 @@ function lifecycleWakeupWorkflowFailures(workflow) {
       );
   const writePermissions = [...new Set(workflowWritePermissions(workflow))];
   if (
-    JSON.stringify(writePermissions.toSorted()) !==
-    JSON.stringify(["attestations", "id-token", "issues", "statuses"])
+    JSON.stringify(
+      writePermissions.toSorted((left, right) => left.localeCompare(right)),
+    ) !== JSON.stringify(["attestations", "id-token", "issues", "statuses"])
   )
     failures.push(
       `Lifecycle wake-up write permissions drifted: ${writePermissions.join(", ")}.`,
@@ -1978,8 +1980,9 @@ function contractPublicationWorkflowFailures(workflow) {
       `Contract publication workflow must not request write permissions: ${unexpectedWritePermissions.join(", ")}.`,
     );
   if (
-    JSON.stringify(writePermissions.toSorted()) !==
-    JSON.stringify(["attestations", "id-token", "issues"])
+    JSON.stringify(
+      writePermissions.toSorted((left, right) => left.localeCompare(right)),
+    ) !== JSON.stringify(["attestations", "id-token", "issues"])
   )
     failures.push(
       `Contract publication workflow write permissions drifted: ${writePermissions.join(", ")}.`,

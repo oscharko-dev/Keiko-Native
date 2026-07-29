@@ -30,8 +30,12 @@ function exactKeys(value, keys) {
     value !== null &&
     typeof value === "object" &&
     !Array.isArray(value) &&
-    JSON.stringify(Object.keys(value).toSorted()) ===
-      JSON.stringify([...keys].toSorted())
+    JSON.stringify(
+      Object.keys(value).toSorted((left, right) => left.localeCompare(right)),
+    ) ===
+      JSON.stringify(
+        [...keys].toSorted((left, right) => left.localeCompare(right)),
+      )
   );
 }
 

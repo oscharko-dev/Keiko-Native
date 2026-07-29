@@ -120,8 +120,12 @@ function strictBase64(value) {
   return bytes;
 }
 
-function gitBlobObjectId(bytes) {
-  return createHash("sha1")
+function gitBlobObjectId(bytes, expectedObjectId) {
+  const algorithm = { 40: "sha1", 64: "sha256" }[expectedObjectId.length];
+  if (algorithm === undefined) {
+    fail("publication blob object algorithm unavailable");
+  }
+  return createHash(algorithm)
     .update(Buffer.from(`blob ${bytes.length}\0`))
     .update(bytes)
     .digest("hex");
@@ -140,7 +144,8 @@ function blobBinding(response, expected) {
   const contentSha256 = createHash("sha256").update(bytes).digest("hex");
   if (
     bytes.length !== expected.byte_count ||
-    gitBlobObjectId(bytes) !== expected.blob_object_id ||
+    gitBlobObjectId(bytes, expected.blob_object_id) !==
+      expected.blob_object_id ||
     contentSha256 !== expected.content_sha256
   ) {
     fail("publication blob content mismatch");

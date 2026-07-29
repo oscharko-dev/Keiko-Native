@@ -1223,10 +1223,18 @@ function issueIdentity(issue) {
 }
 
 function issueObservationMatches(expected, actual) {
-  const expectedLabels = [...(labelNames(expected) ?? [])].sort();
-  const actualLabels = [...(labelNames(actual) ?? [])].sort();
-  const expectedAssignees = [...assignedLogins(expected)].sort();
-  const actualAssignees = [...assignedLogins(actual)].sort();
+  const expectedLabels = [...(labelNames(expected) ?? [])].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  const actualLabels = [...(labelNames(actual) ?? [])].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  const expectedAssignees = [...assignedLogins(expected)].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  const actualAssignees = [...assignedLogins(actual)].sort((left, right) =>
+    left.localeCompare(right),
+  );
   return (
     issueIdentity(actual) === issueIdentity(expected) &&
     actual?.number === expected?.number &&
