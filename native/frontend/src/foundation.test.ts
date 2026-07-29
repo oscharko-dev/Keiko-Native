@@ -312,6 +312,44 @@ describe("closed Foundation presentation", () => {
     expect(workspaceController.clearWorkspace).toHaveBeenCalledOnce();
   });
 
+  it("observes unexpected workspace action rejection with a redacted diagnostic", async () => {
+    const diagnostic = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    try {
+      const workspaceController: WorkspaceController = {
+        selectWorkspace: vi.fn(async () =>
+          Promise.reject(new Error("raw selection detail")),
+        ),
+        clearWorkspace: vi.fn(async () => undefined),
+      };
+      const rendered = renderFoundation(
+        { kind: "canvas", committedText: "" },
+        controller,
+        { kind: "empty", generation: 0 },
+        workspaceController,
+      );
+      const select = elements(rendered).find(
+        ({ type, props }) =>
+          type === "button" && props.children === "Repository auswählen",
+      );
+
+      (select?.props.onClick as () => void)();
+      for (let index = 0; index < 6; index += 1) {
+        await Promise.resolve();
+      }
+
+      expect(diagnostic).toHaveBeenCalledExactlyOnceWith(
+        "Workspace action failed after controller recovery.",
+      );
+      expect(diagnostic).not.toHaveBeenCalledWith(
+        expect.stringContaining("raw selection detail"),
+      );
+    } finally {
+      diagnostic.mockRestore();
+    }
+  });
+
   it("discards a superseded composition commit when a new composition starts without focus loss", async () => {
     vi.useFakeTimers();
     try {

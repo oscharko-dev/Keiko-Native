@@ -38,20 +38,28 @@ export async function startRenderer(
   };
   const port = createRendererPort(invokeCommand, authorityProvider);
   let initial: Awaited<ReturnType<typeof port.loadFoundation>>;
-  let initialWorkspace: Awaited<ReturnType<typeof port.workspaceStatus>>;
   try {
     await port.health();
     await port.health();
     initial = await port.loadFoundation();
-    initialWorkspace = await port.workspaceStatus();
   } catch {
     root?.render(renderFoundation(unavailable, unavailableController));
     return;
   }
+  let initialWorkspace: WorkspaceState;
+  try {
+    initialWorkspace = (await port.workspaceStatus()).result.state;
+  } catch {
+    initialWorkspace = {
+      kind: "closed",
+      generation: 1,
+      reason: "unavailable",
+    };
+  }
   let controller: FoundationController;
   let workspaceController: WorkspaceController;
   let currentView = initial.result;
-  let workspaceState: WorkspaceState = initialWorkspace.result.state;
+  let workspaceState: WorkspaceState = initialWorkspace;
   const present = (view: FoundationView): FoundationView => {
     currentView = view;
     root?.render(

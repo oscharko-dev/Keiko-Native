@@ -35,10 +35,18 @@ pub struct WorkspaceHost {
     bound_root: Option<InspectedWorkspace>,
 }
 
+fn retire_bound_root_after<T>(
+    bound_root: &mut Option<InspectedWorkspace>,
+    transition: impl FnOnce() -> Result<T, WorkspaceError>,
+) -> Result<T, WorkspaceError> {
+    let result = transition()?;
+    *bound_root = None;
+    Ok(result)
+}
+
 impl WorkspaceHost {
     fn begin_selection(&mut self) -> Result<u64, WorkspaceError> {
-        self.bound_root = None;
-        self.application.begin_selection()
+        retire_bound_root_after(&mut self.bound_root, || self.application.begin_selection())
     }
 
     fn finish_selection(
@@ -76,41 +84,41 @@ impl WorkspaceHost {
         self.finish_selection(generation, picker_result)
     }
 
-    pub fn status(&mut self) -> WorkspaceView {
+    pub fn status(&mut self) -> Result<WorkspaceView, WorkspaceError> {
         let Some(bound) = self.bound_root.as_ref() else {
-            return self.application.view();
+            return Ok(self.application.view());
         };
         let generation = self.application.current_generation();
         let revalidated = inspect_workspace_root(&bound.canonical_root);
         let reason = match revalidated {
             Ok(current) if current.root_identity == bound.root_identity => {
-                return self.application.view();
+                return Ok(self.application.view());
             }
             Ok(_) => WorkspaceClosedReason::Unsafe,
             Err(reason) => reason,
         };
-        let _ = self.application.close_binding(generation, reason);
+        self.application.close_binding(generation, reason)?;
         self.bound_root = None;
-        self.application.view()
-    }
-
-    pub fn clear(&mut self) -> Result<WorkspaceView, WorkspaceError> {
-        self.bound_root = None;
-        self.application.clear()?;
         Ok(self.application.view())
     }
 
-    fn abort_selection(&mut self, generation: u64) {
-        self.bound_root = None;
+    pub fn clear(&mut self) -> Result<WorkspaceView, WorkspaceError> {
+        retire_bound_root_after(&mut self.bound_root, || self.application.clear())?;
+        Ok(self.application.view())
+    }
+
+    fn abort_selection(&mut self, generation: u64) -> Result<(), WorkspaceError> {
         if self.application.binding(generation).is_some() {
-            let _ = self
-                .application
-                .close_binding(generation, WorkspaceClosedReason::Unavailable);
+            self.application
+                .close_binding(generation, WorkspaceClosedReason::Unavailable)?;
         } else if self.application.view() == (WorkspaceView::Selecting { generation }) {
-            let _ = self
-                .application
-                .close_selection(generation, WorkspaceClosedReason::Unavailable);
+            self.application
+                .close_selection(generation, WorkspaceClosedReason::Unavailable)?;
+        } else {
+            return Err(WorkspaceError::StaleGeneration);
         }
+        self.bound_root = None;
+        Ok(())
     }
 }
 
@@ -144,7 +152,7 @@ pub fn workspace_request(
             accepted,
             workspace.lock().map_or_else(
                 |_| Err(WorkspaceError::StaleGeneration),
-                |mut workspace| Ok(workspace.status()),
+                |mut workspace| workspace.status(),
             ),
             true,
         ),
@@ -195,8 +203,10 @@ fn select_workspace(
         .lock()
         .is_ok_and(|mut lifecycle| lifecycle.resume_after_user_interaction(&accepted));
     if !resumed {
-        if let Ok(mut workspace) = workspace.lock() {
-            workspace.abort_selection(generation);
+        if let Ok(mut workspace) = workspace.lock()
+            && workspace.abort_selection(generation).is_err()
+        {
+            return failed("unknown-request", ReasonCode::InternalFailure);
         }
         return failed("unknown-request", ReasonCode::InternalFailure);
     }
@@ -213,7 +223,13 @@ fn select_workspace(
     let view = match workspace.finish_selection(generation, picker_result) {
         Ok(view) => view,
         Err(_) => {
-            workspace.abort_selection(generation);
+            if workspace.abort_selection(generation).is_err() {
+                return finish_encoded(
+                    lifecycle,
+                    accepted,
+                    encode_error("unknown-request", ReasonCode::InternalFailure),
+                );
+            }
             return finish_encoded(
                 lifecycle,
                 accepted,
@@ -225,12 +241,14 @@ fn select_workspace(
     let completion = match lifecycle.lock() {
         Ok(mut lifecycle) => lifecycle.complete_foundation_request(accepted, encoded, false),
         Err(_) => {
-            workspace.abort_selection(generation);
+            if workspace.abort_selection(generation).is_err() {
+                return failed("unknown-request", ReasonCode::InternalFailure);
+            }
             return failed("unknown-request", ReasonCode::InternalFailure);
         }
     };
-    if !completion.live {
-        workspace.abort_selection(generation);
+    if !completion.live && workspace.abort_selection(generation).is_err() {
+        return failed("unknown-request", ReasonCode::InternalFailure);
     }
     WorkspaceRequestOutput {
         encoded: completion.encoded,
@@ -539,7 +557,7 @@ mod tests {
 
         fs::rename(&fixture.root, &moved).expect("move fixture");
         assert_eq!(
-            host.status(),
+            host.status().expect("moved root status"),
             WorkspaceView::Closed {
                 generation: 1,
                 reason: WorkspaceClosedReason::Unavailable,
@@ -561,7 +579,7 @@ mod tests {
         fs::create_dir(&fixture.root).expect("replacement root");
         fs::create_dir(fixture.root.join(".git")).expect("replacement marker");
         assert_eq!(
-            host.status(),
+            host.status().expect("replaced root status"),
             WorkspaceView::Closed {
                 generation: 2,
                 reason: WorkspaceClosedReason::Unsafe,
@@ -578,7 +596,7 @@ mod tests {
         let bound = host
             .select(FolderPickerResult::Selected(fixture.root.clone()))
             .expect("selection");
-        assert_eq!(host.status(), bound);
+        assert_eq!(host.status().expect("unchanged status"), bound);
 
         let stale_generation = host.begin_selection().expect("next selection");
         host.clear().expect("clear selection");
@@ -586,6 +604,21 @@ mod tests {
             host.finish_selection(stale_generation, FolderPickerResult::Cancelled),
             Err(WorkspaceError::StaleGeneration)
         );
+    }
+
+    #[test]
+    fn failed_application_transition_preserves_bound_root_metadata() {
+        let fixture = Fixture::new();
+        fs::create_dir(fixture.root.join(".git")).expect("Git marker");
+        let mut bound_root =
+            Some(inspect_workspace_root(&fixture.root).expect("inspected workspace"));
+
+        let result = retire_bound_root_after(&mut bound_root, || {
+            Err::<u64, WorkspaceError>(WorkspaceError::GenerationExhausted)
+        });
+
+        assert_eq!(result, Err(WorkspaceError::GenerationExhausted));
+        assert!(bound_root.is_some());
     }
 
     #[test]

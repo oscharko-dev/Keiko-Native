@@ -336,7 +336,7 @@ function workspacePanel(
         {
           type: "button",
           disabled: selecting,
-          onClick: () => void controller.selectWorkspace(),
+          onClick: () => observeWorkspaceAction(controller.selectWorkspace()),
         },
         selecting
           ? "Systemdialog geöffnet"
@@ -350,13 +350,20 @@ function workspacePanel(
             {
               type: "button",
               className: "quiet",
-              onClick: () => void controller.clearWorkspace(),
+              onClick: () =>
+                observeWorkspaceAction(controller.clearWorkspace()),
             },
             "Auswahl aufheben",
           )
         : null,
     ),
   );
+}
+
+function observeWorkspaceAction(action: Promise<void>): void {
+  action.catch(() => {
+    console.error("Workspace action failed after controller recovery.");
+  });
 }
 
 function workspacePresentation(workspace: WorkspaceState): string {
