@@ -4,6 +4,7 @@ import {
   renderFoundation,
   type FoundationController,
   type FoundationView,
+  type RuntimeController,
   type WorkspaceController,
 } from "./foundation";
 import "./foundation.css";
@@ -12,6 +13,7 @@ import {
   rendererAuthority,
   type AuthorityProvider,
   type Invoke,
+  type RuntimeReadiness,
   type WorkspaceState,
 } from "./port";
 
@@ -58,8 +60,10 @@ export async function startRenderer(
   }
   let controller: FoundationController;
   let workspaceController: WorkspaceController;
+  let runtimeController: RuntimeController;
   let currentView = initial.result;
   let workspaceState: WorkspaceState = initialWorkspace;
+  let runtimeState: RuntimeReadiness | null = null;
   const present = (view: FoundationView): FoundationView => {
     currentView = view;
     root?.render(
@@ -68,6 +72,8 @@ export async function startRenderer(
         controller,
         workspaceState,
         workspaceController,
+        runtimeState,
+        runtimeController,
       ),
     );
     return view;
@@ -125,6 +131,24 @@ export async function startRenderer(
           reason: "unavailable",
         });
       }
+    },
+  };
+  runtimeController = {
+    checkRuntime: async () => {
+      runtimeState = {
+        state: "checking",
+        quarantinedEvents: 0,
+      };
+      present(currentView);
+      try {
+        runtimeState = (await port.runtimeReadiness()).result.state;
+      } catch {
+        runtimeState = {
+          state: "unavailable",
+          quarantinedEvents: 0,
+        };
+      }
+      present(currentView);
     },
   };
   present(initial.result);

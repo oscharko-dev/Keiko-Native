@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+pub mod runtime;
 pub mod workspace;
 
 pub const PRODUCT_NAME: &str = "Keiko Native";
@@ -31,6 +32,10 @@ pub enum ApplicationResult {
     },
     #[serde(rename = "workspace")]
     Workspace { state: workspace::WorkspaceView },
+    #[serde(rename = "runtime-readiness")]
+    RuntimeReadiness {
+        state: runtime::RuntimeReadinessView,
+    },
     #[serde(rename = "welcome")]
     Welcome { title: String, explanation: String },
     #[serde(rename = "canvas")]

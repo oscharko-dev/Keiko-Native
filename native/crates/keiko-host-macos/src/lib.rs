@@ -15,6 +15,8 @@ mod foundation;
 #[cfg(feature = "tauri-host")]
 mod request_adapter;
 mod request_timing;
+mod runtime;
+mod sha256;
 #[cfg(feature = "tauri-host")]
 pub mod tauri_adapter;
 mod workspace;
@@ -23,6 +25,7 @@ pub use foundation::{FoundationHost, FoundationRequestOutput, foundation_request
 #[cfg(feature = "tauri-host")]
 pub use request_adapter::{ApplicationRequestOutput, application_cancel, application_request};
 use request_timing::{InFlight, MonotonicClock, terminal_reason};
+pub use runtime::{RuntimeHost, RuntimeRequestOutput, runtime_request};
 pub use workspace::{FolderPickerResult, WorkspaceHost, WorkspaceRequestOutput, workspace_request};
 
 const REPLAY_WINDOW: usize = 64;
