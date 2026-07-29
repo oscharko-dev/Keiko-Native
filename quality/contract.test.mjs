@@ -2297,7 +2297,7 @@ test("pins the protected lifecycle recovery wake decision", async () => {
     )
   ).replaceAll("\r\n", "\n");
 
-  assert.match(adr, /Decision issue #131 v8 selected this outcome/u);
+  assert.match(adr, /Decision issue #131 v10 selected this outcome/u);
   assert.match(
     adr,
     /adds one ADR-0012-owned auxiliary identity[\s\S]{0,260}does not change ADR-0011's\s+version-1 record schemas/iu,
@@ -2331,7 +2331,7 @@ test("pins the protected lifecycle recovery wake decision", async () => {
   );
   assert.match(
     adr,
-    /authentication consumes six requests[\s\S]{0,500}at most ten requests[\s\S]{0,500}remaining 140 requests[\s\S]{0,500}151st total request/iu,
+    /authentication consumes six requests[\s\S]{0,700}at most fourteen\s+requests[\s\S]{0,500}remaining 136 requests[\s\S]{0,500}151st total request/iu,
   );
   assert.match(
     adr,
@@ -2339,7 +2339,7 @@ test("pins the protected lifecycle recovery wake decision", async () => {
   );
   assert.match(
     adr,
-    /at most two\s+100-comment pages[\s\S]{0,400}never start history-wide or\s+cursor-resumed recovery-command enumeration/iu,
+    /at most two\s+100-comment pages[\s\S]{0,700}two live collaborator-permission reads[\s\S]{0,400}at most\s+two actors[\s\S]{0,240}at most four permission requests[\s\S]{0,700}lowest\s+numeric comment ID[\s\S]{0,700}cannot starve a later valid command[\s\S]{0,400}never starts?\s+history-wide or cursor-resumed recovery-command enumeration/iu,
   );
   assert.match(
     adr,
@@ -2348,6 +2348,104 @@ test("pins the protected lifecycle recovery wake decision", async () => {
   assert.match(
     adr,
     /This needs no workflow dispatch and no Actions-write\s+permission/iu,
+  );
+
+  assert.match(
+    adr,
+    /pull-request, governance-completion, evidence-completion, and schedule resolvers each acquire\s+`issue-lifecycle-provider-budget`[\s\S]{0,300}sole\s+concurrency group[\s\S]{0,260}issue resolver makes zero provider\s+requests and does not acquire the budget/iu,
+  );
+
+  assert.match(
+    adr,
+    /caller-held per-issue group remains held across the coordinator and every nested producer call[\s\S]{0,260}provider-intensive producer job then acquires `issue-lifecycle-provider-budget` second/iu,
+  );
+
+  assert.match(
+    adr,
+    /Adopt one top-level protected caller at `\.github\/workflows\/lifecycle-wakeup\.yml`[\s\S]{0,180}one reusable\s+coordinator at `\.\/\.github\/workflows\/issue-lifecycle\.yml`[\s\S]{0,260}only protected producer paths[\s\S]{0,160}`\.\/\.github\/workflows\/pr-contract\.yml`[\s\S]{0,160}`\.\/\.github\/workflows\/contract-publication\.yml`/iu,
+  );
+  const protectedProducerMap = adr.match(
+    /The closed mapping is:\n\n([\s\S]+?)\n\nThose workflows/u,
+  );
+  assert.ok(protectedProducerMap, "closed nested protected-producer mapping");
+  for (const row of [
+    "| `issue-contract-current` | `./.github/workflows/pr-contract.yml`",
+    "| `pr-contract`            | `./.github/workflows/pr-contract.yml`",
+    "| `contract-publication`   | `./.github/workflows/contract-publication.yml`",
+  ])
+    assert.ok(protectedProducerMap[1].includes(row), row);
+
+  assert.match(
+    adr,
+    /uses only their `workflow_call` interface[\s\S]{0,500}every input[\s\S]{0,100}`required: true`[\s\S]{0,100}`type: string`[\s\S]{0,1800}No producer call may\s+omit, add, rename, reorder, or weaken the primitive or required status of an input[\s\S]{0,100}passes no\s+secret/iu,
+  );
+  const producerInputSchema = adr.match(
+    /complete ordered\s+protected-producer wire schema is exactly ([\s\S]+?), in that order\./u,
+  );
+  assert.ok(
+    producerInputSchema,
+    "complete ordered protected-producer wire schema",
+  );
+  assert.deepEqual(
+    [...producerInputSchema[1].matchAll(/`([^`]+)`/gu)].map(
+      (entry) => entry[1],
+    ),
+    [
+      "schema_version:string",
+      "producer_contract_version:string",
+      "repository:string",
+      "issue_number:string",
+      "pull_request_number:string",
+      "exact_head_sha:string",
+      "exact_target:string",
+      "generation_bytes_base64:string",
+      "generation_bytes_sha256:string",
+      "generation_identity:string",
+      "attempt:string",
+      "phase_fence_comment_id:string",
+      "phase_fence_digest:string",
+      "generation_request_comment_id:string",
+      "generation_request_digest:string",
+      "request_identity:string",
+      "request_payload_digest:string",
+      "expected_producer:string",
+    ],
+  );
+  assert.match(
+    adr,
+    /`schema_version` is the literal `1`[\s\S]{0,600}canonical positive decimal integers[\s\S]{0,300}`repository` is exactly `oscharko-dev\/Keiko-Native`[\s\S]{0,300}`pull_request_number` is the empty string for explicit null[\s\S]{0,300}`exact_head_sha` is the empty string for explicit null or exactly 40 lowercase hexadecimal[\s\S]{0,300}`exact_target` is the empty string for explicit null[\s\S]{0,500}`generation_bytes_base64` is strict padded RFC 4648 base64 with no whitespace[\s\S]{0,500}must re-encode byte-identically[\s\S]{0,600}exactly 64\s+lowercase hexadecimal characters[\s\S]{0,300}generation-byte digest must match the decoded bytes[\s\S]{0,300}`expected_producer` is exactly one closed producer identity/iu,
+  );
+  assert.match(
+    adr,
+    /`generation_bytes_base64` is at most 65,536 UTF-8 bytes[\s\S]{0,160}Every other input is at most 512 UTF-8\s+bytes[\s\S]{0,300}first-over-bound[\s\S]{0,160}decode-invalid[\s\S]{0,160}re-encoding-mismatched[\s\S]{0,160}digest-mismatched input fails before\s+provider access/iu,
+  );
+
+  const recoveryRequestSchema = adr.match(
+    /Its version-1 schema fields, in order, are\s+([\s\S]+?)\. Its SHA-256 preimage/u,
+  );
+  assert.ok(
+    recoveryRequestSchema,
+    "complete ordered authorized-recovery-request schema",
+  );
+  assert.deepEqual(
+    [...recoveryRequestSchema[1].matchAll(/`([^`]+)`/gu)].map(
+      (entry) => entry[1],
+    ),
+    [
+      "schema_version:uint=1",
+      "repository_id:uint",
+      "issue_number:uint",
+      "comment_id:uint",
+      "command_body_sha256:sha256",
+      "comment_created_at:timestamp",
+      "author_id:uint",
+      "author_type:enum(User)",
+      "recovery_target_identity:sha256",
+    ],
+  );
+  assert.match(
+    adr,
+    /SHA-256 preimage[\s\S]{0,260}`digest_domain`[\s\S]{0,100}schema version `1`[\s\S]{0,100}digest algorithm `sha-256`[\s\S]{0,180}remaining schema\s+fields in that order/iu,
   );
 });
 

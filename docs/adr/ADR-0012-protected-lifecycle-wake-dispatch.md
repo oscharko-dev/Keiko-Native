@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-07-29. Decision issue #131 v8 selected this outcome. The record becomes accepted
+Proposed, 2026-07-29. Decision issue #131 v10 selected this outcome. The record becomes accepted
 only when an authorized maintainer manually merges its pull request to `dev`.
 
 This record narrowly amends ADR-0011's coordinator and producer authentication, invocation,
@@ -40,9 +40,14 @@ how the coordinator starts generation-bound producers without dispatch, did not 
 authority-bearing forward-recovery request after removing caller dispatch, and excluded resolver
 provider reads from ADR-0011's repository-wide budget. A later exact-head review found that recovery
 did not reject a command edited before validation and required an unbounded history-wide
-cardinality proof. Decision issue #131 v8 resolves those gaps without adding an account,
+cardinality proof. Decision issue #131 v8 resolved those gaps without adding an account,
 credential, or provider identity, exceeding ADR-0011's request ceilings, or restoring Actions-write
-authority.
+authority. Ready-state review then found that choosing a syntactically valid fallback command
+before authorizing its actor let an older unauthorized command starve a later valid command.
+Decision issue #131 v9 added a bounded actor-and-permission prefilter before fallback selection.
+Independent audit then found that the protected-producer interface named domain types but did not
+freeze their GitHub `workflow_call` primitives or nullable and canonical-byte encodings. Decision
+issue #131 v10 closes that wire-contract gap.
 
 ## Decision
 
@@ -369,19 +374,42 @@ producer. The closed mapping is:
 | `contract-publication`   | `./.github/workflows/contract-publication.yml` |
 
 Those workflows may retain separately governed top-level triggers, but the lifecycle coordinator
-uses only their `workflow_call` interface. Each call accepts exactly ADR-0011's protected producer
-inputs:
+uses only their `workflow_call` interface. Each reusable workflow declares every input below as
+`required: true` with GitHub primitive `type: string` and no default. The complete ordered
+protected-producer wire schema is exactly `schema_version:string`,
+`producer_contract_version:string`, `repository:string`, `issue_number:string`,
+`pull_request_number:string`, `exact_head_sha:string`, `exact_target:string`,
+`generation_bytes_base64:string`, `generation_bytes_sha256:string`,
+`generation_identity:string`, `attempt:string`, `phase_fence_comment_id:string`,
+`phase_fence_digest:string`, `generation_request_comment_id:string`,
+`generation_request_digest:string`, `request_identity:string`,
+`request_payload_digest:string`, and `expected_producer:string`, in that order. No producer call may
+omit, add, rename, reorder, or weaken the primitive or required status of an input. It passes no
+secret.
 
-- schema and producer-contract version;
-- repository and issue number;
-- pull-request number and exact head, or explicit null;
-- exact target, or explicit null;
-- canonical generation bytes and digest;
-- attempt;
-- fence comment ID and digest;
-- generation-request comment ID and digest;
-- request identity and request-payload digest; and
-- exact expected producer identity.
+The exact wire encodings are:
+
+- `schema_version` is the literal `1`;
+- `producer_contract_version`, `issue_number`, `attempt`, `phase_fence_comment_id`, and
+  `generation_request_comment_id` are canonical positive decimal integers;
+- `repository` is exactly `oscharko-dev/Keiko-Native`;
+- `pull_request_number` is the empty string for explicit null or a canonical positive decimal
+  integer;
+- `exact_head_sha` is the empty string for explicit null or exactly 40 lowercase hexadecimal
+  characters;
+- `exact_target` is the empty string for explicit null or ADR-0011's canonical target string;
+- `generation_bytes_base64` is strict padded RFC 4648 base64 with no whitespace; it decodes to the
+  exact non-empty ADR-0004 canonical generation bytes and must re-encode byte-identically;
+- `generation_bytes_sha256`, `generation_identity`, `phase_fence_digest`,
+  `generation_request_digest`, `request_identity`, and `request_payload_digest` are exactly 64
+  lowercase hexadecimal characters, and the generation-byte digest must match the decoded bytes;
+  and
+- `expected_producer` is exactly one closed producer identity from the mapping above.
+
+`generation_bytes_base64` is at most 65,536 UTF-8 bytes. Every other input is at most 512 UTF-8
+bytes. Missing, extra, reordered, incorrectly typed, noncanonical, empty where prohibited,
+first-over-bound, decode-invalid, re-encoding-mismatched, or digest-mismatched input fails before
+provider access.
 
 There is no caller-selected lane, requested state, activation value, transition, conclusion,
 workflow path, ref, or merge authority. Each producer independently reloads provider state,
@@ -453,7 +481,7 @@ recovery-target identity.
 
 The implementation owns one protected repository allowlist constant shared by lifecycle recovery
 and the existing maintainer-bound governance guard. Its entries are exactly the two immutable
-numeric `User` identities frozen by accepted decision issue #131 v8. Each use additionally requires
+numeric `User` identities frozen by accepted decision issue #131 v10. Each use additionally requires
 a live repository permission of `maintain` or `admin`. Implementations must import that one
 constant; copied numeric identities, mutable-login authorization, actor association, and displayed
 roles are denied. Public provider principal IDs are authorization configuration, not evidence
@@ -484,14 +512,17 @@ authentication consumes six requests. The second REST response must return the s
 ID, and both GraphQL nodes and permission results must agree. Missing or changed node identity,
 resource association, actor, permission, or field fails closed.
 
-Recovery-command discovery and authentication reserve at most ten requests inside ADR-0011's
-existing 150-request recovery-mode counter: at most four GraphQL requests for two complete stable
-reads of the two-page normal fallback window, plus the exact six-request authentication above.
-The remaining 140 requests are reserved for ADR-0011's existing record-chain, target, orphan,
-provider, settlement-publication, and read-back verification. Direct-event recovery omits the
-fallback reads but does not expand any other allowance. Recovery never enters normal effect mode,
-no request is hidden from the counter, unused allowance is not transferred to another invocation,
-and the 151st total request produces no record or effect.
+Fallback discovery, actor authorization, and exact-comment authentication reserve at most fourteen
+requests inside ADR-0011's existing 150-request recovery-mode counter: at most four GraphQL
+requests for two complete stable reads of the two-page normal fallback window, at most four
+collaborator-permission requests for two agreeing reads for each of at most two allowlisted actors,
+plus the exact six-request authentication above. The remaining 136 requests are reserved for
+ADR-0011's existing record-chain, target, orphan, provider, settlement-publication, and read-back
+verification. Direct-event recovery uses only the exact six-request authentication and omits all
+eight fallback-discovery and actor-prefilter requests, but it does not expand any other allowance.
+Recovery never enters normal effect mode, no request is hidden from the counter, unused allowance
+is not transferred to another invocation, and the 151st total request produces no record or
+effect.
 
 ADR-0012 adds exactly one auxiliary identity to ADR-0011's exact domain-to-schema mapping:
 `authorized recovery request` maps only to the fixed domain
@@ -516,13 +547,25 @@ for an already consumed target is a replay no-op regardless of provider order.
 
 The direct comment locator takes precedence and the coordinator considers only that candidate.
 Other wakes may inspect only ADR-0011's existing stable newest-first normal window of at most two
-100-comment pages. They process at most one eligible recovery candidate per invocation,
-deterministically selecting the lowest numeric comment ID. They never start history-wide or
-cursor-resumed recovery-command enumeration. If an event is lost and its command has moved outside
-the bounded window, an authorized maintainer posts a fresh never-edited command. A changed or
-deleted comment, wrong actor or permission, unstable read, malformed command, target mismatch,
-unavailable actor lookup, already consumed target, more than one attempted candidate, or any other
-ADR-0011 recovery-precondition failure produces no record or effect.
+100-comment pages. Before selecting a candidate, the coordinator prefilters the stable window by
+the exact command grammar, every never-edited predicate, actor type `User`, and immutable numeric
+actor-ID membership in the protected two-principal allowlist. For each distinct allowlisted actor
+that remains, it performs two live collaborator-permission reads and requires both to agree on
+`maintain` or `admin`. Because the allowlist contains exactly two actors, this step reads at most
+two actors and makes at most four permission requests. A stable `none` or other insufficient
+permission excludes every command by that actor; any disagreement, provider error, or unavailable
+actor lookup fails the complete invocation.
+
+Only after that complete prefilter does the coordinator deterministically select the lowest
+numeric comment ID from the eligible set. It processes at most one selected recovery candidate per
+invocation, and that comment still undergoes the complete six-request exact authentication before
+it grants recovery authority. A non-allowlisted or permission-revoked older command therefore
+cannot starve a later valid command. The prefilter itself grants no recovery authority. The
+coordinator never starts history-wide or cursor-resumed recovery-command enumeration. If an event
+is lost and its command has moved outside the bounded window, an authorized maintainer posts a
+fresh never-edited command. A changed or deleted comment, wrong actor or permission, unstable read,
+malformed command, target mismatch, already consumed target, more than one attempted candidate, or
+any other ADR-0011 recovery-precondition failure produces no record or effect.
 
 ### Inert rollout
 
@@ -535,10 +578,10 @@ Issue #51 must prove the exact source closure, zero Actions-write permission, lo
 matrix, provider-budget-only resolver serialization, caller-held lock duration, nested producer
 inputs and authentication, provider-budget lock order, the single protected recovery allowlist,
 exact-comment edit predicates, authorized-request identity, at-most-once target consumption,
-duplicate and reordered replay behavior, bounded fallback selection, complete
-caller/coordinator/producer authentication, and disposable guarded-off GitHub behavior. Issue #55
-must repeat the live proof after activation and cover all nine lifecycle states and the complete
-rejected-edge complement.
+duplicate and reordered replay behavior, bounded non-starving fallback prefilter and selection,
+complete caller/coordinator/producer authentication, and disposable guarded-off GitHub behavior.
+Issue #55 must repeat the live proof after activation and cover all nine lifecycle states and the
+complete rejected-edge complement.
 
 ## Alternatives
 
@@ -637,6 +680,7 @@ merge it, enable auto-merge, enqueue it, or use a human credential to bypass the
 - PR #132 post-publication review
   [finding record](https://github.com/oscharko-dev/Keiko-Native/pull/132#issuecomment-5111921934)
 - PR #132 exact-head recovery [finding record][rr]
+- PR #132 ready-state regression [finding record][rr2]
 - [GitHub GraphQL `IssueComment` fields][issue-comment]
 
 [artifacts]: https://docs.github.com/en/rest/actions/artifacts
@@ -645,6 +689,7 @@ merge it, enable auto-merge, enqueue it, or use a human credential to bypass the
 [issue-comment]: https://docs.github.com/en/graphql/reference/objects#issuecomment
 [permissions]: https://docs.github.com/actions/using-jobs/assigning-permissions-to-jobs
 [rr]: https://github.com/oscharko-dev/Keiko-Native/pull/132#pullrequestreview-4803653313
+[rr2]: https://github.com/oscharko-dev/Keiko-Native/pull/132#pullrequestreview-4803986996
 [reuse]: https://docs.github.com/actions/using-workflows/reusing-workflows
 [runs]: https://docs.github.com/en/rest/actions/workflow-runs
 [workflow-run]: https://docs.github.com/actions/using-workflows/events-that-trigger-workflows
