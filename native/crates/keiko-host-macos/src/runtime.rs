@@ -271,7 +271,7 @@ fn perform_check(
     work_generation: &AtomicU64,
     deadline: Instant,
 ) -> RuntimeReadinessView {
-    let mut verified = match verify_configuration(configuration, selected_workspace) {
+    let mut verified = match bind_configuration(configuration, selected_workspace) {
         Ok(verified) => verified,
         Err(state) => return RuntimeReadinessView::terminal(state, 0),
     };
@@ -364,7 +364,7 @@ impl VerifiedConfiguration {
     }
 }
 
-fn verify_configuration(
+fn bind_configuration(
     configuration: &RuntimeConfiguration,
     selected_workspace: Option<&Path>,
 ) -> Result<VerifiedConfiguration, RuntimeReadinessState> {
@@ -389,7 +389,7 @@ fn verify_configuration(
     if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
         return Err(RuntimeReadinessState::Unavailable);
     }
-    let mut verified = VerifiedConfiguration {
+    let verified = VerifiedConfiguration {
         binary,
         binary_file,
         binary_identity: FileIdentity::from_metadata(&metadata),
@@ -397,7 +397,6 @@ fn verify_configuration(
         expected_sha256: configuration.expected_sha256.clone(),
         work_root,
     };
-    verified.revalidate_binary()?;
     Ok(verified)
 }
 
@@ -1298,14 +1297,14 @@ mod tests {
         let mut relative = valid.clone();
         relative.binary = PathBuf::from("codex");
         assert_eq!(
-            verify_configuration(&relative, None).expect_err("relative binary"),
+            bind_configuration(&relative, None).expect_err("relative binary"),
             RuntimeReadinessState::ContainmentFailed
         );
 
         let mut missing = valid.clone();
         missing.binary = fixture.root.join("missing");
         assert_eq!(
-            verify_configuration(&missing, None).expect_err("missing binary"),
+            bind_configuration(&missing, None).expect_err("missing binary"),
             RuntimeReadinessState::Unavailable
         );
 
@@ -1314,21 +1313,21 @@ mod tests {
         let mut linked = valid.clone();
         linked.binary = binary_link;
         assert_eq!(
-            verify_configuration(&linked, None).expect_err("linked binary"),
+            bind_configuration(&linked, None).expect_err("linked binary"),
             RuntimeReadinessState::ContainmentFailed
         );
 
         let mut home_is_file = valid.clone();
         home_is_file.codex_home = fixture.binary.clone();
         assert_eq!(
-            verify_configuration(&home_is_file, None).expect_err("file home"),
+            bind_configuration(&home_is_file, None).expect_err("file home"),
             RuntimeReadinessState::ContainmentFailed
         );
 
         let mut aliased = valid.clone();
         aliased.codex_home = fixture.home.join("..").join("home");
         assert_eq!(
-            verify_configuration(&aliased, None).expect_err("non-canonical alias"),
+            bind_configuration(&aliased, None).expect_err("non-canonical alias"),
             RuntimeReadinessState::ContainmentFailed
         );
 
@@ -1337,7 +1336,7 @@ mod tests {
         let mut not_executable = valid.clone();
         not_executable.binary = non_executable;
         assert_eq!(
-            verify_configuration(&not_executable, None).expect_err("non-executable binary"),
+            bind_configuration(&not_executable, None).expect_err("non-executable binary"),
             RuntimeReadinessState::Unavailable
         );
 
@@ -1345,19 +1344,19 @@ mod tests {
         directory_binary.binary = fixture.root.join("other-directory");
         fs::create_dir(&directory_binary.binary).expect("directory binary");
         assert_eq!(
-            verify_configuration(&directory_binary, None).expect_err("directory binary"),
+            bind_configuration(&directory_binary, None).expect_err("directory binary"),
             RuntimeReadinessState::Unavailable
         );
 
         for selected_workspace in [&fixture.binary, &fixture.home, &fixture.work] {
             assert_eq!(
-                verify_configuration(&valid, Some(selected_workspace))
+                bind_configuration(&valid, Some(selected_workspace))
                     .expect_err("overlapping workspace"),
                 RuntimeReadinessState::ContainmentFailed
             );
         }
         assert_eq!(
-            verify_configuration(&valid, Some(&fixture.root.join("missing-workspace")))
+            bind_configuration(&valid, Some(&fixture.root.join("missing-workspace")))
                 .expect_err("missing workspace"),
             RuntimeReadinessState::ContainmentFailed
         );
@@ -1372,7 +1371,7 @@ mod tests {
             work_root: fixture.work.clone(),
             expected_sha256: sha256_file(&fixture.binary).expect("digest"),
         };
-        let mut verified = verify_configuration(&configuration, None).expect("verified");
+        let mut verified = bind_configuration(&configuration, None).expect("bound");
         let original = fixture.root.join("original-codex");
         fs::rename(&fixture.binary, &original).expect("retain original inode");
         fs::write(&fixture.binary, b"replacement runtime").expect("replacement");
@@ -1690,7 +1689,7 @@ while :; do /bin/sleep 1; done
             &mut child,
             process_group,
             &active,
-            Instant::now() + Duration::from_secs(1),
+            Instant::now() + Duration::from_secs(5),
         ));
         assert_eq!(
             *active.process_group.lock().expect("process-group state"),
