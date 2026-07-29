@@ -3360,6 +3360,30 @@ test("binds Zizmor dangerous-trigger dispositions to the exact rule path", async
       [
         "rules:",
         "  dangerous-triggers:",
+        '    "disable": true',
+        "    ignore:",
+        "      - lifecycle-wakeup.yml:3",
+        "      - pr-contract.yml",
+      ].join("\n"),
+      [
+        "rules:",
+        "  dangerous-triggers:",
+        "    'disable': TRUE",
+        "    ignore:",
+        "      - lifecycle-wakeup.yml:3",
+        "      - pr-contract.yml",
+      ].join("\n"),
+      [
+        "rules:",
+        "  dangerous-triggers:",
+        '    "dis\\u0061ble": true',
+        "    ignore:",
+        "      - lifecycle-wakeup.yml:3",
+        "      - pr-contract.yml",
+      ].join("\n"),
+      [
+        "rules:",
+        "  dangerous-triggers:",
         "    enabled: &enabled true",
         "    disable: *enabled",
         "    ignore:",
@@ -3374,21 +3398,28 @@ test("binds Zizmor dangerous-trigger dispositions to the exact rule path", async
         /Zizmor must bind the exact ordered dangerous-trigger ignore sequence/u,
       );
     }
-    await writeFile(
-      path,
-      [
-        "rules:",
-        "  dangerous-triggers:",
-        "    disable: false",
-        "    ignore:",
-        "      - lifecycle-wakeup.yml:3",
-        "      - pr-contract.yml",
-      ].join("\n"),
-    );
-    assert.doesNotMatch(
-      (await validateRepository(root)).failures.join("\n"),
-      /Zizmor must bind the exact ordered dangerous-trigger ignore sequence/u,
-    );
+    const validPolicies = [
+      "    disable: false",
+      '    "disable": false',
+      "    'disable': !!bool false",
+    ];
+    for (const disable of validPolicies) {
+      await writeFile(
+        path,
+        [
+          "rules:",
+          "  dangerous-triggers:",
+          disable,
+          "    ignore:",
+          "      - lifecycle-wakeup.yml:3",
+          "      - pr-contract.yml",
+        ].join("\n"),
+      );
+      assert.doesNotMatch(
+        (await validateRepository(root)).failures.join("\n"),
+        /Zizmor must bind the exact ordered dangerous-trigger ignore sequence/u,
+      );
+    }
   } finally {
     await rm(root, { force: true, recursive: true });
   }

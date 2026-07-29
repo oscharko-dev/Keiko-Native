@@ -2191,6 +2191,30 @@ function zizmorDangerousTriggerPolicyValid(source) {
     );
     return matches.length === 1 ? matches[0] : -1;
   };
+  const parseMappingEntry = (content) => {
+    const plain = content.match(/^([a-z][a-z0-9-]*)\s*:(.*)$/u);
+    if (plain) return { key: plain[1], value: plain[2].trim() };
+
+    const singleQuoted = content.match(/^('(?:[^']|'')*')\s*:(.*)$/u);
+    if (singleQuoted) {
+      return {
+        key: singleQuoted[1].slice(1, -1).replaceAll("''", "'"),
+        value: singleQuoted[2].trim(),
+      };
+    }
+
+    const doubleQuoted = content.match(/^("(?:[^"\\]|\\.)*")\s*:(.*)$/u);
+    if (!doubleQuoted) return undefined;
+    try {
+      const key = JSON.parse(doubleQuoted[1]);
+      return typeof key === "string"
+        ? { key, value: doubleQuoted[2].trim() }
+        : undefined;
+    } catch {
+      // Unsupported or malformed YAML key escapes are ambiguous here.
+      return undefined;
+    }
+  };
 
   const rules = lines
     .map((line, index) => ({ ...line, index }))
@@ -2225,12 +2249,20 @@ function zizmorDangerousTriggerPolicyValid(source) {
   )
     return false;
 
-  const disableValues = directChildren(dangerousTriggers, 4).flatMap(
-    (index) => {
-      const match = lines[index].content.match(/^disable\s*:(.*)$/u);
-      return match ? [match[1].trim()] : [];
-    },
+  const ruleEntries = directChildren(dangerousTriggers, 4).map((index) =>
+    parseMappingEntry(lines[index].content),
   );
+  if (
+    ruleEntries.some(
+      (entry) =>
+        entry === undefined ||
+        (entry.key !== "ignore" && entry.key !== "disable"),
+    )
+  )
+    return false;
+  const disableValues = ruleEntries
+    .filter((entry) => entry.key === "disable")
+    .map((entry) => entry.value);
   if (disableValues.length === 0) return true;
   if (disableValues.length !== 1) return false;
 
