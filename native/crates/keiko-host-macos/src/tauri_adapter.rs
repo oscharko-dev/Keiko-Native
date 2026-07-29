@@ -189,7 +189,7 @@ pub fn workspace_request(
         workspace.inner(),
         &sender,
         &request,
-        platform_select_workspace,
+        Box::new(platform_select_workspace),
     );
     if output.acknowledged_status {
         eprintln!("keiko-native-workspace-ack/v1 state=available");
