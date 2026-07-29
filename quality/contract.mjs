@@ -2225,9 +2225,18 @@ function zizmorDangerousTriggerPolicyValid(source) {
   )
     return false;
 
-  return !directChildren(dangerousTriggers, 4).some(
-    (index) => lines[index].content === "disable: true",
+  const disableValues = directChildren(dangerousTriggers, 4).flatMap(
+    (index) => {
+      const match = lines[index].content.match(/^disable\s*:(.*)$/u);
+      return match ? [match[1].trim()] : [];
+    },
   );
+  if (disableValues.length === 0) return true;
+  if (disableValues.length !== 1) return false;
+
+  // Fail closed on aliases, anchors, tags other than !!bool, and unknown
+  // scalars. They can change meaning across YAML schemas or parser versions.
+  return /^(?:!!bool\s+)?false$/iu.test(disableValues[0]);
 }
 
 async function providerFailures(root) {
