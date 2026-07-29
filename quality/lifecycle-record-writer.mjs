@@ -2,6 +2,7 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import { githubRequestFor } from "./github-api.mjs";
 import {
@@ -98,8 +99,10 @@ async function providerComment(plan, providerRequest) {
     `/repos/${plan.repository}/issues/${plan.issueNumber}/comments`,
     { method: "POST", payload: { body: plan.recordBody } },
   );
+  if (!Number.isSafeInteger(created?.id) || created.id <= 0)
+    throw new Error("record comment identity is invalid");
   const reread = await providerRequest(
-    `/repos/${plan.repository}/issues/comments/${created?.id}`,
+    `/repos/${plan.repository}/issues/comments/${created.id}`,
   );
   if (!trustedComment(reread, plan.recordBody))
     throw new Error("record comment read-back mismatch");
@@ -149,12 +152,64 @@ function exactArtifact(artifacts, prepared) {
   return matches.length === 1 ? matches[0] : undefined;
 }
 
+function validatePreparedPublication(plan, prepared) {
+  const preparedKeys = [
+    "anchorIdentity",
+    "anchorPath",
+    "artifactName",
+    "checksumsPath",
+    "commentId",
+    "fields",
+    "subject",
+  ];
+  const fieldKeys = [
+    "repository",
+    "issue_number",
+    "record_type",
+    "record_digest",
+    "comment_id",
+    "comment_body_sha256",
+    "generation_identity",
+    "attempt",
+    "workflow_path",
+    "workflow_run_id",
+    "workflow_run_attempt",
+    "protected_dev_sha",
+  ];
+  if (
+    !exactKeys(prepared, preparedKeys) ||
+    !exactKeys(prepared.fields, fieldKeys) ||
+    !Number.isSafeInteger(prepared.commentId) ||
+    prepared.commentId <= 0 ||
+    !Number.isSafeInteger(prepared.fields.workflow_run_id) ||
+    prepared.fields.workflow_run_id <= 0 ||
+    !/^[0-9a-f]{64}$/u.test(prepared.anchorIdentity ?? "") ||
+    typeof prepared.anchorPath !== "string" ||
+    typeof prepared.checksumsPath !== "string"
+  )
+    throw new TypeError("prepared lifecycle publication is invalid");
+  const expectedFields = anchorFields(plan, {
+    body: plan.recordBody,
+    id: prepared.commentId,
+  });
+  if (
+    !isDeepStrictEqual(prepared.fields, expectedFields) ||
+    prepared.artifactName !== lifecycleAnchorArtifactName(plan.issueNumber) ||
+    prepared.anchorIdentity !==
+      digestAuxiliaryIdentity("artifact anchor", expectedFields) ||
+    prepared.subject !== lifecycleAnchorSubject(expectedFields)
+  )
+    throw new TypeError("prepared lifecycle publication identity mismatch");
+  return prepared;
+}
+
 export async function verifyLifecycleRecordPublication({
   encodedPlan,
   prepared,
   providerRequest = request,
 }) {
   const plan = decodeLifecycleRecordPlan(encodedPlan);
+  validatePreparedPublication(plan, prepared);
   const comment = await providerRequest(
     `/repos/${plan.repository}/issues/comments/${prepared.commentId}`,
   );

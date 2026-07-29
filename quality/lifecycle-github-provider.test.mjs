@@ -6,6 +6,10 @@ import {
   createLifecycleGithubProvider,
   verifyLifecycleAttestationBundle,
 } from "./lifecycle-github-provider.mjs";
+import {
+  createRecordEnvelope,
+  parseRecordEnvelope,
+} from "./lifecycle-record-protocol.mjs";
 
 const target = "b".repeat(64);
 const command = `/keiko-native lifecycle-recovery v1 target=sha256:${target}`;
@@ -250,4 +254,94 @@ test("cryptographically verifies the exact bundle with closed signer and source 
     assert.equal(argumentsList[argumentsList.indexOf(pair[0]) + 1], pair[1]);
   assert.ok(argumentsList.includes("--deny-self-hosted-runners"));
   assert.ok(argumentsList.includes("--no-public-good"));
+});
+
+test("bounds checkpoint predecessor traversal to the live suffix", async () => {
+  const bodies = new Map();
+  let predecessorId = null;
+  let predecessorDigest = null;
+  for (let id = 1; id <= 17; id += 1) {
+    const common = {
+      schema_version: 1,
+      digest_algorithm: "sha-256",
+      repository: "oscharko-dev/Keiko-Native",
+      issue_number: 51,
+      pull_request_number: null,
+      exact_head_sha: null,
+      exact_target: "dev",
+      generation_identity: "2".repeat(64),
+      attempt: 1,
+      request_identity: "3".repeat(64),
+      predecessor_comment_id: predecessorId,
+      predecessor_record_digest: predecessorDigest,
+      protected_dev_sha: "a".repeat(40),
+      recorded_at: "2026-07-29T12:00:00Z",
+    };
+    const body =
+      id === 17
+        ? createRecordEnvelope("transition-read-back", {
+            record_type: "transition-read-back",
+            digest_domain: "keiko-native.lifecycle-record.transition-read-back",
+            ...common,
+            phase_fence_comment_id: 20,
+            phase_fence_digest: "6".repeat(64),
+            source_state: "status: ready",
+            desired_state: "status: ready",
+            observed_state: "status: ready",
+            transition_owner: "handoff",
+            effect_identity: null,
+            read_back_identity: "7".repeat(64),
+            producer_results: [],
+            checkpoint_sequence: 1,
+            prior_checkpoint_comment_id: null,
+            prior_checkpoint_record_digest: null,
+            compacted_prefix_identity: "8".repeat(64),
+            outcome: "planned",
+            reason_code: "activation-disabled",
+          })
+        : createRecordEnvelope("generation-request", {
+            record_type: "generation-request",
+            digest_domain: "keiko-native.lifecycle-record.generation-request",
+            ...common,
+            lane: "normal",
+            publication_submode: "not-applicable",
+            generation_schema: 1,
+            generation_bytes_sha256: "1".repeat(64),
+            request_payload_digest: "4".repeat(64),
+            expected_producers: ["issue-contract-current"],
+            source_observation_identity: "5".repeat(64),
+            workflow_path: ".github/workflows/issue-lifecycle.yml",
+            workflow_run_id: 10,
+            workflow_run_attempt: 1,
+          });
+    bodies.set(id, body);
+    predecessorId = id;
+    predecessorDigest = parseRecordEnvelope(body).recordDigest;
+  }
+  const provider = createLifecycleGithubProvider({
+    binary: async () => Buffer.alloc(0),
+    graphql: async () => {
+      throw new Error("GraphQL access is unexpected");
+    },
+    json: async (path) => {
+      const id = Number(path.match(/issues\/comments\/([1-9][0-9]*)$/u)?.[1]);
+      return {
+        body: bodies.get(id),
+        created_at: "2026-07-29T12:00:00Z",
+        id,
+        issue_url:
+          "https://api.github.com/repos/oscharko-dev/Keiko-Native/issues/51",
+        node_id: `IC_${id}`,
+        performed_via_github_app: { id: 15368 },
+        updated_at: "2026-07-29T12:00:00Z",
+        user: { id: 41898282, login: "github-actions[bot]", type: "Bot" },
+      };
+    },
+  });
+  for (let id = 1; id <= 17; id += 1)
+    await provider.getComment({ commentId: id, issueNumber: 51 });
+  await assert.rejects(
+    provider.getCheckpointEvidence({ commentId: 17 }),
+    /checkpoint-member-overflow/u,
+  );
 });

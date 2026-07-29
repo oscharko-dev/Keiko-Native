@@ -92,14 +92,39 @@ export function recoveryScanIdentity({ repository, issueNumber, accumulator }) {
 }
 
 export function validateRecoveryResume({ claim, accumulator, nextCursor }) {
-  const fields = accumulator?.fields;
+  const claimFields = [
+    "recovery_scanned_page_count",
+    "recovery_scanned_comment_count",
+    "recovery_accumulated_suffix_identity",
+    "recovery_provider_cursor",
+    "recovery_scan_complete",
+  ];
+  const accumulatorFields = [
+    "accumulator_step",
+    "cumulative_member_count",
+    "next_provider_cursor",
+    "complete",
+  ];
   if (
-    claim?.recovery_scanned_page_count !== fields?.accumulator_step ||
-    claim?.recovery_scanned_comment_count !== fields?.cumulative_member_count ||
-    claim?.recovery_accumulated_suffix_identity !== accumulator?.identity ||
-    claim?.recovery_provider_cursor !== fields?.next_provider_cursor ||
-    claim?.recovery_scan_complete !== fields?.complete ||
-    nextCursor !== fields?.next_provider_cursor
+    claim === null ||
+    typeof claim !== "object" ||
+    accumulator === null ||
+    typeof accumulator !== "object" ||
+    accumulator.fields === null ||
+    typeof accumulator.fields !== "object" ||
+    typeof accumulator.identity !== "string" ||
+    claimFields.some((field) => !Object.hasOwn(claim, field)) ||
+    accumulatorFields.some((field) => !Object.hasOwn(accumulator.fields, field))
+  )
+    fail("recovery-resume-discontinuity");
+  const fields = accumulator.fields;
+  if (
+    claim.recovery_scanned_page_count !== fields.accumulator_step ||
+    claim.recovery_scanned_comment_count !== fields.cumulative_member_count ||
+    claim.recovery_accumulated_suffix_identity !== accumulator.identity ||
+    claim.recovery_provider_cursor !== fields.next_provider_cursor ||
+    claim.recovery_scan_complete !== fields.complete ||
+    nextCursor !== fields.next_provider_cursor
   )
     fail("recovery-resume-discontinuity");
   return true;

@@ -73,6 +73,19 @@ test("parses and binds an authenticated versioned dispatch request", () => {
     }),
   );
   assert.equal(triage.ok, true);
+  assert.equal(
+    parse(
+      dispatchEvent({
+        inputs: {
+          expected_source: "status: new",
+          ordering_attestation: "confirmed",
+          reason: undefined,
+          requested_target: "status: triaged",
+        },
+      }),
+    ).ok,
+    true,
+  );
 });
 
 test("rejects malformed, hostile, stale, and unauthorized dispatch input", () => {

@@ -93,6 +93,14 @@ test("publishes one canonical comment and prepares exact anchor inputs", async (
     await readFile(prepared.checksumsPath, "utf8"),
     `${prepared.anchorIdentity}  ${prepared.subject}\n`,
   );
+  await assert.rejects(
+    prepareLifecycleRecordPublication({
+      encodedPlan: encodedPlan(),
+      outputDirectory: await mkdtemp(join(tmpdir(), "keiko-record-writer-")),
+      providerRequest: async () => ({ ...comment(), id: undefined }),
+    }),
+    /record comment identity is invalid/u,
+  );
 });
 
 test("verifies exact final provider records and rejects malformed plans", async () => {
@@ -136,6 +144,29 @@ test("verifies exact final provider records and rejects malformed plans", async 
     () => decodeLifecycleRecordPlan("not-base64"),
     /record plan is malformed/u,
   );
+  let providerCalls = 0;
+  await assert.rejects(
+    verifyLifecycleRecordPublication({
+      encodedPlan: encodedPlan(),
+      prepared: { ...prepared, commentId: "../attacker" },
+      providerRequest: async () => {
+        providerCalls += 1;
+      },
+    }),
+    /prepared lifecycle publication is invalid/u,
+  );
+  assert.equal(providerCalls, 0);
+  await assert.rejects(
+    verifyLifecycleRecordPublication({
+      encodedPlan: encodedPlan(),
+      prepared: { ...prepared, anchorIdentity: "0".repeat(64) },
+      providerRequest: async () => {
+        providerCalls += 1;
+      },
+    }),
+    /prepared lifecycle publication identity mismatch/u,
+  );
+  assert.equal(providerCalls, 0);
 });
 
 test("workflow writer transport is pinned and activation remains disabled", async () => {

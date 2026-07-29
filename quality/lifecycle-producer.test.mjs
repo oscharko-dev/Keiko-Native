@@ -171,6 +171,26 @@ test("the producer action reconstructs, evaluates, and writes the record plan", 
   assert.match(output, /^issue-number=51$/mu);
   assert.match(output, /^record-plan=[A-Za-z0-9_-]+$/mu);
   assert.match(output, /^result-identity=[0-9a-f]{64}$/mu);
+
+  for (const [name, value] of [
+    ["GITHUB_WORKFLOW_SHA", "not-a-sha"],
+    ["GITHUB_RUN_ID", "0"],
+    ["GITHUB_RUN_ATTEMPT", "01"],
+  ])
+    await assert.rejects(
+      runLifecycleProducerRecordAction({
+        environment: { ...environment, [name]: value },
+        githubOutput,
+        loadFacts: async () => {
+          throw new Error("provider access is unexpected");
+        },
+        loadHistory: async () => {
+          throw new Error("provider access is unexpected");
+        },
+        provider,
+      }),
+      /producer workflow SHA|canonical positive decimal/u,
+    );
 });
 
 test("rejects stale generations and duplicate or reordered producers", () => {
@@ -218,5 +238,19 @@ test("rejects stale generations and duplicate or reordered producers", () => {
         records: [request, fence, firstRecord],
       }),
     /duplicated or reordered/u,
+  );
+
+  const settledRecovery = {
+    comment: { id: 99 },
+    parsed: {
+      fields: { claim_outcome: "settled", phase: "recovery" },
+      recordType: "phase-fence-claim",
+    },
+  };
+  assert.doesNotThrow(() =>
+    planInertLifecycleProducerResult({
+      ...input,
+      records: [firstRecord, settledRecovery, request, fence],
+    }),
   );
 });

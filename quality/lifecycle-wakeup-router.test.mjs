@@ -194,6 +194,7 @@ test("caller workflow freezes ADR-0012 source closure and has no Actions write o
     "resolve-schedule:",
     "group: issue-lifecycle-provider-budget",
     "group: issue-lifecycle-${{ matrix.locator.issue_number }}",
+    "needs.resolve-schedule.outputs.locators != '[]'",
     "uses: ./.github/workflows/issue-lifecycle.yml",
     "recovery_comment_id: ${{ matrix.locator.recovery_comment_id }}",
   ])

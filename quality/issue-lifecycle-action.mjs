@@ -1058,12 +1058,17 @@ async function replaceLifecycleLabels({
     };
 
   if (!issueObservationMatches(issue, readback)) {
-    await request(`/repos/${repository}/issues/${issueNumber}`, {
-      method: "PATCH",
-      payload: { labels: originalLabels },
-    });
-    const recovered = await reloadIssue(repository, issueNumber, request);
-    if (!issueObservationMatches(issue, recovered))
+    let recovered;
+    try {
+      await request(`/repos/${repository}/issues/${issueNumber}`, {
+        method: "PATCH",
+        payload: { labels: originalLabels },
+      });
+      recovered = await reloadIssue(repository, issueNumber, request);
+    } catch {
+      recovered = undefined;
+    }
+    if (recovered === undefined || !issueObservationMatches(issue, recovered))
       return {
         failures: [
           "Lifecycle mutation failed and original labels could not be restored.",

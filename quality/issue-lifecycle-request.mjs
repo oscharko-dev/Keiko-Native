@@ -146,7 +146,7 @@ export function parseLifecycleDispatchRequest({
     failures.push("request_reason_required");
   if (
     ![LIFECYCLE_STATES[6], LIFECYCLE_STATES[7]].includes(requestedTarget) &&
-    inputs?.reason?.trim() !== ""
+    (inputs?.reason ?? "").trim() !== ""
   )
     failures.push("request_reason_not_permitted");
   if (

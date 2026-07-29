@@ -67,6 +67,8 @@ test("rejects missing, extra, reordered, non-string, malformed, and mismatched w
   cases.push(missing);
   cases.push({ extra: "", ...wire() });
   cases.push({ ...wire(), issue_number: 51 });
+  cases.push(wire({ pull_request_number: "17" }));
+  cases.push(wire({ exact_head_sha: "a".repeat(40) }));
   for (const [field, value] of [
     ["schema_version", "2"],
     ["producer_contract_version", "2"],
@@ -98,10 +100,43 @@ test("requires target bytes to match accepted issue and provider base", () => {
   );
   assert.throws(
     () =>
-      validateLifecycleProducerWire(wire({ exact_target: "epic/49" }), {
-        acceptedTarget: "epic/49",
-        pullRequestBase: "epic/49/",
-      }),
+      validateLifecycleProducerWire(
+        wire({
+          exact_head_sha: "a".repeat(40),
+          exact_target: "epic/49",
+          pull_request_number: "17",
+        }),
+        {
+          acceptedTarget: "epic/49",
+          pullRequestBase: "epic/49/",
+        },
+      ),
     { code: "wire-provider-target-mismatch" },
+  );
+  const pullRequestWire = wire({
+    exact_head_sha: "a".repeat(40),
+    pull_request_number: "17",
+  });
+  assert.throws(
+    () =>
+      validateLifecycleProducerWire(pullRequestWire, {
+        acceptedTarget: "dev",
+      }),
+    { code: "wire-provider-target-unavailable" },
+  );
+  assert.throws(
+    () =>
+      validateLifecycleProducerWire(wire(), {
+        acceptedTarget: "dev",
+        pullRequestBase: "dev",
+      }),
+    { code: "wire-provider-pull-request-mismatch" },
+  );
+  assert.equal(
+    validateLifecycleProducerWire(pullRequestWire, {
+      acceptedTarget: "dev",
+      pullRequestBase: "dev",
+    }).exact_target,
+    "dev",
   );
 });

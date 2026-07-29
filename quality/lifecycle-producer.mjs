@@ -59,10 +59,14 @@ function canonicalTimestamp(value) {
 }
 
 function activeRecords(records) {
-  const checkpoint = records.findLastIndex(
-    (record) => record.parsed.recordType === "transition-read-back",
+  const boundary = records.findLastIndex(
+    (record) =>
+      record.parsed.recordType === "transition-read-back" ||
+      (record.parsed.recordType === "phase-fence-claim" &&
+        record.parsed.fields.phase === "recovery" &&
+        record.parsed.fields.claim_outcome === "settled"),
   );
-  return records.slice(checkpoint + 1);
+  return records.slice(boundary + 1);
 }
 
 function exactRecord(records, type, commentId, digest) {
@@ -144,7 +148,10 @@ export function planInertLifecycleProducerResult({
   )
     throw new TypeError("producer request or fence is stale");
   const producerRecords = active.filter(
-    (record) => record.parsed.recordType === "producer-result",
+    (record) =>
+      record.parsed.recordType === "producer-result" &&
+      record.parsed.fields.generation_identity === generation.identity &&
+      record.parsed.fields.attempt === attempt,
   );
   const observed = new Set(
     producerRecords.map((record) => record.parsed.fields.expected_producer),

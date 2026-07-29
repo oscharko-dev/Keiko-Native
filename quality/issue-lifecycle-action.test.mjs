@@ -496,6 +496,23 @@ test("ignores events without a lifecycle destination and fails bad read-back", a
   });
   assert.equal(result.outcome, "failed");
   assert.match(result.failures.join("\n"), /could not be restored/u);
+
+  let patches = 0;
+  const rejectedRestore = requestMock(t, {
+    issueLabels: ["status: ready"],
+  });
+  const rejectedResult = await runIssueLifecycleAction({
+    event: reopenedEvent,
+    request: async (path, options) => {
+      if (options?.method === "PATCH" && ++patches === 2)
+        throw new Error("restore denied");
+      if (path.includes("/issues/27") && patches > 0)
+        return { ...issue(["status: blocked"]), node_id: "issue-node-42" };
+      return rejectedRestore.request(path, options);
+    },
+  });
+  assert.equal(rejectedResult.outcome, "failed");
+  assert.match(rejectedResult.failures.join("\n"), /could not be restored/u);
 });
 
 test("plans validated assignment claim and release transitions", async (t) => {

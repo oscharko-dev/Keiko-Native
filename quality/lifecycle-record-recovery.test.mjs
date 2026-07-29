@@ -121,6 +121,16 @@ test("requires resume cursor, accumulator, step, and counts to match", () => {
       }),
     { code: "recovery-resume-discontinuity" },
   );
+  for (const malformed of [
+    { accumulator, claim: null },
+    { accumulator: null, claim },
+    { accumulator: {}, claim },
+    { accumulator: { fields: {}, identity: accumulator.identity }, claim: {} },
+  ])
+    assert.throws(
+      () => validateRecoveryResume({ ...malformed, nextCursor: "opaque" }),
+      { code: "recovery-resume-discontinuity" },
+    );
 });
 
 function orphan() {

@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 import {
-  constantTimeDigestEqual,
   digestAuxiliaryIdentity,
   encodeAuxiliaryPreimage,
   parseRecordEnvelope,

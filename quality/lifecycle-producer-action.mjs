@@ -32,6 +32,29 @@ const environmentFields = Object.freeze({
   request_payload_digest: "KEIKO_PRODUCER_REQUEST_PAYLOAD_DIGEST",
   expected_producer: "KEIKO_PRODUCER_EXPECTED_PRODUCER",
 });
+const COMMIT = /^[0-9a-f]{40}$/u;
+const POSITIVE_DECIMAL = /^[1-9][0-9]*$/u;
+
+function producerRuntimeFromEnvironment(environment) {
+  if (!COMMIT.test(environment.GITHUB_WORKFLOW_SHA ?? ""))
+    throw new TypeError("producer workflow SHA is invalid");
+  const positive = (name) => {
+    const value = environment[name] ?? "";
+    const parsed = Number(value);
+    if (
+      !POSITIVE_DECIMAL.test(value) ||
+      !Number.isSafeInteger(parsed) ||
+      String(parsed) !== value
+    )
+      throw new TypeError(`${name} must be a canonical positive decimal`);
+    return parsed;
+  };
+  return Object.freeze({
+    protectedDevSha: environment.GITHUB_WORKFLOW_SHA,
+    runAttempt: positive("GITHUB_RUN_ATTEMPT"),
+    runId: positive("GITHUB_RUN_ID"),
+  });
+}
 
 export function lifecycleProducerWireFromEnvironment(environment) {
   return Object.fromEntries(
@@ -140,6 +163,7 @@ export async function runLifecycleProducerRecordAction({
 } = {}) {
   const rawWire = lifecycleProducerWireFromEnvironment(environment);
   const wire = validateLifecycleProducerWire(rawWire);
+  const runtime = producerRuntimeFromEnvironment(environment);
   const issueNumber = Number(wire.issue_number);
   const budget = createLifecycleProviderBudget("normal");
   const history = await loadHistory({
@@ -157,14 +181,12 @@ export async function runLifecycleProducerRecordAction({
   const facts = lifecycleCoordinatorFacts({
     comments: provider.comments(),
     issue: current.issue,
-    protectedDevSha: environment.GITHUB_WORKFLOW_SHA,
+    protectedDevSha: runtime.protectedDevSha,
     pullRequest: current.pullRequest,
   });
-  const runId = Number(environment.GITHUB_RUN_ID);
-  const runAttempt = Number(environment.GITHUB_RUN_ATTEMPT);
   const workflow = await provider.currentProducerRuntime({
     expectedProducer: wire.expected_producer,
-    runId,
+    runId: runtime.runId,
   });
   const result = planInertLifecycleProducerResult({
     evaluation: producerEvaluation(
@@ -178,8 +200,8 @@ export async function runLifecycleProducerRecordAction({
     runtime: {
       jobId: workflow.jobId,
       recordedAt: now.toISOString(),
-      runAttempt,
-      runId,
+      runAttempt: runtime.runAttempt,
+      runId: runtime.runId,
       workflowId: workflow.workflowId,
     },
     wire: rawWire,

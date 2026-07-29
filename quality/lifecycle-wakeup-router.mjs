@@ -38,7 +38,6 @@ const positive = (value) => {
 };
 const commentId = (eventName, event) =>
   eventName === "issue_comment" ? String(event?.comment?.id ?? "") : "";
-const snapshot = (value) => JSON.stringify(value);
 
 function countedProvider(provider, limit) {
   let used = 0;

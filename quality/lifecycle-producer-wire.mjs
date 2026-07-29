@@ -121,9 +121,19 @@ export function validateLifecycleProducerWire(
     fail("wire-pull-request-number");
   if (input.exact_head_sha !== "" && !COMMIT.test(input.exact_head_sha))
     fail("wire-exact-head");
+  if ((input.pull_request_number === "") !== (input.exact_head_sha === ""))
+    fail("wire-pull-request-head-coupling");
   if (!validLifecycleExactTarget(input.exact_target)) fail("wire-exact-target");
   if (acceptedTarget !== undefined && input.exact_target !== acceptedTarget)
     fail("wire-accepted-target-mismatch");
+  if (
+    acceptedTarget !== undefined &&
+    input.pull_request_number !== "" &&
+    pullRequestBase === undefined
+  )
+    fail("wire-provider-target-unavailable");
+  if (pullRequestBase !== undefined && input.pull_request_number === "")
+    fail("wire-provider-pull-request-mismatch");
   if (pullRequestBase !== undefined && input.exact_target !== pullRequestBase)
     fail("wire-provider-target-mismatch");
   if (!canonicalDecimal(input.attempt, NON_NEGATIVE_DECIMAL, true))

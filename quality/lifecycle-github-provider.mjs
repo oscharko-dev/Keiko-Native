@@ -15,6 +15,7 @@ import {
   digestAuxiliaryIdentity,
   parseRecordEnvelope,
 } from "./lifecycle-record-protocol.mjs";
+import { LIFECYCLE_LIVE_SUFFIX_LIMIT } from "./lifecycle-record-store.mjs";
 import { pullRequestIssueNumber } from "./pr-contract.mjs";
 import { readSingleFileZip } from "./single-file-zip.mjs";
 import {
@@ -949,9 +950,19 @@ export function createLifecycleGithubProvider({
         });
       }
       const members = [];
+      const visited = new Set();
       let predecessorId = parsed.fields.predecessor_comment_id;
       let predecessorDigest = parsed.fields.predecessor_record_digest;
       while (predecessorId !== priorId) {
+        if (
+          !Number.isSafeInteger(predecessorId) ||
+          predecessorId <= 0 ||
+          visited.has(predecessorId)
+        )
+          throw new Error("checkpoint-member-chain-invalid");
+        visited.add(predecessorId);
+        if (visited.size > LIFECYCLE_LIVE_SUFFIX_LIMIT)
+          throw new Error("checkpoint-member-overflow");
         const predecessorComment = comments.get(predecessorId);
         if (predecessorComment === undefined)
           throw new Error("checkpoint-member-unavailable");

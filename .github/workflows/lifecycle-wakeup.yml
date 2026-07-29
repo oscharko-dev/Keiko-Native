@@ -212,7 +212,7 @@ jobs:
       - resolve-governance
       - resolve-evidence
       - resolve-schedule
-    if: ${{ always() && (needs.resolve-issue.outputs.locators != '' || needs.resolve-pull-request.outputs.locators != '' || needs.resolve-governance.outputs.locators != '' || needs.resolve-evidence.outputs.locators != '' || needs.resolve-schedule.outputs.locators != '') }}
+    if: ${{ always() && (needs.resolve-issue.outputs.locators != '' || needs.resolve-pull-request.outputs.locators != '' || needs.resolve-governance.outputs.locators != '' || needs.resolve-evidence.outputs.locators != '' || (needs.resolve-schedule.outputs.locators != '' && needs.resolve-schedule.outputs.locators != '[]')) }}
     strategy:
       fail-fast: false
       max-parallel: 200

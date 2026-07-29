@@ -378,7 +378,6 @@ function transitionRecord({
   runtime,
 }) {
   const request = generationRequestRecord.parsed.fields;
-  const fence = phaseFenceRecord.parsed.fields;
   const prior = predecessor(records);
   const checkpoint = priorCheckpoint(records);
   const compactedPrefixIdentity = digestAuxiliaryIdentity("compacted prefix", {
