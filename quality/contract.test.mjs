@@ -2297,7 +2297,7 @@ test("pins the protected lifecycle recovery wake decision", async () => {
     )
   ).replaceAll("\r\n", "\n");
 
-  assert.match(adr, /Decision issue #131 v10 selected this outcome/u);
+  assert.match(adr, /Decision issue #131 v12 selected this outcome/u);
   assert.match(
     adr,
     /adds one ADR-0012-owned auxiliary identity[\s\S]{0,260}does not change ADR-0011's\s+version-1 record schemas/iu,
@@ -2369,9 +2369,9 @@ test("pins the protected lifecycle recovery wake decision", async () => {
   );
   assert.ok(protectedProducerMap, "closed nested protected-producer mapping");
   for (const row of [
-    "| `issue-contract-current` | `./.github/workflows/pr-contract.yml`",
-    "| `pr-contract`            | `./.github/workflows/pr-contract.yml`",
-    "| `contract-publication`   | `./.github/workflows/contract-publication.yml`",
+    "| `issue-contract-current` | `./.github/workflows/pr-contract.yml`          | `1`",
+    "| `pr-contract`            | `./.github/workflows/pr-contract.yml`          | `1`",
+    "| `contract-publication`   | `./.github/workflows/contract-publication.yml` | `1`",
   ])
     assert.ok(protectedProducerMap[1].includes(row), row);
 
@@ -2413,11 +2413,15 @@ test("pins the protected lifecycle recovery wake decision", async () => {
   );
   assert.match(
     adr,
-    /`schema_version` is the literal `1`[\s\S]{0,600}canonical positive decimal integers[\s\S]{0,300}`repository` is exactly `oscharko-dev\/Keiko-Native`[\s\S]{0,300}`pull_request_number` is the empty string for explicit null[\s\S]{0,300}`exact_head_sha` is the empty string for explicit null or exactly 40 lowercase hexadecimal[\s\S]{0,300}`exact_target` is the empty string for explicit null[\s\S]{0,500}`generation_bytes_base64` is strict padded RFC 4648 base64 with no whitespace[\s\S]{0,500}must re-encode byte-identically[\s\S]{0,600}exactly 64\s+lowercase hexadecimal characters[\s\S]{0,300}generation-byte digest must match the decoded bytes[\s\S]{0,300}`expected_producer` is exactly one closed producer identity/iu,
+    /`schema_version` is the literal `1`[\s\S]{0,120}`producer_contract_version` is the literal `1`[\s\S]{0,180}every other producer\/version pair is unsupported[\s\S]{0,300}canonical positive decimal integers[\s\S]{0,300}`repository` is exactly `oscharko-dev\/Keiko-Native`[\s\S]{0,300}`pull_request_number` is the empty string for explicit null[\s\S]{0,300}`exact_head_sha` is the empty string for explicit null or exactly 40 lowercase hexadecimal[\s\S]{0,300}`exact_target` is the empty string for explicit null[\s\S]{0,140}literal `dev`[\s\S]{0,220}`epic\/\[A-Za-z0-9\]\(\?:\[A-Za-z0-9\._-\]\*\[A-Za-z0-9\]\)\?\(\?:\/\[A-Za-z0-9\]\(\?:\[A-Za-z0-9\._-\]\*\[A-Za-z0-9\]\)\?\)\*`[\s\S]{0,240}contains no `\.\.`[\s\S]{0,120}no slash-delimited component ending `\.lock`[\s\S]{0,120}no\s+`refs\/heads\/` prefix or normalization step[\s\S]{0,260}accepted issue delivery[\s\S]{0,180}provider base-ref bytes exactly[\s\S]{0,500}`generation_bytes_base64` is strict padded RFC 4648 base64 with no whitespace[\s\S]{0,500}must re-encode byte-identically[\s\S]{0,600}exactly 64\s+lowercase hexadecimal characters[\s\S]{0,300}generation-byte digest must match the decoded bytes[\s\S]{0,300}`expected_producer` is exactly one closed producer identity/iu,
+  );
+  assert.ok(
+    adr.includes("provider-invalid `epic/a..b` and `epic/a.lock` refs"),
+    "first rejected target complements",
   );
   assert.match(
     adr,
-    /`generation_bytes_base64` is at most 65,536 UTF-8 bytes[\s\S]{0,160}Every other input is at most 512 UTF-8\s+bytes[\s\S]{0,300}first-over-bound[\s\S]{0,160}decode-invalid[\s\S]{0,160}re-encoding-mismatched[\s\S]{0,160}digest-mismatched input fails before\s+provider access/iu,
+    /`generation_bytes_base64` is at most 65,536 UTF-8 bytes[\s\S]{0,160}Every other input is at most 512 UTF-8\s+bytes[\s\S]{0,240}producer\/version mismatch[\s\S]{0,120}authority-mismatched target fails before\s+provider access[\s\S]{0,220}first-over-bound[\s\S]{0,160}decode-invalid[\s\S]{0,160}re-encoding-mismatched[\s\S]{0,160}digest-mismatched input/iu,
   );
 
   const recoveryRequestSchema = adr.match(
@@ -2443,9 +2447,30 @@ test("pins the protected lifecycle recovery wake decision", async () => {
       "recovery_target_identity:sha256",
     ],
   );
-  assert.match(
-    adr,
-    /SHA-256 preimage[\s\S]{0,260}`digest_domain`[\s\S]{0,100}schema version `1`[\s\S]{0,100}digest algorithm `sha-256`[\s\S]{0,180}remaining schema\s+fields in that order/iu,
+  const recoveryRequestPreimage = adr.match(
+    /Its SHA-256 preimage fields, in\s+order, are ([\s\S]+?)\. ADR-0011's existing auxiliary rule/u,
+  );
+  assert.ok(
+    recoveryRequestPreimage,
+    "complete ordered authorized-recovery-request preimage",
+  );
+  assert.deepEqual(
+    [...recoveryRequestPreimage[1].matchAll(/`([^`]+)`/gu)].map(
+      (entry) => entry[1],
+    ),
+    [
+      "digest_domain:enum(keiko-native.lifecycle-recovery-authorized-request)",
+      "schema_version:uint=1",
+      "digest_algorithm:enum(sha-256)",
+      "repository_id:uint",
+      "issue_number:uint",
+      "comment_id:uint",
+      "command_body_sha256:sha256",
+      "comment_created_at:timestamp",
+      "author_id:uint",
+      "author_type:enum(User)",
+      "recovery_target_identity:sha256",
+    ],
   );
 });
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-07-29. Decision issue #131 v10 selected this outcome. The record becomes accepted
+Proposed, 2026-07-29. Decision issue #131 v12 selected this outcome. The record becomes accepted
 only when an authorized maintainer manually merges its pull request to `dev`.
 
 This record narrowly amends ADR-0011's coordinator and producer authentication, invocation,
@@ -47,7 +47,13 @@ before authorizing its actor let an older unauthorized command starve a later va
 Decision issue #131 v9 added a bounded actor-and-permission prefilter before fallback selection.
 Independent audit then found that the protected-producer interface named domain types but did not
 freeze their GitHub `workflow_call` primitives or nullable and canonical-byte encodings. Decision
-issue #131 v10 closes that wire-contract gap.
+issue #131 v10 closed that transport gap. Fresh exact-head review then found that the wire accepted
+unsupported positive producer-contract versions and referenced a target canonical form that
+ADR-0011 did not define. Decision issue #131 v11 freezes the closed producer/version matrix and a
+self-contained target-branch grammar with byte-exact authority checks. Independent v11 audit then
+proved that the positive grammar admitted provider-invalid `epic/a..b` and `epic/a.lock` refs.
+Decision issue #131 v12 additionally rejects `..` anywhere and any slash-delimited component ending
+`.lock`.
 
 ## Decision
 
@@ -367,11 +373,11 @@ The coordinator starts one nested reusable call for each producer required by th
 ADR-0011 phase and never starts a replacement for the same generation, attempt, fence, and expected
 producer. The closed mapping is:
 
-| Expected producer        | Exact reusable workflow                        |
-| ------------------------ | ---------------------------------------------- |
-| `issue-contract-current` | `./.github/workflows/pr-contract.yml`          |
-| `pr-contract`            | `./.github/workflows/pr-contract.yml`          |
-| `contract-publication`   | `./.github/workflows/contract-publication.yml` |
+| Expected producer        | Exact reusable workflow                        | Contract version |
+| ------------------------ | ---------------------------------------------- | ---------------- |
+| `issue-contract-current` | `./.github/workflows/pr-contract.yml`          | `1`              |
+| `pr-contract`            | `./.github/workflows/pr-contract.yml`          | `1`              |
+| `contract-publication`   | `./.github/workflows/contract-publication.yml` | `1`              |
 
 Those workflows may retain separately governed top-level triggers, but the lifecycle coordinator
 uses only their `workflow_call` interface. Each reusable workflow declares every input below as
@@ -390,14 +396,21 @@ secret.
 The exact wire encodings are:
 
 - `schema_version` is the literal `1`;
-- `producer_contract_version`, `issue_number`, `attempt`, `phase_fence_comment_id`, and
-  `generation_request_comment_id` are canonical positive decimal integers;
+- `producer_contract_version` is the literal `1` for each producer in the closed mapping above;
+  every other producer/version pair is unsupported;
+- `issue_number`, `attempt`, `phase_fence_comment_id`, and `generation_request_comment_id` are
+  canonical positive decimal integers;
 - `repository` is exactly `oscharko-dev/Keiko-Native`;
 - `pull_request_number` is the empty string for explicit null or a canonical positive decimal
   integer;
 - `exact_head_sha` is the empty string for explicit null or exactly 40 lowercase hexadecimal
   characters;
-- `exact_target` is the empty string for explicit null or ADR-0011's canonical target string;
+- `exact_target` is the empty string for explicit null, the literal `dev`, or an ASCII epic branch
+  matching
+  `epic/[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?(?:/[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)*`;
+  a non-empty value contains no `..`, has no slash-delimited component ending `.lock`, has no
+  `refs/heads/` prefix or normalization step, and must equal the current accepted issue delivery
+  target and, when a pull request exists, the provider base-ref bytes exactly;
 - `generation_bytes_base64` is strict padded RFC 4648 base64 with no whitespace; it decodes to the
   exact non-empty ADR-0004 canonical generation bytes and must re-encode byte-identically;
 - `generation_bytes_sha256`, `generation_identity`, `phase_fence_digest`,
@@ -407,9 +420,9 @@ The exact wire encodings are:
 - `expected_producer` is exactly one closed producer identity from the mapping above.
 
 `generation_bytes_base64` is at most 65,536 UTF-8 bytes. Every other input is at most 512 UTF-8
-bytes. Missing, extra, reordered, incorrectly typed, noncanonical, empty where prohibited,
-first-over-bound, decode-invalid, re-encoding-mismatched, or digest-mismatched input fails before
-provider access.
+bytes. A producer/version mismatch or noncanonical, authority-mismatched target fails before
+provider access, as does any missing, extra, reordered, incorrectly typed, empty where prohibited,
+first-over-bound, decode-invalid, re-encoding-mismatched, or digest-mismatched input.
 
 There is no caller-selected lane, requested state, activation value, transition, conclusion,
 workflow path, ref, or merge authority. Each producer independently reloads provider state,
@@ -529,10 +542,14 @@ ADR-0012 adds exactly one auxiliary identity to ADR-0011's exact domain-to-schem
 `keiko-native.lifecycle-recovery-authorized-request`. Its version-1 schema fields, in order, are
 `schema_version:uint=1`, `repository_id:uint`, `issue_number:uint`, `comment_id:uint`,
 `command_body_sha256:sha256`, `comment_created_at:timestamp`, `author_id:uint`,
-`author_type:enum(User)`, and `recovery_target_identity:sha256`. Its SHA-256 preimage follows
-ADR-0011's existing auxiliary rule exactly: one top-level ADR-0004 canonical `record` node with
-`digest_domain`, schema version `1`, digest algorithm `sha-256`, and then the remaining schema
-fields in that order. All existing domain-to-schema mappings remain unchanged.
+`author_type:enum(User)`, and `recovery_target_identity:sha256`. Its SHA-256 preimage fields, in
+order, are `digest_domain:enum(keiko-native.lifecycle-recovery-authorized-request)`,
+`schema_version:uint=1`, `digest_algorithm:enum(sha-256)`, `repository_id:uint`,
+`issue_number:uint`, `comment_id:uint`, `command_body_sha256:sha256`,
+`comment_created_at:timestamp`, `author_id:uint`, `author_type:enum(User)`, and
+`recovery_target_identity:sha256`. ADR-0011's existing auxiliary rule encodes those exact fields as
+one top-level ADR-0004 canonical `record` node. All existing domain-to-schema mappings remain
+unchanged.
 
 The coordinator recomputes that identity only after the stable reads and then independently
 reconstructs the exact orphan comment/body/record digest, last authenticated predecessor, current
