@@ -2285,6 +2285,195 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   }
 });
 
+test("pins the protected lifecycle recovery wake decision", async () => {
+  const adr = (
+    await readFile(
+      join(
+        import.meta.dirname,
+        "..",
+        "docs/adr/ADR-0012-protected-lifecycle-wake-dispatch.md",
+      ),
+      "utf8",
+    )
+  ).replaceAll("\r\n", "\n");
+
+  assert.match(adr, /Decision issue #131 v13 selected this outcome/u);
+  assert.match(
+    adr,
+    /adds one ADR-0012-owned auxiliary identity[\s\S]{0,260}does not change ADR-0011's\s+version-1 record schemas/iu,
+  );
+  assert.match(
+    adr,
+    /canonical decimal recovery-comment-ID string for `issue_comment`, otherwise the empty string/iu,
+  );
+  assert.match(
+    adr,
+    /recovery_comment_id:\s*\$\{\{\s*matrix\.locator\.recovery_comment_id\s*\}\}/u,
+  );
+  assert.match(
+    adr,
+    /required `recovery_comment_id` of type `string`[\s\S]{0,220}empty string[\s\S]{0,220}positive safe decimal integer/iu,
+  );
+
+  for (const predicate of [
+    "`createdAt` must equal `updatedAt`",
+    "`lastEditedAt` and `editor` must be null",
+    "`includesCreatedEdit` must be false",
+    "keiko-native.lifecycle-recovery-authorized-request",
+    "`command_body_sha256:sha256`",
+    "`recovery_target_identity:sha256`",
+  ])
+    assert.ok(adr.includes(predicate), predicate);
+
+  assert.match(
+    adr,
+    /REST `GET \/repos\/\{owner\}\/\{repo\}\/issues\/comments\/\{comment_id\}`[\s\S]{0,500}GraphQL `node\(id: \$node_id\)`[\s\S]{0,500}collaborator-permission/iu,
+  );
+  assert.match(
+    adr,
+    /authentication consumes six requests[\s\S]{0,700}at most fourteen\s+requests[\s\S]{0,500}remaining 136 requests[\s\S]{0,500}151st total request/iu,
+  );
+  assert.match(
+    adr,
+    /At most one authenticated recovery record may consume a recovery-target identity[\s\S]{0,400}replay no-op/iu,
+  );
+  assert.match(
+    adr,
+    /at most two\s+100-comment pages[\s\S]{0,700}two live collaborator-permission reads[\s\S]{0,400}at most\s+two actors[\s\S]{0,240}at most four permission requests[\s\S]{0,700}lowest\s+numeric comment ID[\s\S]{0,700}cannot starve a later valid command[\s\S]{0,400}never starts?\s+history-wide or cursor-resumed recovery-command enumeration/iu,
+  );
+  assert.match(
+    adr,
+    /one protected repository allowlist constant[\s\S]{0,260}two immutable\s+numeric `User` identities[\s\S]{0,260}copied numeric identities[\s\S]{0,120}denied/iu,
+  );
+  assert.match(
+    adr,
+    /This needs no workflow dispatch and no Actions-write\s+permission/iu,
+  );
+
+  assert.match(
+    adr,
+    /pull-request, governance-completion, evidence-completion, and schedule resolvers each acquire\s+`issue-lifecycle-provider-budget`[\s\S]{0,300}sole\s+concurrency group[\s\S]{0,260}issue resolver makes zero provider\s+requests and does not acquire the budget/iu,
+  );
+
+  assert.match(
+    adr,
+    /caller-held per-issue group remains held across the coordinator and every nested producer call[\s\S]{0,260}provider-intensive producer job then acquires `issue-lifecycle-provider-budget` second/iu,
+  );
+
+  assert.match(
+    adr,
+    /Adopt one top-level protected caller at `\.github\/workflows\/lifecycle-wakeup\.yml`[\s\S]{0,180}one reusable\s+coordinator at `\.\/\.github\/workflows\/issue-lifecycle\.yml`[\s\S]{0,260}only protected producer paths[\s\S]{0,160}`\.\/\.github\/workflows\/pr-contract\.yml`[\s\S]{0,160}`\.\/\.github\/workflows\/contract-publication\.yml`/iu,
+  );
+  const protectedProducerMap = adr.match(
+    /The closed mapping is:\n\n([\s\S]+?)\n\nThose workflows/u,
+  );
+  assert.ok(protectedProducerMap, "closed nested protected-producer mapping");
+  for (const row of [
+    "| `issue-contract-current` | `./.github/workflows/pr-contract.yml`          | `1`",
+    "| `pr-contract`            | `./.github/workflows/pr-contract.yml`          | `1`",
+    "| `contract-publication`   | `./.github/workflows/contract-publication.yml` | `1`",
+  ])
+    assert.ok(protectedProducerMap[1].includes(row), row);
+
+  assert.match(
+    adr,
+    /uses only their `workflow_call` interface[\s\S]{0,500}every input[\s\S]{0,100}`required: true`[\s\S]{0,100}`type: string`[\s\S]{0,1800}No producer call may\s+omit, add, rename, reorder, or weaken the primitive or required status of an input[\s\S]{0,100}passes no\s+secret/iu,
+  );
+  const producerInputSchema = adr.match(
+    /complete ordered\s+protected-producer wire schema is exactly ([\s\S]+?), in that order\./u,
+  );
+  assert.ok(
+    producerInputSchema,
+    "complete ordered protected-producer wire schema",
+  );
+  assert.deepEqual(
+    [...producerInputSchema[1].matchAll(/`([^`]+)`/gu)].map(
+      (entry) => entry[1],
+    ),
+    [
+      "schema_version:string",
+      "producer_contract_version:string",
+      "repository:string",
+      "issue_number:string",
+      "pull_request_number:string",
+      "exact_head_sha:string",
+      "exact_target:string",
+      "generation_bytes_base64:string",
+      "generation_bytes_sha256:string",
+      "generation_identity:string",
+      "attempt:string",
+      "phase_fence_comment_id:string",
+      "phase_fence_digest:string",
+      "generation_request_comment_id:string",
+      "generation_request_digest:string",
+      "request_identity:string",
+      "request_payload_digest:string",
+      "expected_producer:string",
+    ],
+  );
+  assert.match(
+    adr,
+    /`schema_version` is the literal `1`[\s\S]{0,120}`producer_contract_version` is the literal `1`[\s\S]{0,180}every other producer\/version pair is unsupported[\s\S]{0,300}`issue_number`[\s\S]{0,160}canonical\s+positive safe decimal integers[\s\S]{0,160}`1`[\s\S]{0,80}`9007199254740991`[\s\S]{0,220}`attempt` is a canonical non-negative safe decimal integer[\s\S]{0,180}`\(\?:0\|\[1-9\]\[0-9\]\*\)`[\s\S]{0,160}`0` through `9007199254740991`[\s\S]{0,180}bootstrap `0`[\s\S]{0,80}subsequent `1`[\s\S]{0,200}`-1`[\s\S]{0,80}`\+1`[\s\S]{0,80}`00`[\s\S]{0,80}`01`[\s\S]{0,80}`1\.0`[\s\S]{0,100}`9007199254740992`[\s\S]{0,120}rejected before provider access[\s\S]{0,300}`repository` is exactly `oscharko-dev\/Keiko-Native`[\s\S]{0,300}`pull_request_number` is the empty string for explicit null[\s\S]{0,300}`exact_head_sha` is the empty string for explicit null or exactly 40 lowercase hexadecimal[\s\S]{0,300}`exact_target` is the empty string for explicit null[\s\S]{0,140}literal `dev`[\s\S]{0,220}`epic\/\[A-Za-z0-9\]\(\?:\[A-Za-z0-9\._-\]\*\[A-Za-z0-9\]\)\?\(\?:\/\[A-Za-z0-9\]\(\?:\[A-Za-z0-9\._-\]\*\[A-Za-z0-9\]\)\?\)\*`[\s\S]{0,240}contains no `\.\.`[\s\S]{0,120}no slash-delimited component ending `\.lock`[\s\S]{0,120}no\s+`refs\/heads\/` prefix or normalization step[\s\S]{0,260}accepted issue delivery[\s\S]{0,180}provider base-ref bytes exactly[\s\S]{0,500}`generation_bytes_base64` is strict padded RFC 4648 base64 with no whitespace[\s\S]{0,500}must re-encode byte-identically[\s\S]{0,600}exactly 64\s+lowercase hexadecimal characters[\s\S]{0,300}generation-byte digest must match the decoded bytes[\s\S]{0,300}`expected_producer` is exactly one closed producer identity/iu,
+  );
+  assert.ok(
+    adr.includes("provider-invalid `epic/a..b` and `epic/a.lock` refs"),
+    "first rejected target complements",
+  );
+  assert.match(
+    adr,
+    /`generation_bytes_base64` is at most 65,536 UTF-8 bytes[\s\S]{0,160}Every other input is at most 512 UTF-8\s+bytes[\s\S]{0,240}producer\/version mismatch[\s\S]{0,120}authority-mismatched target fails before\s+provider access[\s\S]{0,220}first-over-bound[\s\S]{0,160}decode-invalid[\s\S]{0,160}re-encoding-mismatched[\s\S]{0,160}digest-mismatched input/iu,
+  );
+
+  const recoveryRequestSchema = adr.match(
+    /Its version-1 schema fields, in order, are\s+([\s\S]+?)\. Its SHA-256 preimage/u,
+  );
+  assert.ok(
+    recoveryRequestSchema,
+    "complete ordered authorized-recovery-request schema",
+  );
+  assert.deepEqual(
+    [...recoveryRequestSchema[1].matchAll(/`([^`]+)`/gu)].map(
+      (entry) => entry[1],
+    ),
+    [
+      "schema_version:uint=1",
+      "repository_id:uint",
+      "issue_number:uint",
+      "comment_id:uint",
+      "command_body_sha256:sha256",
+      "comment_created_at:timestamp",
+      "author_id:uint",
+      "author_type:enum(User)",
+      "recovery_target_identity:sha256",
+    ],
+  );
+  const recoveryRequestPreimage = adr.match(
+    /Its SHA-256 preimage fields, in\s+order, are ([\s\S]+?)\. ADR-0011's existing auxiliary rule/u,
+  );
+  assert.ok(
+    recoveryRequestPreimage,
+    "complete ordered authorized-recovery-request preimage",
+  );
+  assert.deepEqual(
+    [...recoveryRequestPreimage[1].matchAll(/`([^`]+)`/gu)].map(
+      (entry) => entry[1],
+    ),
+    [
+      "digest_domain:enum(keiko-native.lifecycle-recovery-authorized-request)",
+      "schema_version:uint=1",
+      "digest_algorithm:enum(sha-256)",
+      "repository_id:uint",
+      "issue_number:uint",
+      "comment_id:uint",
+      "command_body_sha256:sha256",
+      "comment_created_at:timestamp",
+      "author_id:uint",
+      "author_type:enum(User)",
+      "recovery_target_identity:sha256",
+    ],
+  );
+});
+
 async function fixtureRepository() {
   const root = await mkdtemp(join(tmpdir(), "keiko-native-quality-"));
   const files = [
