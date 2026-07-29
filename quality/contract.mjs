@@ -2165,6 +2165,71 @@ async function workflowFailures(root, manifest) {
   ];
 }
 
+function zizmorDangerousTriggerPolicyValid(source) {
+  const lines = [];
+  for (const rawLine of source.split(/\r?\n/u)) {
+    if (/^\s*\t/u.test(rawLine)) return false;
+    const withoutComment = rawLine.replace(/\s+#.*$/u, "").trimEnd();
+    if (withoutComment.trim() === "") continue;
+    const indent = withoutComment.match(/^ */u)?.[0].length ?? 0;
+    if (indent % 2 !== 0) return false;
+    lines.push({ content: withoutComment.slice(indent), indent });
+  }
+
+  const directChildren = (parentIndex, childIndent) => {
+    const parentIndent = lines[parentIndex].indent;
+    const children = [];
+    for (let index = parentIndex + 1; index < lines.length; index += 1) {
+      if (lines[index].indent <= parentIndent) break;
+      if (lines[index].indent === childIndent) children.push(index);
+    }
+    return children;
+  };
+  const uniqueChild = (parentIndex, childIndent, content) => {
+    const matches = directChildren(parentIndex, childIndent).filter(
+      (index) => lines[index].content === content,
+    );
+    return matches.length === 1 ? matches[0] : -1;
+  };
+
+  const rules = lines
+    .map((line, index) => ({ ...line, index }))
+    .filter((line) => line.indent === 0 && line.content === "rules:");
+  if (rules.length !== 1) return false;
+  const dangerousTriggers = uniqueChild(
+    rules[0].index,
+    2,
+    "dangerous-triggers:",
+  );
+  if (dangerousTriggers === -1) return false;
+  const ignore = uniqueChild(dangerousTriggers, 4, "ignore:");
+  if (ignore === -1) return false;
+
+  const ignoreLines = [];
+  for (let index = ignore + 1; index < lines.length; index += 1) {
+    if (lines[index].indent <= 4) break;
+    ignoreLines.push(lines[index]);
+  }
+  if (
+    ignoreLines.some(
+      (line) => line.indent !== 6 || !line.content.startsWith("- "),
+    )
+  )
+    return false;
+  const ignoredWorkflows = ignoreLines.map((line) =>
+    line.content.slice(2).trim(),
+  );
+  if (
+    JSON.stringify(ignoredWorkflows) !==
+    JSON.stringify(["lifecycle-wakeup.yml:3", "pr-contract.yml"])
+  )
+    return false;
+
+  return !directChildren(dangerousTriggers, 4).some(
+    (index) => lines[index].content === "disable: true",
+  );
+}
+
 async function providerFailures(root) {
   const sonar = await readFile(join(root, "sonar-project.properties"), "utf8");
   const zizmor = await readFile(join(root, ".github", "zizmor.yml"), "utf8");
@@ -2175,29 +2240,9 @@ async function providerFailures(root) {
     failures.push("Sonar organization is not bound to oscharko-dev.");
   if (!sonar.includes("coverage/lcov.info"))
     failures.push("Sonar LCOV evidence is not configured.");
-  if (
-    !zizmor.includes("dangerous-triggers:") ||
-    !zizmor.includes("- lifecycle-wakeup.yml:3") ||
-    !zizmor.includes("- pr-contract.yml") ||
-    zizmor.includes("disable: true")
-  )
+  if (!zizmorDangerousTriggerPolicyValid(zizmor))
     failures.push(
-      "Zizmor must contain only scoped dangerous-trigger dispositions for the protected lifecycle wake and PR metadata workflows.",
-    );
-  const ignoredWorkflowFiles = zizmor
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith("- "))
-    .map((line) => line.slice(2).split("#")[0].trim())
-    .filter((value) =>
-      /\.ya?ml(?::[1-9][0-9]*(?::[1-9][0-9]*)?)?$/u.test(value),
-    );
-  if (
-    JSON.stringify(ignoredWorkflowFiles) !==
-    JSON.stringify(["lifecycle-wakeup.yml:3", "pr-contract.yml"])
-  )
-    failures.push(
-      "Zizmor workflow ignores must remain limited to lifecycle-wakeup.yml:3 and pr-contract.yml.",
+      "Zizmor must bind the exact ordered dangerous-trigger ignore sequence to lifecycle-wakeup.yml:3 and pr-contract.yml without disabling the rule.",
     );
   return failures;
 }

@@ -3312,6 +3312,48 @@ test("reports provider and workflow drift without leaking file contents", async 
   }
 });
 
+test("binds Zizmor dangerous-trigger dispositions to the exact rule path", async () => {
+  const root = await fixtureRepository();
+  try {
+    const path = join(root, ".github/zizmor.yml");
+    const invalidPolicies = [
+      [
+        "rules:",
+        "  dangerous-triggers:",
+        "    ignore: [different.yml]",
+        "unrelated:",
+        "  notes:",
+        "    - lifecycle-wakeup.yml:3",
+        "    - pr-contract.yml",
+      ].join("\n"),
+      [
+        "rules:",
+        "  dangerous-triggers:",
+        "    ignore:",
+        "      - pr-contract.yml",
+        "      - lifecycle-wakeup.yml:3",
+      ].join("\n"),
+      [
+        "rules:",
+        "  dangerous-triggers:",
+        "    disable: true",
+        "    ignore:",
+        "      - lifecycle-wakeup.yml:3",
+        "      - pr-contract.yml",
+      ].join("\n"),
+    ];
+    for (const policy of invalidPolicies) {
+      await writeFile(path, policy);
+      assert.match(
+        (await validateRepository(root)).failures.join("\n"),
+        /Zizmor must bind the exact ordered dangerous-trigger ignore sequence/u,
+      );
+    }
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
 test("Sonar classifies epic merge support modules as test code", async () => {
   const lines = new Set(
     (
