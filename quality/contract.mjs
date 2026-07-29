@@ -2174,24 +2174,27 @@ async function providerFailures(root) {
     failures.push("Sonar LCOV evidence is not configured.");
   if (
     !zizmor.includes("dangerous-triggers:") ||
+    !zizmor.includes("- lifecycle-wakeup.yml:3") ||
     !zizmor.includes("- pr-contract.yml") ||
     zizmor.includes("disable: true")
   )
     failures.push(
-      "Zizmor must contain only a scoped dangerous-trigger disposition for the trusted PR metadata workflow.",
+      "Zizmor must contain only scoped dangerous-trigger dispositions for the protected lifecycle wake and PR metadata workflows.",
     );
   const ignoredWorkflowFiles = zizmor
     .split(/\r?\n/u)
     .map((line) => line.trim())
     .filter((line) => line.startsWith("- "))
     .map((line) => line.slice(2).split("#")[0].trim())
-    .filter((value) => value.endsWith(".yml") || value.endsWith(".yaml"));
+    .filter((value) =>
+      /\.ya?ml(?::[1-9][0-9]*(?::[1-9][0-9]*)?)?$/u.test(value),
+    );
   if (
-    ignoredWorkflowFiles.length !== 1 ||
-    ignoredWorkflowFiles[0] !== "pr-contract.yml"
+    JSON.stringify(ignoredWorkflowFiles) !==
+    JSON.stringify(["lifecycle-wakeup.yml:3", "pr-contract.yml"])
   )
     failures.push(
-      "Zizmor workflow ignores must remain limited to pr-contract.yml.",
+      "Zizmor workflow ignores must remain limited to lifecycle-wakeup.yml:3 and pr-contract.yml.",
     );
   return failures;
 }

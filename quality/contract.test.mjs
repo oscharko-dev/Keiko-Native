@@ -2857,6 +2857,7 @@ async function fixtureRepository() {
       "rules:",
       "  dangerous-triggers:",
       "    ignore:",
+      "      - lifecycle-wakeup.yml:3",
       "      - pr-contract.yml",
     ].join("\n"),
   );

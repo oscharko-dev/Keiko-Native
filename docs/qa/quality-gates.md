@@ -101,10 +101,11 @@ fixed ordered 18-string wire and the same protected `dev` SHA. Neither caller no
 `actions: write`. Before signed Issue #55 activation, only non-applied records are permitted;
 lifecycle/status writes, closure, branch, pull-request, queue, and merge effects remain prohibited.
 
-Zizmor's `dangerous-triggers` finding is dispositioned only for this one metadata workflow. The
-repository contract enforces its protected-`dev` checkout, fixed script, pinned actions,
-least-privilege permissions, absence of PR checkout or build commands, and exact branch filters. No
-other workflow or dangerous trigger inherits that exception.
+Zizmor's `dangerous-triggers` finding is dispositioned only for the protected PR metadata workflow
+and line 3's exact trigger mapping in the protected lifecycle wake caller. The repository contract
+enforces their protected-`dev` checkout, fixed scripts, pinned actions, least-privilege permissions,
+absence of PR checkout or build commands, exact branch filters, closed event sets, and guarded data
+flow. No other workflow or dangerous trigger inherits either exception.
 
 ## Merge authority and automation boundary
 
