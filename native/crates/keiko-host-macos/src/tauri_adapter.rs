@@ -5,9 +5,10 @@ use tauri::{AppHandle, Manager, RunEvent, Runtime, State, Webview, WebviewWindow
 
 use crate::document_nonce::secure_document_nonce;
 use crate::{
-    FoundationHost, HostLifecycle, SenderContext, application_cancel as dispatch_cancel,
-    application_request as dispatch_request, canonical_origin,
-    foundation_request as dispatch_foundation_request, is_bundled_navigation,
+    FolderPickerResult, FoundationHost, HostLifecycle, SenderContext, WorkspaceHost,
+    application_cancel as dispatch_cancel, application_request as dispatch_request,
+    canonical_origin, foundation_request as dispatch_foundation_request, is_bundled_navigation,
+    workspace_request as dispatch_workspace_request,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -165,6 +166,74 @@ pub fn foundation_request(
         app.exit(0);
     }
     output.encoded
+}
+
+#[tauri::command]
+pub fn workspace_request(
+    window: WebviewWindow,
+    lifecycle: State<'_, Mutex<HostLifecycle>>,
+    workspace: State<'_, Mutex<WorkspaceHost>>,
+    generation: u64,
+    document_nonce: String,
+    request: String,
+) -> String {
+    let origin = canonical_origin(window.url().ok().as_ref());
+    let sender = SenderContext {
+        window_label: window.label().to_owned(),
+        origin,
+        generation,
+        document_nonce,
+    };
+    let output = dispatch_workspace_request(
+        lifecycle.inner(),
+        workspace.inner(),
+        &sender,
+        &request,
+        platform_select_workspace,
+    );
+    if output.acknowledged_status {
+        eprintln!("keiko-native-workspace-ack/v1 state=available");
+    }
+    output.encoded
+}
+
+fn platform_select_workspace() -> FolderPickerResult {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSModalResponseCancel, NSModalResponseOK, NSOpenPanel};
+        #[allow(deprecated)]
+        use objc2_foundation::MainThreadMarker;
+        use objc2_foundation::NSString;
+
+        let Some(main_thread) = MainThreadMarker::new() else {
+            return FolderPickerResult::Unavailable;
+        };
+        let panel = NSOpenPanel::openPanel(main_thread);
+        panel.setCanChooseDirectories(true);
+        panel.setCanChooseFiles(false);
+        panel.setAllowsMultipleSelection(false);
+        panel.setResolvesAliases(false);
+        panel.setTitle(Some(&NSString::from_str(
+            "Lokales Git-Repository auswählen",
+        )));
+        panel.setPrompt(Some(&NSString::from_str("Repository auswählen")));
+        panel.setMessage(Some(&NSString::from_str(
+            "Keiko bindet dieses Repository nur für die aktuelle Sitzung.",
+        )));
+        match panel.runModal() {
+            response if response == NSModalResponseOK => panel
+                .URL()
+                .and_then(|url| url.path())
+                .map(|path| FolderPickerResult::Selected(path.to_string().into()))
+                .unwrap_or(FolderPickerResult::Unavailable),
+            response if response == NSModalResponseCancel => FolderPickerResult::Cancelled,
+            _ => FolderPickerResult::Unavailable,
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        FolderPickerResult::Unavailable
+    }
 }
 
 fn platform_open(url: &str) -> bool {

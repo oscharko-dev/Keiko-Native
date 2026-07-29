@@ -33,6 +33,32 @@ export interface FoundationResponse {
   result: FoundationView;
 }
 
+export type WorkspaceClosedReason =
+  | "cancelled"
+  | "permission-denied"
+  | "invalid"
+  | "unavailable"
+  | "unsafe";
+
+export type WorkspaceState =
+  | { kind: "empty"; generation: number }
+  | { kind: "selecting"; generation: number }
+  | { kind: "bound"; generation: number; displayLabel: string }
+  | {
+      kind: "closed";
+      generation: number;
+      reason: WorkspaceClosedReason;
+    };
+
+export interface WorkspaceResponse {
+  schemaVersion: 1;
+  requestId: string;
+  result: {
+    kind: "workspace";
+    state: WorkspaceState;
+  };
+}
+
 type FoundationOperation =
   | { kind: "foundation-load" }
   | { kind: "dismiss-welcome" }
@@ -42,6 +68,11 @@ type FoundationOperation =
   | { kind: "commit-canvas-text"; committedText: string }
   | { kind: "open-foundation-link"; destination: LinkDestination }
   | { kind: "quit-application" };
+
+type WorkspaceOperation =
+  | { kind: "workspace-status" }
+  | { kind: "workspace-select" }
+  | { kind: "workspace-clear" };
 
 export type Invoke = (
   command: string,
@@ -221,6 +252,75 @@ export function createRendererPort(
     });
   }
 
+  async function workspace(
+    operation: WorkspaceOperation,
+    signal?: AbortSignal,
+  ): Promise<WorkspaceResponse> {
+    if (signal?.aborted) throw new Error("workspace-request-cancelled");
+    const authority = await authorityProvider();
+    if (signal?.aborted) throw new Error("workspace-request-cancelled");
+    sequence += 1;
+    const request = {
+      schemaVersion: 1 as const,
+      requestId: canonicalRequestId(authority.generation, sequence),
+      sequence,
+      timeoutMs: 1000,
+      operation,
+    };
+    return new Promise((resolve, reject) => {
+      let terminal = false;
+      const finish = () => signal?.removeEventListener("abort", cancel);
+      const fail = (message: string) => {
+        if (terminal) return;
+        terminal = true;
+        finish();
+        reject(new Error(message));
+      };
+      const cancel = () => {
+        if (terminal) return;
+        const cancellation: CancelRequest = {
+          schemaVersion: 1,
+          requestId: request.requestId,
+        };
+        void invoke("application_cancel", {
+          generation: authority.generation,
+          documentNonce: authority.documentNonce,
+          request: JSON.stringify(cancellation),
+        }).catch(() => undefined);
+        fail("workspace-request-cancelled");
+      };
+      signal?.addEventListener("abort", cancel, { once: true });
+      void invoke("workspace_request", {
+        documentNonce: authority.documentNonce,
+        generation: authority.generation,
+        request: JSON.stringify(request),
+      }).then(
+        (encoded) => {
+          if (terminal) return;
+          let response: unknown;
+          try {
+            response = JSON.parse(encoded);
+          } catch {
+            fail("workspace-request-failed");
+            return;
+          }
+          if (
+            !isWorkspaceResponse(response) ||
+            response.requestId !== request.requestId
+          ) {
+            fail("workspace-request-failed");
+            return;
+          }
+          terminal = true;
+          finish();
+          resolve(response);
+        },
+        () => fail("workspace-request-failed"),
+      );
+      if (signal?.aborted) cancel();
+    });
+  }
+
   return {
     health,
     loadFoundation: (signal?: AbortSignal) =>
@@ -234,6 +334,12 @@ export function createRendererPort(
     openLink: (destination: LinkDestination) =>
       foundation({ kind: "open-foundation-link", destination }),
     quit: () => foundation({ kind: "quit-application" }),
+    workspaceStatus: (signal?: AbortSignal) =>
+      workspace({ kind: "workspace-status" }, signal),
+    selectWorkspace: (signal?: AbortSignal) =>
+      workspace({ kind: "workspace-select" }, signal),
+    clearWorkspace: (signal?: AbortSignal) =>
+      workspace({ kind: "workspace-clear" }, signal),
   };
 }
 
@@ -347,6 +453,71 @@ export function isFoundationResponse(
     default:
       return false;
   }
+}
+
+export function isWorkspaceResponse(
+  value: unknown,
+): value is WorkspaceResponse {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["schemaVersion", "requestId", "result"]) ||
+    value.schemaVersion !== 1 ||
+    typeof value.requestId !== "string" ||
+    !isRecord(value.result) ||
+    !hasExactKeys(value.result, ["kind", "state"]) ||
+    value.result.kind !== "workspace" ||
+    !isRecord(value.result.state)
+  ) {
+    return false;
+  }
+  const state = value.result.state;
+  if (!validWorkspaceGeneration(state.generation)) return false;
+  switch (state.kind) {
+    case "empty":
+      return hasExactKeys(state, ["kind", "generation"]);
+    case "selecting":
+      return (
+        Number(state.generation) > 0 &&
+        hasExactKeys(state, ["kind", "generation"])
+      );
+    case "bound":
+      return (
+        Number(state.generation) > 0 &&
+        hasExactKeys(state, ["kind", "generation", "displayLabel"]) &&
+        validWorkspaceDisplayLabel(state.displayLabel)
+      );
+    case "closed":
+      return (
+        Number(state.generation) > 0 &&
+        hasExactKeys(state, ["kind", "generation", "reason"]) &&
+        [
+          "cancelled",
+          "permission-denied",
+          "invalid",
+          "unavailable",
+          "unsafe",
+        ].includes(String(state.reason))
+      );
+    default:
+      return false;
+  }
+}
+
+function validWorkspaceGeneration(value: unknown): boolean {
+  return (
+    Number.isSafeInteger(value) &&
+    Number(value) >= 0 &&
+    Number(value) <= Number.MAX_SAFE_INTEGER
+  );
+}
+
+function validWorkspaceDisplayLabel(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    new TextEncoder().encode(value).length <= 128 &&
+    !/[\u0000-\u001f\u007f-\u009f]/u.test(value)
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

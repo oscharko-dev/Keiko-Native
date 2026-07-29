@@ -5,6 +5,7 @@ import {
   renderFoundation,
   type FoundationController,
   type FoundationView,
+  type WorkspaceController,
 } from "./foundation";
 
 const controller: FoundationController = {
@@ -255,6 +256,60 @@ describe("closed Foundation presentation", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("presents every workspace state without exposing a path or color-only meaning", async () => {
+    const workspaceController: WorkspaceController = {
+      selectWorkspace: vi.fn(async () => undefined),
+      clearWorkspace: vi.fn(async () => undefined),
+    };
+    const states = [
+      { kind: "empty", generation: 0 },
+      { kind: "selecting", generation: 1 },
+      {
+        kind: "bound",
+        generation: 1,
+        displayLabel: "Keiko Native",
+      },
+      { kind: "closed", generation: 2, reason: "cancelled" },
+      { kind: "closed", generation: 3, reason: "permission-denied" },
+      { kind: "closed", generation: 4, reason: "invalid" },
+      { kind: "closed", generation: 5, reason: "unavailable" },
+      { kind: "closed", generation: 6, reason: "unsafe" },
+    ] as const;
+
+    for (const state of states) {
+      const rendered = renderFoundation(
+        { kind: "canvas", committedText: "" },
+        controller,
+        state,
+        workspaceController,
+      );
+      const tree = elements(rendered);
+      const status = tree.find(({ props }) => props.role === "status");
+      expect(status?.props["data-workspace-state"]).toBe(state.kind);
+      expect(textContent(rendered)).toContain("Codex erhält weder Pfad");
+      expect(textContent(rendered)).not.toMatch(/\/Users\/|\/private\//u);
+    }
+
+    const bound = renderFoundation(
+      { kind: "canvas", committedText: "" },
+      controller,
+      { kind: "bound", generation: 7, displayLabel: "Keiko Native" },
+      workspaceController,
+    );
+    for (const button of elements(bound).filter(
+      ({ type, props }) =>
+        type === "button" &&
+        ["Anderes Repository auswählen", "Auswahl aufheben"].includes(
+          String(props.children),
+        ),
+    )) {
+      (button.props.onClick as () => void)();
+    }
+    await Promise.resolve();
+    expect(workspaceController.selectWorkspace).toHaveBeenCalledOnce();
+    expect(workspaceController.clearWorkspace).toHaveBeenCalledOnce();
   });
 
   it("discards a superseded composition commit when a new composition starts without focus loss", async () => {

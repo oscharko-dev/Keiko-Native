@@ -5,6 +5,7 @@ import {
   expectedSourceRevision,
   isFoundationResponse,
   isHealthResponse,
+  isWorkspaceResponse,
   rendererAuthority,
   type HealthRequest,
   type RendererAuthority,
@@ -526,6 +527,203 @@ describe("closed Foundation port", () => {
       response({ kind: "fifth-state" }),
     ]) {
       expect(isFoundationResponse(value)).toBe(false);
+    }
+  });
+});
+
+describe("closed workspace port", () => {
+  const bound = {
+    kind: "workspace",
+    state: {
+      kind: "bound",
+      generation: 3,
+      displayLabel: "Keiko Native",
+    },
+  } as const;
+
+  it("sends only path-free workspace intents through the workspace command", async () => {
+    const operations: unknown[] = [];
+    const invoke = vi.fn(
+      async (
+        command: string,
+        arguments_: {
+          documentNonce: string;
+          generation: number;
+          request: string;
+        },
+      ) => {
+        const request = JSON.parse(arguments_.request) as {
+          requestId: string;
+          operation: unknown;
+        };
+        operations.push(request.operation);
+        expect(command).toBe("workspace_request");
+        return JSON.stringify({
+          schemaVersion: 1,
+          requestId: request.requestId,
+          result: bound,
+        });
+      },
+    );
+    const port = createRendererPort(invoke, async () => authority);
+
+    await port.workspaceStatus();
+    await port.selectWorkspace();
+    await port.clearWorkspace();
+
+    expect(operations).toEqual([
+      { kind: "workspace-status" },
+      { kind: "workspace-select" },
+      { kind: "workspace-clear" },
+    ]);
+    expect(JSON.stringify(operations)).not.toMatch(/path|root|repository/iu);
+  });
+
+  it("accepts only bounded semantic workspace responses", () => {
+    const response = {
+      schemaVersion: 1,
+      requestId: "request-0000000000000001-0000000000000001",
+      result: bound,
+    };
+    for (const state of [
+      { kind: "empty", generation: 0 },
+      { kind: "selecting", generation: 1 },
+      bound.state,
+      { kind: "closed", generation: 4, reason: "cancelled" },
+      { kind: "closed", generation: 4, reason: "permission-denied" },
+      { kind: "closed", generation: 4, reason: "invalid" },
+      { kind: "closed", generation: 4, reason: "unavailable" },
+      { kind: "closed", generation: 4, reason: "unsafe" },
+    ]) {
+      expect(
+        isWorkspaceResponse({
+          ...response,
+          result: { kind: "workspace", state },
+        }),
+      ).toBe(true);
+    }
+    for (const hostile of [
+      { ...bound, path: "/private/sensitive" },
+      { ...bound, state: { ...bound.state, root: "secret" } },
+      { ...bound, state: { ...bound.state, generation: 0 } },
+      { ...bound, state: { ...bound.state, displayLabel: "x".repeat(129) } },
+      { ...bound, state: { ...bound.state, displayLabel: "unsafe\nlabel" } },
+      { kind: "workspace", state: { kind: "closed", generation: 4 } },
+      {
+        kind: "workspace",
+        state: { kind: "closed", generation: 4, reason: "unexpected" },
+      },
+    ]) {
+      expect(isWorkspaceResponse({ ...response, result: hostile })).toBe(false);
+    }
+    for (const invalid of [
+      null,
+      [],
+      {},
+      { ...response, schemaVersion: 2 },
+      { ...response, requestId: 1 },
+      { ...response, result: null },
+      { ...response, result: { kind: "workspace", state: null } },
+      {
+        ...response,
+        result: {
+          kind: "workspace",
+          state: { kind: "unknown", generation: 1 },
+        },
+      },
+    ]) {
+      expect(isWorkspaceResponse(invalid)).toBe(false);
+    }
+  });
+
+  it("cancels pre-authority and in-flight selection without accepting late success", async () => {
+    const preAborted = new AbortController();
+    preAborted.abort();
+    const unused = vi.fn(async () => "unused");
+    await expect(
+      createRendererPort(unused, async () => authority).selectWorkspace(
+        preAborted.signal,
+      ),
+    ).rejects.toThrow("workspace-request-cancelled");
+    expect(unused).not.toHaveBeenCalled();
+
+    let provideAuthority: ((value: RendererAuthority) => void) | undefined;
+    const authorityAbort = new AbortController();
+    const pendingAuthority = createRendererPort(
+      unused,
+      () =>
+        new Promise<RendererAuthority>((resolve) => {
+          provideAuthority = resolve;
+        }),
+    ).selectWorkspace(authorityAbort.signal);
+    authorityAbort.abort();
+    provideAuthority?.(authority);
+    await expect(pendingAuthority).rejects.toThrow(
+      "workspace-request-cancelled",
+    );
+
+    let resolveSelection: ((value: string) => void) | undefined;
+    const raced = vi.fn(
+      (command: string, arguments_: { request: string }): Promise<string> => {
+        if (command === "application_cancel")
+          return Promise.reject(new Error("redacted"));
+        const request = JSON.parse(arguments_.request) as { requestId: string };
+        return new Promise((resolve) => {
+          resolveSelection = () =>
+            resolve(
+              JSON.stringify({
+                schemaVersion: 1,
+                requestId: request.requestId,
+                result: bound,
+              }),
+            );
+        });
+      },
+    );
+    const controller = new AbortController();
+    const pending = createRendererPort(
+      raced,
+      async () => authority,
+    ).selectWorkspace(controller.signal);
+    await Promise.resolve();
+    controller.abort();
+    resolveSelection?.("");
+    await expect(pending).rejects.toThrow("workspace-request-cancelled");
+    expect(raced).toHaveBeenCalledWith(
+      "application_cancel",
+      expect.objectContaining({ generation: authority.generation }),
+    );
+  });
+
+  it("fails closed on workspace transport, JSON and correlation errors", async () => {
+    for (const reply of [
+      () => Promise.reject(new Error("transport")),
+      () => Promise.resolve("not-json"),
+      () =>
+        Promise.resolve(
+          JSON.stringify({
+            schemaVersion: 1,
+            requestId: "wrong",
+            result: bound,
+          }),
+        ),
+      (_command: string, arguments_: { request: string }) => {
+        const request = JSON.parse(arguments_.request) as { requestId: string };
+        return Promise.resolve(
+          JSON.stringify({
+            schemaVersion: 1,
+            requestId: request.requestId,
+            result: { ...bound, path: "/private/sensitive" },
+          }),
+        );
+      },
+    ]) {
+      await expect(
+        createRendererPort(
+          vi.fn(reply),
+          async () => authority,
+        ).workspaceStatus(),
+      ).rejects.toThrow("workspace-request-failed");
     }
   });
 });

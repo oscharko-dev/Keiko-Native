@@ -5,13 +5,24 @@ const authority = { documentNonce: "a".repeat(64), generation: 7 };
 
 const invoke = vi.fn(
   async (
-    _command: string,
+    command: string,
     arguments_: { documentNonce: string; generation: number; request: string },
   ) => {
     const request = JSON.parse(arguments_.request) as {
       requestId: string;
       operation: { kind: string };
     };
+    if (command === "workspace_request") {
+      const state =
+        request.operation.kind === "workspace-select"
+          ? { kind: "bound", generation: 1, displayLabel: "Keiko Native" }
+          : { kind: "empty", generation: 2 };
+      return JSON.stringify({
+        schemaVersion: 1,
+        requestId: request.requestId,
+        result: { kind: "workspace", state },
+      });
+    }
     if (request.operation.kind !== "application-health") {
       const result =
         request.operation.kind === "foundation-load"
@@ -92,7 +103,7 @@ describe("production renderer composition", () => {
 
     await startRenderer(invoke, async () => authority);
 
-    expect(invoke).toHaveBeenCalledTimes(3);
+    expect(invoke).toHaveBeenCalledTimes(4);
     expect(render).toHaveBeenCalled();
   });
 
@@ -106,7 +117,7 @@ describe("production renderer composition", () => {
 
     await startRenderer(invoke, async () => authority);
 
-    expect(invoke).toHaveBeenCalledTimes(3);
+    expect(invoke).toHaveBeenCalledTimes(4);
   });
 
   it("connects every visible action to its narrow typed port operation", async () => {
@@ -143,6 +154,8 @@ describe("production renderer composition", () => {
     };
 
     await click("Foundation öffnen");
+    await click("Repository auswählen");
+    await click("Auswahl aufheben");
     const canvas = all(render.mock.calls.at(-1)?.[0]).find(
       ({ type }) => type === "textarea",
     );
@@ -174,6 +187,17 @@ describe("production renderer composition", () => {
       "show-internal-update",
       "show-canvas",
       "quit-application",
+    ]);
+    const workspaceKinds = invoke.mock.calls
+      .filter(([command]) => command === "workspace_request")
+      .map(([, arguments_]) =>
+        Reflect.get(JSON.parse(String(arguments_.request)), "operation"),
+      )
+      .map((operation) => Reflect.get(operation, "kind"));
+    expect(workspaceKinds).toEqual([
+      "workspace-status",
+      "workspace-select",
+      "workspace-clear",
     ]);
   });
 

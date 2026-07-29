@@ -304,6 +304,7 @@ export function evidenceFailures(evidence, expected) {
     "cargoLockSha256",
     "cleanupOwnedDescendants",
     "acknowledgementMs",
+    "foundationReadinessFingerprint",
     "npmLockSha256",
     "outcomes",
     "packageManifestSha256",
@@ -313,6 +314,7 @@ export function evidenceFailures(evidence, expected) {
     "schema",
     "shutdownMs",
     "sourceRevision",
+    "workspaceAcknowledgementMs",
   ].toSorted(compareCodeUnits);
   const failures = [];
   if (
@@ -321,7 +323,7 @@ export function evidenceFailures(evidence, expected) {
   ) {
     failures.push("evidence-fields");
   }
-  if (evidence.schema !== "keiko-native-packaged-shell-evidence/v1")
+  if (evidence.schema !== "keiko-native-packaged-shell-evidence/v2")
     failures.push("evidence-schema");
   if (!/^[0-9a-f]{40}$/u.test(evidence.sourceRevision ?? ""))
     failures.push("evidence-revision");
@@ -341,15 +343,26 @@ export function evidenceFailures(evidence, expected) {
     failures.push("evidence-npm-lock-binding");
   if (
     evidence.readinessFingerprint !==
-    "da2459bd3becc6cbf651a24ef1b64d1b11a8ed642bfddc92923f0d6ed6dc8e5e"
+    "9ffd5d0ff53857f35ff47f470a4661fdd89ddcba8d08a2b92cf9c36a4afd446e"
   )
     failures.push("evidence-readiness-fingerprint");
   if (evidence.readinessFingerprint !== expected?.readinessFingerprint)
     failures.push("evidence-readiness-binding");
   if (
+    evidence.foundationReadinessFingerprint !==
+    "da2459bd3becc6cbf651a24ef1b64d1b11a8ed642bfddc92923f0d6ed6dc8e5e"
+  )
+    failures.push("evidence-foundation-readiness-fingerprint");
+  if (
+    evidence.foundationReadinessFingerprint !==
+    expected?.foundationReadinessFingerprint
+  )
+    failures.push("evidence-foundation-readiness-binding");
+  if (
     JSON.stringify(evidence.outcomes) !==
     JSON.stringify([
       "packaged-health-acknowledged",
+      "packaged-workspace-status-acknowledged",
       "normal-shutdown",
       "zero-owned-descendants",
       "package-policy",
@@ -381,6 +394,14 @@ export function evidenceFailures(evidence, expected) {
     evidence.acknowledgementMs > FUNCTIONAL_ACKNOWLEDGEMENT_WATCHDOG_MS
   )
     failures.push("evidence-acknowledgement-duration");
+  if (
+    !Number.isSafeInteger(evidence.workspaceAcknowledgementMs) ||
+    evidence.workspaceAcknowledgementMs < 0 ||
+    evidence.workspaceAcknowledgementMs >
+      FUNCTIONAL_ACKNOWLEDGEMENT_WATCHDOG_MS ||
+    evidence.workspaceAcknowledgementMs > evidence.acknowledgementMs
+  )
+    failures.push("evidence-workspace-acknowledgement-duration");
   if (
     !Number.isSafeInteger(evidence.shutdownMs) ||
     evidence.shutdownMs < 0 ||

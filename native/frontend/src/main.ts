@@ -4,6 +4,7 @@ import {
   renderFoundation,
   type FoundationController,
   type FoundationView,
+  type WorkspaceController,
 } from "./foundation";
 import "./foundation.css";
 import {
@@ -11,6 +12,7 @@ import {
   rendererAuthority,
   type AuthorityProvider,
   type Invoke,
+  type WorkspaceState,
 } from "./port";
 
 export async function startRenderer(
@@ -36,17 +38,30 @@ export async function startRenderer(
   };
   const port = createRendererPort(invokeCommand, authorityProvider);
   let initial: Awaited<ReturnType<typeof port.loadFoundation>>;
+  let initialWorkspace: Awaited<ReturnType<typeof port.workspaceStatus>>;
   try {
     await port.health();
     await port.health();
     initial = await port.loadFoundation();
+    initialWorkspace = await port.workspaceStatus();
   } catch {
     root?.render(renderFoundation(unavailable, unavailableController));
     return;
   }
   let controller: FoundationController;
+  let workspaceController: WorkspaceController;
+  let currentView = initial.result;
+  let workspaceState: WorkspaceState = initialWorkspace.result.state;
   const present = (view: FoundationView): FoundationView => {
-    root?.render(renderFoundation(view, controller));
+    currentView = view;
+    root?.render(
+      renderFoundation(
+        currentView,
+        controller,
+        workspaceState,
+        workspaceController,
+      ),
+    );
     return view;
   };
   const recover = async (
@@ -70,6 +85,38 @@ export async function startRenderer(
       recover(port.commitCanvasText(committedText)),
     quit: async () => {
       await recover(port.quit());
+    },
+  };
+  const presentWorkspace = (state: WorkspaceState): void => {
+    workspaceState = state;
+    present(currentView);
+  };
+  workspaceController = {
+    selectWorkspace: async () => {
+      presentWorkspace({
+        kind: "selecting",
+        generation: Math.max(1, workspaceState.generation + 1),
+      });
+      try {
+        presentWorkspace((await port.selectWorkspace()).result.state);
+      } catch {
+        presentWorkspace({
+          kind: "closed",
+          generation: workspaceState.generation,
+          reason: "unavailable",
+        });
+      }
+    },
+    clearWorkspace: async () => {
+      try {
+        presentWorkspace((await port.clearWorkspace()).result.state);
+      } catch {
+        presentWorkspace({
+          kind: "closed",
+          generation: Math.max(1, workspaceState.generation),
+          reason: "unavailable",
+        });
+      }
     },
   };
   present(initial.result);

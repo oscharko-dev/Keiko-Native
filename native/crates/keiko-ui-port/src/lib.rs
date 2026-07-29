@@ -89,6 +89,12 @@ pub enum Operation {
     OpenFoundationLink { destination: LinkDestination },
     #[serde(rename = "quit-application")]
     QuitApplication,
+    #[serde(rename = "workspace-status")]
+    WorkspaceStatus,
+    #[serde(rename = "workspace-select")]
+    WorkspaceSelect,
+    #[serde(rename = "workspace-clear")]
+    WorkspaceClear,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -143,6 +149,9 @@ pub fn parse_request(bytes: &[u8]) -> Result<UiRequest, ReasonCode> {
         "commit-canvas-text",
         "open-foundation-link",
         "quit-application",
+        "workspace-status",
+        "workspace-select",
+        "workspace-clear",
     ];
     if value
         .get("operation")
@@ -151,6 +160,9 @@ pub fn parse_request(bytes: &[u8]) -> Result<UiRequest, ReasonCode> {
         .is_some_and(|kind| !OPERATIONS.contains(&kind))
     {
         return Err(ReasonCode::UnknownOperation);
+    }
+    if !operation_fields_are_closed(&value) {
+        return Err(ReasonCode::InvalidRequest);
     }
     let request: UiRequest =
         serde_json::from_slice(bytes).map_err(|_| ReasonCode::InvalidRequest)?;
@@ -167,6 +179,24 @@ pub fn parse_request(bytes: &[u8]) -> Result<UiRequest, ReasonCode> {
         return Err(ReasonCode::StaleRequest);
     }
     Ok(request)
+}
+
+fn operation_fields_are_closed(value: &serde_json::Value) -> bool {
+    let Some(operation) = value
+        .get("operation")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return false;
+    };
+    let Some(kind) = operation.get("kind").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let expected = match kind {
+        "commit-canvas-text" => &["committedText", "kind"][..],
+        "open-foundation-link" => &["destination", "kind"][..],
+        _ => &["kind"][..],
+    };
+    operation.len() == expected.len() && expected.iter().all(|key| operation.contains_key(*key))
 }
 
 pub fn request_metadata(request: &UiRequest) -> (&str, u64, u16) {
@@ -307,6 +337,52 @@ mod tests {
                 parse_request(request(1, denied).as_bytes()).is_err(),
                 "{denied}"
             );
+        }
+    }
+
+    #[test]
+    fn workspace_intents_are_closed_and_never_accept_a_renderer_path() {
+        let request = |operation: &str| {
+            format!(
+                r#"{{"schemaVersion":1,"requestId":"request-0000000000000001-0000000000000001","sequence":1,"timeoutMs":1000,"operation":{operation}}}"#
+            )
+        };
+        for accepted in [
+            r#"{"kind":"workspace-status"}"#,
+            r#"{"kind":"workspace-select"}"#,
+            r#"{"kind":"workspace-clear"}"#,
+        ] {
+            assert!(parse_request(request(accepted).as_bytes()).is_ok());
+        }
+        for rejected in [
+            r#"{"kind":"workspace-select","path":"/private/sensitive"}"#,
+            r#"{"kind":"workspace-status","root":"repository"}"#,
+            r#"{"kind":"workspace-clear","generation":1}"#,
+        ] {
+            assert_eq!(
+                parse_request(request(rejected).as_bytes()),
+                Err(ReasonCode::InvalidRequest)
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_response_exposes_only_bounded_view_state() {
+        let encoded = encode_success(&keiko_application::application_response(
+            "request-0000000000000001-0000000000000001",
+            keiko_application::ApplicationResult::Workspace {
+                state: keiko_application::workspace::WorkspaceView::Bound {
+                    generation: 3,
+                    display_label: "Keiko Native".to_owned(),
+                },
+            },
+        ));
+        assert_eq!(
+            encoded,
+            r#"{"schemaVersion":1,"requestId":"request-0000000000000001-0000000000000001","result":{"kind":"workspace","state":{"kind":"bound","generation":3,"displayLabel":"Keiko Native"}}}"#
+        );
+        for prohibited in ["path", "root", "device", "inode", ".git"] {
+            assert!(!encoded.contains(prohibited));
         }
     }
 

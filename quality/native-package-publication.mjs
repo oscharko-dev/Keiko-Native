@@ -164,6 +164,8 @@ function validatePackage(
       npmLockSha256,
       packageManifestSha256: digest(manifestBytes),
       readinessFingerprint:
+        "9ffd5d0ff53857f35ff47f470a4661fdd89ddcba8d08a2b92cf9c36a4afd446e",
+      foundationReadinessFingerprint:
         "da2459bd3becc6cbf651a24ef1b64d1b11a8ed642bfddc92923f0d6ed6dc8e5e",
       sourceRevision: revision,
     });

@@ -379,6 +379,7 @@ async function createPackage(packageRoot, mode) {
         acknowledgementMs: 1,
         cleanupOwnedDescendants: 0,
         shutdownMs: 2,
+        workspaceAcknowledgementMs: 1,
       },
       npmLockSha256: "f".repeat(64),
       packageManifestSha256: digest(manifestBytes),

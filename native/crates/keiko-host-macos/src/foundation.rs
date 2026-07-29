@@ -211,7 +211,10 @@ impl FoundationHost {
                     Err(error) => failed(request_id, reason_for(error)),
                 });
             }
-            Operation::ApplicationHealth => {
+            Operation::ApplicationHealth
+            | Operation::WorkspaceStatus
+            | Operation::WorkspaceSelect
+            | Operation::WorkspaceClear => {
                 return PreparedDispatch::immediate(failed(
                     request_id,
                     ReasonCode::UnknownOperation,
