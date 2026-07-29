@@ -380,6 +380,13 @@ describe("closed Foundation presentation", () => {
       );
       expect(status?.props.role).toBe("status");
       expect(textContent(status)).not.toBe("");
+      if (state === "checking") {
+        const check = elements(rendered).find(
+          ({ type, props }) =>
+            type === "button" && props.children === "Codex wird geprüft",
+        );
+        expect(check?.props.disabled).toBe(true);
+      }
       expect(textContent(rendered)).not.toMatch(
         /\/Users\/|\/private\/|@example/iu,
       );

@@ -23,7 +23,9 @@ mod workspace;
 use acknowledgement::AcknowledgementState;
 pub use foundation::{FoundationHost, FoundationRequestOutput, foundation_request};
 #[cfg(feature = "tauri-host")]
-pub use request_adapter::{ApplicationRequestOutput, application_cancel, application_request};
+pub use request_adapter::{
+    ApplicationCancelOutput, ApplicationRequestOutput, application_cancel, application_request,
+};
 use request_timing::{InFlight, MonotonicClock, terminal_reason};
 pub use runtime::{RuntimeHost, RuntimeRequestOutput, runtime_request};
 pub use workspace::{FolderPickerResult, WorkspaceHost, WorkspaceRequestOutput, workspace_request};

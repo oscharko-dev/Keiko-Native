@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 
 pub const MAX_REQUEST_BYTES: usize = 4096;
 pub const MAX_SEQUENCE: u64 = 9_007_199_254_740_991;
+const MAX_REQUEST_TIMEOUT_MS: u16 = 1000;
+const MAX_RUNTIME_READINESS_TIMEOUT_MS: u16 = 5000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReasonCode {
@@ -120,13 +122,15 @@ pub struct ErrorResponse {
     pub error: ErrorBody,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CancelResult {
     pub kind: String,
     pub status: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CancelResponse {
     #[serde(rename = "schemaVersion")]
     pub schema_version: u8,
@@ -173,8 +177,8 @@ pub fn parse_request(bytes: &[u8]) -> Result<UiRequest, ReasonCode> {
         return Err(ReasonCode::UnsupportedSchema);
     }
     let maximum_timeout_ms = match request.operation {
-        Operation::RuntimeReadiness => 5000,
-        _ => 1000,
+        Operation::RuntimeReadiness => MAX_RUNTIME_READINESS_TIMEOUT_MS,
+        _ => MAX_REQUEST_TIMEOUT_MS,
     };
     if !valid_request_id(&request.request_id)
         || request.timeout_ms == 0

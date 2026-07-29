@@ -94,6 +94,15 @@ pub fn stop_runtime(runtime: &RuntimeHost) {
     runtime.cancel_all();
 }
 
+pub(crate) fn runtime_isolation_root(
+    workspace: &Mutex<WorkspaceHost>,
+) -> Result<Option<std::path::PathBuf>, keiko_ui_port::ReasonCode> {
+    workspace
+        .lock()
+        .map(|workspace| workspace.bound_root_for_isolation())
+        .map_err(|_| keiko_ui_port::ReasonCode::InternalFailure)
+}
+
 pub fn shut_down(lifecycle: &Mutex<HostLifecycle>) {
     if let Ok(mut lifecycle) = lifecycle.lock() {
         lifecycle.shutdown();
@@ -133,7 +142,7 @@ pub fn application_cancel(
     request: String,
 ) -> String {
     let origin = canonical_origin(window.url().ok().as_ref());
-    let encoded = dispatch_cancel(
+    let output = dispatch_cancel(
         lifecycle.inner(),
         window.label(),
         &origin,
@@ -141,12 +150,10 @@ pub fn application_cancel(
         &document_nonce,
         &request,
     );
-    if encoded.contains(r#""status":"cancelled""#)
-        && let Ok(cancel) = keiko_ui_port::parse_cancel(request.as_bytes())
-    {
-        runtime.cancel_request(keiko_ui_port::cancel_request_id(&cancel));
+    if let Some(request_id) = output.cancelled_request_id.as_deref() {
+        runtime.cancel_request(request_id);
     }
-    encoded
+    output.encoded
 }
 
 #[tauri::command]
@@ -226,10 +233,10 @@ pub async fn runtime_request(
         let lifecycle = app.state::<Mutex<HostLifecycle>>();
         let runtime = app.state::<RuntimeHost>();
         let workspace = app.state::<Mutex<WorkspaceHost>>();
-        let selected_workspace = workspace
-            .lock()
-            .ok()
-            .and_then(|workspace| workspace.bound_root_for_isolation());
+        let selected_workspace = match runtime_isolation_root(workspace.inner()) {
+            Ok(selected_workspace) => selected_workspace,
+            Err(reason) => return keiko_ui_port::encode_error("unknown-request", reason),
+        };
         dispatch_runtime_request(
             lifecycle.inner(),
             runtime.inner(),

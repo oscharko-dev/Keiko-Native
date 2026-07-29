@@ -1,6 +1,6 @@
-use std::fs::File;
 use std::io::{self, Read};
-use std::path::Path;
+#[cfg(test)]
+use std::{fs::File, path::Path};
 
 const INITIAL_STATE: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
@@ -17,12 +17,17 @@ const ROUND_CONSTANTS: [u32; 64] = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
+#[cfg(test)]
 pub fn sha256_file(path: &Path) -> io::Result<String> {
     let mut file = File::open(path)?;
+    sha256_reader(&mut file)
+}
+
+pub fn sha256_reader(reader: &mut impl Read) -> io::Result<String> {
     let mut sha256 = Sha256::default();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
-        let read = file.read(&mut buffer)?;
+        let read = reader.read(&mut buffer)?;
         if read == 0 {
             break;
         }
@@ -176,5 +181,35 @@ mod tests {
             digest(&[&vec![b'a'; 1_000_000]]),
             "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
         );
+    }
+
+    #[test]
+    fn matches_padding_boundary_vectors() {
+        for (length, expected) in [
+            (
+                55,
+                "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318",
+            ),
+            (
+                56,
+                "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a",
+            ),
+            (
+                64,
+                "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb",
+            ),
+            (
+                65,
+                "635361c48bb9eab14198e76ea8ab7f1a41685d6ad62aa9146d301d4f17eb0ae0",
+            ),
+        ] {
+            let input = vec![b'a'; length];
+            assert_eq!(digest(&[&input]), expected, "{length}");
+            assert_eq!(
+                digest(&[&input[..length / 2], &input[length / 2..]]),
+                expected,
+                "split {length}"
+            );
+        }
     }
 }

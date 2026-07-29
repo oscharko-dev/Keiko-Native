@@ -1,6 +1,7 @@
-use std::fs;
-use std::io::{self, BufRead, BufReader, Read, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::ffi::c_void;
+use std::fs::{self, File, Metadata};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -10,7 +11,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
 use crate::sha256::sha256_file;
+use crate::sha256::sha256_reader;
 use crate::{AcceptedRequest, HostLifecycle, SenderContext};
 use keiko_application::runtime::{
     CODEX_RUNTIME_SHA256, RuntimeReadinessState, RuntimeReadinessView,
@@ -21,16 +24,18 @@ use keiko_ui_port::{
 };
 use serde_json::{Value, json};
 
-const INITIALIZE_DEADLINE: Duration = Duration::from_secs(5);
-const CLEANUP_DEADLINE: Duration = Duration::from_secs(5);
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_QUEUE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_QUEUE_FRAMES: usize = 256;
 const MAX_STDERR_BYTES: usize = 1024 * 1024;
 const MAX_QUARANTINED_EVENTS: u16 = 64;
-const EPERM: i32 = 1;
+const P_PID: i32 = 1;
 const SIGKILL: i32 = 9;
 const SIGTERM: i32 = 15;
+const WEXITED: i32 = 0x0000_0004;
+const WNOHANG: i32 = 0x0000_0001;
+const WNOWAIT: i32 = 0x0000_0020;
 
 const BINARY_ENV: &str = "KEIKO_CODEX_0_145_0_BINARY";
 const HOME_ENV: &str = "KEIKO_CODEX_0_145_0_HOME";
@@ -39,6 +44,20 @@ const WORK_ROOT_ENV: &str = "KEIKO_CODEX_0_145_0_WORK_ROOT";
 unsafe extern "C" {
     #[link_name = "kill"]
     fn keiko_kill(process_or_group: i32, signal: i32) -> i32;
+    #[link_name = "proc_listpgrppids"]
+    fn keiko_proc_listpgrppids(process_group: i32, buffer: *mut c_void, buffer_size: i32) -> i32;
+    #[link_name = "waitid"]
+    fn keiko_waitid(id_type: i32, id: u32, information: *mut WaitInformation, options: i32) -> i32;
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct WaitInformation {
+    signal: i32,
+    error: i32,
+    code: i32,
+    process_id: i32,
+    reserved: [usize; 14],
 }
 
 #[derive(Clone, Debug)]
@@ -91,6 +110,16 @@ impl RuntimeHost {
         request_id: &str,
         selected_workspace: Option<&Path>,
     ) -> RuntimeReadinessView {
+        self.check_with_timeout(request_id, selected_workspace, DEFAULT_REQUEST_TIMEOUT)
+    }
+
+    fn check_with_timeout(
+        &self,
+        request_id: &str,
+        selected_workspace: Option<&Path>,
+        timeout: Duration,
+    ) -> RuntimeReadinessView {
+        let deadline = Instant::now() + timeout;
         if self
             .active
             .running
@@ -111,6 +140,7 @@ impl RuntimeHost {
                     selected_workspace,
                     &self.active,
                     &self.work_generation,
+                    deadline,
                 )
             },
         );
@@ -141,7 +171,7 @@ impl RuntimeHost {
             .ok()
             .and_then(|active| *active);
         if let Some(process_group) = process_group {
-            signal_process_group(process_group, SIGTERM);
+            signal_active_process_group(&self.active, process_group, SIGTERM);
         }
     }
 
@@ -194,8 +224,12 @@ pub fn runtime_request(
             encode_error("unknown-request", ReasonCode::UnknownOperation),
         );
     }
-    let (request_id, _, _) = request_metadata(&accepted.request);
-    let view = runtime.check(request_id, selected_workspace);
+    let (request_id, _, timeout_ms) = request_metadata(&accepted.request);
+    let view = runtime.check_with_timeout(
+        request_id,
+        selected_workspace,
+        Duration::from_millis(u64::from(timeout_ms)),
+    );
     let encoded = encode_runtime(&accepted, view);
     finish_encoded(lifecycle, accepted, encoded)
 }
@@ -235,13 +269,17 @@ fn perform_check(
     selected_workspace: Option<&Path>,
     active: &ActiveRuntime,
     work_generation: &AtomicU64,
+    deadline: Instant,
 ) -> RuntimeReadinessView {
-    let verified = match verify_configuration(configuration, selected_workspace) {
+    let mut verified = match verify_configuration(configuration, selected_workspace) {
         Ok(verified) => verified,
         Err(state) => return RuntimeReadinessView::terminal(state, 0),
     };
     if active.cancelled.load(Ordering::Acquire) {
         return RuntimeReadinessView::terminal(RuntimeReadinessState::Cancelled, 0);
+    }
+    if Instant::now() >= deadline {
+        return RuntimeReadinessView::terminal(RuntimeReadinessState::TimedOut, 0);
     }
     let generation = work_generation.fetch_add(1, Ordering::AcqRel) + 1;
     let work_directory = verified
@@ -250,7 +288,7 @@ fn perform_check(
     if fs::create_dir(&work_directory).is_err() {
         return RuntimeReadinessView::terminal(RuntimeReadinessState::Unavailable, 0);
     }
-    let outcome = run_protocol(&verified, &work_directory, active);
+    let outcome = run_protocol(&mut verified, &work_directory, active, deadline);
     let work_cleaned = fs::remove_dir_all(&work_directory).is_ok();
     if !outcome.cleaned || !work_cleaned {
         RuntimeReadinessView::terminal(
@@ -262,11 +300,68 @@ fn perform_check(
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FileIdentity {
+    device: u64,
+    inode: u64,
+    mode: u32,
+    modified_nanoseconds: i64,
+    modified_seconds: i64,
+    size: u64,
+}
+
+impl FileIdentity {
+    fn from_metadata(metadata: &Metadata) -> Self {
+        Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            mode: metadata.mode(),
+            modified_nanoseconds: metadata.mtime_nsec(),
+            modified_seconds: metadata.mtime(),
+            size: metadata.size(),
+        }
+    }
+}
+
+#[derive(Debug)]
 struct VerifiedConfiguration {
     binary: PathBuf,
+    binary_file: File,
+    binary_identity: FileIdentity,
     codex_home: PathBuf,
+    expected_sha256: String,
     work_root: PathBuf,
+}
+
+impl VerifiedConfiguration {
+    fn revalidate_binary(&mut self) -> Result<(), RuntimeReadinessState> {
+        let descriptor_metadata = self
+            .binary_file
+            .metadata()
+            .map_err(|_| RuntimeReadinessState::Incompatible)?;
+        if FileIdentity::from_metadata(&descriptor_metadata) != self.binary_identity
+            || !descriptor_metadata.is_file()
+            || descriptor_metadata.permissions().mode() & 0o111 == 0
+        {
+            return Err(RuntimeReadinessState::Incompatible);
+        }
+        let path_metadata =
+            fs::symlink_metadata(&self.binary).map_err(|_| RuntimeReadinessState::Incompatible)?;
+        if path_metadata.file_type().is_symlink()
+            || FileIdentity::from_metadata(&path_metadata) != self.binary_identity
+        {
+            return Err(RuntimeReadinessState::Incompatible);
+        }
+        self.binary_file
+            .seek(SeekFrom::Start(0))
+            .map_err(|_| RuntimeReadinessState::Incompatible)?;
+        let digest = sha256_reader(&mut self.binary_file)
+            .map_err(|_| RuntimeReadinessState::Incompatible)?;
+        if digest != self.expected_sha256 {
+            return Err(RuntimeReadinessState::Incompatible);
+        }
+        Ok(())
+    }
 }
 
 fn verify_configuration(
@@ -287,19 +382,23 @@ fn verify_configuration(
     {
         return Err(RuntimeReadinessState::ContainmentFailed);
     }
-    let metadata = fs::metadata(&binary).map_err(|_| RuntimeReadinessState::Unavailable)?;
+    let binary_file = File::open(&binary).map_err(|_| RuntimeReadinessState::Unavailable)?;
+    let metadata = binary_file
+        .metadata()
+        .map_err(|_| RuntimeReadinessState::Unavailable)?;
     if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
         return Err(RuntimeReadinessState::Unavailable);
     }
-    let digest = sha256_file(&binary).map_err(|_| RuntimeReadinessState::Unavailable)?;
-    if digest != configuration.expected_sha256 {
-        return Err(RuntimeReadinessState::Incompatible);
-    }
-    Ok(VerifiedConfiguration {
+    let mut verified = VerifiedConfiguration {
         binary,
+        binary_file,
+        binary_identity: FileIdentity::from_metadata(&metadata),
         codex_home,
+        expected_sha256: configuration.expected_sha256.clone(),
         work_root,
-    })
+    };
+    verified.revalidate_binary()?;
+    Ok(verified)
 }
 
 fn canonical_existing(path: &Path, directory: bool) -> Result<PathBuf, RuntimeReadinessState> {
@@ -332,10 +431,18 @@ struct ProtocolOutcome {
 }
 
 fn run_protocol(
-    configuration: &VerifiedConfiguration,
+    configuration: &mut VerifiedConfiguration,
     work_directory: &Path,
     active: &ActiveRuntime,
+    deadline: Instant,
 ) -> ProtocolOutcome {
+    if let Err(state) = configuration.revalidate_binary() {
+        return ProtocolOutcome {
+            state,
+            quarantined_events: 0,
+            cleaned: true,
+        };
+    }
     let mut command = Command::new(&configuration.binary);
     command
         .args([
@@ -374,6 +481,9 @@ fn run_protocol(
     if let Ok(mut active_group) = active.process_group.lock() {
         *active_group = Some(process_group);
     }
+    if let Err(state) = configuration.revalidate_binary() {
+        return cleanup_after(child, process_group, state, 0, active, deadline);
+    }
     let Some(((mut stdin, stdout), stderr)) = child
         .stdin
         .take()
@@ -386,6 +496,7 @@ fn run_protocol(
             RuntimeReadinessState::ContainmentFailed,
             0,
             active,
+            deadline,
         );
     };
     let queued_bytes = Arc::new(AtomicUsize::new(0));
@@ -418,10 +529,13 @@ fn run_protocol(
             RuntimeReadinessState::Incompatible,
             0,
             active,
+            deadline,
         );
     }
     let mut projection = ProtocolProjection::new(&configuration.codex_home);
-    let deadline = Instant::now() + INITIALIZE_DEADLINE;
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let cleanup_reserve = remaining / 5;
+    let protocol_deadline = deadline.checked_sub(cleanup_reserve).unwrap_or(deadline);
     let state = loop {
         if active.cancelled.load(Ordering::Acquire) {
             break RuntimeReadinessState::Cancelled;
@@ -430,10 +544,10 @@ fn run_protocol(
             break RuntimeReadinessState::ContainmentFailed;
         }
         let now = Instant::now();
-        if now >= deadline {
+        if now >= protocol_deadline {
             break RuntimeReadinessState::TimedOut;
         }
-        match receiver.recv_timeout((deadline - now).min(Duration::from_millis(20))) {
+        match receiver.recv_timeout((protocol_deadline - now).min(Duration::from_millis(20))) {
             Ok(FrameEvent::Frame(frame)) => {
                 queued_bytes.fetch_sub(frame.len(), Ordering::AcqRel);
                 match projection.accept(&frame) {
@@ -481,6 +595,7 @@ fn run_protocol(
         state,
         projection.quarantined_events,
         active,
+        deadline,
     )
 }
 
@@ -725,11 +840,9 @@ fn cleanup_after(
     state: RuntimeReadinessState,
     quarantined_events: u16,
     active: &ActiveRuntime,
+    deadline: Instant,
 ) -> ProtocolOutcome {
-    let cleaned = stop_process_group(&mut child, process_group);
-    if let Ok(mut active_group) = active.process_group.lock() {
-        *active_group = None;
-    }
+    let cleaned = stop_process_group(&mut child, process_group, active, deadline);
     ProtocolOutcome {
         state,
         quarantined_events,
@@ -737,27 +850,107 @@ fn cleanup_after(
     }
 }
 
-fn stop_process_group(child: &mut Child, process_group: i32) -> bool {
+fn stop_process_group(
+    child: &mut Child,
+    process_group: i32,
+    active: &ActiveRuntime,
+    deadline: Instant,
+) -> bool {
     let cleanup_started = Instant::now();
-    let term_deadline = cleanup_started + Duration::from_secs(4);
-    let absolute_deadline = cleanup_started + CLEANUP_DEADLINE;
-    if child.try_wait().ok().flatten().is_none() {
-        signal_process_group(process_group, SIGTERM);
-    }
+    let remaining = deadline.saturating_duration_since(cleanup_started);
+    let term_deadline = cleanup_started + remaining.saturating_sub(remaining / 5);
+    signal_active_process_group(active, process_group, SIGTERM);
     while Instant::now() < term_deadline {
-        if child.try_wait().ok().flatten().is_some() && !process_group_exists(process_group) {
-            return true;
+        if ready_to_reap(child.id() as i32, process_group) {
+            retire_active_process_group(active, process_group);
+            return child.wait().is_ok();
         }
         thread::sleep(Duration::from_millis(10));
     }
-    signal_process_group(process_group, SIGKILL);
-    while Instant::now() < absolute_deadline {
-        if child.try_wait().ok().flatten().is_some() && !process_group_exists(process_group) {
-            return true;
+    signal_active_process_group(active, process_group, SIGKILL);
+    while Instant::now() < deadline {
+        if ready_to_reap(child.id() as i32, process_group) {
+            retire_active_process_group(active, process_group);
+            return child.wait().is_ok();
         }
         thread::sleep(Duration::from_millis(10));
     }
+    retire_active_process_group(active, process_group);
+    let _ = child.try_wait();
     false
+}
+
+fn signal_active_process_group(active: &ActiveRuntime, process_group: i32, signal: i32) -> bool {
+    let Ok(active_group) = active.process_group.lock() else {
+        return false;
+    };
+    if *active_group != Some(process_group) {
+        return false;
+    }
+    signal_process_group(process_group, signal);
+    true
+}
+
+fn retire_active_process_group(active: &ActiveRuntime, process_group: i32) {
+    if let Ok(mut active_group) = active.process_group.lock()
+        && *active_group == Some(process_group)
+    {
+        *active_group = None;
+    }
+}
+
+fn ready_to_reap(child: i32, process_group: i32) -> bool {
+    let exited = child_exited_without_reaping(child);
+    let descendants = process_group_has_descendants(process_group, child);
+    exited.unwrap_or(false) && !descendants.unwrap_or(true)
+}
+
+fn child_exited_without_reaping(child: i32) -> io::Result<bool> {
+    let mut information = WaitInformation::default();
+    // SAFETY: waitid receives this supervisor's positive child PID and a
+    // correctly sized writable siginfo-compatible buffer. WNOWAIT preserves
+    // the child identity until the active process group is retired.
+    let result = unsafe {
+        keiko_waitid(
+            P_PID,
+            child as u32,
+            &mut information,
+            WEXITED | WNOHANG | WNOWAIT,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(information.process_id == child)
+}
+
+fn process_group_has_descendants(process_group: i32, leader: i32) -> io::Result<bool> {
+    let mut members = [0_i32; 512];
+    let buffer_size = i32::try_from(std::mem::size_of_val(&members))
+        .map_err(|_| io::Error::other("process group buffer"))?;
+    // SAFETY: proc_listpgrppids receives a positive group ID and a writable
+    // fixed-size PID buffer owned by this call.
+    let member_count = unsafe {
+        keiko_proc_listpgrppids(
+            process_group,
+            members.as_mut_ptr().cast::<c_void>(),
+            buffer_size,
+        )
+    };
+    if member_count < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let member_count =
+        usize::try_from(member_count).map_err(|_| io::Error::other("process group size"))?;
+    if member_count > members.len() {
+        return Err(io::Error::other("process group result"));
+    }
+    if member_count == members.len() {
+        return Ok(true);
+    }
+    Ok(members[..member_count]
+        .iter()
+        .any(|process| *process > 0 && *process != leader))
 }
 
 fn signal_process_group(process_group: i32, signal: i32) {
@@ -769,11 +962,12 @@ fn signal_process_group(process_group: i32, signal: i32) {
     }
 }
 
+#[cfg(test)]
 fn process_group_exists(process_group: i32) -> bool {
     // SAFETY: signal 0 performs existence/permission checking only. The process
     // group ID came directly from the child created by this supervisor.
     let result = unsafe { keiko_kill(-process_group, 0) };
-    result == 0 || io::Error::last_os_error().raw_os_error() == Some(EPERM)
+    result == 0
 }
 
 #[cfg(test)]
@@ -1065,6 +1259,9 @@ mod tests {
 
     #[test]
     fn configuration_rejects_substitution_symlinks_and_overlapping_roots() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let fixture = Fixture::new();
         let host = RuntimeHost::for_test(
             fixture.binary.clone(),
@@ -1167,7 +1364,35 @@ mod tests {
     }
 
     #[test]
+    fn verified_binary_descriptor_rejects_path_replacement_before_launch() {
+        let fixture = Fixture::new();
+        let configuration = RuntimeConfiguration {
+            binary: fixture.binary.clone(),
+            codex_home: fixture.home.clone(),
+            work_root: fixture.work.clone(),
+            expected_sha256: sha256_file(&fixture.binary).expect("digest"),
+        };
+        let mut verified = verify_configuration(&configuration, None).expect("verified");
+        let original = fixture.root.join("original-codex");
+        fs::rename(&fixture.binary, &original).expect("retain original inode");
+        fs::write(&fixture.binary, b"replacement runtime").expect("replacement");
+        let mut permissions = fs::metadata(&fixture.binary)
+            .expect("replacement metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&fixture.binary, permissions).expect("replacement permissions");
+
+        assert_eq!(
+            verified.revalidate_binary(),
+            Err(RuntimeReadinessState::Incompatible)
+        );
+    }
+
+    #[test]
     fn host_rejects_concurrency_honours_pre_cancel_and_preserves_collisions() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let fixture = Fixture::new();
         let host = fixture.scripted_host("#!/bin/sh\nexit 0\n");
         host.active.running.store(true, Ordering::Release);
@@ -1193,7 +1418,14 @@ mod tests {
         let active = ActiveRuntime::default();
         active.cancelled.store(true, Ordering::Release);
         assert_eq!(
-            perform_check(configuration, None, &active, &AtomicU64::new(0)).state,
+            perform_check(
+                configuration,
+                None,
+                &active,
+                &AtomicU64::new(0),
+                Instant::now() + DEFAULT_REQUEST_TIMEOUT,
+            )
+            .state,
             RuntimeReadinessState::Cancelled
         );
 
@@ -1205,6 +1437,15 @@ mod tests {
             host.check("collision", None).state,
             RuntimeReadinessState::Unavailable
         );
+    }
+
+    #[test]
+    fn retired_process_group_refuses_every_late_signal() {
+        let active = ActiveRuntime::default();
+        *active.process_group.lock().expect("process-group state") = Some(i32::MAX);
+        retire_active_process_group(&active, i32::MAX);
+        assert!(!signal_active_process_group(&active, i32::MAX, SIGTERM));
+        assert!(!signal_active_process_group(&active, i32::MAX, SIGKILL));
     }
 
     #[test]
@@ -1366,6 +1607,29 @@ while :; do /bin/sleep 1; done
 
         let retry = host.check("request-retry", Some(&fixture.work));
         assert_eq!(retry.state, RuntimeReadinessState::ContainmentFailed);
+    }
+
+    #[test]
+    fn request_timeout_is_one_end_to_end_initialization_and_cleanup_deadline() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let host = fixture.scripted_host(
+            r#"#!/bin/sh
+read -r initialize
+while :; do /bin/sleep 1; done
+"#,
+        );
+        let started = Instant::now();
+        let result = host.check_with_timeout("request-timeout", None, Duration::from_millis(500));
+        assert_eq!(result.state, RuntimeReadinessState::TimedOut);
+        assert!(
+            started.elapsed() < Duration::from_millis(1500),
+            "request deadline was multiplied across phases: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
     }
 
     struct Fixture {

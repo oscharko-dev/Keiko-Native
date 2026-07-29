@@ -623,14 +623,17 @@ export function isRuntimeReadinessResponse(
     return false;
   }
   const state = value.result.state;
+  const quarantinedEvents = state.quarantinedEvents;
   if (
-    !Number.isInteger(state.quarantinedEvents) ||
-    Number(state.quarantinedEvents) < 0 ||
-    Number(state.quarantinedEvents) > 64
+    typeof quarantinedEvents !== "number" ||
+    !Number.isInteger(quarantinedEvents) ||
+    quarantinedEvents < 0 ||
+    quarantinedEvents > 64
   ) {
     return false;
   }
-  const kind = String(state.state);
+  if (typeof state.state !== "string") return false;
+  const kind = state.state;
   const terminalStates = [
     "unavailable",
     "incompatible",
