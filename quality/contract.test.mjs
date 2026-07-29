@@ -2297,7 +2297,7 @@ test("pins the protected lifecycle recovery wake decision", async () => {
     )
   ).replaceAll("\r\n", "\n");
 
-  assert.match(adr, /Decision issue #131 v12 selected this outcome/u);
+  assert.match(adr, /Decision issue #131 v13 selected this outcome/u);
   assert.match(
     adr,
     /adds one ADR-0012-owned auxiliary identity[\s\S]{0,260}does not change ADR-0011's\s+version-1 record schemas/iu,
@@ -2413,7 +2413,7 @@ test("pins the protected lifecycle recovery wake decision", async () => {
   );
   assert.match(
     adr,
-    /`schema_version` is the literal `1`[\s\S]{0,120}`producer_contract_version` is the literal `1`[\s\S]{0,180}every other producer\/version pair is unsupported[\s\S]{0,300}canonical positive decimal integers[\s\S]{0,300}`repository` is exactly `oscharko-dev\/Keiko-Native`[\s\S]{0,300}`pull_request_number` is the empty string for explicit null[\s\S]{0,300}`exact_head_sha` is the empty string for explicit null or exactly 40 lowercase hexadecimal[\s\S]{0,300}`exact_target` is the empty string for explicit null[\s\S]{0,140}literal `dev`[\s\S]{0,220}`epic\/\[A-Za-z0-9\]\(\?:\[A-Za-z0-9\._-\]\*\[A-Za-z0-9\]\)\?\(\?:\/\[A-Za-z0-9\]\(\?:\[A-Za-z0-9\._-\]\*\[A-Za-z0-9\]\)\?\)\*`[\s\S]{0,240}contains no `\.\.`[\s\S]{0,120}no slash-delimited component ending `\.lock`[\s\S]{0,120}no\s+`refs\/heads\/` prefix or normalization step[\s\S]{0,260}accepted issue delivery[\s\S]{0,180}provider base-ref bytes exactly[\s\S]{0,500}`generation_bytes_base64` is strict padded RFC 4648 base64 with no whitespace[\s\S]{0,500}must re-encode byte-identically[\s\S]{0,600}exactly 64\s+lowercase hexadecimal characters[\s\S]{0,300}generation-byte digest must match the decoded bytes[\s\S]{0,300}`expected_producer` is exactly one closed producer identity/iu,
+    /`schema_version` is the literal `1`[\s\S]{0,120}`producer_contract_version` is the literal `1`[\s\S]{0,180}every other producer\/version pair is unsupported[\s\S]{0,300}`issue_number`[\s\S]{0,160}canonical\s+positive safe decimal integers[\s\S]{0,160}`1`[\s\S]{0,80}`9007199254740991`[\s\S]{0,220}`attempt` is a canonical non-negative safe decimal integer[\s\S]{0,180}`\(\?:0\|\[1-9\]\[0-9\]\*\)`[\s\S]{0,160}`0` through `9007199254740991`[\s\S]{0,180}bootstrap `0`[\s\S]{0,80}subsequent `1`[\s\S]{0,200}`-1`[\s\S]{0,80}`\+1`[\s\S]{0,80}`00`[\s\S]{0,80}`01`[\s\S]{0,80}`1\.0`[\s\S]{0,100}`9007199254740992`[\s\S]{0,120}rejected before provider access[\s\S]{0,300}`repository` is exactly `oscharko-dev\/Keiko-Native`[\s\S]{0,300}`pull_request_number` is the empty string for explicit null[\s\S]{0,300}`exact_head_sha` is the empty string for explicit null or exactly 40 lowercase hexadecimal[\s\S]{0,300}`exact_target` is the empty string for explicit null[\s\S]{0,140}literal `dev`[\s\S]{0,220}`epic\/\[A-Za-z0-9\]\(\?:\[A-Za-z0-9\._-\]\*\[A-Za-z0-9\]\)\?\(\?:\/\[A-Za-z0-9\]\(\?:\[A-Za-z0-9\._-\]\*\[A-Za-z0-9\]\)\?\)\*`[\s\S]{0,240}contains no `\.\.`[\s\S]{0,120}no slash-delimited component ending `\.lock`[\s\S]{0,120}no\s+`refs\/heads\/` prefix or normalization step[\s\S]{0,260}accepted issue delivery[\s\S]{0,180}provider base-ref bytes exactly[\s\S]{0,500}`generation_bytes_base64` is strict padded RFC 4648 base64 with no whitespace[\s\S]{0,500}must re-encode byte-identically[\s\S]{0,600}exactly 64\s+lowercase hexadecimal characters[\s\S]{0,300}generation-byte digest must match the decoded bytes[\s\S]{0,300}`expected_producer` is exactly one closed producer identity/iu,
   );
   assert.ok(
     adr.includes("provider-invalid `epic/a..b` and `epic/a.lock` refs"),

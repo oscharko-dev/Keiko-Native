@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-07-29. Decision issue #131 v12 selected this outcome. The record becomes accepted
+Proposed, 2026-07-29. Decision issue #131 v13 selected this outcome. The record becomes accepted
 only when an authorized maintainer manually merges its pull request to `dev`.
 
 This record narrowly amends ADR-0011's coordinator and producer authentication, invocation,
@@ -53,7 +53,10 @@ ADR-0011 did not define. Decision issue #131 v11 freezes the closed producer/ver
 self-contained target-branch grammar with byte-exact authority checks. Independent v11 audit then
 proved that the positive grammar admitted provider-invalid `epic/a..b` and `epic/a.lock` refs.
 Decision issue #131 v12 additionally rejects `..` anywhere and any slash-delimited component ending
-`.lock`.
+`.lock`. Fresh exact-head review then found that the protected-producer wire classified `attempt`
+as positive even though ADR-0011's unsigned attempt sequence and the canonical bootstrap generation
+permit `0`. Decision issue #131 v13 separates positive provider identifiers from the non-negative
+safe attempt sequence.
 
 ## Decision
 
@@ -398,8 +401,13 @@ The exact wire encodings are:
 - `schema_version` is the literal `1`;
 - `producer_contract_version` is the literal `1` for each producer in the closed mapping above;
   every other producer/version pair is unsupported;
-- `issue_number`, `attempt`, `phase_fence_comment_id`, and `generation_request_comment_id` are
-  canonical positive decimal integers;
+- `issue_number`, `phase_fence_comment_id`, and `generation_request_comment_id` are canonical
+  positive safe decimal integers: they match `[1-9][0-9]*` and are in the inclusive range `1`
+  through `9007199254740991`;
+- `attempt` is a canonical non-negative safe decimal integer: it matches
+  `(?:0|[1-9][0-9]*)` and is in the inclusive range `0` through `9007199254740991`; bootstrap `0`
+  and subsequent `1` are accepted, while the empty string, `-1`, `+1`, `00`, `01`, `1.0`, and
+  `9007199254740992` are rejected before provider access;
 - `repository` is exactly `oscharko-dev/Keiko-Native`;
 - `pull_request_number` is the empty string for explicit null or a canonical positive decimal
   integer;
