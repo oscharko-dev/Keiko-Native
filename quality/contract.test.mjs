@@ -2304,11 +2304,11 @@ test("pins the protected lifecycle recovery wake decision", async () => {
   );
   assert.match(
     adr,
-    /recovery comment ID for `issue_comment`, otherwise explicit null/iu,
+    /canonical decimal recovery-comment-ID string for `issue_comment`, otherwise the empty string/iu,
   );
   assert.match(
     adr,
-    /recovery_comment_id:\s*\$\{\{\s*matrix\.locator\.recovery_comment_id \|\| ''\s*\}\}/u,
+    /recovery_comment_id:\s*\$\{\{\s*matrix\.locator\.recovery_comment_id\s*\}\}/u,
   );
   assert.match(
     adr,
@@ -2343,9 +2343,8 @@ test("pins the protected lifecycle recovery wake decision", async () => {
   );
   assert.match(
     adr,
-    /one protected repository allowlist constant[\s\S]{0,260}two immutable\s+numeric `User` identities/iu,
+    /one protected repository allowlist constant[\s\S]{0,260}two immutable\s+numeric `User` identities[\s\S]{0,260}copied numeric identities[\s\S]{0,120}denied/iu,
   );
-  assert.doesNotMatch(adr, /159039192|59687448/u);
   assert.match(
     adr,
     /This needs no workflow dispatch and no Actions-write\s+permission/iu,

@@ -40,8 +40,9 @@ how the coordinator starts generation-bound producers without dispatch, did not 
 authority-bearing forward-recovery request after removing caller dispatch, and excluded resolver
 provider reads from ADR-0011's repository-wide budget. A later exact-head review found that recovery
 did not reject a command edited before validation and required an unbounded history-wide
-cardinality proof. Decision issue #131 v8 resolves those gaps without adding an identity, exceeding
-ADR-0011's request ceilings, or restoring Actions-write authority.
+cardinality proof. Decision issue #131 v8 resolves those gaps without adding an account,
+credential, or provider identity, exceeding ADR-0011's request ceilings, or restoring Actions-write
+authority.
 
 ## Decision
 
@@ -154,15 +155,16 @@ A direct-event resolver emits only:
 - repository;
 - canonical decimal issue number;
 - pull request number or explicit null;
-- recovery comment ID for `issue_comment`, otherwise explicit null;
+- canonical decimal recovery-comment-ID string for `issue_comment`, otherwise the empty string;
 - source event kind;
 - source run ID and attempt or explicit null; and
 - the resolver's protected caller SHA.
 
-The recovery comment ID is an untrusted positive safe integer copied from the canonical event
-payload. It is not a comment body, actor, command conclusion, target, or authority fact. A missing
-ID on `issue_comment`, a non-null ID on another event, a non-canonical decimal encoding, zero,
-negative, fractional, or unsafe integer rejects the complete direct locator.
+The recovery comment ID is copied from the canonical event payload only after it is validated as an
+untrusted positive safe integer, then encoded as its unique non-zero ASCII decimal string. It is not
+a comment body, actor, command conclusion, target, or authority fact. A missing ID on
+`issue_comment`, a non-empty ID on another event, a non-canonical decimal encoding, zero, negative,
+fractional, or unsafe integer rejects the complete direct locator.
 
 The protected source-workflow locator uses domain
 `keiko-native.lifecycle-wake-locator`, schema version `1`, digest algorithm `sha-256`, and the
@@ -182,7 +184,7 @@ twice and must remain identical. The resolver rejects a missing, extra, repeated
 oversized, non-canonical, wrong-run, wrong-path, wrong-ref, wrong-SHA, or unstable locator. The
 artifact contains no issue body, pull-request body, comment, reason, credential, provider payload,
 requested state, lane, readiness result, producer result, activation value, or merge value.
-Source-workflow and scheduled locators always normalize `recovery_comment_id` to explicit null;
+Source-workflow and scheduled locators always normalize `recovery_comment_id` to the empty string;
 only a direct canonical `issue_comment` event can carry it.
 
 This locator artifact is deliberately not attested and is not an ADR-0011 record. It only selects
@@ -253,9 +255,10 @@ to make a decision. Any staleness is resolved only by the complete read inside t
 ### Per-issue caller lock and reusable coordinator
 
 The resolver outputs only canonical matrix items
-`{issue_number, recovery_comment_id-or-null}`. Items sort by issue number and then comment ID, and
-duplicates must be byte-identical before deduplication. A scheduled or source-workflow item always
-has a null comment ID. The caller creates one job per item with:
+`{issue_number, recovery_comment_id-string}`. Items sort by issue number and then the numeric value
+of the comment ID, treating the empty string as absent, and duplicates must be byte-identical
+before deduplication. A scheduled or source-workflow item always has an empty comment ID. The
+caller creates one job per item with:
 
 ```yaml
 concurrency:
@@ -264,7 +267,7 @@ concurrency:
 uses: ./.github/workflows/issue-lifecycle.yml
 with:
   issue_number: ${{ matrix.locator.issue_number }}
-  recovery_comment_id: ${{ matrix.locator.recovery_comment_id || '' }}
+  recovery_comment_id: ${{ matrix.locator.recovery_comment_id }}
 ```
 
 There is no `cancel-in-progress` key. GitHub acquires this job-level group before starting the
