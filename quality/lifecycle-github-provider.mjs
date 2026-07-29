@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import { isDeepStrictEqual } from "node:util";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { isDeepStrictEqual, promisify } from "node:util";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   githubBinaryRequestFor,
@@ -37,6 +41,7 @@ const binaryRequest = githubBinaryRequestFor("keiko-native-lifecycle-provider");
 const graphqlRequest = githubGraphqlRequestFor(
   "keiko-native-lifecycle-provider",
 );
+const executeFile = promisify(execFile);
 const RECOVERY_COMMENT_QUERY = `query LifecycleRecoveryComment($id: ID!) {
   node(id: $id) {
     __typename
@@ -205,19 +210,117 @@ function statementFromAttestation(attestation) {
   return statement;
 }
 
-function expectedClaims(fields) {
-  return {
-    repository: REPOSITORY,
-    workflow_ref: `${REPOSITORY}/${CALLER}@${DEV_REF}`,
-    workflow_sha: fields.protected_dev_sha,
-    job_workflow_ref: `${REPOSITORY}/${fields.workflow_path}@${DEV_REF}`,
-    job_workflow_sha: fields.protected_dev_sha,
-    ref: DEV_REF,
-    sha: fields.protected_dev_sha,
-    run_id: fields.workflow_run_id,
-    run_attempt: fields.workflow_run_attempt,
-    iss: ISSUER,
+function verifiedAttestationClaims(result) {
+  const certificate = result?.verificationResult?.signature?.certificate;
+  if (certificate === null || typeof certificate !== "object")
+    throw new Error("record-attestation-certificate-invalid");
+  const repositoryPrefix = "https://github.com/";
+  const workflowReference = (value, name) => {
+    if (typeof value !== "string" || !value.startsWith(repositoryPrefix))
+      throw new Error(`record-attestation-${name}-invalid`);
+    return value.slice(repositoryPrefix.length);
   };
+  const invocation = new RegExp(
+    `^${repositoryPrefix}${REPOSITORY}/actions/runs/([1-9][0-9]*)/attempts/([1-9][0-9]*)$`,
+    "u",
+  ).exec(certificate.runInvocationURI);
+  if (invocation === null)
+    throw new Error("record-attestation-run-invocation-invalid");
+  return {
+    repository: workflowReference(
+      certificate.sourceRepositoryURI,
+      "repository",
+    ),
+    workflow_ref: workflowReference(certificate.buildConfigURI, "workflow-ref"),
+    workflow_sha: certificate.buildConfigDigest,
+    job_workflow_ref: workflowReference(
+      certificate.buildSignerURI,
+      "job-workflow-ref",
+    ),
+    job_workflow_sha: certificate.buildSignerDigest,
+    ref: certificate.sourceRepositoryRef,
+    sha: certificate.sourceRepositoryDigest,
+    run_id: Number(invocation[1]),
+    run_attempt: Number(invocation[2]),
+    iss: certificate.issuer,
+  };
+}
+
+export async function verifyLifecycleAttestationBundle({
+  anchorBytes,
+  attestation,
+  execute = executeFile,
+  fields,
+}) {
+  if (
+    !Buffer.isBuffer(anchorBytes) ||
+    anchorBytes.length === 0 ||
+    attestation?.bundle === undefined
+  )
+    throw new Error("record-attestation-verification-input-invalid");
+  const directory = await mkdtemp(
+    join(tmpdir(), "keiko-lifecycle-attestation-"),
+  );
+  try {
+    const anchorPath = join(directory, ANCHOR_FILE);
+    const bundlePath = join(directory, "bundle.json");
+    await writeFile(anchorPath, anchorBytes, { flag: "wx" });
+    await writeFile(bundlePath, JSON.stringify(attestation.bundle), {
+      encoding: "utf8",
+      flag: "wx",
+    });
+    const signerWorkflow = `${REPOSITORY}/${fields.workflow_path}`;
+    const { stdout } = await execute(
+      "gh",
+      [
+        "attestation",
+        "verify",
+        anchorPath,
+        "--bundle",
+        bundlePath,
+        "--repo",
+        REPOSITORY,
+        "--signer-workflow",
+        signerWorkflow,
+        "--signer-digest",
+        fields.protected_dev_sha,
+        "--source-ref",
+        DEV_REF,
+        "--source-digest",
+        fields.protected_dev_sha,
+        "--cert-oidc-issuer",
+        ISSUER,
+        "--deny-self-hosted-runners",
+        "--no-public-good",
+        "--format",
+        "json",
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GH_TOKEN: process.env.GITHUB_TOKEN,
+        },
+        maxBuffer: 256 * 1024,
+        timeout: 30_000,
+      },
+    );
+    let verified;
+    try {
+      verified = JSON.parse(stdout);
+    } catch {
+      throw new Error("record-attestation-verifier-output-invalid");
+    }
+    if (!Array.isArray(verified) || verified.length !== 1)
+      throw new Error("record-attestation-verifier-cardinality");
+    const claims = verifiedAttestationClaims(verified[0]);
+    const exactBundle = JSON.parse(await readFile(bundlePath, "utf8"));
+    if (!isDeepStrictEqual(exactBundle, attestation.bundle))
+      throw new Error("record-attestation-bundle-reread-mismatch");
+    return claims;
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
 }
 
 export function createLifecycleGithubProvider({
@@ -225,6 +328,7 @@ export function createLifecycleGithubProvider({
   graphql = graphqlRequest,
   json = request,
   maximumRequests = 136,
+  verifyBundle = verifyLifecycleAttestationBundle,
 } = {}) {
   if (!Number.isSafeInteger(maximumRequests) || maximumRequests <= 0)
     throw new TypeError("provider request ceiling is invalid");
@@ -806,8 +910,19 @@ export function createLifecycleGithubProvider({
         subject?.digest?.sha256 !== bundle.subjectDigest
       )
         throw new Error("record-attestation-subject-mismatch");
+      const artifact = [...artifacts.values()].find(
+        (candidate) =>
+          candidate.normalized.anchorIdentity === bundle.subjectDigest,
+      );
+      if (artifact === undefined)
+        throw new Error("record-attestation-artifact-missing");
+      const claims = await verifyBundle({
+        anchorBytes: artifact.bytes,
+        attestation: bundle.attestation,
+        fields: bundle.fields,
+      });
       return {
-        claims: expectedClaims(bundle.fields),
+        claims,
         subject: {
           digest: `sha256:${bundle.subjectDigest}`,
           name: subject.name,

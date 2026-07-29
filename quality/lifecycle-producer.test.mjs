@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
+import { semanticIssueFingerprint } from "./issue-contract.mjs";
+import { readinessComment } from "./issue-readiness-action.mjs";
 import {
   lifecycleCoordinatorFacts,
   planInertLifecycleCoordinatorStep,
 } from "./lifecycle-coordinator.mjs";
+import { runLifecycleProducerRecordAction } from "./lifecycle-producer-action.mjs";
 import { planInertLifecycleProducerResult } from "./lifecycle-producer.mjs";
 import { parseRecordEnvelope } from "./lifecycle-record-protocol.mjs";
 
@@ -36,9 +42,9 @@ function decodeStep(step, id) {
   return { comment: { id }, parsed: parseRecordEnvelope(plan.recordBody) };
 }
 
-function coordinatorPrefix() {
+function coordinatorPrefix(comments = []) {
   const facts = lifecycleCoordinatorFacts({
-    comments: [],
+    comments,
     issue,
     protectedDevSha: commit,
   });
@@ -109,6 +115,62 @@ test("emits only the selected same-generation producer result", () => {
   assert.equal(parsed.fields.attempt, 0);
   assert.equal(parsed.fields.predecessor_comment_id, 101);
   assert.equal(parsed.fields.workflow_job_id, 903);
+});
+
+test("the producer action reconstructs, evaluates, and writes the record plan", async () => {
+  const fingerprint = semanticIssueFingerprint(issue.body, issue.title);
+  const readiness = {
+    body: readinessComment({
+      actor: "Niko4417",
+      decision: { outcome: "accept", reasons: [] },
+      now: "2026-07-29T11:55:00Z",
+      validation: { fingerprint, version: "v1" },
+    }),
+    id: 77,
+    user: {
+      id: 41898282,
+      login: "github-actions[bot]",
+      type: "Bot",
+    },
+  };
+  const { fence, producer, request } = coordinatorPrefix([readiness]);
+  const environment = {
+    GITHUB_RUN_ATTEMPT: "1",
+    GITHUB_RUN_ID: "902",
+    GITHUB_WORKFLOW_SHA: commit,
+    ...Object.fromEntries(
+      Object.entries(producer.wire).map(([name, value]) => [
+        `KEIKO_PRODUCER_${name.toUpperCase()}`,
+        value,
+      ]),
+    ),
+    KEIKO_PRODUCER_CONTRACT_VERSION: producer.wire.producer_contract_version,
+  };
+  const root = await mkdtemp(join(tmpdir(), "keiko-producer-"));
+  const githubOutput = join(root, "output");
+  await writeFile(githubOutput, "");
+  const provider = {
+    comments: () => [readiness],
+    currentProducerRuntime: async () => ({ jobId: 903, workflowId: 44 }),
+    requestCount: () => 0,
+  };
+  const result = await runLifecycleProducerRecordAction({
+    environment,
+    githubOutput,
+    loadFacts: async () => ({ issue, pullRequest: null }),
+    loadHistory: async () => ({
+      records: [request, fence],
+      state: "authenticated",
+    }),
+    now: new Date("2026-07-29T12:03:00Z"),
+    provider,
+  });
+  assert.equal(result.result.issueNumber, 51);
+  assert.match(result.result.resultIdentity, /^[0-9a-f]{64}$/u);
+  const output = await readFile(githubOutput, "utf8");
+  assert.match(output, /^issue-number=51$/mu);
+  assert.match(output, /^record-plan=[A-Za-z0-9_-]+$/mu);
+  assert.match(output, /^result-identity=[0-9a-f]{64}$/mu);
 });
 
 test("rejects stale generations and duplicate or reordered producers", () => {

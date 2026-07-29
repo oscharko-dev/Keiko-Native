@@ -46,9 +46,8 @@ export async function runLifecycleProducerAction({
   environment = process.env,
   githubOutput = process.env.GITHUB_OUTPUT,
 } = {}) {
-  const wire = validateLifecycleProducerWire(
-    lifecycleProducerWireFromEnvironment(environment),
-  );
+  const rawWire = lifecycleProducerWireFromEnvironment(environment);
+  const wire = validateLifecycleProducerWire(rawWire);
   if (githubOutput)
     await appendFile(
       githubOutput,
@@ -135,15 +134,15 @@ export async function runLifecycleProducerRecordAction({
   environment = process.env,
   githubOutput = process.env.GITHUB_OUTPUT,
   loadFacts,
+  loadHistory = reconstructLifecycleHistory,
   now = new Date(),
   provider = createLifecycleGithubProvider(),
 } = {}) {
-  const wire = validateLifecycleProducerWire(
-    lifecycleProducerWireFromEnvironment(environment),
-  );
+  const rawWire = lifecycleProducerWireFromEnvironment(environment);
+  const wire = validateLifecycleProducerWire(rawWire);
   const issueNumber = Number(wire.issue_number);
   const budget = createLifecycleProviderBudget("normal");
-  const history = await reconstructLifecycleHistory({
+  const history = await loadHistory({
     budget,
     issueNumber,
     mode: "normal",
@@ -183,7 +182,7 @@ export async function runLifecycleProducerRecordAction({
       runId,
       workflowId: workflow.workflowId,
     },
-    wire,
+    wire: rawWire,
   });
   if (typeof githubOutput === "string" && githubOutput !== "")
     await appendFile(
