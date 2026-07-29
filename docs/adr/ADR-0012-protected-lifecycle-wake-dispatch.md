@@ -2,12 +2,13 @@
 
 ## Status
 
-Proposed, 2026-07-29. Decision issue #131 v5 selected this outcome. The record becomes accepted
+Proposed, 2026-07-29. Decision issue #131 v6 selected this outcome. The record becomes accepted
 only when an authorized maintainer manually merges its pull request to `dev`.
 
-This record narrowly amends ADR-0011's coordinator authentication and serialization topology. It
-does not change ADR-0011's version-1 record or auxiliary schemas, producer identities, coordinator
-ownership, lifecycle state graph, activation boundary, or the human-only `dev` merge rule.
+This record narrowly amends ADR-0011's coordinator and producer authentication, invocation,
+recovery, and serialization topology. It does not change ADR-0011's version-1 record or auxiliary
+schemas, producer identities, coordinator ownership, lifecycle state graph, activation boundary,
+or the human-only `dev` merge rule.
 
 ## Context
 
@@ -33,10 +34,18 @@ the sole coordinator as a reusable workflow. This needs no workflow dispatch and
 permission. It requires authentication to prove the fixed caller and the exact called writer as
 one protected run chain.
 
+Review of the first published ADR-0012 draft at PR #132 found three incomplete paths. It did not say
+how the coordinator starts generation-bound producers without dispatch, did not expose an
+authority-bearing forward-recovery request after removing caller dispatch, and excluded resolver
+provider reads from ADR-0011's repository-wide budget. Decision issue #131 v6 resolves those gaps
+without adding an identity or restoring Actions-write authority.
+
 ## Decision
 
 Adopt one top-level protected caller at `.github/workflows/lifecycle-wakeup.yml` and one reusable
-coordinator at `./.github/workflows/issue-lifecycle.yml`.
+coordinator at `./.github/workflows/issue-lifecycle.yml`. The only protected producer paths the
+coordinator may call are `./.github/workflows/pr-contract.yml` and
+`./.github/workflows/contract-publication.yml`.
 
 The caller has two job roles:
 
@@ -128,9 +137,11 @@ successful protected scan or another allowed event, so the provider latency has 
 bound in this design.
 
 The caller exposes no `workflow_dispatch`, `repository_dispatch`, generic webhook,
-caller-selected workflow, or caller-selected ref, and it never emits either dispatch event. The
-existing contract-publication source may still be started only under its separately accepted
-contract.
+caller-selected workflow, or caller-selected ref. Neither the caller nor coordinator emits a
+workflow or repository dispatch event. Generation-bound producer starts use only the exact local
+reusable calls below. The existing top-level contract-publication source may still be started only
+under its separately accepted contract; that independent manual source is outside this lifecycle
+invocation path.
 
 ### Locator schema and resolver boundary
 
@@ -181,6 +192,14 @@ The caller splits resolution into exact event-class jobs so unused reads are not
 Every write permission is `none`. An event selects exactly one resolver job; every other resolver
 job is skipped. Each job checks out only the exact caller workflow SHA with
 `persist-credentials: false`.
+
+The pull-request, governance-completion, evidence-completion, and schedule resolvers each acquire
+`issue-lifecycle-provider-budget` with `queue: max` and no `cancel-in-progress` key before their
+first provider request and hold it until the bounded resolver job finishes. It is their sole
+concurrency group because the issue number is not yet known. The issue resolver makes zero provider
+requests and does not acquire the budget. A resolver never waits for or invokes a per-issue job
+while holding the provider budget, so this standalone read serialization cannot reverse the nested
+authority-lock order below.
 
 Repository permissions alone do not deny runner-artifact upload: GitHub's artifact transport uses
 the runner artifact service rather than `actions: write`. The resolver boundary is therefore also
@@ -247,12 +266,14 @@ workflow call. Its exact permission ceiling is:
 - `id-token: write`;
 - `issues: write`;
 - `pull-requests: read`; and
-- `statuses: read`.
+- `statuses: write`.
 
 Every other permission is `none`. Reusable-workflow permission inheritance can only preserve or
 reduce this ceiling. Inside the callee, read-only evaluation jobs receive only their declared read
 permissions. A record-publication job retains ADR-0011's exact writer permissions:
 `actions: read`, `attestations: write`, `contents: read`, `id-token: write`, and `issues: write`.
+Only the closed status-producing jobs in `pr-contract.yml` receive `statuses: write`; no other
+called job receives it.
 
 Every provider-intensive callee job acquires
 `issue-lifecycle-provider-budget` with `queue: max` and no `cancel-in-progress` key. The fixed lock
@@ -263,14 +284,16 @@ caller coordinate job: issue-lifecycle-{issue}
   -> called coordinator provider job: issue-lifecycle-provider-budget
 ```
 
-No job acquires the groups in the opposite order. Resolver reads do not enter the provider-budget
-group because they cannot read lifecycle authority or perform a write. After entering both groups,
-the coordinator performs ADR-0011's complete stable reload before any record obligation or effect.
+No coordinator or producer job acquires the groups in the opposite order. Provider-reading
+resolvers hold only the provider-budget group and finish before they can create a coordinate job.
+After entering both nested groups, the coordinator or producer performs ADR-0011's complete stable
+reload before any record obligation, result, or effect.
 
 This amends ADR-0011's serialization phrase “every dispatch” to “every reusable coordinator call.”
-There is no dispatch in the selected design. Every coordinator record write, lifecycle effect, and
-transition read-back remains inside the caller-held per-issue group. The read-only locator stage is
-explicitly outside that authority boundary.
+There is no coordinator-initiated dispatch in the selected design. Every producer start,
+coordinator or producer record write, lifecycle effect, and transition read-back remains inside the
+caller-held per-issue group. The read-only locator stage is explicitly outside that authority
+boundary.
 
 ### Dual caller and callee authentication
 
@@ -297,18 +320,73 @@ Authentication of a coordinator record requires all of the following:
 8. the comment, record digest, artifact anchor, subject name, run, attempt, caller, callee, commit,
    and attestation independently agree.
 
-The artifact anchor's version-1 `workflow_path` remains the callee writer path. Its
+The artifact anchor's version-1 `workflow_path` remains the exact record-writer path. Its
 `workflow_run_id`, `workflow_run_attempt`, and `protected_dev_sha` remain sufficient because the
-caller path is one fixed authenticated constant and the callee path is already recorded. Producer
-results written by `.github/workflows/pr-contract.yml` or
-`.github/workflows/contract-publication.yml` retain ADR-0011's direct protected-workflow
-authentication; the dual-chain rule applies only to coordinator-authored records.
+caller path is one fixed authenticated constant and the writer path is already recorded.
 
 A run that names only the caller, a claim that names only the callee, a different caller or callee,
 an unlisted referenced workflow, a caller/callee SHA mismatch, a mutable ref, an absent job, a
 deleted run or anchor, or any claim/body/provider disagreement rejects the record. Login, marker,
 author association, workflow display name, event timing, or a copied locator never authenticates
 it.
+
+### Nested protected producer invocation and authentication
+
+The coordinator starts one nested reusable call for each producer required by the current
+ADR-0011 phase and never starts a replacement for the same generation, attempt, fence, and expected
+producer. The closed mapping is:
+
+| Expected producer        | Exact reusable workflow                        |
+| ------------------------ | ---------------------------------------------- |
+| `issue-contract-current` | `./.github/workflows/pr-contract.yml`          |
+| `pr-contract`            | `./.github/workflows/pr-contract.yml`          |
+| `contract-publication`   | `./.github/workflows/contract-publication.yml` |
+
+Those workflows may retain separately governed top-level triggers, but the lifecycle coordinator
+uses only their `workflow_call` interface. Each call accepts exactly ADR-0011's protected producer
+inputs:
+
+- schema and producer-contract version;
+- repository and issue number;
+- pull-request number and exact head, or explicit null;
+- exact target, or explicit null;
+- canonical generation bytes and digest;
+- attempt;
+- fence comment ID and digest;
+- generation-request comment ID and digest;
+- request identity and request-payload digest; and
+- exact expected producer identity.
+
+There is no caller-selected lane, requested state, activation value, transition, conclusion,
+workflow path, ref, or merge authority. Each producer independently reloads provider state,
+reconstructs the canonical record chain, recomputes the generation, authenticates the current
+fence, and emits only its own producer-result record and separately fenced closed status result.
+A direct top-level producer run or status may wake reconciliation but cannot satisfy a
+generation-bound producer obligation.
+
+The caller-held per-issue group remains held across the coordinator and every nested producer call.
+Every provider-intensive producer job then acquires `issue-lifecycle-provider-budget` second. The
+top-level caller's permission ceiling includes the exact `statuses: write` capability required by
+the two status results from `pr-contract.yml`; reusable permission inheritance cannot add another
+capability.
+
+For a nested producer record, authentication requires the same top-level caller facts in the prior
+section plus:
+
+1. the run's referenced-workflow inventory proves the closed chain from
+   `.github/workflows/lifecycle-wakeup.yml` through
+   `.github/workflows/issue-lifecycle.yml` to the exact producer path;
+2. every workflow in that chain resolves to the same protected `dev` SHA;
+3. the record's `workflow_path` and `workflow_job_id` name the exact producer and record-writing job;
+4. verified OIDC and attestation claims bind `workflow_ref` and `workflow_sha` to the fixed caller,
+   and `job_workflow_ref` and `job_workflow_sha` to the exact producer at that same SHA; and
+5. the complete typed inputs, recomputed generation, attempt, request, fence, producer identity,
+   comment, record digest, anchor, run, job, and attestation independently agree.
+
+The intermediate coordinator path is authenticated from the closed referenced-workflow chain; it is
+not inferred from timing, a status name, or an event. This preserves ADR-0011's version-1
+`workflow_path`, run, attempt, and job fields: the top-level run identity stays fixed, while the
+existing writer-path field names the coordinator or producer that actually wrote the record.
 
 ### Failure, duplicate, and recovery behavior
 
@@ -325,6 +403,8 @@ These conditions produce no lifecycle effect and no automatic retry:
 - Actions-write or any undeclared permission;
 - locator artifact or referenced-workflow disagreement;
 - caller/callee OIDC or attestation mismatch;
+- missing, additional, dispatch-started, or input-mismatched producer call;
+- malformed, edited, deleted, unauthorized, duplicated, or stale recovery request;
 - per-issue or provider-budget queue refusal or cancellation;
 - delayed or dropped scheduled run;
 - API 403, 404, 409, 422, 429, timeout, malformed response, or partial response; and
@@ -334,6 +414,39 @@ A later independent provider event or successful nominally hourly reconciliation
 current state. It does not retry a possibly accepted effect. ADR-0011's explicit authenticated
 forward recovery remains the only path after ambiguity.
 
+That forward-recovery entry point is an issue comment whose Unicode-NFC body is exactly one line:
+
+```text
+/keiko-native lifecycle-recovery v1 target=sha256:{64 lowercase hexadecimal characters}
+```
+
+The braces describe the fixed-width digest slot and are not literal bytes. There is no leading or
+trailing whitespace, second line, omitted or alternate algorithm, uppercase hexadecimal, reason,
+requested state, lane, conclusion, or free-form payload. The digest is the exact ADR-0011
+recovery-target identity.
+
+Only these current repository-maintainer principals may author the request:
+
+| Login      | Numeric user ID | Type   | Required live repository permission |
+| ---------- | --------------- | ------ | ----------------------------------- |
+| `Niko4417` | `159039192`     | `User` | `maintain` or `admin`               |
+| `oscharko` | `59687448`      | `User` | `maintain` or `admin`               |
+
+The `issue_comment` event remains only a locator wake. Inside the per-issue lock, the coordinator
+enumerates current candidate recovery comments and accepts exactly one unconsumed command whose
+digest matches exactly one independently reconstructed ADR-0011 recovery target. Two complete
+stable reads must agree on comment ID, exact body bytes, `updated_at`, author login, numeric ID,
+type, live repository permission, orphan comment/body/record digest, last authenticated
+predecessor, and current record chain. The event payload, author association, displayed role,
+comment timing, or digest text alone grants no authority.
+
+Zero or multiple commands or targets, a changed or deleted comment, wrong author or permission,
+already consumed request, target mismatch, unstable read, unavailable actor lookup, or any
+ADR-0011 recovery precondition produces no record or effect. A valid request creates exactly the
+next attempt, binds the recovery-target identity and settled predecessor through ADR-0011's
+existing version-1 request fields, and becomes a duplicate no-op after its authenticated recovery
+record is present.
+
 ### Inert rollout
 
 Before issue #55's signed activation, the caller and reusable coordinator remain inert. They may
@@ -342,9 +455,11 @@ no lifecycle, label, status, content, branch, pull-request, queue, merge, or rep
 effect.
 
 Issue #51 must prove the exact source closure, zero Actions-write permission, locator rejection
-matrix, caller-held lock duration, provider-budget lock order, dual caller/callee authentication,
-and disposable guarded-off GitHub behavior. Issue #55 must repeat the live proof after activation
-and cover all nine lifecycle states and the complete rejected-edge complement.
+matrix, provider-budget-only resolver serialization, caller-held lock duration, nested producer
+inputs and authentication, provider-budget lock order, explicit recovery allowlist and rejection
+matrix, complete caller/coordinator/producer authentication, and disposable guarded-off GitHub
+behavior. Issue #55 must repeat the live proof after activation and cover all nine lifecycle states
+and the complete rejected-edge complement.
 
 ## Alternatives
 
@@ -373,10 +488,10 @@ Rejected. It violates the operator-approved repository boundary and is unnecessa
 ## Security and operational consequences
 
 The protected caller's coordinate job carries the maximum permission envelope required by called
-jobs, including `issues: write`, attestation, and OIDC access. It cannot execute a step of its own:
-the job is structurally only one exact local reusable-workflow call, and repository contract tests
-deny drift. The callee reduces permissions per job. Protected review and exact-head gates therefore
-remain part of the trust boundary.
+jobs, including `issues: write`, `statuses: write`, attestation, and OIDC access. It cannot execute
+a step of its own: the job is structurally only one exact local reusable-workflow call, and
+repository contract tests deny drift. The coordinator and nested producers reduce permissions per
+job. Protected review and exact-head gates therefore remain part of the trust boundary.
 
 The resolver can consume read quota or cause redundant coordinator calls. Bounded input, stable
 reads, canonical deduplication, schedule caps, per-issue serialization, provider-budget
@@ -394,8 +509,9 @@ machine-denying any artifact action or additional step is part of the enforced b
 need for resolver-produced artifacts is semantic replanning, not a permission-only edit.
 
 The same `github-actions[bot]` and GitHub Actions App identity appears across protected workflows.
-Dual workflow/run/job/ref/SHA verification, immutable anchors, and OIDC attestations distinguish
-the caller, reusable writer, and producer roles without another account.
+Complete caller/coordinator/producer workflow/run/job/ref/SHA verification, immutable anchors, and
+OIDC attestations distinguish the caller, reusable writer, and producer roles without another
+account.
 
 There is no added account, App installation, PAT, secret, broker, database, hosted service, or
 human credential in automation. No agent receives `dev` merge, auto-merge, enqueue, push, update,
@@ -435,6 +551,8 @@ merge it, enable auto-merge, enqueue it, or use a human credential to bypass the
 - [Actions artifact API][artifacts]
 - Repository evidence run
   [30393476770](https://github.com/oscharko-dev/Keiko-Native/actions/runs/30393476770)
+- PR #132 post-publication review
+  [finding record](https://github.com/oscharko-dev/Keiko-Native/pull/132#issuecomment-5111921934)
 
 [artifacts]: https://docs.github.com/en/rest/actions/artifacts
 [concurrency]: https://docs.github.com/actions/using-jobs/using-concurrency
