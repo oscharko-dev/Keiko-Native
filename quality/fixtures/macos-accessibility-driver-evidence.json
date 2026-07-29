@@ -1,0 +1,327 @@
+{
+  "schemaVersion": "keiko-native-macos-accessibility-driver-evidence/v1",
+  "profileId": "epic-98-packaged-journey/v1",
+  "bindings": {
+    "issue": 111,
+    "contractVersion": "v3",
+    "readinessFingerprint": "6d95dc95700c17a2d29850d1f517ad45c53df4a95318e3ae482f7d32d5dc75d7",
+    "frozenBaseHead": "f8228706a5d60c5e85fa8e5ab576a64b3542c4ea",
+    "evaluationHead": "8f09eed3b0726207bc27132556c3174bba1abe60",
+    "evaluationSourceSha256": "5ebf81545eee192a6e56273f9f04e954ef715104f5258c6e770a66c41805b5ab",
+    "preparedEvidenceSha256": "a0fb5a5993482e3aba833bd37bb5571f6335ef0c453979ee2e09c84547bedea8",
+    "allowedCaptureSha256": "b563a6ecd254e279e5443c763e40a9e5c3cfd80a0ff5dd9e51ed19e27d18c6fd",
+    "deniedCaptureSha256": "dbb5e8b3da81074b9a390f0d8f51d6f0ae2bd7f18e8e6889edafa80239776bfb",
+    "revokedCaptureSha256": "dabb9c0c614c8805d706f886003c171d57853196cce9ff5f54e9e0aa3551105d",
+    "recoveredCaptureSha256": "c035576c3d70da4588cd0e405914cd9e2d2d6eb96302e77d1f194bfddedbb996",
+    "foundationPackageSha256": "939a6873fb73734855e4970af1605dd962966097d1db21aa80ef6d38649e0fa8",
+    "foundationEvidenceSha256": "5c23581a38a8a15616e3a100b9a4cfd872f52de9dc39ada7455c615479ba6fae",
+    "representativePackageSha256": "1a7d6390b320c9e8ae41c09841bd0e470fe11d44e38df8d41ec47924969b236c",
+    "axuielementCandidateSha256": "d0d47381edce630beb967fe88c2e67c021e4e6f490fd166a1c8569075305d304",
+    "systemEventsCandidateSha256": "31eb90d1acff620497845680bad99ef78401b769985876037043381d9020eb6e"
+  },
+  "commonProfile": {
+    "profileId": "epic-98-packaged-journey/v1",
+    "checkpoints": [
+      "workspace-select",
+      "workspace-cancel",
+      "workspace-permission-deny",
+      "task-submit",
+      "streaming",
+      "normal-completion",
+      "run-cancellation",
+      "crash-recovery",
+      "terminal-summary",
+      "keyboard-focus",
+      "voiceover-semantics",
+      "appearance-contrast",
+      "reduce-motion-applicability",
+      "scaling",
+      "unicode-ime",
+      "quit-zero-descendants"
+    ],
+    "permissionStates": ["allowed", "denied", "revoked"],
+    "repetitions": 20,
+    "absoluteGates": [
+      "product-hook",
+      "private-api",
+      "content-leak",
+      "package-inclusion",
+      "unexplained-failed-repetition",
+      "missing-automatable-checkpoint",
+      "unbounded-wait",
+      "authoritative-evidence-unavailable"
+    ],
+    "evidenceFields": [
+      "checkpointCoverage",
+      "permissionStates",
+      "repetitions",
+      "boundedWaits",
+      "diagnostics",
+      "packageIsolation",
+      "dependencyInventory",
+      "licenseInventory",
+      "macosOwner",
+      "windowsBoundary",
+      "migration",
+      "removal"
+    ]
+  },
+  "authority": {
+    "platform": "macos",
+    "architecture": "arm64",
+    "physicalAccessibility": "complete",
+    "physicalRepetitions": 20
+  },
+  "packageBindings": {
+    "foundation": {
+      "status": "complete",
+      "packageName": "keiko-native-desktop",
+      "bundleIdentifier": "dev.oscharko.keiko-native",
+      "targetTriple": "aarch64-apple-darwin",
+      "evidenceProducer": "acceptance:macos",
+      "selfAssertedExclusion": true
+    },
+    "representative": {
+      "status": "complete",
+      "bundleIdentifier": "dev.oscharko.keiko-native.evaluation.accessibility",
+      "evidenceProducer": "evaluate:macos-accessibility-driver",
+      "selfAssertedProductExclusion": true
+    }
+  },
+  "sources": {
+    "axuielement": {
+      "api": "AXUIElement",
+      "component": "macOS ApplicationServices framework",
+      "documentation": "https://developer.apple.com/documentation/applicationservices/axuielement_h",
+      "publicApi": true,
+      "privateApi": false,
+      "distribution": "Provided by macOS and the Apple SDK; no vendored binary or package",
+      "licence": "Apple SDK and macOS platform terms; no third-party repository licence or notice"
+    },
+    "systemEvents": {
+      "api": "System Events",
+      "component": "System Events.app through the documented AppleScript UI automation interface",
+      "documentation": "https://developer.apple.com/library/archive/documentation/LanguagesUtilities/Conceptual/MacAutomationScriptingGuide/AutomatetheUserInterface.html",
+      "publicApi": true,
+      "privateApi": false,
+      "distribution": "Provided by macOS; no vendored script runtime, binary, or package",
+      "licence": "macOS platform terms; no third-party repository licence or notice"
+    }
+  },
+  "options": {
+    "axuielement": {
+      "mechanism": "external-axuielement-adapter",
+      "evidenceStatus": "complete",
+      "absoluteFailures": [],
+      "matrixScores": {
+        "checkpointCoverage": 5,
+        "determinism": 5,
+        "packageIsolation": 5,
+        "permissionDiagnostics": 5,
+        "dependencyCost": 4,
+        "platformBoundary": 5
+      },
+      "physicalRepetitions": 20,
+      "permissionMatrix": {
+        "allowed": {
+          "status": "allowed",
+          "repetitions": 20,
+          "successfulRepetitions": 20,
+          "checkpointPasses": 320,
+          "boundedWaits": true,
+          "unexplainedFailures": 0,
+          "reasonCode": null,
+          "cleanupOwnedDescendants": 0
+        },
+        "denied": {
+          "status": "denied",
+          "repetitions": 1,
+          "successfulRepetitions": 0,
+          "checkpointPasses": 0,
+          "boundedWaits": true,
+          "unexplainedFailures": 0,
+          "reasonCode": "accessibility-permission-denied",
+          "cleanupOwnedDescendants": 0
+        },
+        "revoked": {
+          "status": "revoked",
+          "repetitions": 1,
+          "successfulRepetitions": 0,
+          "checkpointPasses": 0,
+          "boundedWaits": true,
+          "unexplainedFailures": 0,
+          "reasonCode": "accessibility-permission-denied",
+          "cleanupOwnedDescendants": 0
+        },
+        "recovered": {
+          "status": "allowed",
+          "repetitions": 1,
+          "successfulRepetitions": 1,
+          "checkpointPasses": 16,
+          "boundedWaits": true,
+          "unexplainedFailures": 0,
+          "reasonCode": null,
+          "cleanupOwnedDescendants": 0
+        }
+      },
+      "diagnostics": "Exact AXUIElement errors, closed reason codes, two-second per-checkpoint subprocess bounds, a separate bounded five-second natural-quit observation, and zero-owned-descendant cleanup were verified physically on macOS 26.5.1 build 25F80, Mac16,1 arm64, Apple clang 21.0.0, Node 24.18.0. The retained 20-run distribution spans 1996-2548 ms per journey (mean 2220 ms), with a 404 ms maximum checkpoint observation.",
+      "dependencyInventory": [
+        "macOS ApplicationServices AXUIElement system API"
+      ],
+      "licenseInventory": [
+        "Apple SDK and macOS platform terms; no third-party repository dependency, redistribution, or notice"
+      ],
+      "macosOwner": "Keiko Native quality and acceptance owners",
+      "windowsBoundary": "A future Windows mechanism requires a separate accepted decision.",
+      "migration": "Issue #104 may extend the existing Node acceptance harness only with this bounded external adapter and the accepted semantic identifiers.",
+      "removal": "The generated executable and representative package remain temporary; the repository retains only governed source generation, tests, and closed evidence."
+    },
+    "systemEvents": {
+      "mechanism": "bounded-system-events-extension",
+      "evidenceStatus": "complete",
+      "absoluteFailures": ["authoritative-evidence-unavailable"],
+      "matrixScores": {
+        "checkpointCoverage": 1,
+        "determinism": 1,
+        "packageIsolation": 5,
+        "permissionDiagnostics": 1,
+        "dependencyCost": 5,
+        "platformBoundary": 5
+      },
+      "physicalRepetitions": 0,
+      "permissionMatrix": {
+        "allowed": {
+          "status": "allowed",
+          "repetitions": 0,
+          "successfulRepetitions": 0,
+          "checkpointPasses": 0,
+          "boundedWaits": true,
+          "unexplainedFailures": 0,
+          "reasonCode": "authoritative-evidence-unavailable",
+          "cleanupOwnedDescendants": 0
+        },
+        "denied": {
+          "status": "denied",
+          "repetitions": 0,
+          "successfulRepetitions": 0,
+          "checkpointPasses": 0,
+          "boundedWaits": true,
+          "unexplainedFailures": 0,
+          "reasonCode": "authoritative-evidence-unavailable",
+          "cleanupOwnedDescendants": 0
+        },
+        "revoked": {
+          "status": "revoked",
+          "repetitions": 0,
+          "successfulRepetitions": 0,
+          "checkpointPasses": 0,
+          "boundedWaits": true,
+          "unexplainedFailures": 0,
+          "reasonCode": "authoritative-evidence-unavailable",
+          "cleanupOwnedDescendants": 0
+        },
+        "recovered": {
+          "status": "allowed",
+          "repetitions": 0,
+          "successfulRepetitions": 0,
+          "checkpointPasses": 0,
+          "boundedWaits": true,
+          "unexplainedFailures": 0,
+          "reasonCode": "authoritative-evidence-unavailable",
+          "cleanupOwnedDescendants": 0
+        }
+      },
+      "diagnostics": "System Events is rejected before any Apple Events probe, process launch, or checkpoint operation. Its separate Automation-consent boundary cannot provide authoritative non-prompting evidence under this issue; prompt state remains unknown and error -1743 is not classified as Accessibility denial.",
+      "dependencyInventory": ["macOS System Events system application"],
+      "licenseInventory": [
+        "macOS platform terms; no third-party repository dependency, redistribution, or notice"
+      ],
+      "macosOwner": "Keiko Native quality and acceptance owners",
+      "windowsBoundary": "A future Windows mechanism requires a separate accepted decision.",
+      "migration": "No production or issue #104 migration is authorized because this option was not selected.",
+      "removal": "The generated script and representative package remain temporary and are removed after evaluation."
+    },
+    "noDriver": {
+      "mechanism": "existing-packaged-shell-and-manual-observation",
+      "evidenceStatus": "complete",
+      "absoluteFailures": ["missing-automatable-checkpoint"],
+      "matrixScores": {
+        "checkpointCoverage": 1,
+        "determinism": 1,
+        "packageIsolation": 5,
+        "permissionDiagnostics": 1,
+        "dependencyCost": 5,
+        "platformBoundary": 5
+      },
+      "physicalRepetitions": 20,
+      "permissionMatrix": {
+        "allowed": {
+          "status": "allowed",
+          "repetitions": 20,
+          "successfulRepetitions": 0,
+          "checkpointPasses": 0,
+          "boundedWaits": true,
+          "unexplainedFailures": 0,
+          "reasonCode": "missing-automatable-checkpoint",
+          "cleanupOwnedDescendants": 0
+        },
+        "denied": {
+          "status": "denied",
+          "repetitions": 1,
+          "successfulRepetitions": 0,
+          "checkpointPasses": 0,
+          "boundedWaits": true,
+          "unexplainedFailures": 0,
+          "reasonCode": "accessibility-permission-denied",
+          "cleanupOwnedDescendants": 0
+        },
+        "revoked": {
+          "status": "revoked",
+          "repetitions": 1,
+          "successfulRepetitions": 0,
+          "checkpointPasses": 0,
+          "boundedWaits": true,
+          "unexplainedFailures": 0,
+          "reasonCode": "accessibility-permission-denied",
+          "cleanupOwnedDescendants": 0
+        },
+        "recovered": {
+          "status": "allowed",
+          "repetitions": 1,
+          "successfulRepetitions": 0,
+          "checkpointPasses": 0,
+          "boundedWaits": true,
+          "unexplainedFailures": 0,
+          "reasonCode": "missing-automatable-checkpoint",
+          "cleanupOwnedDescendants": 0
+        }
+      },
+      "diagnostics": "The baseline cannot machine-evaluate the declared accessibility checkpoints.",
+      "dependencyInventory": [],
+      "licenseInventory": [],
+      "macosOwner": "Keiko Native quality and acceptance owners",
+      "windowsBoundary": "The baseline creates no Windows automation path.",
+      "migration": "No migration applies to the no-driver baseline.",
+      "removal": "No driver artifact exists to remove."
+    }
+  },
+  "availableEvidence": [
+    "common-profile",
+    "hermetic-semantic-contract",
+    "candidate-source-generation",
+    "exact-evaluation-head",
+    "exact-foundation-package-digest",
+    "representative-package-inspection",
+    "product-package-exclusion",
+    "accessibility-allowed",
+    "accessibility-denied",
+    "accessibility-revoked",
+    "accessibility-recovered",
+    "physical-repetitions",
+    "elapsed-timing-distributions",
+    "reference-environment-macos-26.5.1-build-25F80-mac16,1-arm64-apple-clang-21.0.0-node-24.18.0",
+    "zero-owned-descendants",
+    "closed-redaction"
+  ],
+  "pendingEvidence": []
+}

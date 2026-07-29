@@ -80,6 +80,9 @@ test("package policy requires exact paths, dependencies, notices and SPDX", () =
         "secret-value",
         "test-listener",
         "remote-debugging",
+        "evaluate:macos-accessibility-driver",
+        "dev.oscharko.keiko-native.evaluation.accessibility",
+        "KeikoAccessibilityEvaluation",
       ],
       prohibitedPathFragments: [
         "node_modules",

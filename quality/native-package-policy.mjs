@@ -26,6 +26,9 @@ export const CLOSED_PROHIBITED_MARKERS = [
   "secret-value",
   "test-listener",
   "remote-debugging",
+  "evaluate:macos-accessibility-driver",
+  "dev.oscharko.keiko-native.evaluation.accessibility",
+  "KeikoAccessibilityEvaluation",
 ];
 
 export const CLOSED_PROHIBITED_PATH_FRAGMENTS = [
