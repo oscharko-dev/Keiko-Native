@@ -4,13 +4,14 @@ use keiko_host_macos::tauri_adapter::{
     handle_page_load, handle_run_event, handle_web_content_process_terminate, handle_window_event,
     navigation_policy,
 };
-use keiko_host_macos::{FoundationHost, HostLifecycle, WorkspaceHost};
+use keiko_host_macos::{FoundationHost, HostLifecycle, RuntimeHost, WorkspaceHost};
 use tauri::Manager;
 
 fn main() {
     tauri::Builder::default()
         .manage(Mutex::new(HostLifecycle::default()))
         .manage(Mutex::new(WorkspaceHost::default()))
+        .manage(RuntimeHost::from_environment())
         .setup(|app| {
             app.manage(Mutex::new(FoundationHost::new(
                 app.path()
@@ -25,7 +26,8 @@ fn main() {
             keiko_host_macos::tauri_adapter::application_request,
             keiko_host_macos::tauri_adapter::application_cancel,
             keiko_host_macos::tauri_adapter::foundation_request,
-            keiko_host_macos::tauri_adapter::workspace_request
+            keiko_host_macos::tauri_adapter::workspace_request,
+            keiko_host_macos::tauri_adapter::runtime_request
         ])
         .on_page_load(handle_page_load)
         .on_web_content_process_terminate(handle_web_content_process_terminate)

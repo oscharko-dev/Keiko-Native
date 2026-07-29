@@ -214,7 +214,8 @@ impl FoundationHost {
             Operation::ApplicationHealth
             | Operation::WorkspaceStatus
             | Operation::WorkspaceSelect
-            | Operation::WorkspaceClear => {
+            | Operation::WorkspaceClear
+            | Operation::RuntimeReadiness => {
                 return PreparedDispatch::immediate(failed(
                     request_id,
                     ReasonCode::UnknownOperation,

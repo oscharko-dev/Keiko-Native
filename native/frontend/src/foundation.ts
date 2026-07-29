@@ -4,7 +4,7 @@ import {
   type FocusEvent,
   type ReactElement,
 } from "react";
-import type { WorkspaceState } from "./port";
+import type { RuntimeReadiness, WorkspaceState } from "./port";
 
 export const closedSurfaceKinds = [
   "welcome",
@@ -45,11 +45,18 @@ export interface WorkspaceController {
   clearWorkspace(): Promise<void>;
 }
 
+export interface RuntimeController {
+  checkRuntime(): Promise<void>;
+}
+
 const MAX_COMMITTED_TEXT_BYTES = 2048;
 const EMPTY_WORKSPACE: WorkspaceState = { kind: "empty", generation: 0 };
 const INERT_WORKSPACE_CONTROLLER: WorkspaceController = {
   selectWorkspace: async () => undefined,
   clearWorkspace: async () => undefined,
+};
+const INERT_RUNTIME_CONTROLLER: RuntimeController = {
+  checkRuntime: async () => undefined,
 };
 
 export class ImeHarnessState {
@@ -91,6 +98,8 @@ export function renderFoundation(
   controller: FoundationController,
   workspace: WorkspaceState = EMPTY_WORKSPACE,
   workspaceController: WorkspaceController = INERT_WORKSPACE_CONTROLLER,
+  runtime: RuntimeReadiness | null = null,
+  runtimeController: RuntimeController = INERT_RUNTIME_CONTROLLER,
 ): ReactElement {
   return createElement(
     "main",
@@ -119,7 +128,14 @@ export function renderFoundation(
     createElement(
       "section",
       { className: `surface surface-${view.kind}`, "aria-live": "polite" },
-      surface(view, controller, workspace, workspaceController),
+      surface(
+        view,
+        controller,
+        workspace,
+        workspaceController,
+        runtime,
+        runtimeController,
+      ),
     ),
     createElement(
       "footer",
@@ -143,6 +159,8 @@ function surface(
   controller: FoundationController,
   workspace: WorkspaceState,
   workspaceController: WorkspaceController,
+  runtime: RuntimeReadiness | null,
+  runtimeController: RuntimeController,
 ): ReactElement {
   switch (view.kind) {
     case "welcome":
@@ -163,7 +181,14 @@ function surface(
         ),
       );
     case "canvas":
-      return canvasSurface(view, controller, workspace, workspaceController);
+      return canvasSurface(
+        view,
+        controller,
+        workspace,
+        workspaceController,
+        runtime,
+        runtimeController,
+      );
     case "about":
       return createElement(
         "div",
@@ -222,6 +247,8 @@ function canvasSurface(
   controller: FoundationController,
   workspace: WorkspaceState,
   workspaceController: WorkspaceController,
+  runtime: RuntimeReadiness | null,
+  runtimeController: RuntimeController,
 ): ReactElement {
   const model = new ImeHarnessState(view.committedText);
   let composing = false;
@@ -269,6 +296,7 @@ function canvasSurface(
       "Keine Coding-, Wissens- oder Agentenfunktion ist in diesem internen Meilenstein enthalten.",
     ),
     workspacePanel(workspace, workspaceController),
+    runtimePanel(runtime, runtimeController),
     createElement(
       "label",
       { htmlFor: "ime-harness" },
@@ -297,6 +325,80 @@ function canvasSurface(
       "Nur ein interner Eingabe-Test. Der Text startet keine Produktfunktion.",
     ),
   );
+}
+
+function runtimePanel(
+  runtime: RuntimeReadiness | null,
+  controller: RuntimeController,
+): ReactElement {
+  const checking = runtime?.state === "checking";
+  return createElement(
+    "section",
+    {
+      className: "runtime-card",
+      "aria-labelledby": "runtime-title",
+    },
+    createElement("p", { className: "eyebrow" }, "CODEX-LAUFZEIT"),
+    createElement("h2", { id: "runtime-title" }, "Lokale Bereitschaft"),
+    createElement(
+      "p",
+      {
+        className: `runtime-status runtime-status-${runtime?.state ?? "unchecked"}`,
+        role: "status",
+        "aria-live": "polite",
+        "data-runtime-state": runtime?.state ?? "unchecked",
+      },
+      runtimePresentation(runtime),
+    ),
+    createElement(
+      "p",
+      { className: "hint" },
+      "Die Prüfung startet keinen Coding-Auftrag. Sie beendet die Laufzeit anschließend vollständig.",
+    ),
+    createElement(
+      "button",
+      {
+        type: "button",
+        disabled: checking,
+        onClick: () => observeRuntimeAction(controller.checkRuntime()),
+      },
+      checking
+        ? "Codex wird geprüft"
+        : runtime === null
+          ? "Codex-Bereitschaft prüfen"
+          : "Prüfung wiederholen",
+    ),
+  );
+}
+
+function observeRuntimeAction(action: Promise<void>): void {
+  action.catch(() => {
+    console.error("Runtime readiness action failed after controller recovery.");
+  });
+}
+
+function runtimePresentation(runtime: RuntimeReadiness | null): string {
+  if (runtime === null) {
+    return "Noch nicht geprüft.";
+  }
+  return {
+    checking: "Die verifizierte Codex-Laufzeit wird sicher geprüft.",
+    ready:
+      "Codex 0.145.0 ist protokollbereit. Für einen Auftrag wird später ein neuer Prozess gestartet.",
+    unavailable:
+      "Die freigegebene Codex-Laufzeit ist nicht verfügbar. Prüfen Sie die lokale Bereitstellung und versuchen Sie es erneut.",
+    incompatible:
+      "Die lokale Codex-Laufzeit stimmt nicht mit der freigegebenen Version oder dem Protokoll überein.",
+    "authentication-required":
+      "Die separate ChatGPT-Anmeldung fehlt. Melden Sie Codex außerhalb von Keiko an und prüfen Sie erneut.",
+    "containment-failed":
+      "Die Sicherheitsgrenze konnte nicht bestätigt werden. Codex wurde nicht freigegeben.",
+    "timed-out":
+      "Die Codex-Prüfung hat das Zeitlimit erreicht. Der Prozess wurde beendet.",
+    cancelled: "Die Codex-Prüfung wurde abgebrochen und der Prozess beendet.",
+    "cleanup-failed":
+      "Codex konnte nicht vollständig beendet werden. Beenden Sie Keiko Native, bevor Sie fortfahren.",
+  }[runtime.state];
 }
 
 function workspacePanel(

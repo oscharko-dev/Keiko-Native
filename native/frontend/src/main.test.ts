@@ -23,6 +23,26 @@ const invoke = vi.fn(
         result: { kind: "workspace", state },
       });
     }
+    if (command === "runtime_request") {
+      return JSON.stringify({
+        schemaVersion: 1,
+        requestId: request.requestId,
+        result: {
+          kind: "runtime-readiness",
+          state: {
+            state: "ready",
+            quarantinedEvents: 0,
+            descriptor: {
+              version: "0.145.0",
+              artifactSha256:
+                "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
+              containmentProfile: "keiko-codex-readiness-v1",
+              freshStartRequired: true,
+            },
+          },
+        },
+      });
+    }
     if (request.operation.kind !== "application-health") {
       const result =
         request.operation.kind === "foundation-load"
@@ -154,6 +174,7 @@ describe("production renderer composition", () => {
     };
 
     await click("Foundation öffnen");
+    await click("Codex-Bereitschaft prüfen");
     await click("Repository auswählen");
     await click("Auswahl aufheben");
     const canvas = all(render.mock.calls.at(-1)?.[0]).find(
@@ -199,6 +220,16 @@ describe("production renderer composition", () => {
       "workspace-select",
       "workspace-clear",
     ]);
+    const runtimeKinds = invoke.mock.calls
+      .filter(([command]) => command === "runtime_request")
+      .map(([, arguments_]) =>
+        Reflect.get(JSON.parse(String(arguments_.request)), "operation"),
+      )
+      .map((operation) => Reflect.get(operation, "kind"));
+    expect(runtimeKinds).toEqual(["runtime-readiness"]);
+    expect(JSON.stringify(render.mock.calls.at(-1)?.[0])).not.toContain(
+      "redacted-account-value",
+    );
   });
 
   it("renders a redacted recoverable welcome substate when the host is unavailable", async () => {

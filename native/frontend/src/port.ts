@@ -59,6 +59,37 @@ export interface WorkspaceResponse {
   };
 }
 
+export type RuntimeReadinessState =
+  | "checking"
+  | "ready"
+  | "unavailable"
+  | "incompatible"
+  | "authentication-required"
+  | "containment-failed"
+  | "timed-out"
+  | "cancelled"
+  | "cleanup-failed";
+
+export interface RuntimeReadiness {
+  state: RuntimeReadinessState;
+  quarantinedEvents: number;
+  descriptor?: {
+    version: "0.145.0";
+    artifactSha256: "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590";
+    containmentProfile: "keiko-codex-readiness-v1";
+    freshStartRequired: true;
+  };
+}
+
+export interface RuntimeReadinessResponse {
+  schemaVersion: 1;
+  requestId: string;
+  result: {
+    kind: "runtime-readiness";
+    state: RuntimeReadiness;
+  };
+}
+
 type FoundationOperation =
   | { kind: "foundation-load" }
   | { kind: "dismiss-welcome" }
@@ -73,6 +104,8 @@ type WorkspaceOperation =
   | { kind: "workspace-status" }
   | { kind: "workspace-select" }
   | { kind: "workspace-clear" };
+
+type RuntimeOperation = { kind: "runtime-readiness" };
 
 export type Invoke = (
   command: string,
@@ -321,6 +354,75 @@ export function createRendererPort(
     });
   }
 
+  async function runtime(
+    operation: RuntimeOperation,
+    signal?: AbortSignal,
+  ): Promise<RuntimeReadinessResponse> {
+    if (signal?.aborted) throw new Error("runtime-readiness-cancelled");
+    const authority = await authorityProvider();
+    if (signal?.aborted) throw new Error("runtime-readiness-cancelled");
+    sequence += 1;
+    const request = {
+      schemaVersion: 1 as const,
+      requestId: canonicalRequestId(authority.generation, sequence),
+      sequence,
+      timeoutMs: 5000,
+      operation,
+    };
+    return new Promise((resolve, reject) => {
+      let terminal = false;
+      const finish = () => signal?.removeEventListener("abort", cancel);
+      const fail = (message: string) => {
+        if (terminal) return;
+        terminal = true;
+        finish();
+        reject(new Error(message));
+      };
+      const cancel = () => {
+        if (terminal) return;
+        const cancellation: CancelRequest = {
+          schemaVersion: 1,
+          requestId: request.requestId,
+        };
+        void invoke("application_cancel", {
+          generation: authority.generation,
+          documentNonce: authority.documentNonce,
+          request: JSON.stringify(cancellation),
+        }).catch(() => undefined);
+        fail("runtime-readiness-cancelled");
+      };
+      signal?.addEventListener("abort", cancel, { once: true });
+      void invoke("runtime_request", {
+        documentNonce: authority.documentNonce,
+        generation: authority.generation,
+        request: JSON.stringify(request),
+      }).then(
+        (encoded) => {
+          if (terminal) return;
+          let response: unknown;
+          try {
+            response = JSON.parse(encoded);
+          } catch {
+            fail("runtime-readiness-failed");
+            return;
+          }
+          if (
+            !isRuntimeReadinessResponse(response) ||
+            response.requestId !== request.requestId
+          ) {
+            fail("runtime-readiness-failed");
+            return;
+          }
+          terminal = true;
+          finish();
+          resolve(response);
+        },
+        () => fail("runtime-readiness-failed"),
+      );
+      if (signal?.aborted) cancel();
+    });
+  }
+
   return {
     health,
     loadFoundation: (signal?: AbortSignal) =>
@@ -340,6 +442,8 @@ export function createRendererPort(
       workspace({ kind: "workspace-select" }, signal),
     clearWorkspace: (signal?: AbortSignal) =>
       workspace({ kind: "workspace-clear" }, signal),
+    runtimeReadiness: (signal?: AbortSignal) =>
+      runtime({ kind: "runtime-readiness" }, signal),
   };
 }
 
@@ -501,6 +605,62 @@ export function isWorkspaceResponse(
     default:
       return false;
   }
+}
+
+export function isRuntimeReadinessResponse(
+  value: unknown,
+): value is RuntimeReadinessResponse {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["schemaVersion", "requestId", "result"]) ||
+    value.schemaVersion !== 1 ||
+    typeof value.requestId !== "string" ||
+    !isRecord(value.result) ||
+    !hasExactKeys(value.result, ["kind", "state"]) ||
+    value.result.kind !== "runtime-readiness" ||
+    !isRecord(value.result.state)
+  ) {
+    return false;
+  }
+  const state = value.result.state;
+  if (
+    !Number.isInteger(state.quarantinedEvents) ||
+    Number(state.quarantinedEvents) < 0 ||
+    Number(state.quarantinedEvents) > 64
+  ) {
+    return false;
+  }
+  const kind = String(state.state);
+  const terminalStates = [
+    "unavailable",
+    "incompatible",
+    "authentication-required",
+    "containment-failed",
+    "timed-out",
+    "cancelled",
+    "cleanup-failed",
+  ];
+  if (kind === "ready") {
+    return (
+      hasExactKeys(state, ["state", "descriptor", "quarantinedEvents"]) &&
+      isRecord(state.descriptor) &&
+      hasExactKeys(state.descriptor, [
+        "version",
+        "artifactSha256",
+        "containmentProfile",
+        "freshStartRequired",
+      ]) &&
+      state.descriptor.version === "0.145.0" &&
+      state.descriptor.artifactSha256 ===
+        "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590" &&
+      state.descriptor.containmentProfile === "keiko-codex-readiness-v1" &&
+      state.descriptor.freshStartRequired === true
+    );
+  }
+  return (
+    (kind === "checking" || terminalStates.includes(kind)) &&
+    hasExactKeys(state, ["state", "quarantinedEvents"])
+  );
 }
 
 function validWorkspaceGeneration(value: unknown): boolean {

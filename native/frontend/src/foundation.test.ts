@@ -5,6 +5,7 @@ import {
   renderFoundation,
   type FoundationController,
   type FoundationView,
+  type RuntimeController,
   type WorkspaceController,
 } from "./foundation";
 
@@ -348,6 +349,56 @@ describe("closed Foundation presentation", () => {
     } finally {
       diagnostic.mockRestore();
     }
+  });
+
+  it("presents every runtime outcome semantically and exposes a retry action", async () => {
+    const runtimeController: RuntimeController = {
+      checkRuntime: vi.fn(async () => undefined),
+    };
+    const states = [
+      "checking",
+      "ready",
+      "unavailable",
+      "incompatible",
+      "authentication-required",
+      "containment-failed",
+      "timed-out",
+      "cancelled",
+      "cleanup-failed",
+    ] as const;
+    for (const state of states) {
+      const rendered = renderFoundation(
+        { kind: "canvas", committedText: "" },
+        controller,
+        { kind: "empty", generation: 0 },
+        undefined,
+        { state, quarantinedEvents: 0 },
+        runtimeController,
+      );
+      const status = elements(rendered).find(
+        ({ props }) => props["data-runtime-state"] === state,
+      );
+      expect(status?.props.role).toBe("status");
+      expect(textContent(status)).not.toBe("");
+      expect(textContent(rendered)).not.toMatch(
+        /\/Users\/|\/private\/|@example/iu,
+      );
+    }
+    const rendered = renderFoundation(
+      { kind: "canvas", committedText: "" },
+      controller,
+      { kind: "empty", generation: 0 },
+      undefined,
+      null,
+      runtimeController,
+    );
+    const check = elements(rendered).find(
+      ({ type, props }) =>
+        type === "button" && props.children === "Codex-Bereitschaft prüfen",
+    );
+    (check?.props.onClick as () => void)();
+    await Promise.resolve();
+    expect(runtimeController.checkRuntime).toHaveBeenCalledOnce();
   });
 
   it("discards a superseded composition commit when a new composition starts without focus loss", async () => {

@@ -5,6 +5,7 @@ import {
   expectedSourceRevision,
   isFoundationResponse,
   isHealthResponse,
+  isRuntimeReadinessResponse,
   isWorkspaceResponse,
   rendererAuthority,
   type HealthRequest,
@@ -267,6 +268,123 @@ describe("renderer health port", () => {
         createRendererPort(vi.fn(failure), async () => authority).health(),
       ).rejects.toThrow("application-health-failed");
     }
+  });
+});
+
+describe("closed runtime-readiness port", () => {
+  const ready = {
+    schemaVersion: 1,
+    requestId: "request-0000000000000007-0000000000000001",
+    result: {
+      kind: "runtime-readiness",
+      state: {
+        state: "ready",
+        quarantinedEvents: 0,
+        descriptor: {
+          version: "0.145.0",
+          artifactSha256:
+            "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
+          containmentProfile: "keiko-codex-readiness-v1",
+          freshStartRequired: true,
+        },
+      },
+    },
+  } as const;
+
+  it("sends only the path-free readiness intent with the bounded runtime deadline", async () => {
+    const invoke = vi.fn(
+      async (command: string, arguments_: { request: string }) => {
+        const request = JSON.parse(arguments_.request) as {
+          requestId: string;
+          timeoutMs: number;
+          operation: unknown;
+        };
+        expect(command).toBe("runtime_request");
+        expect(request.timeoutMs).toBe(5000);
+        expect(request.operation).toEqual({ kind: "runtime-readiness" });
+        expect(JSON.stringify(request)).not.toMatch(
+          /path|root|environment|repository/iu,
+        );
+        return JSON.stringify({ ...ready, requestId: request.requestId });
+      },
+    );
+    await expect(
+      createRendererPort(invoke, async () => authority).runtimeReadiness(),
+    ).resolves.toMatchObject({
+      result: { state: { state: "ready" } },
+    });
+  });
+
+  it("accepts only canonical redacted states and the exact fresh-start descriptor", () => {
+    expect(isRuntimeReadinessResponse(ready)).toBe(true);
+    for (const state of [
+      "checking",
+      "unavailable",
+      "incompatible",
+      "authentication-required",
+      "containment-failed",
+      "timed-out",
+      "cancelled",
+      "cleanup-failed",
+    ]) {
+      expect(
+        isRuntimeReadinessResponse({
+          ...ready,
+          result: {
+            kind: "runtime-readiness",
+            state: { state, quarantinedEvents: 0 },
+          },
+        }),
+      ).toBe(true);
+    }
+    for (const hostileState of [
+      { ...ready.result.state, path: "/private/sensitive" },
+      { ...ready.result.state, email: "redacted" },
+      { ...ready.result.state, quarantinedEvents: 65 },
+      {
+        ...ready.result.state,
+        descriptor: { ...ready.result.state.descriptor, version: "0.146.0" },
+      },
+      {
+        state: "unavailable",
+        quarantinedEvents: 0,
+        descriptor: ready.result.state.descriptor,
+      },
+    ]) {
+      expect(
+        isRuntimeReadinessResponse({
+          ...ready,
+          result: { kind: "runtime-readiness", state: hostileState },
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it("cancels an in-flight check and ignores late ready output", async () => {
+    let resolveCheck: ((value: string) => void) | undefined;
+    const invoke = vi.fn(
+      (command: string, arguments_: { request: string }): Promise<string> => {
+        if (command === "application_cancel") return Promise.resolve("{}");
+        const request = JSON.parse(arguments_.request) as { requestId: string };
+        return new Promise((resolve) => {
+          resolveCheck = () =>
+            resolve(JSON.stringify({ ...ready, requestId: request.requestId }));
+        });
+      },
+    );
+    const cancellation = new AbortController();
+    const pending = createRendererPort(
+      invoke,
+      async () => authority,
+    ).runtimeReadiness(cancellation.signal);
+    await Promise.resolve();
+    cancellation.abort();
+    resolveCheck?.("");
+    await expect(pending).rejects.toThrow("runtime-readiness-cancelled");
+    expect(invoke).toHaveBeenCalledWith(
+      "application_cancel",
+      expect.objectContaining({ generation: authority.generation }),
+    );
   });
 });
 

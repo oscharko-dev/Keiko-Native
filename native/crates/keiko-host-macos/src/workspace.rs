@@ -45,6 +45,12 @@ fn retire_bound_root_after<T>(
 }
 
 impl WorkspaceHost {
+    pub(crate) fn bound_root_for_isolation(&self) -> Option<PathBuf> {
+        self.bound_root
+            .as_ref()
+            .map(|bound| bound.canonical_root.clone())
+    }
+
     fn begin_selection(&mut self) -> Result<u64, WorkspaceError> {
         retire_bound_root_after(&mut self.bound_root, || self.application.begin_selection())
     }

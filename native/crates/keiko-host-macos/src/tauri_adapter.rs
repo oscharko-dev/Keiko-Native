@@ -5,10 +5,10 @@ use tauri::{AppHandle, Manager, RunEvent, Runtime, State, Webview, WebviewWindow
 
 use crate::document_nonce::secure_document_nonce;
 use crate::{
-    FolderPickerResult, FoundationHost, HostLifecycle, SenderContext, WorkspaceHost,
+    FolderPickerResult, FoundationHost, HostLifecycle, RuntimeHost, SenderContext, WorkspaceHost,
     application_cancel as dispatch_cancel, application_request as dispatch_request,
     canonical_origin, foundation_request as dispatch_foundation_request, is_bundled_navigation,
-    workspace_request as dispatch_workspace_request,
+    runtime_request as dispatch_runtime_request, workspace_request as dispatch_workspace_request,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -90,6 +90,10 @@ pub fn lose_renderer(lifecycle: &Mutex<HostLifecycle>) {
     }
 }
 
+pub fn stop_runtime(runtime: &RuntimeHost) {
+    runtime.cancel_all();
+}
+
 pub fn shut_down(lifecycle: &Mutex<HostLifecycle>) {
     if let Ok(mut lifecycle) = lifecycle.lock() {
         lifecycle.shutdown();
@@ -123,19 +127,26 @@ pub fn application_request(
 pub fn application_cancel(
     window: WebviewWindow,
     lifecycle: State<'_, Mutex<HostLifecycle>>,
+    runtime: State<'_, RuntimeHost>,
     generation: u64,
     document_nonce: String,
     request: String,
 ) -> String {
     let origin = canonical_origin(window.url().ok().as_ref());
-    dispatch_cancel(
+    let encoded = dispatch_cancel(
         lifecycle.inner(),
         window.label(),
         &origin,
         generation,
         &document_nonce,
         &request,
-    )
+    );
+    if encoded.contains(r#""status":"cancelled""#)
+        && let Ok(cancel) = keiko_ui_port::parse_cancel(request.as_bytes())
+    {
+        runtime.cancel_request(keiko_ui_port::cancel_request_id(&cancel));
+    }
+    encoded
 }
 
 #[tauri::command]
@@ -195,6 +206,46 @@ pub fn workspace_request(
         eprintln!("keiko-native-workspace-ack/v1 state=available");
     }
     output.encoded
+}
+
+#[tauri::command]
+pub async fn runtime_request(
+    app: AppHandle,
+    window: WebviewWindow,
+    generation: u64,
+    document_nonce: String,
+    request: String,
+) -> String {
+    let sender = SenderContext {
+        window_label: window.label().to_owned(),
+        origin: canonical_origin(window.url().ok().as_ref()),
+        generation,
+        document_nonce,
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let lifecycle = app.state::<Mutex<HostLifecycle>>();
+        let runtime = app.state::<RuntimeHost>();
+        let workspace = app.state::<Mutex<WorkspaceHost>>();
+        let selected_workspace = workspace
+            .lock()
+            .ok()
+            .and_then(|workspace| workspace.bound_root_for_isolation());
+        dispatch_runtime_request(
+            lifecycle.inner(),
+            runtime.inner(),
+            &sender,
+            selected_workspace.as_deref(),
+            &request,
+        )
+        .encoded
+    })
+    .await
+    .unwrap_or_else(|_| {
+        keiko_ui_port::encode_error(
+            "unknown-request",
+            keiko_ui_port::ReasonCode::InternalFailure,
+        )
+    })
 }
 
 fn platform_select_workspace() -> FolderPickerResult {
@@ -269,6 +320,7 @@ pub fn handle_page_load<R: Runtime>(webview: &Webview<R>, payload: &PageLoadPayl
     );
     match decision {
         PageLoadDecision::BeginDocument => {
+            stop_runtime(webview.state::<RuntimeHost>().inner());
             if started != Some(true) {
                 eprintln!("keiko-renderer-authority-generation-failed");
             }
@@ -286,17 +338,20 @@ pub fn handle_page_load<R: Runtime>(webview: &Webview<R>, payload: &PageLoadPayl
 
 pub fn handle_web_content_process_terminate<R: Runtime>(webview: &Webview<R>) {
     lose_renderer(webview.state::<Mutex<HostLifecycle>>().inner());
+    stop_runtime(webview.state::<RuntimeHost>().inner());
 }
 
 pub fn handle_window_event<R: Runtime>(window: &Window<R>, event: &tauri::WindowEvent) {
     if matches!(event, tauri::WindowEvent::Destroyed) {
         lose_renderer(window.state::<Mutex<HostLifecycle>>().inner());
+        stop_runtime(window.state::<RuntimeHost>().inner());
     }
 }
 
 pub fn handle_run_event<R: Runtime>(handle: &AppHandle<R>, event: RunEvent) {
     if matches!(event, RunEvent::Exit | RunEvent::ExitRequested { .. }) {
         shut_down(handle.state::<Mutex<HostLifecycle>>().inner());
+        stop_runtime(handle.state::<RuntimeHost>().inner());
     }
 }
 
