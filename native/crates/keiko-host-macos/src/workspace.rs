@@ -107,18 +107,13 @@ impl WorkspaceHost {
         Ok(self.application.view())
     }
 
-    fn abort_selection(&mut self, generation: u64) -> Result<(), WorkspaceError> {
-        if self.application.binding(generation).is_some() {
-            self.application
-                .close_binding(generation, WorkspaceClosedReason::Unavailable)?;
-        } else if self.application.view() == (WorkspaceView::Selecting { generation }) {
-            self.application
-                .close_selection(generation, WorkspaceClosedReason::Unavailable)?;
-        } else {
-            return Err(WorkspaceError::StaleGeneration);
+    fn abort_selection(&mut self, generation: u64) {
+        if self
+            .application
+            .close_if_current(generation, WorkspaceClosedReason::Unavailable)
+        {
+            self.bound_root = None;
         }
-        self.bound_root = None;
-        Ok(())
     }
 }
 
@@ -203,10 +198,8 @@ fn select_workspace(
         .lock()
         .is_ok_and(|mut lifecycle| lifecycle.resume_after_user_interaction(&accepted));
     if !resumed {
-        if let Ok(mut workspace) = workspace.lock()
-            && workspace.abort_selection(generation).is_err()
-        {
-            return failed("unknown-request", ReasonCode::InternalFailure);
+        if let Ok(mut workspace) = workspace.lock() {
+            workspace.abort_selection(generation);
         }
         return failed("unknown-request", ReasonCode::InternalFailure);
     }
@@ -223,13 +216,7 @@ fn select_workspace(
     let view = match workspace.finish_selection(generation, picker_result) {
         Ok(view) => view,
         Err(_) => {
-            if workspace.abort_selection(generation).is_err() {
-                return finish_encoded(
-                    lifecycle,
-                    accepted,
-                    encode_error("unknown-request", ReasonCode::InternalFailure),
-                );
-            }
+            workspace.abort_selection(generation);
             return finish_encoded(
                 lifecycle,
                 accepted,
@@ -241,14 +228,12 @@ fn select_workspace(
     let completion = match lifecycle.lock() {
         Ok(mut lifecycle) => lifecycle.complete_foundation_request(accepted, encoded, false),
         Err(_) => {
-            if workspace.abort_selection(generation).is_err() {
-                return failed("unknown-request", ReasonCode::InternalFailure);
-            }
+            workspace.abort_selection(generation);
             return failed("unknown-request", ReasonCode::InternalFailure);
         }
     };
-    if !completion.live && workspace.abort_selection(generation).is_err() {
-        return failed("unknown-request", ReasonCode::InternalFailure);
+    if !completion.live {
+        workspace.abort_selection(generation);
     }
     WorkspaceRequestOutput {
         encoded: completion.encoded,
@@ -622,6 +607,69 @@ mod tests {
     }
 
     #[test]
+    fn stale_picker_completion_preserves_the_newer_state_and_reports_failure() {
+        let (lifecycle, sender) = session();
+        let host = Mutex::new(WorkspaceHost::default());
+
+        let output = workspace_request(
+            &lifecycle,
+            &host,
+            &sender,
+            &request(sender.generation, 1, "workspace-select"),
+            Box::new(|| {
+                host.lock()
+                    .expect("workspace during picker")
+                    .clear()
+                    .expect("newer clear");
+                FolderPickerResult::Cancelled
+            }),
+        );
+
+        assert!(output.encoded.contains(r#""code":"internal-failure""#));
+        let host = host.lock().expect("workspace after stale completion");
+        assert!(host.bound_root.is_none());
+        assert_eq!(
+            host.application.view(),
+            WorkspaceView::Empty { generation: 2 }
+        );
+    }
+
+    #[test]
+    fn revalidation_transition_error_is_propagated_without_dropping_root_metadata() {
+        let fixture = Fixture::new();
+        fs::create_dir(fixture.root.join(".git")).expect("Git marker");
+        let moved = fixture.root.with_file_name(format!(
+            "keiko-native-workspace-transition-error-{}-{}",
+            std::process::id(),
+            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut host = WorkspaceHost::default();
+        host.select(FolderPickerResult::Selected(fixture.root.clone()))
+            .expect("selection");
+        host.application.clear().expect("simulate newer transition");
+        fs::rename(&fixture.root, &moved).expect("move fixture");
+        let (lifecycle, sender) = session();
+        let host = Mutex::new(host);
+
+        let output = workspace_request(
+            &lifecycle,
+            &host,
+            &sender,
+            &request(sender.generation, 1, "workspace-status"),
+            Box::new(|| panic!("status must not open the picker")),
+        );
+
+        assert!(output.encoded.contains(r#""code":"internal-failure""#));
+        assert!(
+            host.lock()
+                .expect("workspace after transition error")
+                .bound_root
+                .is_some()
+        );
+        fs::rename(&moved, &fixture.root).expect("restore fixture");
+    }
+
+    #[test]
     fn poisoned_host_owners_abort_selection_without_retaining_authority() {
         let (lifecycle, sender) = session();
         let host = Mutex::new(WorkspaceHost::default());
@@ -673,6 +721,34 @@ mod tests {
                 .contains(r#""code":"internal-failure""#)
         );
         assert!(!workspace_failure.acknowledged_status);
+
+        let poisoned_status = workspace_request(
+            &lifecycle,
+            &host,
+            &sender,
+            &request(sender.generation, 2, "workspace-status"),
+            Box::new(|| panic!("status must not open the picker")),
+        );
+        assert!(
+            poisoned_status
+                .encoded
+                .contains(r#""code":"internal-failure""#)
+        );
+        assert!(!poisoned_status.acknowledged_status);
+
+        let poisoned_clear = workspace_request(
+            &lifecycle,
+            &host,
+            &sender,
+            &request(sender.generation, 3, "workspace-clear"),
+            Box::new(|| panic!("clear must not open the picker")),
+        );
+        assert!(
+            poisoned_clear
+                .encoded
+                .contains(r#""code":"internal-failure""#)
+        );
+        assert!(!poisoned_clear.acknowledged_status);
 
         let (lifecycle, sender) = session();
         let host = Mutex::new(WorkspaceHost::default());

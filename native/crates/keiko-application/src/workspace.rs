@@ -171,6 +171,18 @@ impl WorkspaceApplication {
         Ok(())
     }
 
+    pub fn close_if_current(&mut self, generation: u64, reason: WorkspaceClosedReason) -> bool {
+        let is_current = match &self.state {
+            WorkspaceState::Selecting => self.generation == generation,
+            WorkspaceState::Bound(binding) => binding.generation == generation,
+            WorkspaceState::Empty | WorkspaceState::Closed(_) => false,
+        };
+        if is_current {
+            self.state = WorkspaceState::Closed(reason);
+        }
+        is_current
+    }
+
     pub fn binding(&self, generation: u64) -> Option<&WorkspaceBinding> {
         match &self.state {
             WorkspaceState::Bound(binding) if binding.generation == generation => Some(binding),
@@ -327,6 +339,34 @@ mod tests {
             }
         );
         assert!(application.binding(generation).is_none());
+    }
+
+    #[test]
+    fn cleanup_closes_only_the_current_selecting_or_bound_generation() {
+        let mut application = WorkspaceApplication::default();
+        let selecting = application.begin_selection().expect("selecting generation");
+        assert!(!application.close_if_current(selecting + 1, WorkspaceClosedReason::Unavailable));
+        assert_eq!(
+            application.view(),
+            WorkspaceView::Selecting {
+                generation: selecting,
+            }
+        );
+        assert!(application.close_if_current(selecting, WorkspaceClosedReason::Unavailable));
+
+        let bound = application.begin_selection().expect("bound generation");
+        application
+            .accept_selection(
+                bound,
+                ValidatedWorkspace::new(
+                    WorkspaceRootIdentity::new(7, 11),
+                    "Keiko Native".to_owned(),
+                )
+                .expect("validated workspace"),
+            )
+            .expect("binding");
+        assert!(application.close_if_current(bound, WorkspaceClosedReason::Cancelled));
+        assert!(!application.close_if_current(bound, WorkspaceClosedReason::Cancelled));
     }
 
     #[test]
