@@ -3610,7 +3610,10 @@ test("fails closed when the PR producer loses status write access", async () => 
   const root = await fixtureRepository();
   try {
     const workflowPath = join(root, ".github/workflows/pr-contract.yml");
-    const workflow = await readFile(workflowPath, "utf8");
+    const workflow = (await readFile(workflowPath, "utf8")).replaceAll(
+      "\r\n",
+      "\n",
+    );
     await writeFile(
       workflowPath,
       workflow.replaceAll("      statuses: write\n", ""),
@@ -3807,7 +3810,7 @@ test("accepts inert workflow permission blocks with Windows line endings", async
     ]) {
       const workflowPath = join(root, path);
       const workflow = await readFile(workflowPath, "utf8");
-      await writeFile(workflowPath, workflow.replaceAll("\n", "\r\n"));
+      await writeFile(workflowPath, workflow.replaceAll(/\r?\n/gu, "\r\n"));
     }
     const result = await validateRepository(root);
     assert.deepEqual(result.failures, []);
@@ -3845,7 +3848,10 @@ test("rejects scalar and misplaced inert workflow permissions", async () => {
       root,
       ".github/workflows/contract-publication.yml",
     );
-    const workflow = await readFile(workflowPath, "utf8");
+    const workflow = (await readFile(workflowPath, "utf8")).replaceAll(
+      "\r\n",
+      "\n",
+    );
     await writeFile(
       workflowPath,
       workflow.replace(
