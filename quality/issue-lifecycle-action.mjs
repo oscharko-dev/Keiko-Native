@@ -55,10 +55,12 @@ const PR_OPEN = LIFECYCLE_STATES[4];
 const REVIEW = LIFECYCLE_STATES[5];
 
 function labelNames(issue) {
-  return Array.isArray(issue?.labels)
-    ? issue.labels.map((label) =>
-        typeof label === "string" ? label : label?.name,
-      )
+  if (!Array.isArray(issue?.labels)) return undefined;
+  const names = issue.labels.map((label) =>
+    typeof label === "string" ? label : label?.name,
+  );
+  return names.every((name) => typeof name === "string" && name.trim() !== "")
+    ? names
     : undefined;
 }
 

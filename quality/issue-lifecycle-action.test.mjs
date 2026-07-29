@@ -530,6 +530,36 @@ test("ignores events without a lifecycle destination and fails bad read-back", a
   );
   assert.equal(successfulRestorePatches, 2);
 
+  let malformedRestorePatches = 0;
+  const malformedRestore = requestMock(t, {
+    issueLabels: ["status: ready"],
+  });
+  const malformedRestoreResult = await runIssueLifecycleAction({
+    event: reopenedEvent,
+    request: async (path, options) => {
+      if (options?.method === "PATCH") {
+        malformedRestorePatches += 1;
+        return {};
+      }
+      if (path.includes("/issues/27") && malformedRestorePatches === 1)
+        return issue(["status: blocked"], {
+          updated_at: "2026-07-17T12:00:01Z",
+        });
+      if (path.includes("/issues/27") && malformedRestorePatches === 2)
+        return issue([], {
+          labels: [{ name: "status: ready" }, { name: 7 }],
+          updated_at: "2026-07-17T12:00:02Z",
+        });
+      return malformedRestore.request(path, options);
+    },
+  });
+  assert.equal(malformedRestoreResult.outcome, "failed");
+  assert.match(
+    malformedRestoreResult.failures.join("\n"),
+    /could not be restored/u,
+  );
+  assert.equal(malformedRestorePatches, 2);
+
   let patches = 0;
   const rejectedRestore = requestMock(t, {
     issueLabels: ["status: ready"],
