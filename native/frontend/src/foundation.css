@@ -151,7 +151,8 @@ h1 {
 }
 
 .workspace-card,
-.runtime-card {
+.runtime-card,
+.turn-card {
   margin: 0 0 2rem;
   border: 1px solid rgb(255 255 255 / 16%);
   border-radius: 18px;
@@ -160,9 +161,53 @@ h1 {
 }
 
 .workspace-card h2,
-.runtime-card h2 {
+.runtime-card h2,
+.turn-card h2 {
   margin: 0;
   font-size: 1.35rem;
+}
+
+.authority-copy {
+  margin: 0.9rem 0 1.2rem;
+  border-inline-start: 4px solid #8cebd2;
+  padding-inline-start: 0.8rem;
+  line-height: 1.55;
+}
+
+.byte-count {
+  margin: 0.4rem 0 0.9rem;
+  color: #aeb6cc;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.85rem;
+}
+
+.turn-result {
+  margin-top: 1.2rem;
+}
+
+.turn-status {
+  border-inline-start: 4px solid #8cebd2;
+  padding-inline-start: 0.8rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.turn-status-failed,
+.turn-status-timed-out,
+.turn-status-containment-failed,
+.turn-status-cleanup-failed {
+  border-inline-start-color: #ffbd66;
+}
+
+.agent-response {
+  margin: 1rem 0;
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 14px;
+  padding: 1rem;
+  background: rgb(0 0 0 / 20%);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .workspace-status {
@@ -289,7 +334,8 @@ footer {
   }
 
   .workspace-card,
-  .runtime-card {
+  .runtime-card,
+  .turn-card {
     border-color: rgb(25 32 55 / 16%);
     background: rgb(238 240 248 / 72%);
   }
@@ -300,6 +346,23 @@ footer {
 
   .runtime-status {
     border-inline-start-color: #08785e;
+  }
+
+  .authority-copy,
+  .turn-status {
+    border-inline-start-color: #08785e;
+  }
+
+  .turn-status-failed,
+  .turn-status-timed-out,
+  .turn-status-containment-failed,
+  .turn-status-cleanup-failed {
+    border-inline-start-color: #9a5200;
+  }
+
+  .agent-response {
+    border-color: rgb(25 32 55 / 16%);
+    background: #fff;
   }
 
   .runtime-status-incompatible,
@@ -320,7 +383,8 @@ footer {
   .content-card,
   .canvas-card,
   .workspace-card,
-  .runtime-card {
+  .runtime-card,
+  .turn-card {
     border-width: 2px;
   }
 
@@ -329,6 +393,11 @@ footer {
   }
 
   .runtime-status {
+    border-inline-start-width: 6px;
+  }
+
+  .authority-copy,
+  .turn-status {
     border-inline-start-width: 6px;
   }
 }

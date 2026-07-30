@@ -1,5 +1,6 @@
 use std::sync::Mutex;
 
+use tauri::ipc::Channel;
 use tauri::webview::{PageLoadEvent, PageLoadPayload};
 use tauri::{AppHandle, Manager, RunEvent, Runtime, State, Webview, WebviewWindow, Window};
 
@@ -8,7 +9,8 @@ use crate::{
     FolderPickerResult, FoundationHost, HostLifecycle, RuntimeHost, SenderContext, WorkspaceHost,
     application_cancel as dispatch_cancel, application_request as dispatch_request,
     canonical_origin, foundation_request as dispatch_foundation_request, is_bundled_navigation,
-    runtime_request as dispatch_runtime_request, workspace_request as dispatch_workspace_request,
+    runtime_request as dispatch_runtime_request, turn_request as dispatch_turn_request,
+    workspace_request as dispatch_workspace_request,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -243,6 +245,48 @@ pub async fn runtime_request(
             &sender,
             selected_workspace.as_deref(),
             &request,
+        )
+        .encoded
+    })
+    .await
+    .unwrap_or_else(|_| {
+        keiko_ui_port::encode_error(
+            "unknown-request",
+            keiko_ui_port::ReasonCode::InternalFailure,
+        )
+    })
+}
+
+#[tauri::command]
+pub async fn codex_turn_request(
+    app: AppHandle,
+    window: WebviewWindow,
+    generation: u64,
+    document_nonce: String,
+    request: String,
+    on_event: Channel<keiko_application::turn::TurnView>,
+) -> String {
+    let sender = SenderContext {
+        window_label: window.label().to_owned(),
+        origin: canonical_origin(window.url().ok().as_ref()),
+        generation,
+        document_nonce,
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let lifecycle = app.state::<Mutex<HostLifecycle>>();
+        let runtime = app.state::<RuntimeHost>();
+        let workspace = app.state::<Mutex<WorkspaceHost>>();
+        dispatch_turn_request(
+            lifecycle.inner(),
+            workspace.inner(),
+            runtime.inner(),
+            &sender,
+            &request,
+            |view| {
+                if on_event.send(view).is_err() {
+                    runtime.cancel_all();
+                }
+            },
         )
         .encoded
     })

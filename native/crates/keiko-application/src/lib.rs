@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod runtime;
+pub mod turn;
 pub mod workspace;
 
 pub const PRODUCT_NAME: &str = "Keiko Native";
@@ -36,6 +37,8 @@ pub enum ApplicationResult {
     RuntimeReadiness {
         state: runtime::RuntimeReadinessView,
     },
+    #[serde(rename = "codex-turn")]
+    CodexTurn { state: turn::TurnView },
     #[serde(rename = "welcome")]
     Welcome { title: String, explanation: String },
     #[serde(rename = "canvas")]

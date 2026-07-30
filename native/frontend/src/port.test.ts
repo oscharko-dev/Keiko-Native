@@ -6,10 +6,14 @@ import {
   isFoundationResponse,
   isHealthResponse,
   isRuntimeReadinessResponse,
+  isTurnResponse,
+  isTurnView,
   isWorkspaceResponse,
   rendererAuthority,
   type HealthRequest,
   type RendererAuthority,
+  type TurnState,
+  type TurnView,
 } from "./port";
 
 const build = {
@@ -843,5 +847,187 @@ describe("closed workspace port", () => {
         ).workspaceStatus(),
       ).rejects.toThrow("workspace-request-failed");
     }
+  });
+});
+
+describe("closed streamed Codex turn port", () => {
+  const turn = (
+    state: TurnState,
+    agentText = "",
+    reason?: TurnView["reason"],
+  ): TurnView => ({
+    taskId: "task-0000000000000007-0000000000000001",
+    runId: "run-0000000000000007-0000000000000001",
+    workspaceGeneration: 3,
+    state,
+    ...(reason === undefined ? {} : { reason }),
+    agentText,
+    providerThreadEstablished: state !== "preflighting",
+    providerTurnEstablished: state !== "preflighting",
+    evidence: {
+      runtimeVersion: "0.145.0",
+      runtimeArtifactSha256:
+        "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
+      containmentProfile: "keiko-codex-readiness-v1",
+      authorityProfile: "keiko-codex-no-effect-v1",
+      messageBytes: new TextEncoder().encode(agentText).length,
+      quarantinedEvents: state === "preflighting" ? 0 : 1,
+      acceptedEffects: 0,
+      cleanupComplete: !["preflighting", "streaming"].includes(state),
+      terminalState: state,
+    },
+  });
+
+  it("submits only the bounded identity and text task then projects monotonic canonical updates", async () => {
+    const updates: TurnView[] = [];
+    const preflight = turn("preflighting");
+    const streaming = turn("streaming", "Bounded ");
+    const completed = turn("completed", "Bounded answer.");
+    const invoke = vi.fn(
+      async (
+        command: string,
+        arguments_: {
+          request: string;
+          onEvent?: { onmessage: (value: TurnView) => void };
+        },
+      ) => {
+        const request = JSON.parse(arguments_.request) as {
+          requestId: string;
+          timeoutMs: number;
+          operation: Record<string, unknown>;
+        };
+        expect(command).toBe("codex_turn_request");
+        expect(request.timeoutMs).toBe(120_000);
+        expect(request.operation).toEqual({
+          kind: "codex-turn-start",
+          workspaceGeneration: 3,
+          task: "Explain one invariant.",
+        });
+        expect(JSON.stringify(request)).not.toMatch(
+          /repositoryPath|runtimeRoot|tool|command|credential/iu,
+        );
+        arguments_.onEvent?.onmessage(preflight);
+        arguments_.onEvent?.onmessage(streaming);
+        arguments_.onEvent?.onmessage(completed);
+        return JSON.stringify({
+          schemaVersion: 1,
+          requestId: request.requestId,
+          result: { kind: "codex-turn", state: completed },
+        });
+      },
+    );
+    const channel = { onmessage: (_value: TurnView) => undefined };
+    const response = await createRendererPort(
+      invoke,
+      async () => authority,
+      () => channel,
+    ).codexTurn(3, "Explain one invariant.", (update) => updates.push(update));
+    expect(response.result.state).toEqual(completed);
+    expect(updates).toEqual([preflight, streaming, completed, completed]);
+  });
+
+  it("accepts only body-bounded zero-effect terminal evidence", () => {
+    const completed = turn("completed", "Bounded answer.");
+    const response = {
+      schemaVersion: 1,
+      requestId: "request-0000000000000007-0000000000000001",
+      result: { kind: "codex-turn", state: completed },
+    };
+    expect(isTurnView(completed)).toBe(true);
+    expect(isTurnResponse(response)).toBe(true);
+    for (const hostile of [
+      { ...completed, path: "/private/repository" },
+      { ...completed, taskId: completed.runId },
+      { ...completed, agentText: "x".repeat(256 * 1024 + 1) },
+      {
+        ...completed,
+        evidence: { ...completed.evidence, acceptedEffects: 1 },
+      },
+      {
+        ...completed,
+        evidence: { ...completed.evidence, cleanupComplete: false },
+      },
+      {
+        ...completed,
+        evidence: { ...completed.evidence, messageBytes: 1 },
+      },
+      { ...completed, state: "failed", reason: undefined },
+      {
+        ...completed,
+        evidence: { ...completed.evidence, quarantinedEvents: 65 },
+      },
+    ]) {
+      expect(isTurnView(hostile)).toBe(false);
+      expect(
+        isTurnResponse({
+          ...response,
+          result: { kind: "codex-turn", state: hostile },
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it("rejects invalid tasks, out-of-order streams, correlation drift and cancellation", async () => {
+    const unused = vi.fn(async () => "");
+    const port = createRendererPort(
+      unused,
+      async () => authority,
+      () => ({ onmessage: () => undefined }),
+    );
+    for (const task of ["", " \n", "\u0000", "x".repeat(4097)]) {
+      await expect(port.codexTurn(3, task, () => undefined)).rejects.toThrow(
+        "codex-turn-invalid",
+      );
+    }
+    expect(unused).not.toHaveBeenCalled();
+
+    for (const badUpdate of [
+      turn("streaming", "early"),
+      { ...turn("preflighting"), workspaceGeneration: 4 },
+      { ...turn("preflighting"), taskId: "task-wrong" },
+    ]) {
+      const invoke = vi.fn(
+        async (
+          _command: string,
+          arguments_: {
+            onEvent?: { onmessage: (value: TurnView) => void };
+          },
+        ) => {
+          arguments_.onEvent?.onmessage(badUpdate as TurnView);
+          return "late";
+        },
+      );
+      await expect(
+        createRendererPort(
+          invoke,
+          async () => authority,
+          () => ({ onmessage: () => undefined }),
+        ).codexTurn(3, "Bounded.", () => undefined),
+      ).rejects.toThrow("codex-turn-failed");
+    }
+
+    let resolveTurn: ((value: string) => void) | undefined;
+    const raced = vi.fn(
+      (command: string, arguments_: { request: string }): Promise<string> => {
+        if (command === "application_cancel") return Promise.resolve("{}");
+        return new Promise((resolve) => {
+          resolveTurn = resolve;
+        });
+      },
+    );
+    const cancellation = new AbortController();
+    const pending = createRendererPort(
+      raced,
+      async () => authority,
+      () => ({ onmessage: () => undefined }),
+    ).codexTurn(3, "Bounded.", () => undefined, cancellation.signal);
+    await Promise.resolve();
+    cancellation.abort();
+    resolveTurn?.("{}");
+    await expect(pending).rejects.toThrow("codex-turn-cancelled");
+    expect(raced).toHaveBeenCalledWith(
+      "application_cancel",
+      expect.objectContaining({ generation: authority.generation }),
+    );
   });
 });

@@ -19,6 +19,7 @@ mod runtime;
 mod sha256;
 #[cfg(feature = "tauri-host")]
 pub mod tauri_adapter;
+mod turn;
 mod workspace;
 use acknowledgement::AcknowledgementState;
 pub use foundation::{FoundationHost, FoundationRequestOutput, foundation_request};
@@ -28,6 +29,7 @@ pub use request_adapter::{
 };
 use request_timing::{InFlight, MonotonicClock, terminal_reason};
 pub use runtime::{RuntimeHost, RuntimeRequestOutput, runtime_request};
+pub use turn::{TurnRequestOutput, turn_request};
 pub use workspace::{FolderPickerResult, WorkspaceHost, WorkspaceRequestOutput, workspace_request};
 
 const REPLAY_WINDOW: usize = 64;

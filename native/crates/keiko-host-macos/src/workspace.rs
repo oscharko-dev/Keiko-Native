@@ -51,6 +51,26 @@ impl WorkspaceHost {
             .map(|bound| bound.canonical_root.clone())
     }
 
+    pub(crate) fn current_root_for_generation(
+        &mut self,
+        generation: u64,
+    ) -> Result<PathBuf, WorkspaceError> {
+        let view = self.status()?;
+        if !matches!(
+            view,
+            WorkspaceView::Bound {
+                generation: current,
+                ..
+            } if current == generation
+        ) {
+            return Err(WorkspaceError::StaleGeneration);
+        }
+        self.bound_root
+            .as_ref()
+            .map(|bound| bound.canonical_root.clone())
+            .ok_or(WorkspaceError::StaleGeneration)
+    }
+
     fn begin_selection(&mut self) -> Result<u64, WorkspaceError> {
         retire_bound_root_after(&mut self.bound_root, || self.application.begin_selection())
     }

@@ -1,10 +1,11 @@
-import { invoke } from "@tauri-apps/api/core";
+import * as tauriCore from "@tauri-apps/api/core";
 import { createRoot } from "react-dom/client";
 import {
   renderFoundation,
   type FoundationController,
   type FoundationView,
   type RuntimeController,
+  type TurnController,
   type WorkspaceController,
 } from "./foundation";
 import "./foundation.css";
@@ -14,11 +15,12 @@ import {
   type AuthorityProvider,
   type Invoke,
   type RuntimeReadiness,
+  type TurnView,
   type WorkspaceState,
 } from "./port";
 
 export async function startRenderer(
-  invokeCommand: Invoke = invoke,
+  invokeCommand: Invoke = tauriCore.invoke,
   authorityProvider: AuthorityProvider = rendererAuthority,
 ): Promise<void> {
   const rootNode = document.getElementById("root");
@@ -38,7 +40,11 @@ export async function startRenderer(
     commitCanvasText: async () => unavailable,
     quit: async () => undefined,
   };
-  const port = createRendererPort(invokeCommand, authorityProvider);
+  const port = createRendererPort(
+    invokeCommand,
+    authorityProvider,
+    () => new tauriCore.Channel<TurnView>(),
+  );
   let initial: Awaited<ReturnType<typeof port.loadFoundation>>;
   try {
     await port.health();
@@ -61,9 +67,11 @@ export async function startRenderer(
   let controller: FoundationController;
   let workspaceController: WorkspaceController;
   let runtimeController: RuntimeController;
+  let turnController: TurnController;
   let currentView = initial.result;
   let workspaceState: WorkspaceState = initialWorkspace;
   let runtimeState: RuntimeReadiness | null = null;
+  let turnState: TurnView | null = null;
   const present = (view: FoundationView): FoundationView => {
     currentView = view;
     root?.render(
@@ -74,6 +82,8 @@ export async function startRenderer(
         workspaceController,
         runtimeState,
         runtimeController,
+        turnState,
+        turnController,
       ),
     );
     return view;
@@ -149,6 +159,22 @@ export async function startRenderer(
         };
       }
       present(currentView);
+    },
+  };
+  turnController = {
+    startTurn: async (task) => {
+      if (workspaceState.kind !== "bound" || runtimeState?.state !== "ready") {
+        return;
+      }
+      const workspaceGeneration = workspaceState.generation;
+      try {
+        await port.codexTurn(workspaceGeneration, task, (state) => {
+          turnState = state;
+          present(currentView);
+        });
+      } catch {
+        present(currentView);
+      }
     },
   };
   present(initial.result);
