@@ -111,7 +111,9 @@ function createProvider(body = recordBody()) {
     };
   };
   buildArtifact();
+  const attestationSubjects = [];
   const provider = {
+    attestationSubjects,
     state: { artifact, attestation, comment },
     async getComment() {
       return structuredClone(provider.state.comment);
@@ -170,7 +172,8 @@ function createProvider(body = recordBody()) {
     async isCommitReachableFromDev() {
       return true;
     },
-    async listAttestations() {
+    async listAttestations({ subjectDigest }) {
+      attestationSubjects.push(subjectDigest);
       return [{}];
     },
     async verifyAttestation() {
@@ -181,8 +184,9 @@ function createProvider(body = recordBody()) {
 }
 
 test("authenticates an exact stable comment/anchor/attestation/run tuple", async () => {
+  const provider = createProvider();
   const result = await verifyLifecycleRecordTuple({
-    provider: createProvider(),
+    provider,
     repository,
     issueNumber: 51,
     commentId: 100,
@@ -192,6 +196,10 @@ test("authenticates an exact stable comment/anchor/attestation/run tuple", async
     result.artifact.anchorIdentity,
     result.verified.subject.digest.slice(7),
   );
+  assert.deepEqual(provider.attestationSubjects, [
+    result.artifact.anchorIdentity,
+    result.artifact.anchorIdentity,
+  ]);
 });
 
 test("publishes comment, exact single-file anchor, attestation, and rereads", async () => {

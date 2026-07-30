@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
@@ -8,6 +9,7 @@ import {
 } from "./lifecycle-github-provider.mjs";
 import {
   createRecordEnvelope,
+  digestAuxiliaryIdentity,
   parseRecordEnvelope,
 } from "./lifecycle-record-protocol.mjs";
 
@@ -172,6 +174,186 @@ test("selects the lowest eligible fallback only after stable bounded discovery",
   );
   assert.equal(graphCalls.length, 2);
   assert.equal(provider.requestCount(), 4);
+});
+
+test("qualifies validated internal attestation identities only at the outbound route", async () => {
+  const jsonCalls = [];
+  const provider = createLifecycleGithubProvider({
+    binary: async () => {
+      throw new Error("binary access is unexpected");
+    },
+    graphql: async () => {
+      throw new Error("GraphQL access is unexpected");
+    },
+    json: async (path) => {
+      jsonCalls.push(path);
+      return { attestations: [] };
+    },
+  });
+  const identity = "c".repeat(64);
+  await assert.rejects(
+    provider.listAttestations({ subjectDigest: identity }),
+    /record-attestation-inventory-invalid/u,
+  );
+  assert.deepEqual(jsonCalls, [
+    `/repos/oscharko-dev/Keiko-Native/attestations/sha256:${identity}`,
+  ]);
+  assert.equal(provider.requestCount(), 1);
+});
+
+test("rejects invalid internal attestation identities without consuming provider requests", async () => {
+  for (const subjectDigest of [
+    "",
+    "c".repeat(63),
+    "c".repeat(65),
+    "C".repeat(64),
+    `sha256:${"c".repeat(64)}`,
+    `sha512:${"c".repeat(64)}`,
+    `sha256%3A${"c".repeat(64)}`,
+    `${"c".repeat(64)}/..`,
+    `${"c".repeat(64)}?page=1`,
+    `${"c".repeat(64)}#fragment`,
+  ]) {
+    const jsonCalls = [];
+    const provider = createLifecycleGithubProvider({
+      binary: async () => {
+        throw new Error("binary access is unexpected");
+      },
+      graphql: async () => {
+        throw new Error("GraphQL access is unexpected");
+      },
+      json: async (...arguments_) => {
+        jsonCalls.push(arguments_);
+        return { attestations: [] };
+      },
+    });
+    await assert.rejects(
+      provider.listAttestations({ subjectDigest }),
+      /record-attestation-inventory-invalid/u,
+    );
+    assert.equal(provider.requestCount(), 0, subjectDigest);
+    assert.equal(jsonCalls.length, 0, subjectDigest);
+  }
+});
+
+test("qualifies both stable orphan-recovery attestation absence reads", async () => {
+  const repository = "oscharko-dev/Keiko-Native";
+  const protectedDevSha = "a".repeat(40);
+  const body = createRecordEnvelope("generation-request", {
+    record_type: "generation-request",
+    schema_version: 1,
+    digest_algorithm: "sha-256",
+    digest_domain: "keiko-native.lifecycle-record.generation-request",
+    repository,
+    issue_number: 51,
+    pull_request_number: null,
+    exact_head_sha: null,
+    exact_target: null,
+    lane: "normal",
+    publication_submode: "not-applicable",
+    generation_schema: 1,
+    generation_bytes_sha256: "1".repeat(64),
+    generation_identity: "2".repeat(64),
+    attempt: 1,
+    request_identity: "3".repeat(64),
+    request_payload_digest: "4".repeat(64),
+    expected_producers: ["issue-contract-current"],
+    source_observation_identity: "5".repeat(64),
+    predecessor_comment_id: null,
+    predecessor_record_digest: null,
+    workflow_path: ".github/workflows/issue-lifecycle.yml",
+    workflow_run_id: 77,
+    workflow_run_attempt: 1,
+    protected_dev_sha: protectedDevSha,
+    recorded_at: "2026-07-29T12:00:00Z",
+  });
+  const parsed = parseRecordEnvelope(body);
+  const comment = {
+    body,
+    created_at: "2026-07-29T12:00:00Z",
+    id: 501,
+    issue_url: `https://api.github.com/repos/${repository}/issues/51`,
+    node_id: "IC_orphan",
+    performed_via_github_app: { id: 15368 },
+    updated_at: "2026-07-29T12:00:00Z",
+    user: { id: 41898282, login: "github-actions[bot]", type: "Bot" },
+  };
+  const commentBodySha256 = createHash("sha256")
+    .update(Buffer.from(body, "utf8"))
+    .digest("hex");
+  const recoveryTargetIdentity = digestAuxiliaryIdentity("recovery target", {
+    repository,
+    issue_number: 51,
+    orphan_comment_id: 501,
+    orphan_comment_body_sha256: commentBodySha256,
+    orphan_record_digest: parsed.recordDigest,
+    last_authenticated_comment_id: null,
+    last_authenticated_record_digest: null,
+  });
+  const anchorIdentity = digestAuxiliaryIdentity("artifact anchor", {
+    repository,
+    issue_number: 51,
+    record_type: parsed.recordType,
+    record_digest: parsed.recordDigest,
+    comment_id: 501,
+    comment_body_sha256: commentBodySha256,
+    generation_identity: parsed.fields.generation_identity,
+    attempt: parsed.fields.attempt,
+    workflow_path: parsed.fields.workflow_path,
+    workflow_run_id: parsed.fields.workflow_run_id,
+    workflow_run_attempt: parsed.fields.workflow_run_attempt,
+    protected_dev_sha: parsed.fields.protected_dev_sha,
+  });
+  const attestationPaths = [];
+  const provider = createLifecycleGithubProvider({
+    binary: async () => {
+      throw new Error("binary access is unexpected");
+    },
+    graphql: async () => {
+      throw new Error("GraphQL access is unexpected");
+    },
+    json: async (path) => {
+      if (path.includes("/attestations/")) {
+        attestationPaths.push(path);
+        return { attestations: [] };
+      }
+      if (path.includes("/issues/51/comments?")) return [comment];
+      if (path.includes("/actions/artifacts?"))
+        return { artifacts: [], total_count: 0 };
+      if (path.endsWith("/issues/comments/501")) return comment;
+      if (path.endsWith("/actions/runs/77"))
+        return {
+          conclusion: "failure",
+          head_branch: "dev",
+          id: 77,
+          path: "/.github/workflows/lifecycle-wakeup.yml",
+          referenced_workflows: [
+            {
+              path: ".github/workflows/issue-lifecycle.yml",
+              ref: "refs/heads/dev",
+              sha: protectedDevSha,
+            },
+          ],
+          run_attempt: 1,
+        };
+      if (path.endsWith(`/compare/${protectedDevSha}...dev`))
+        return { status: "ahead" };
+      throw new Error(`unexpected route: ${path}`);
+    },
+  });
+  const result = await provider.loadRecoveryOrphan({
+    issueNumber: 51,
+    recoveryTargetIdentity,
+  });
+  assert.match(recoveryTargetIdentity, /^[0-9a-f]{64}$/u);
+  assert.match(anchorIdentity, /^[0-9a-f]{64}$/u);
+  assert.equal(result.first.record_digest, parsed.recordDigest);
+  assert.deepEqual(result.first, result.second);
+  assert.deepEqual(attestationPaths, [
+    `/repos/${repository}/attestations/sha256:${anchorIdentity}`,
+    `/repos/${repository}/attestations/sha256:${anchorIdentity}`,
+  ]);
+  assert.equal(provider.requestCount(), 12);
 });
 
 test("cryptographically verifies the exact bundle with closed signer and source flags", async () => {

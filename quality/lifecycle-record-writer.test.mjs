@@ -110,10 +110,12 @@ test("verifies exact final provider records and rejects malformed plans", async 
     outputDirectory: directory,
     providerRequest: async () => comment(),
   });
+  const verificationCalls = [];
   const result = await verifyLifecycleRecordPublication({
     encodedPlan: encodedPlan(),
     prepared,
     providerRequest: async (path) => {
+      verificationCalls.push(path);
       if (path.includes("/issues/comments/")) return comment();
       if (path.includes("/artifacts?"))
         return {
@@ -136,6 +138,10 @@ test("verifies exact final provider records and rejects malformed plans", async 
   });
   assert.equal(result.commentId, 99);
   assert.equal(result.recordDigest.length, 64);
+  assert.equal(
+    verificationCalls.find((path) => path.includes("/attestations/")),
+    `/repos/${repository}/attestations/sha256:${prepared.anchorIdentity}`,
+  );
   assert.throws(
     () => decodeLifecycleRecordPlan(encodedPlan({ repository: "evil/repo" })),
     /record plan is invalid/u,
