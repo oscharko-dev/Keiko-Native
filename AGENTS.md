@@ -50,6 +50,15 @@ switch, that expanded lifecycle is inert: readiness is requested directly from `
 rejected or invalidated work returns to new, and `status: ready` with its exact matching accepted
 record remains the only executable state.
 
+The protected `lifecycle-wakeup.yml` caller is the only stable lifecycle ingress. Closed direct
+events, protected source-workflow completions, and the hourly schedule resolve only an issue number
+and optional recovery-comment locator, then hold the per-issue lock while invoking the reusable
+coordinator. The caller cannot supply a source, target, actor role, lane, activation, producer, or
+outcome. Until #55 activation, the coordinator advances only bounded authenticated non-applied
+ADR-0011 record obligations and performs no lifecycle, status, closure, branch, pull-request,
+queue, or merge effect. Agent skills and external orchestration remain event initiators and
+observers and must not duplicate transition policy.
+
 The planning actor requests readiness by applying `status: ready`. The repository workflow keeps
 that label only after validating the contract and recording its version and fingerprint; otherwise
 it restores `status: new`. Only `status: ready` with a matching readiness record makes an epic or

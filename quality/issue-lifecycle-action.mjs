@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { appendFile, readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 import { githubRequestFor } from "./github-api.mjs";
@@ -21,25 +21,46 @@ import {
   evaluateClosurePrecondition,
   evaluateCurrentReadiness,
   evaluatePullRequestTopology,
+  evaluateResumePrecondition,
 } from "./issue-lifecycle-readiness.mjs";
 import { readinessRecordFromComments } from "./issue-readiness-action.mjs";
-import { semanticIssueFingerprint } from "./issue-contract.mjs";
+import {
+  issueSchemaForLabels,
+  semanticIssueFingerprint,
+} from "./issue-contract.mjs";
+import {
+  LIFECYCLE_OBSERVATION_MARKER,
+  lifecycleObservation,
+  lifecycleObservationComment,
+  lifecycleRequestReplay,
+  parseLifecycleDispatchRequest,
+  trustedLifecycleObservation,
+} from "./issue-lifecycle-request.mjs";
 
 const lifecycleActivationEnabled = "enabled";
 const pullRequestContractSuccess = "success";
 const githubActionsAppId = "15368";
+const maxProviderPages = 100;
 const githubRequest = githubRequestFor("keiko-native-issue-lifecycle");
 const assignmentClaimPermissions = new Set(["admin", "maintain", "write"]);
+const planningRequestPermissions = new Set([
+  "admin",
+  "maintain",
+  "triage",
+  "write",
+]);
 const devHumanMergers = new Set(["niko4417", "oscharko"]);
 const READY = LIFECYCLE_STATES[2];
 const PR_OPEN = LIFECYCLE_STATES[4];
 const REVIEW = LIFECYCLE_STATES[5];
 
 function labelNames(issue) {
-  return Array.isArray(issue?.labels)
-    ? issue.labels.map((label) =>
-        typeof label === "string" ? label : label?.name,
-      )
+  if (!Array.isArray(issue?.labels)) return undefined;
+  const names = issue.labels.map((label) =>
+    typeof label === "string" ? label : label?.name,
+  );
+  return names.every((name) => typeof name === "string" && name.trim() !== "")
+    ? names
     : undefined;
 }
 
@@ -126,24 +147,127 @@ async function actorCanClaimAssignment(repository, actor, request) {
   }
 }
 
+async function pullRequestEventAuthorityFailures(repository, event, request) {
+  const actor = event?.sender?.login;
+  const pullRequest = event?.pull_request;
+  const failures = [];
+  if (
+    typeof actor !== "string" ||
+    !(await actorCanClaimAssignment(repository, actor, request))
+  )
+    failures.push("pull_request_actor_not_authorized");
+  if (
+    pullRequest?.head?.repo?.full_name !== repository ||
+    pullRequest?.base?.repo?.full_name !== repository
+  )
+    failures.push("pull_request_repository_not_authorized");
+  return failures;
+}
+
+function isLifecycleDispatch(event) {
+  return (
+    event?.inputs !== undefined &&
+    event.inputs !== null &&
+    typeof event.inputs === "object" &&
+    event?.pull_request === undefined &&
+    event?.issue === undefined
+  );
+}
+
+function dispatchContextFromEnvironment() {
+  return {
+    actor: process.env.GITHUB_ACTOR,
+    protectedRef: process.env.GITHUB_REF,
+    runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+    runId: process.env.GITHUB_RUN_ID,
+  };
+}
+
+async function dispatchActorRole(repository, dispatch, request) {
+  let permission;
+  try {
+    const result = await request(
+      `/repos/${repository}/collaborators/${encodeURIComponent(dispatch.actor)}/permission`,
+    );
+    permission = result?.permission;
+  } catch {
+    return undefined;
+  }
+  if (
+    devHumanMergers.has(dispatch.actor.toLowerCase()) &&
+    assignmentClaimPermissions.has(permission)
+  )
+    return "maintainer";
+  if (
+    [LIFECYCLE_STATES[1], LIFECYCLE_STATES[2]].includes(
+      dispatch.requestedTarget,
+    ) &&
+    ![LIFECYCLE_STATES[6], LIFECYCLE_STATES[7]].includes(
+      dispatch.expectedSource,
+    )
+  )
+    return planningRequestPermissions.has(permission) ? "planner" : undefined;
+  return assignmentClaimPermissions.has(permission) ? "implementer" : undefined;
+}
+
+function eventForLifecycleDispatch(dispatch, actorRole) {
+  return {
+    action: "labeled",
+    issue: { number: dispatch.issueNumber },
+    label: { name: dispatch.requestedTarget },
+    sender: { login: dispatch.actor },
+    transitionRequest: {
+      actorRole,
+      blockingCondition:
+        dispatch.requestedTarget === LIFECYCLE_STATES[6]
+          ? dispatch.reason
+          : undefined,
+      eventIdentity: dispatch.eventIdentity,
+      humanInput:
+        dispatch.requestedTarget === LIFECYCLE_STATES[7]
+          ? dispatch.reason
+          : undefined,
+      requestedSource: dispatch.expectedSource,
+    },
+  };
+}
+
+function dispatchAuthorityFailures({ actorRole, dispatch, issue }) {
+  const states = statusLabels(issue);
+  const failures = [];
+  if (actorRole === undefined) failures.push("actor_not_authorized");
+  if (states.length !== 1) failures.push("sole_source_state_required");
+  else if (states[0] !== dispatch.expectedSource)
+    failures.push("stale_expected_source");
+  if (
+    dispatch.requestedTarget === LIFECYCLE_STATES[1] &&
+    issueSchemaForLabels(issue.labels) === undefined
+  )
+    failures.push("exact_issue_type_required");
+  return failures;
+}
+
 async function derivedAssignmentClaim({ event, issue, repository, request }) {
   const claim = assignmentClaimCandidate(event, issue);
   if (claim === undefined) return undefined;
-  return (await actorCanClaimAssignment(
-    repository,
-    event.sender.login,
-    request,
-  ))
+  return (
+    await Promise.all([
+      actorCanClaimAssignment(repository, event.sender.login, request),
+      actorCanClaimAssignment(repository, event.assignee.login, request),
+    ])
+  ).every(Boolean) && assignedLogins(issue).size === 1
     ? claim
     : undefined;
 }
 
-function derivedAssignmentRelease(event, issue) {
+async function derivedAssignmentRelease(event, issue, repository, request) {
   const actor = event?.sender?.login;
   const assignee = event?.assignee?.login;
   if (typeof actor !== "string" || typeof assignee !== "string")
     return undefined;
   if (assignedLogins(issue).has(assignee)) return undefined;
+  if (!(await actorCanClaimAssignment(repository, actor, request)))
+    return undefined;
   return {
     id: `${issueIdentity(issue)}:assignment-release:${assignee}`,
     validated: true,
@@ -234,21 +358,30 @@ function pullRequestContractSucceeded({ event, prEvent, result }) {
   return hasTrustedPullRequestContractSuccess(event);
 }
 
-function unauthorizedRawLabelResult(enabled) {
-  return enabled
-    ? {
-        failures: [
-          "Lifecycle label events require explicit transition authority.",
-        ],
-        outcome: "failed",
-      }
-    : { outcome: "ignored", reason: "raw_lifecycle_label_event" };
+function unauthorizedRawLabelResult(enabled, issue, requestedTarget) {
+  if (!enabled)
+    return { outcome: "ignored", reason: "raw_lifecycle_label_event" };
+  const priorStates = statusLabels(issue).filter(
+    (state) => state !== requestedTarget,
+  );
+  return {
+    desiredState:
+      priorStates.length === 1 ? priorStates[0] : LIFECYCLE_STATES[0],
+    repairUnauthorizedLabel: requestedTarget,
+  };
 }
 
-function desiredStateForLabelEvent(event, currentState, enabled, readiness) {
+function desiredStateForLabelEvent(
+  event,
+  currentState,
+  enabled,
+  readiness,
+  issue,
+) {
   const requestedTarget = labelRequestTarget(event);
   if (requestedTarget === undefined) return undefined;
-  if (!hasTransitionRequest(event)) return unauthorizedRawLabelResult(enabled);
+  if (!hasTransitionRequest(event))
+    return unauthorizedRawLabelResult(enabled, issue, requestedTarget);
   const failures = [
     ...transitionRequestFailures(event, currentState, requestedTarget),
   ];
@@ -286,6 +419,17 @@ function desiredStateForClaimEvent(
 ) {
   if (event?.action === "assigned") {
     const claim = event.claim;
+    if (
+      [LIFECYCLE_STATES[6], LIFECYCLE_STATES[7]].includes(currentState) &&
+      claim?.validated === true
+    ) {
+      const resumed = evaluateResumePrecondition({
+        claim,
+        pauseEvidence: { suspendedSource: currentState, validated: true },
+        readiness,
+      });
+      return { desiredState: resumed.target };
+    }
     const result = evaluateClaimPrecondition({
       claim,
       readiness,
@@ -297,7 +441,7 @@ function desiredStateForClaimEvent(
       : { failures: [result.reason], outcome: "failed" };
   }
   if (event?.action === "unassigned") {
-    const release = event.release ?? derivedAssignmentRelease(event, issue);
+    const release = event.release;
     const result = evaluateClaimRelease({
       hasOpenPullRequest: event.hasOpenPullRequest,
       readiness,
@@ -397,7 +541,7 @@ function desiredStateForEvent(
   if (event?.action === "edited" && readiness.current !== true)
     return { desiredState: LIFECYCLE_STATES[0] };
   return (
-    desiredStateForLabelEvent(event, currentState, enabled, readiness) ??
+    desiredStateForLabelEvent(event, currentState, enabled, readiness, issue) ??
     desiredStateForClaimEvent(event, readiness, currentState, enabled, issue) ??
     desiredStateForClosure(event, issue) ??
     {}
@@ -410,7 +554,7 @@ function failed(failures) {
 
 async function allIssueComments(repository, issueNumber, request) {
   const comments = [];
-  for (let page = 1; ; page += 1) {
+  for (let page = 1; page <= maxProviderPages; page += 1) {
     const batch = await request(
       `/repos/${repository}/issues/${issueNumber}/comments?per_page=100&page=${page}`,
     );
@@ -419,11 +563,12 @@ async function allIssueComments(repository, issueNumber, request) {
     comments.push(...batch);
     if (batch.length < 100) return comments;
   }
+  throw new Error("Issue comments pagination limit exceeded.");
 }
 
 async function allProviderLabels(repository, request) {
   const labels = [];
-  for (let page = 1; ; page += 1) {
+  for (let page = 1; page <= maxProviderPages; page += 1) {
     const batch = await request(
       `/repos/${repository}/labels?per_page=100&page=${page}`,
     );
@@ -432,6 +577,7 @@ async function allProviderLabels(repository, request) {
     labels.push(...batch.map((label) => label?.name));
     if (batch.length < 100) return labels;
   }
+  throw new Error("Provider labels pagination limit exceeded.");
 }
 
 function linkedPullRequestEvidence(pullRequest, issueNumber, excludeId) {
@@ -502,7 +648,7 @@ async function firstValidatedLinkedOpenPullRequest(
   request,
   excludeId,
 ) {
-  for (let page = 1; ; page += 1) {
+  for (let page = 1; page <= maxProviderPages; page += 1) {
     const batch = await request(
       `/repos/${repository}/pulls?state=open&per_page=100&page=${page}`,
     );
@@ -526,6 +672,7 @@ async function firstValidatedLinkedOpenPullRequest(
     }
     if (batch.length < 100) return undefined;
   }
+  throw new Error("Open pull request pagination limit exceeded.");
 }
 
 function acceptedDeliveryBoundary(pullRequest) {
@@ -613,7 +760,7 @@ async function finalDeliveryEvidence({
   repository,
   request,
 }) {
-  for (let page = 1; ; page += 1) {
+  for (let page = 1; page <= maxProviderPages; page += 1) {
     const batch = await request(
       `/repos/${repository}/pulls?state=closed&per_page=100&page=${page}`,
     );
@@ -632,6 +779,7 @@ async function finalDeliveryEvidence({
     }
     if (batch.length < 100) return undefined;
   }
+  throw new Error("Closed pull request pagination limit exceeded.");
 }
 
 function needsOtherOpenPullRequestEvidence(event) {
@@ -780,6 +928,15 @@ async function eventWithDerivedEvidence({
           request,
         )) !== undefined,
     };
+  if (event?.action === "unassigned" && event.release === undefined) {
+    const release = await derivedAssignmentRelease(
+      event,
+      issue,
+      repository,
+      request,
+    );
+    if (release !== undefined) evidencedEvent = { ...evidencedEvent, release };
+  }
   if (
     event?.pull_request === undefined &&
     event?.action === "closed" &&
@@ -864,12 +1021,122 @@ async function removeLabel(repository, issueNumber, label, request) {
   }
 }
 
-async function addLabels(repository, issueNumber, labels, request) {
-  if (labels.length === 0) return;
-  await request(`/repos/${repository}/issues/${issueNumber}/labels`, {
-    method: "POST",
-    payload: { labels },
+async function replaceLifecycleLabels({
+  desiredState,
+  issue,
+  issueNumber,
+  repository,
+  request,
+}) {
+  const originalLabels = labelNames(issue);
+  if (!Array.isArray(originalLabels))
+    return failed(["Issue lifecycle labels are unavailable."]);
+  const desiredLabels = [
+    ...originalLabels.filter((label) => !label?.startsWith("status: ")),
+    desiredState,
+  ];
+  let mutationError;
+  try {
+    await request(`/repos/${repository}/issues/${issueNumber}`, {
+      method: "PATCH",
+      payload: { labels: desiredLabels },
+    });
+  } catch (error) {
+    mutationError = error;
+  }
+  const readback = await reloadIssue(repository, issueNumber, request);
+  const verified = verifyStatusLabelReadback({
+    actualIssueIdentity: issueIdentity(readback),
+    desiredState,
+    expectedIssueIdentity: issueIdentity(issue),
+    labels: labelNames(readback),
   });
+  if (verified.ok)
+    return {
+      issue: readback,
+      mutationResult: "applied",
+      ok: true,
+      readbackResult: "verified",
+    };
+
+  if (!issueObservationMatches(issue, readback)) {
+    let recovered;
+    try {
+      await request(`/repos/${repository}/issues/${issueNumber}`, {
+        method: "PATCH",
+        payload: { labels: originalLabels },
+      });
+      recovered = await reloadIssue(repository, issueNumber, request);
+    } catch {
+      recovered = undefined;
+    }
+    if (
+      recovered === undefined ||
+      !issueLabelObservationMatches(issue, recovered)
+    )
+      return {
+        failures: [
+          "Lifecycle mutation failed and original labels could not be restored.",
+        ],
+        mutationResult: "failed",
+        ok: false,
+        readbackResult: "not-verified",
+      };
+  }
+  return {
+    failures: [
+      mutationError === undefined
+        ? "Lifecycle label replacement did not match desired state."
+        : "Lifecycle label replacement failed without a verified desired state.",
+    ],
+    mutationResult: "failed",
+    ok: false,
+    readbackResult: "not-verified",
+  };
+}
+
+async function recordLifecycleObservation(
+  repository,
+  issueNumber,
+  observation,
+  request,
+) {
+  const body = lifecycleObservationComment(observation);
+  const comment = await request(
+    `/repos/${repository}/issues/${issueNumber}/comments`,
+    {
+      method: "POST",
+      payload: { body },
+    },
+  );
+  if (!trustedLifecycleObservation(comment, body))
+    throw new Error("Lifecycle observation read-back failed.");
+}
+
+async function finalizeLifecycleDispatch({
+  dispatch,
+  enabled,
+  issueNumber,
+  now,
+  repository,
+  request,
+  result,
+}) {
+  if (dispatch === undefined) return result;
+  const observation = lifecycleObservation({
+    activation: enabled ? "enabled" : "disabled",
+    issueNumber,
+    now,
+    request: dispatch,
+    result,
+  });
+  await recordLifecycleObservation(
+    repository,
+    issueNumber,
+    observation,
+    request,
+  );
+  return { ...result, observation };
 }
 
 async function closeIssueAsCompleted({
@@ -960,6 +1227,100 @@ function issueIdentity(issue) {
   return undefined;
 }
 
+function issueLabelObservationMatches(expected, actual) {
+  const expectedLabelNames = labelNames(expected);
+  const actualLabelNames = labelNames(actual);
+  if (!Array.isArray(expectedLabelNames) || !Array.isArray(actualLabelNames))
+    return false;
+  const expectedLabels = [...expectedLabelNames].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  const actualLabels = [...actualLabelNames].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  return (
+    issueIdentity(actual) === issueIdentity(expected) &&
+    actual?.number === expected?.number &&
+    JSON.stringify(actualLabels) === JSON.stringify(expectedLabels)
+  );
+}
+
+function issueObservationMatches(expected, actual) {
+  const expectedAssignees = [...assignedLogins(expected)].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  const actualAssignees = [...assignedLogins(actual)].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  return (
+    issueLabelObservationMatches(expected, actual) &&
+    actual?.state === expected?.state &&
+    actual?.state_reason === expected?.state_reason &&
+    actual?.updated_at === expected?.updated_at &&
+    actual?.title === expected?.title &&
+    semanticIssueFingerprint(actual?.body ?? "", actual?.title ?? "") ===
+      semanticIssueFingerprint(expected?.body ?? "", expected?.title ?? "") &&
+    JSON.stringify(actualAssignees) === JSON.stringify(expectedAssignees)
+  );
+}
+
+function governanceCommentSnapshot(comments) {
+  return (Array.isArray(comments) ? comments : [])
+    .filter(
+      (comment) =>
+        comment?.body?.includes("<!-- keiko-native-readiness -->") ||
+        comment?.body?.includes(LIFECYCLE_OBSERVATION_MARKER),
+    )
+    .map((comment) => ({
+      body: comment.body,
+      id: comment.id,
+      user: {
+        id: comment?.user?.id,
+        login: comment?.user?.login,
+        type: comment?.user?.type,
+      },
+    }))
+    .sort((left, right) => String(left.id).localeCompare(String(right.id)));
+}
+
+function providerLabelSnapshot(labels) {
+  return [...labels].sort((left, right) => left.localeCompare(right));
+}
+
+async function stableLifecycleInputs({
+  comments,
+  event,
+  issue,
+  issueNumber,
+  providerLabels,
+  readiness,
+  repository,
+  request,
+}) {
+  const [currentIssue, currentComments, currentProviderLabels] =
+    await Promise.all([
+      reloadIssue(repository, issueNumber, request),
+      allIssueComments(repository, issueNumber, request),
+      allProviderLabels(repository, request),
+    ]);
+  if (!issueObservationMatches(issue, currentIssue)) return undefined;
+  if (
+    JSON.stringify(governanceCommentSnapshot(currentComments)) !==
+      JSON.stringify(governanceCommentSnapshot(comments)) ||
+    JSON.stringify(providerLabelSnapshot(currentProviderLabels)) !==
+      JSON.stringify(providerLabelSnapshot(providerLabels))
+  )
+    return undefined;
+  const currentReadiness = evaluateReadinessForIssue({
+    comments: currentComments,
+    event,
+    issue: currentIssue,
+  });
+  return JSON.stringify(currentReadiness) === JSON.stringify(readiness)
+    ? currentIssue
+    : undefined;
+}
+
 function readinessEvent(event) {
   if (event?.pull_request !== undefined) return { action: "pull_request" };
   return event.action === "edited"
@@ -1005,10 +1366,13 @@ function exactLifecycleLabelFailure(issue) {
 }
 
 async function reconcileLifecycleRemoval({
+  comments,
   enabled,
+  event,
   issue,
   issueNumber,
   now,
+  providerLabels,
   readiness,
   repository,
   request,
@@ -1024,6 +1388,19 @@ async function reconcileLifecycleRemoval({
       readiness,
       removeLifecycleLabels: true,
     };
+  if (
+    (await stableLifecycleInputs({
+      comments,
+      event,
+      issue,
+      issueNumber,
+      providerLabels,
+      readiness,
+      repository,
+      request,
+    })) === undefined
+  )
+    return failed(["issue_changed_before_reconciliation"]);
   for (const label of reconciliation.remove)
     await removeLabel(repository, issueNumber, label, request);
   const readback = await reloadIssue(repository, issueNumber, request);
@@ -1039,11 +1416,14 @@ async function reconcileLifecycleRemoval({
 
 async function reconcileDesiredStatus({
   closeIssue,
+  comments,
   desiredState,
   enabled,
+  event,
   issue,
   issueNumber,
   now,
+  providerLabels,
   readiness,
   repository,
   request,
@@ -1070,6 +1450,20 @@ async function reconcileDesiredStatus({
       readiness,
     };
 
+  if (
+    (await stableLifecycleInputs({
+      comments,
+      event,
+      issue,
+      issueNumber,
+      providerLabels,
+      readiness,
+      repository,
+      request,
+    })) === undefined
+  )
+    return failed(["issue_changed_before_reconciliation"]);
+
   if (closeIssue === true) {
     const closure = await closeIssueAsCompleted({
       desiredState,
@@ -1083,9 +1477,55 @@ async function reconcileDesiredStatus({
       : failed(closure.failures);
   }
 
-  for (const label of reconciliation.remove)
-    await removeLabel(repository, issueNumber, label, request);
-  await addLabels(repository, issueNumber, reconciliation.apply, request);
+  const replacement = await replaceLifecycleLabels({
+    desiredState,
+    issue,
+    issueNumber,
+    repository,
+    request,
+  });
+  return replacement.ok
+    ? {
+        closeIssue,
+        desiredState,
+        mutationResult: replacement.mutationResult,
+        outcome: "applied",
+        plan: reconciliation,
+        readbackResult: replacement.readbackResult,
+      }
+    : {
+        ...failed(replacement.failures),
+        mutationResult: replacement.mutationResult,
+        readbackResult: replacement.readbackResult,
+      };
+}
+
+async function repairUnauthorizedRawGesture({
+  comments,
+  desiredState,
+  event,
+  issue,
+  issueNumber,
+  providerLabels,
+  readiness,
+  repository,
+  request,
+  unauthorizedLabel,
+}) {
+  if (
+    (await stableLifecycleInputs({
+      comments,
+      event,
+      issue,
+      issueNumber,
+      providerLabels,
+      readiness,
+      repository,
+      request,
+    })) === undefined
+  )
+    return failed(["issue_changed_before_reconciliation"]);
+  await removeLabel(repository, issueNumber, unauthorizedLabel, request);
   const readback = await reloadIssue(repository, issueNumber, request);
   const verified = verifyStatusLabelReadback({
     actualIssueIdentity: issueIdentity(readback),
@@ -1094,11 +1534,24 @@ async function reconcileDesiredStatus({
     labels: labelNames(readback),
   });
   return verified.ok
-    ? { closeIssue, desiredState, outcome: "applied", plan: reconciliation }
-    : failed(verified.failures);
+    ? {
+        failures: ["unauthorized_raw_lifecycle_gesture_repaired"],
+        mutationResult: "applied",
+        outcome: "failed",
+        readbackResult: "verified",
+      }
+    : {
+        ...failed([
+          "unauthorized_raw_lifecycle_gesture_repair_failed",
+          ...verified.failures,
+        ]),
+        mutationResult: "failed",
+        readbackResult: "not-verified",
+      };
 }
 
 export async function runIssueLifecycleAction({
+  dispatchContext = dispatchContextFromEnvironment(),
   event,
   now = new Date(),
   request = githubRequest,
@@ -1108,7 +1561,20 @@ export async function runIssueLifecycleAction({
     throw new Error("GITHUB_REPOSITORY is missing or invalid.");
   if (event?.issue?.pull_request !== undefined)
     return { outcome: "ignored", reason: "pull_request_issue" };
-  const issueNumber = eventIssueNumber(event);
+
+  let dispatch;
+  let lifecycleEvent = event;
+  if (isLifecycleDispatch(event)) {
+    const parsed = parseLifecycleDispatchRequest({
+      event,
+      repository,
+      ...dispatchContext,
+    });
+    if (!parsed.ok) return failed(parsed.failures);
+    dispatch = parsed.request;
+    lifecycleEvent = eventForLifecycleDispatch(dispatch);
+  }
+  const issueNumber = dispatch?.issueNumber ?? eventIssueNumber(lifecycleEvent);
   if (!Number.isInteger(issueNumber))
     throw new Error("Issue number is missing.");
 
@@ -1118,22 +1584,61 @@ export async function runIssueLifecycleAction({
     allProviderLabels(repository, request),
   ]);
   const providerValidation = validateProviderStatusLabels(providerLabels);
-  if (!providerValidation.ok) return failed(providerValidation.failures);
-  if (event?.pull_request !== undefined) {
+  const enabled = enabledLifecycleActivation();
+  if (!providerValidation.ok)
+    return finalizeLifecycleDispatch({
+      dispatch,
+      enabled,
+      issueNumber,
+      now,
+      repository,
+      request,
+      result: failed(providerValidation.failures),
+    });
+  if (dispatch !== undefined) {
+    const replay = lifecycleRequestReplay(comments, dispatch);
+    if (replay !== undefined)
+      return finalizeLifecycleDispatch({
+        dispatch,
+        enabled,
+        issueNumber,
+        now,
+        repository,
+        request,
+        result: failed([replay]),
+      });
+    const actorRole = await dispatchActorRole(repository, dispatch, request);
+    const authorityFailures = dispatchAuthorityFailures({
+      actorRole,
+      dispatch,
+      issue,
+    });
+    if (authorityFailures.length > 0)
+      return finalizeLifecycleDispatch({
+        dispatch,
+        enabled,
+        issueNumber,
+        now,
+        repository,
+        request,
+        result: failed(authorityFailures),
+      });
+    lifecycleEvent = eventForLifecycleDispatch(dispatch, actorRole);
+  }
+  if (lifecycleEvent?.pull_request !== undefined) {
     const labelFailure = exactLifecycleLabelFailure(issue);
     if (labelFailure !== undefined) return labelFailure;
   }
-  const currentState = currentLifecycleState(issue, event);
+  const currentState = currentLifecycleState(issue, lifecycleEvent);
 
   const readiness = evaluateReadinessForIssue({
     comments,
-    event,
+    event: lifecycleEvent,
     issue,
   });
-  const enabled = enabledLifecycleActivation();
   const evidencedEvent = await eventWithDerivedEvidence({
     comments,
-    event,
+    event: lifecycleEvent,
     issue,
     issueNumber,
     repository,
@@ -1147,34 +1652,82 @@ export async function runIssueLifecycleAction({
     issue,
     issueNumber,
   );
-  if (desired?.outcome === "failed") return desired;
-  const ignored = ignoredDesiredResult(desired, readiness);
-  if (ignored !== undefined) return ignored;
-  if (desired.removeLifecycleLabels === true)
-    return reconcileLifecycleRemoval({
+  if (desired?.outcome === "failed")
+    return finalizeLifecycleDispatch({
+      dispatch,
       enabled,
+      issueNumber,
+      now,
+      repository,
+      request,
+      result: desired,
+    });
+  if (enabled && lifecycleEvent?.pull_request !== undefined) {
+    const authorityFailures = await pullRequestEventAuthorityFailures(
+      repository,
+      lifecycleEvent,
+      request,
+    );
+    if (authorityFailures.length > 0) return failed(authorityFailures);
+  }
+  const ignored = ignoredDesiredResult(desired, readiness);
+  let result;
+  if (ignored !== undefined) result = ignored;
+  else if (desired.repairUnauthorizedLabel !== undefined)
+    result = await repairUnauthorizedRawGesture({
+      comments,
+      desiredState: desired.desiredState,
+      event: lifecycleEvent,
+      issue,
+      issueNumber,
+      providerLabels,
+      readiness,
+      repository,
+      request,
+      unauthorizedLabel: desired.repairUnauthorizedLabel,
+    });
+  else if (desired.removeLifecycleLabels === true)
+    result = await reconcileLifecycleRemoval({
+      comments,
+      enabled,
+      event: lifecycleEvent,
       issue,
       issueNumber,
       now,
+      providerLabels,
       readiness,
       repository,
       request,
     });
-  return reconcileDesiredStatus({
-    closeIssue: desired.closeIssue === true,
-    desiredState: desired.desiredState,
+  else
+    result = await reconcileDesiredStatus({
+      closeIssue: desired.closeIssue === true,
+      comments,
+      desiredState: desired.desiredState,
+      enabled,
+      event: lifecycleEvent,
+      issue,
+      issueNumber,
+      now,
+      providerLabels,
+      readiness,
+      repository,
+      request,
+    });
+  return finalizeLifecycleDispatch({
+    dispatch,
     enabled,
-    issue,
     issueNumber,
     now,
-    readiness,
     repository,
     request,
+    result,
   });
 }
 
 export async function runIssueLifecycleCli({
   eventPath = process.env.GITHUB_EVENT_PATH,
+  githubOutput = process.env.GITHUB_OUTPUT,
   output = process.stdout,
   request = githubRequest,
 } = {}) {
@@ -1183,6 +1736,12 @@ export async function runIssueLifecycleCli({
   const event = JSON.parse(await readFile(eventPath, "utf8"));
   const result = await runIssueLifecycleAction({ event, request });
   output.write(`issue-lifecycle: ${result.outcome}\n`);
+  if (result.observation !== undefined) {
+    const serialized = JSON.stringify(result.observation);
+    output.write(`issue-lifecycle-observation: ${serialized}\n`);
+    if (typeof githubOutput === "string" && githubOutput.trim() !== "")
+      await appendFile(githubOutput, `observation=${serialized}\n`, "utf8");
+  }
   if (result.outcome === "failed")
     throw new Error(`Issue lifecycle failed: ${result.failures.join("; ")}`);
   return result;

@@ -92,10 +92,20 @@ and exact regular-file blob bytes, modes, object IDs, sizes, and SHA-256 digests
 files API is not complete tree authority. Candidate-set drift, non-regular entries, malformed blobs,
 changed rereads, or unavailable provider evidence fail closed.
 
-Zizmor's `dangerous-triggers` finding is dispositioned only for this one metadata workflow. The
-repository contract enforces its protected-`dev` checkout, fixed script, pinned actions,
-least-privilege permissions, absence of PR checkout or build commands, and exact branch filters. No
-other workflow or dangerous trigger inherits that exception.
+Lifecycle requests enter only through ADR-0012's protected top-level wake workflow. Its closed
+direct-event, protected-source completion, and hourly schedule resolvers emit only a canonical
+issue number and optional exact recovery-comment locator. The caller holds the per-issue lock while
+the reusable coordinator reloads current authority and advances one ADR-0011 record obligation.
+Only `pr-contract.yml` and `contract-publication.yml` may be called as nested producers, using the
+fixed ordered 18-string wire and the same protected `dev` SHA. Neither caller nor callee has
+`actions: write`. Before signed Issue #55 activation, only non-applied records are permitted;
+lifecycle/status writes, closure, branch, pull-request, queue, and merge effects remain prohibited.
+
+Zizmor's `dangerous-triggers` finding is dispositioned only for the protected PR metadata workflow
+and line 3's exact trigger mapping in the protected lifecycle wake caller. The repository contract
+enforces their protected-`dev` checkout, fixed scripts, pinned actions, least-privilege permissions,
+absence of PR checkout or build commands, exact branch filters, closed event sets, and guarded data
+flow. No other workflow or dangerous trigger inherits either exception.
 
 ## Merge authority and automation boundary
 
@@ -161,7 +171,10 @@ branch, pull-request, queue, or merge result. Issue #55 alone owns activation an
 proof; missing, stale, ambiguous, or wrong-producer record evidence cannot promote availability.
 The per-issue and repository-wide provider-budget groups use `queue: max`; a hard local request
 counter and fail-closed provider responses, not a racy remaining-quota read, protect the shared
-repository token boundary.
+repository token boundary. Until the pinned actionlint release understands GitHub's newer
+`concurrency.queue` key, the actionlint job ignores only that exact unknown-key diagnostic; the
+repository contract independently requires `queue: max`, rejects `cancel-in-progress`, and keeps
+all other actionlint diagnostics active.
 
 This shared identity means GitHub attribution cannot distinguish an agent operation from a
 deliberate human action, and repository identity rules cannot technically constrain the credential
