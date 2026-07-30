@@ -29,6 +29,7 @@ function requestHarness(response = Response.json({ accepted: true })) {
 }
 
 const sha = "0123456789abcdef0123456789abcdef01234567";
+const sha256 = "a".repeat(64);
 const repository = "oscharko-dev/Keiko-Native";
 const validRoutes = [
   [
@@ -72,6 +73,11 @@ const validRoutes = [
     "GET",
   ],
   ["GET pull detail", `/repos/${repository}/pulls/12`, "GET"],
+  [
+    "GET attestation inventory by qualified SHA-256 subject",
+    `/repos/${repository}/attestations/sha256:${sha256}`,
+    "GET",
+  ],
 ];
 
 test("allows every current route only with its bound method", async () => {
@@ -208,6 +214,25 @@ test("rejects invalid repository and dynamic segments before fetch", async () =>
     assert.equal(calls.length, 0, target);
   }
 });
+
+test("rejects raw, alternate, doubled, uppercase, and encoded attestation selectors before fetch", async () => {
+  for (const selector of [
+    sha256,
+    `sha256:sha256:${sha256}`,
+    `SHA256:${sha256}`,
+    `sha256:${sha256.toUpperCase()}`,
+    `sha512:${"0".repeat(128)}`,
+    `sha256%3A${sha256}`,
+  ]) {
+    const { calls, request } = requestHarness();
+    await assert.rejects(
+      request(`/repos/${repository}/attestations/${selector}`),
+      /request target is invalid/u,
+    );
+    assert.equal(calls.length, 0, selector);
+  }
+});
+
 test("rejects decoded Unicode control and format labels before fetch", async () => {
   const invalidLabels =
     "%C2%85,%E2%80%AE,%E2%80%8D,A%E2%80%8DB,%F3%A0%81%A7,%F0%9F%8F%B4%F3%A0%81%A7,%F3%A0%81%BF,%F0%9F%8F%B4%F3%A0%81%BF";

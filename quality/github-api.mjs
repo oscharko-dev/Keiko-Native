@@ -170,10 +170,10 @@ const routes = [
   ),
   route(
     "GET",
-    `/attestations/${SHA256}`,
+    `/attestations/sha256:${SHA256}`,
     ["sha256"],
     ([owner, repository, digest]) =>
-      `/repos/${owner}/${repository}/attestations/${digest}`,
+      `/repos/${owner}/${repository}/attestations/sha256:${digest}`,
   ),
   route(
     "GET",
@@ -255,6 +255,12 @@ const plainValueValidators = {
   sha: (value) => /^[0-9a-f]{40}$/u.test(value),
   sha256: (value) => /^[0-9a-f]{64}$/u.test(value),
 };
+
+export function githubSha256Subject(identity) {
+  if (typeof identity !== "string" || !/^[0-9a-f]{64}$/u.test(identity))
+    throw new TypeError("GitHub SHA-256 identity is invalid.");
+  return `sha256:${identity}`;
+}
 
 function hasValidSyntax(path) {
   if (

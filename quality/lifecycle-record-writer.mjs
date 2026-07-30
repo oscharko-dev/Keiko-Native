@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
-import { githubRequestFor } from "./github-api.mjs";
+import { githubRequestFor, githubSha256Subject } from "./github-api.mjs";
 import {
   digestAuxiliaryIdentity,
   encodeAuxiliaryPreimage,
@@ -224,8 +224,9 @@ export async function verifyLifecycleRecordPublication({
   );
   if (exactArtifact(artifacts, prepared) === undefined)
     throw new Error("record anchor artifact unavailable");
+  const attestationSubject = githubSha256Subject(prepared.anchorIdentity);
   const attestations = await providerRequest(
-    `/repos/${plan.repository}/attestations/${prepared.anchorIdentity}`,
+    `/repos/${plan.repository}/attestations/${attestationSubject}`,
   );
   if (
     !Array.isArray(attestations?.attestations) ||

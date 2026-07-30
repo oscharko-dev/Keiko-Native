@@ -9,6 +9,7 @@ import {
   githubBinaryRequestFor,
   githubGraphqlRequestFor,
   githubRequestFor,
+  githubSha256Subject,
 } from "./github-api.mjs";
 import { decodeCanonical } from "./lifecycle-record-canonical.mjs";
 import {
@@ -565,8 +566,9 @@ export function createLifecycleGithubProvider({
       "artifact anchor",
       orphanAnchorFields,
     );
+    const attestationSubject = githubSha256Subject(anchorIdentity);
     const attestations = await providerJson(
-      `/repos/${REPOSITORY}/attestations/${anchorIdentity}`,
+      `/repos/${REPOSITORY}/attestations/${attestationSubject}`,
     );
     if (
       !Array.isArray(attestations?.attestations) ||
@@ -889,8 +891,14 @@ export function createLifecycleGithubProvider({
     },
 
     async listAttestations({ subjectDigest }) {
+      let attestationSubject;
+      try {
+        attestationSubject = githubSha256Subject(subjectDigest);
+      } catch {
+        throw new Error("record-attestation-inventory-invalid");
+      }
       const response = await providerJson(
-        `/repos/${REPOSITORY}/attestations/${subjectDigest}`,
+        `/repos/${REPOSITORY}/attestations/${attestationSubject}`,
       );
       const fields = anchorFields.get(subjectDigest);
       if (fields === undefined || !Array.isArray(response?.attestations))
