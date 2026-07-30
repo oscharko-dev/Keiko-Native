@@ -54,14 +54,133 @@ test("round-trips the exact bounded source locator and authenticates its closed 
         workflowPath: locator.source_workflow_path,
         name: "Issue readiness",
         event: "issues",
+        headSha: commit,
         status: "completed",
         ref: "refs/heads/dev",
-        workflowSha: commit,
       },
       locator,
     ),
     "governance",
   );
+});
+
+test("treats pull-request source ref as correlation while authenticating protected workflow SHA", () => {
+  const locator = {
+    repository,
+    issue_number: 51,
+    pull_request_number: 17,
+    source_workflow_path: ".github/workflows/pr-contract.yml",
+    source_run_id: 30444766778,
+    source_run_attempt: 1,
+    source_protected_dev_sha: commit,
+  };
+  const run = {
+    id: locator.source_run_id,
+    attempt: locator.source_run_attempt,
+    repository,
+    workflowPath: locator.source_workflow_path,
+    name: "Pull request contract",
+    event: "pull_request_target",
+    status: "completed",
+    ref: "codex/51-protected-lifecycle",
+    pullRequests: [
+      {
+        base: {
+          ref: "dev",
+          repository: "https://api.github.com/repos/oscharko-dev/Keiko-Native",
+          sha: commit,
+        },
+        number: 17,
+      },
+    ],
+  };
+  assert.equal(validateLifecycleWakeSource(run, locator), "governance");
+  for (const pullRequests of [
+    [...run.pullRequests, ...run.pullRequests],
+    [{ ...run.pullRequests[0], number: 18 }],
+    [
+      {
+        ...run.pullRequests[0],
+        base: { ...run.pullRequests[0].base, ref: "main" },
+      },
+    ],
+    [
+      {
+        ...run.pullRequests[0],
+        base: {
+          ...run.pullRequests[0].base,
+          repository: "https://api.github.com/repos/attacker/repo",
+        },
+      },
+    ],
+    [
+      {
+        ...run.pullRequests[0],
+        base: { ...run.pullRequests[0].base, sha: "b".repeat(40) },
+      },
+    ],
+  ])
+    assert.throws(
+      () => validateLifecycleWakeSource({ ...run, pullRequests }, locator),
+      { code: "governance-source-unprotected" },
+    );
+
+  for (const pullRequestNumber of [null, 0, -1, "17"])
+    assert.throws(
+      () =>
+        validateLifecycleWakeSource(
+          { ...run, pullRequests: [] },
+          { ...locator, pull_request_number: pullRequestNumber },
+          commit,
+        ),
+      { code: "governance-source-unprotected" },
+    );
+
+  assert.equal(
+    validateLifecycleWakeSource({ ...run, pullRequests: [] }, locator, commit),
+    "governance",
+  );
+  for (const protectedCallerSha of [undefined, "b".repeat(40), "invalid"])
+    assert.throws(
+      () =>
+        validateLifecycleWakeSource(
+          { ...run, pullRequests: [] },
+          locator,
+          protectedCallerSha,
+        ),
+      { code: "governance-source-unprotected" },
+    );
+});
+
+test("requires non-PR governance ref and head to bind the locator SHA", () => {
+  const locator = {
+    repository,
+    issue_number: 51,
+    pull_request_number: null,
+    source_workflow_path: ".github/workflows/issue-readiness.yml",
+    source_run_id: 30444766777,
+    source_run_attempt: 1,
+    source_protected_dev_sha: commit,
+  };
+  const run = {
+    id: locator.source_run_id,
+    attempt: locator.source_run_attempt,
+    repository,
+    workflowPath: locator.source_workflow_path,
+    name: "Issue readiness",
+    event: "issues",
+    headSha: commit,
+    status: "completed",
+    ref: "refs/heads/dev",
+  };
+  for (const changed of [
+    { ...run, ref: "refs/heads/main" },
+    { ...run, headSha: "b".repeat(40) },
+    { ...run, headSha: undefined },
+  ])
+    assert.throws(() => validateLifecycleWakeSource(changed, locator), {
+      code: "governance-source-unprotected",
+    });
 });
 
 test("authenticates only the exact never-edited recovery command and derives one identity", () => {

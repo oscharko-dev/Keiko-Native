@@ -46,14 +46,19 @@ function commit(value, name) {
 }
 
 function timestamp(value, name) {
-  if (typeof value !== "string" || !Number.isFinite(Date.parse(value)))
+  const match =
+    typeof value === "string"
+      ? /^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.[0-9]+)?Z$/u.exec(
+          value,
+        )
+      : null;
+  const parsed = match === null ? Number.NaN : Date.parse(value);
+  if (!Number.isFinite(parsed))
     throw new TypeError(`${name} must be a canonical timestamp`);
-  const canonical = new Date(value).toISOString().replace(".000Z", "Z");
-  if (
-    !/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/u.test(canonical)
-  )
+  const wholeSeconds = new Date(parsed).toISOString().slice(0, 19);
+  if (wholeSeconds !== match[1])
     throw new TypeError(`${name} must be a canonical timestamp`);
-  return canonical;
+  return `${wholeSeconds}Z`;
 }
 
 function labels(issue) {
