@@ -1632,6 +1632,7 @@ while :; do /bin/sleep 1; done
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let request_timeout = Duration::from_secs(2);
         let fixture = Fixture::new();
         let host = fixture.scripted_host(
             r#"#!/bin/sh
@@ -1640,10 +1641,10 @@ while :; do /bin/sleep 1; done
 "#,
         );
         let started = Instant::now();
-        let result = host.check_with_timeout("request-timeout", None, Duration::from_millis(500));
+        let result = host.check_with_timeout("request-timeout", None, request_timeout);
         assert_eq!(result.state, RuntimeReadinessState::TimedOut);
         assert!(
-            started.elapsed() < Duration::from_millis(1500),
+            started.elapsed() < request_timeout + request_timeout / 2,
             "request deadline was multiplied across phases: {:?}",
             started.elapsed()
         );
