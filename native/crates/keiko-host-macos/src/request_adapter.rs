@@ -1,7 +1,10 @@
 use std::sync::Mutex;
 
 use keiko_application::current_build_identity;
-use keiko_ui_port::{ReasonCode, dispatch_health, encode_error, encode_success};
+use keiko_ui_port::{
+    CancelResponse, ReasonCode, cancel_request_id, dispatch_health, encode_error, encode_success,
+    parse_cancel,
+};
 
 use crate::HostLifecycle;
 
@@ -53,6 +56,11 @@ pub fn application_request(
     }
 }
 
+pub struct ApplicationCancelOutput {
+    pub cancelled_request_id: Option<String>,
+    pub encoded: String,
+}
+
 pub fn application_cancel(
     lifecycle: &Mutex<HostLifecycle>,
     window_label: &str,
@@ -60,15 +68,29 @@ pub fn application_cancel(
     generation: u64,
     document_nonce: &str,
     request: &str,
-) -> String {
-    lifecycle.lock().map_or_else(
+) -> ApplicationCancelOutput {
+    let parsed_request_id = parse_cancel(request.as_bytes())
+        .ok()
+        .map(|request| cancel_request_id(&request).to_owned());
+    let encoded = lifecycle.lock().map_or_else(
         |_| encode_error("unknown-request", ReasonCode::InternalFailure),
         |mut lifecycle| {
             let sender =
                 lifecycle.sender_for_document(window_label, origin, generation, document_nonce);
             lifecycle.cancel_application_request(&sender, request.as_bytes())
         },
-    )
+    );
+    let cancelled_request_id = parsed_request_id.filter(|request_id| {
+        serde_json::from_str::<CancelResponse>(&encoded).is_ok_and(|response| {
+            response.request_id == *request_id
+                && response.result.kind == "application-cancel"
+                && response.result.status == "cancelled"
+        })
+    });
+    ApplicationCancelOutput {
+        cancelled_request_id,
+        encoded,
+    }
 }
 
 fn failed_output(reason: ReasonCode) -> ApplicationRequestOutput {

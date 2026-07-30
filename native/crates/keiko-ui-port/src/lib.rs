@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 
 pub const MAX_REQUEST_BYTES: usize = 4096;
 pub const MAX_SEQUENCE: u64 = 9_007_199_254_740_991;
+const MAX_REQUEST_TIMEOUT_MS: u16 = 1000;
+const MAX_RUNTIME_READINESS_TIMEOUT_MS: u16 = 5000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReasonCode {
@@ -95,6 +97,8 @@ pub enum Operation {
     WorkspaceSelect,
     #[serde(rename = "workspace-clear")]
     WorkspaceClear,
+    #[serde(rename = "runtime-readiness")]
+    RuntimeReadiness,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -118,13 +122,15 @@ pub struct ErrorResponse {
     pub error: ErrorBody,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CancelResult {
     pub kind: String,
     pub status: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CancelResponse {
     #[serde(rename = "schemaVersion")]
     pub schema_version: u8,
@@ -152,6 +158,7 @@ pub fn parse_request(bytes: &[u8]) -> Result<UiRequest, ReasonCode> {
         "workspace-status",
         "workspace-select",
         "workspace-clear",
+        "runtime-readiness",
     ];
     if value
         .get("operation")
@@ -169,9 +176,13 @@ pub fn parse_request(bytes: &[u8]) -> Result<UiRequest, ReasonCode> {
     if request.schema_version != 1 {
         return Err(ReasonCode::UnsupportedSchema);
     }
+    let maximum_timeout_ms = match request.operation {
+        Operation::RuntimeReadiness => MAX_RUNTIME_READINESS_TIMEOUT_MS,
+        _ => MAX_REQUEST_TIMEOUT_MS,
+    };
     if !valid_request_id(&request.request_id)
         || request.timeout_ms == 0
-        || request.timeout_ms > 1000
+        || request.timeout_ms > maximum_timeout_ms
     {
         return Err(ReasonCode::InvalidRequest);
     }
@@ -361,6 +372,30 @@ mod tests {
         ] {
             assert_eq!(
                 parse_request(request(rejected).as_bytes()),
+                Err(ReasonCode::InvalidRequest)
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_readiness_is_a_closed_path_free_intent_with_its_own_deadline() {
+        let request = |timeout_ms: u16, operation: &str| {
+            format!(
+                r#"{{"schemaVersion":1,"requestId":"request-0000000000000001-0000000000000001","sequence":1,"timeoutMs":{timeout_ms},"operation":{operation}}}"#
+            )
+        };
+        assert!(parse_request(request(5000, r#"{"kind":"runtime-readiness"}"#).as_bytes()).is_ok());
+        for rejected in [
+            request(5001, r#"{"kind":"runtime-readiness"}"#),
+            request(5000, r#"{"kind":"runtime-readiness","path":"/tmp/codex"}"#),
+            request(
+                5000,
+                r#"{"kind":"runtime-readiness","environment":{"HOME":"/tmp"}}"#,
+            ),
+            request(5000, r#"{"kind":"application-health"}"#),
+        ] {
+            assert_eq!(
+                parse_request(rejected.as_bytes()),
                 Err(ReasonCode::InvalidRequest)
             );
         }

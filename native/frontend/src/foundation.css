@@ -150,7 +150,8 @@ h1 {
   gap: 0.65rem;
 }
 
-.workspace-card {
+.workspace-card,
+.runtime-card {
   margin: 0 0 2rem;
   border: 1px solid rgb(255 255 255 / 16%);
   border-radius: 18px;
@@ -158,7 +159,8 @@ h1 {
   background: rgb(0 0 0 / 18%);
 }
 
-.workspace-card h2 {
+.workspace-card h2,
+.runtime-card h2 {
   margin: 0;
   font-size: 1.35rem;
 }
@@ -167,6 +169,24 @@ h1 {
   margin: 0.9rem 0 0;
   font-weight: 700;
   line-height: 1.5;
+}
+
+.runtime-status {
+  margin: 0.9rem 0;
+  border-inline-start: 4px solid #8cebd2;
+  padding-inline-start: 0.8rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.runtime-status-incompatible,
+.runtime-status-authentication-required,
+.runtime-status-containment-failed,
+.runtime-status-timed-out,
+.runtime-status-cancelled,
+.runtime-status-cleanup-failed,
+.runtime-status-unavailable {
+  border-inline-start-color: #ffbd66;
 }
 
 .workspace-status-closed {
@@ -268,12 +288,27 @@ footer {
     color: #13182a;
   }
 
-  .workspace-card {
+  .workspace-card,
+  .runtime-card {
     border-color: rgb(25 32 55 / 16%);
     background: rgb(238 240 248 / 72%);
   }
 
   .workspace-status-closed {
+    border-inline-start-color: #9a5200;
+  }
+
+  .runtime-status {
+    border-inline-start-color: #08785e;
+  }
+
+  .runtime-status-incompatible,
+  .runtime-status-authentication-required,
+  .runtime-status-containment-failed,
+  .runtime-status-timed-out,
+  .runtime-status-cancelled,
+  .runtime-status-cleanup-failed,
+  .runtime-status-unavailable {
     border-inline-start-color: #9a5200;
   }
 }
@@ -284,11 +319,16 @@ footer {
   .welcome-card,
   .content-card,
   .canvas-card,
-  .workspace-card {
+  .workspace-card,
+  .runtime-card {
     border-width: 2px;
   }
 
   .workspace-status-closed {
+    border-inline-start-width: 6px;
+  }
+
+  .runtime-status {
     border-inline-start-width: 6px;
   }
 }
