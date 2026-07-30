@@ -758,26 +758,55 @@ impl<'a> ProtocolProjection<'a> {
         if object.contains_key("id")
             || object
                 .keys()
-                .any(|key| !matches!(key.as_str(), "method" | "params"))
+                .any(|key| !matches!(key.as_str(), "emittedAtMs" | "method" | "params"))
+            || object
+                .get("emittedAtMs")
+                .is_some_and(|emitted_at| emitted_at.as_i64().is_none())
         {
             return ProjectionAction::Terminal(RuntimeReadinessState::ContainmentFailed);
         }
         let Some(method) = object.get("method").and_then(Value::as_str) else {
             return ProjectionAction::Terminal(RuntimeReadinessState::ContainmentFailed);
         };
-        if !matches!(
+        let inert_provider_state = matches!(
             method,
             "turn/plan/updated"
                 | "thread/status/changed"
                 | "item/agentMessage/delta"
                 | "account/updated"
-        ) || self.quarantined_events == MAX_QUARANTINED_EVENTS
-        {
+        ) || (method == "remoteControl/status/changed"
+            && remote_control_is_disabled(object.get("params")));
+        if !inert_provider_state || self.quarantined_events == MAX_QUARANTINED_EVENTS {
             return ProjectionAction::Terminal(RuntimeReadinessState::ContainmentFailed);
         }
         self.quarantined_events += 1;
         ProjectionAction::Continue
     }
+}
+
+fn remote_control_is_disabled(params: Option<&Value>) -> bool {
+    let Some(params) = params.and_then(Value::as_object) else {
+        return false;
+    };
+    if !matches!(params.len(), 3 | 4)
+        || !params.contains_key("installationId")
+        || !params.contains_key("serverName")
+        || !params.contains_key("status")
+        || params.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "environmentId" | "installationId" | "serverName" | "status"
+            )
+        })
+    {
+        return false;
+    }
+    params.get("installationId").is_some_and(Value::is_string)
+        && params.get("serverName").is_some_and(Value::is_string)
+        && params.get("status").and_then(Value::as_str) == Some("disabled")
+        && params
+            .get("environmentId")
+            .is_none_or(|environment| environment.is_null() || environment.is_string())
 }
 
 fn valid_initialize_response(object: &serde_json::Map<String, Value>, codex_home: &Path) -> bool {
@@ -1023,6 +1052,96 @@ mod tests {
         );
         assert_eq!(projection.quarantined_events, 1);
         assert_eq!(projection.stage, ProjectionStage::Initialize);
+    }
+
+    #[test]
+    fn disabled_remote_control_state_is_bounded_quarantine_not_product_state() {
+        let mut projection = ProtocolProjection::new(Path::new("/private/tmp/codex-home"));
+        assert_eq!(
+            projection.accept(
+                br#"{"method":"remoteControl/status/changed","params":{"environmentId":null,"installationId":"redacted","serverName":"redacted","status":"disabled"},"emittedAtMs":1}"#
+            ),
+            ProjectionAction::Continue
+        );
+        assert_eq!(projection.quarantined_events, 1);
+        assert_eq!(projection.stage, ProjectionStage::Initialize);
+    }
+
+    #[test]
+    fn remote_control_projection_rejects_effectful_or_malformed_state() {
+        let valid_identity = json!({
+            "environmentId": null,
+            "installationId": "redacted",
+            "serverName": "redacted"
+        });
+        for status in ["connecting", "connected", "errored"] {
+            let mut params = valid_identity.clone();
+            params["status"] = json!(status);
+            assert_eq!(
+                ProtocolProjection::new(Path::new("/private/tmp/codex-home")).accept(
+                    &serde_json::to_vec(&json!({
+                        "method": "remoteControl/status/changed",
+                        "params": params,
+                        "emittedAtMs": 1
+                    }))
+                    .expect("remote control event")
+                ),
+                ProjectionAction::Terminal(RuntimeReadinessState::ContainmentFailed)
+            );
+        }
+
+        for event in [
+            json!({
+                "method": "remoteControl/status/changed",
+                "params": {"installationId": "redacted", "status": "disabled"},
+                "emittedAtMs": 1
+            }),
+            json!({
+                "method": "remoteControl/status/changed",
+                "params": {
+                    "environmentId": 7,
+                    "installationId": "redacted",
+                    "serverName": "redacted",
+                    "status": "disabled"
+                },
+                "emittedAtMs": 1
+            }),
+            json!({
+                "method": "remoteControl/status/changed",
+                "params": {
+                    "installationId": "redacted",
+                    "serverName": "redacted",
+                    "status": "disabled",
+                    "unexpected": true
+                },
+                "emittedAtMs": 1
+            }),
+            json!({
+                "method": "remoteControl/status/changed",
+                "params": {
+                    "installationId": "redacted",
+                    "serverName": "redacted",
+                    "status": "disabled"
+                },
+                "emittedAtMs": "1"
+            }),
+            json!({
+                "method": "remoteControl/status/changed",
+                "id": 9,
+                "params": {
+                    "installationId": "redacted",
+                    "serverName": "redacted",
+                    "status": "disabled"
+                },
+                "emittedAtMs": 1
+            }),
+        ] {
+            assert_eq!(
+                ProtocolProjection::new(Path::new("/private/tmp/codex-home"))
+                    .accept(&serde_json::to_vec(&event).expect("remote control event")),
+                ProjectionAction::Terminal(RuntimeReadinessState::ContainmentFailed)
+            );
+        }
     }
 
     #[test]
