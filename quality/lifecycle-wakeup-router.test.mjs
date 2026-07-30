@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { lifecycleWakeLocatorBytes } from "./lifecycle-wake.mjs";
 import { resolveLifecycleWakeup } from "./lifecycle-wakeup-router.mjs";
 
 const repository = "oscharko-dev/Keiko-Native";
@@ -37,6 +38,94 @@ function provider(responses) {
       calls.push(path);
       return structuredClone(responses[path]);
     },
+  };
+}
+
+function storedZip(name, contents) {
+  const filename = Buffer.from(name, "utf8");
+  const local = Buffer.alloc(30 + filename.length + contents.length);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(20, 4);
+  local.writeUInt16LE(contents.length, 18);
+  local.writeUInt16LE(contents.length, 22);
+  local.writeUInt16LE(filename.length, 26);
+  filename.copy(local, 30);
+  contents.copy(local, 30 + filename.length);
+
+  const central = Buffer.alloc(46 + filename.length);
+  central.writeUInt32LE(0x02014b50, 0);
+  central.writeUInt16LE(20, 4);
+  central.writeUInt16LE(20, 6);
+  central.writeUInt16LE(contents.length, 20);
+  central.writeUInt16LE(contents.length, 24);
+  central.writeUInt16LE(filename.length, 28);
+  filename.copy(central, 46);
+
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(1, 8);
+  end.writeUInt16LE(1, 10);
+  end.writeUInt32LE(central.length, 12);
+  end.writeUInt32LE(local.length, 16);
+  return Buffer.concat([local, central, end]);
+}
+
+function governanceProvider({
+  locatorPullRequestNumber = 134,
+  pullRequests = undefined,
+  sourceWorkflowSha = workflowSha,
+} = {}) {
+  const runId = 30531667422;
+  const runPath = `/repos/${repository}/actions/runs/${runId}`;
+  const artifactsPath = `${runPath}/artifacts?per_page=100`;
+  const archivePath = `/repos/${repository}/actions/artifacts/701/zip`;
+  const locator = lifecycleWakeLocatorBytes({
+    repository,
+    issue_number: 51,
+    pull_request_number: locatorPullRequestNumber,
+    source_workflow_path: ".github/workflows/pr-contract.yml",
+    source_run_id: runId,
+    source_run_attempt: 1,
+    source_protected_dev_sha: sourceWorkflowSha,
+  });
+  return {
+    api: provider({
+      [runPath]: {
+        event: "pull_request_target",
+        head_branch: "codex/51-protected-lifecycle",
+        head_sha: "b".repeat(40),
+        id: runId,
+        name: "Pull request contract",
+        path: ".github/workflows/pr-contract.yml",
+        pull_requests: pullRequests ?? [
+          {
+            base: {
+              ref: "dev",
+              repo: {
+                url: "https://api.github.com/repos/oscharko-dev/Keiko-Native",
+              },
+              sha: workflowSha,
+            },
+            number: locatorPullRequestNumber,
+          },
+        ],
+        repository: { full_name: repository },
+        run_attempt: 1,
+        status: "completed",
+      },
+      [artifactsPath]: {
+        artifacts: [
+          {
+            expired: false,
+            id: 701,
+            name: "keiko-lifecycle-wake-locator-v1",
+            size_in_bytes: 512,
+          },
+        ],
+      },
+      [archivePath]: storedZip("locator.bin", locator),
+    }),
+    event: baseEvent({ workflow_run: { id: runId } }),
   };
 }
 
@@ -91,6 +180,93 @@ test("maps one stable pull request to its accepted issue in exactly two reads", 
   ]);
   assert.equal(result.requestCount, 2);
   assert.deepEqual(api.calls, [path, path]);
+});
+
+test("authenticates PR-target governance sources from an exact base or closed-run caller SHA", async () => {
+  const valid = governanceProvider();
+  const result = await resolveLifecycleWakeup({
+    environment: environment("governance", "workflow_run"),
+    event: valid.event,
+    provider: valid.api,
+  });
+  assert.deepEqual(result.locators, [
+    { issue_number: 51, recovery_comment_id: "" },
+  ]);
+  assert.equal(result.requestCount, 6);
+
+  const closed = governanceProvider({ pullRequests: [] });
+  const closedResult = await resolveLifecycleWakeup({
+    environment: environment("governance", "workflow_run"),
+    event: closed.event,
+    provider: closed.api,
+  });
+  assert.deepEqual(closedResult.locators, [
+    { issue_number: 51, recovery_comment_id: "" },
+  ]);
+  assert.equal(closedResult.requestCount, 6);
+
+  const mismatched = governanceProvider({
+    pullRequests: [],
+    sourceWorkflowSha: "c".repeat(40),
+  });
+  await assert.rejects(
+    resolveLifecycleWakeup({
+      environment: environment("governance", "workflow_run"),
+      event: mismatched.event,
+      provider: mismatched.api,
+    }),
+    { code: "governance-source-unprotected" },
+  );
+
+  for (const invalid of [
+    governanceProvider({ locatorPullRequestNumber: null, pullRequests: [] }),
+    governanceProvider({
+      pullRequests: [
+        {
+          base: {
+            ref: "dev",
+            repo: {
+              url: "https://api.github.com/repos/oscharko-dev/Keiko-Native",
+            },
+            sha: workflowSha,
+          },
+          number: 133,
+        },
+      ],
+    }),
+    governanceProvider({
+      pullRequests: [
+        {
+          base: {
+            ref: "dev",
+            repo: {
+              url: "https://api.github.com/repos/oscharko-dev/Keiko-Native",
+            },
+            sha: workflowSha,
+          },
+          number: 134,
+        },
+        {
+          base: {
+            ref: "dev",
+            repo: {
+              url: "https://api.github.com/repos/oscharko-dev/Keiko-Native",
+            },
+            sha: workflowSha,
+          },
+          number: 134,
+        },
+      ],
+    }),
+  ])
+    await assert.rejects(
+      resolveLifecycleWakeup({
+        environment: environment("governance", "workflow_run"),
+        event: invalid.event,
+        provider: invalid.api,
+      }),
+      { code: "governance-source-unprotected" },
+    );
 });
 
 test("scheduled enumeration is stable, sorted, deduplicated, and bounded to eight reads", async () => {

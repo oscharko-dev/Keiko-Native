@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { runLifecycleCoordinatorAction } from "./lifecycle-coordinator-action.mjs";
+import { parseRecordEnvelope } from "./lifecycle-record-protocol.mjs";
 
 const commit = "a".repeat(40);
 const environment = {
@@ -70,6 +71,25 @@ test("writes the exact coordinator record outputs for an empty history", async (
   assert.match(output, /^next-writer=record$/mu);
   assert.match(output, /^should-record=true$/mu);
   assert.match(output, /^record-plan=[A-Za-z0-9_-]+$/mu);
+});
+
+test("normalizes valid fractional runtime clocks to whole-second record timestamps", async () => {
+  for (const fraction of ["001", "929", "999"]) {
+    const result = await runLifecycleCoordinatorAction({
+      environment,
+      loadFacts: async () => ({ issue, pullRequest: null }),
+      now: new Date(`2026-07-29T12:00:00.${fraction}Z`),
+      provider: emptyProvider(),
+    });
+    assert.equal(result.plan.kind, "record");
+    const plan = JSON.parse(
+      Buffer.from(result.plan.recordPlan, "base64url").toString("utf8"),
+    );
+    assert.equal(
+      parseRecordEnvelope(plan.recordBody).fields.recorded_at,
+      "2026-07-29T12:00:00Z",
+    );
+  }
 });
 
 test("rejects noncanonical routes and unavailable recovery before facts access", async () => {

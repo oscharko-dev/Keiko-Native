@@ -160,6 +160,16 @@ function sourceRunShape(run) {
     id: run?.id,
     name: run?.name,
     path: run?.path,
+    pullRequests: Array.isArray(run?.pull_requests)
+      ? run.pull_requests.map((pullRequest) => ({
+          base: {
+            ref: pullRequest?.base?.ref,
+            repository: pullRequest?.base?.repo?.url,
+            sha: pullRequest?.base?.sha,
+          },
+          number: pullRequest?.number,
+        }))
+      : undefined,
     ref: run?.head_branch === "dev" ? "refs/heads/dev" : run?.head_branch,
     repository: run?.repository?.full_name,
     status: run?.status,
@@ -202,10 +212,12 @@ async function resolveGovernance(event, provider) {
       repository: run.repository,
       status: run.status,
       workflowPath: run.path,
-      workflowSha: locator.source_protected_dev_sha,
+      headSha: run.headSha,
+      pullRequests: run.pullRequests,
       ref: run.ref,
     },
     locator,
+    event.workflowSha,
   );
   return [{ issue_number: locator.issue_number, recovery_comment_id: "" }];
 }

@@ -17,6 +17,8 @@ export const LIFECYCLE_WAKE_COORDINATOR =
   ".github/workflows/issue-lifecycle.yml";
 export const LIFECYCLE_WAKE_LOCATOR_ARTIFACT =
   "keiko-lifecycle-wake-locator-v1";
+const LIFECYCLE_WAKE_REPOSITORY_API_URL =
+  "https://api.github.com/repos/oscharko-dev/Keiko-Native";
 
 export const LIFECYCLE_WAKE_SOURCE_WORKFLOWS = Object.freeze({
   ".github/workflows/contract-publication.yml": Object.freeze({
@@ -117,7 +119,11 @@ export function parseLifecycleWakeLocator(bytes) {
   return decodeCanonical("lifecycle-wake-locator", bytes);
 }
 
-export function validateLifecycleWakeSource(run, locator) {
+export function validateLifecycleWakeSource(
+  run,
+  locator,
+  protectedCallerSha = undefined,
+) {
   const expected = LIFECYCLE_WAKE_SOURCE_WORKFLOWS[run?.workflowPath];
   if (
     expected === undefined ||
@@ -131,14 +137,40 @@ export function validateLifecycleWakeSource(run, locator) {
     locator?.source_workflow_path !== run.workflowPath
   )
     fail("source-run-mismatch");
-  if (
-    expected.sourceClass === "governance" &&
-    (!commit(locator.source_protected_dev_sha) ||
-      run.workflowSha !== locator.source_protected_dev_sha ||
-      run.ref !== "refs/heads/dev")
-  )
-    fail("governance-source-unprotected");
+  if (expected.sourceClass === "governance") {
+    const protectedSha =
+      expected.event === "pull_request_target"
+        ? pullRequestTargetProtectedSha(run, locator, protectedCallerSha)
+        : run.ref === "refs/heads/dev" && commit(run.headSha)
+          ? run.headSha
+          : undefined;
+    if (
+      !commit(locator.source_protected_dev_sha) ||
+      protectedSha !== locator.source_protected_dev_sha
+    )
+      fail("governance-source-unprotected");
+  }
   return expected.sourceClass;
+}
+
+function pullRequestTargetProtectedSha(run, locator, protectedCallerSha) {
+  if (!Array.isArray(run.pullRequests) || run.pullRequests.length > 1)
+    return undefined;
+  if (run.pullRequests.length === 0)
+    return positive(locator.pull_request_number) &&
+      commit(protectedCallerSha) &&
+      protectedCallerSha === locator.source_protected_dev_sha
+      ? protectedCallerSha
+      : undefined;
+  const pullRequest = run.pullRequests[0];
+  return positive(locator.pull_request_number) &&
+    positive(pullRequest?.number) &&
+    pullRequest.number === locator.pull_request_number &&
+    pullRequest?.base?.repository === LIFECYCLE_WAKE_REPOSITORY_API_URL &&
+    pullRequest?.base?.ref === "dev" &&
+    commit(pullRequest?.base?.sha)
+    ? pullRequest.base.sha
+    : undefined;
 }
 
 export function directLifecycleWakeLocator({
