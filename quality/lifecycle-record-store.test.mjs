@@ -85,6 +85,30 @@ test("proves exact empty-history bootstrap with two stable evidence reads", asyn
   assert.equal(result.state, "empty");
 });
 
+test("binds both stable anchor inventory reads to the exact issue", async () => {
+  const provider = providerFor([]);
+  const inventoryCalls = [];
+  provider.listAnchorArtifacts = async (input) => {
+    inventoryCalls.push(structuredClone(input));
+    return { items: [], complete: true };
+  };
+
+  await readStableLifecycleSnapshot({
+    provider,
+    repository: "oscharko-dev/Keiko-Native",
+    issueNumber: 51,
+    parseEnvelope: parser([]),
+  });
+
+  const expected = {
+    repository: "oscharko-dev/Keiko-Native",
+    issueNumber: 51,
+    name: "keiko-lifecycle-anchor-v1-issue-51",
+    direction: "newest-first",
+  };
+  assert.deepEqual(inventoryCalls, [expected, expected]);
+});
+
 test("treats the reserved prefix from any author as non-empty and malformed", async () => {
   const provider = providerFor([]);
   provider.listCommentsPage = async () => ({
