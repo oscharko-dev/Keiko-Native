@@ -443,7 +443,9 @@ function turnPanel(
       "button",
       {
         type: "button",
-        disabled: true,
+        // `refresh` owns the live DOM state. A literal disabled prop remains
+        // disabled in React's event metadata even after the ref enables the
+        // element, which suppresses otherwise valid click activation.
         ref: (node: HTMLButtonElement | null) => {
           submitButton = node;
           refresh();
