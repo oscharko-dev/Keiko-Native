@@ -4,7 +4,7 @@ import {
   type FocusEvent,
   type ReactElement,
 } from "react";
-import type { RuntimeReadiness, WorkspaceState } from "./port";
+import type { RuntimeReadiness, TurnView, WorkspaceState } from "./port";
 
 export const closedSurfaceKinds = [
   "welcome",
@@ -49,6 +49,10 @@ export interface RuntimeController {
   checkRuntime(): Promise<void>;
 }
 
+export interface TurnController {
+  startTurn(task: string): Promise<void>;
+}
+
 const MAX_COMMITTED_TEXT_BYTES = 2048;
 const EMPTY_WORKSPACE: WorkspaceState = { kind: "empty", generation: 0 };
 const INERT_WORKSPACE_CONTROLLER: WorkspaceController = {
@@ -57,6 +61,9 @@ const INERT_WORKSPACE_CONTROLLER: WorkspaceController = {
 };
 const INERT_RUNTIME_CONTROLLER: RuntimeController = {
   checkRuntime: async () => undefined,
+};
+const INERT_TURN_CONTROLLER: TurnController = {
+  startTurn: async () => undefined,
 };
 
 export class ImeHarnessState {
@@ -100,6 +107,8 @@ export function renderFoundation(
   workspaceController: WorkspaceController = INERT_WORKSPACE_CONTROLLER,
   runtime: RuntimeReadiness | null = null,
   runtimeController: RuntimeController = INERT_RUNTIME_CONTROLLER,
+  turn: TurnView | null = null,
+  turnController: TurnController = INERT_TURN_CONTROLLER,
 ): ReactElement {
   return createElement(
     "main",
@@ -135,6 +144,8 @@ export function renderFoundation(
         workspaceController,
         runtime,
         runtimeController,
+        turn,
+        turnController,
       ),
     ),
     createElement(
@@ -161,6 +172,8 @@ function surface(
   workspaceController: WorkspaceController,
   runtime: RuntimeReadiness | null,
   runtimeController: RuntimeController,
+  turn: TurnView | null,
+  turnController: TurnController,
 ): ReactElement {
   switch (view.kind) {
     case "welcome":
@@ -188,6 +201,8 @@ function surface(
         workspaceController,
         runtime,
         runtimeController,
+        turn,
+        turnController,
       );
     case "about":
       return createElement(
@@ -249,6 +264,8 @@ function canvasSurface(
   workspaceController: WorkspaceController,
   runtime: RuntimeReadiness | null,
   runtimeController: RuntimeController,
+  turn: TurnView | null,
+  turnController: TurnController,
 ): ReactElement {
   const model = new ImeHarnessState(view.committedText);
   let composing = false;
@@ -324,7 +341,182 @@ function canvasSurface(
       { id: "ime-description", className: "hint" },
       "Nur ein interner Eingabe-Test. Der Text startet keine Produktfunktion.",
     ),
+    turnPanel(workspace, runtime, turn, turnController),
   );
+}
+
+function turnPanel(
+  workspace: WorkspaceState,
+  runtime: RuntimeReadiness | null,
+  turn: TurnView | null,
+  controller: TurnController,
+): ReactElement {
+  const active = turn?.state === "preflighting" || turn?.state === "streaming";
+  const authorized = workspace.kind === "bound" && runtime?.state === "ready";
+  const descriptionId = "codex-task-description";
+  const countId = "codex-task-count";
+  let taskBytes = 0;
+  let taskValid = false;
+  let composing = false;
+  let taskInput: HTMLTextAreaElement | null = null;
+  let submitButton: HTMLButtonElement | null = null;
+  let countNode: HTMLElement | null = null;
+  const refresh = (): void => {
+    const task = taskInput?.value ?? "";
+    taskBytes = new TextEncoder().encode(task).length;
+    taskValid =
+      task.trim().length > 0 &&
+      taskBytes <= 4096 &&
+      !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(task);
+    if (countNode !== null) {
+      countNode.textContent = `${taskBytes} von 4096 Bytes`;
+    }
+    if (submitButton !== null) {
+      submitButton.disabled = !authorized || active || composing || !taskValid;
+    }
+  };
+  const submit = (): void => {
+    const task = taskInput?.value ?? "";
+    refresh();
+    if (!taskValid || !authorized || active) return;
+    if (taskInput !== null) taskInput.disabled = true;
+    if (submitButton !== null) submitButton.disabled = true;
+    observeTurnAction(controller.startTurn(task));
+  };
+
+  return createElement(
+    "section",
+    { className: "turn-card", "aria-labelledby": "turn-title" },
+    createElement("p", { className: "eyebrow" }, "CODEX-AUFTRAG"),
+    createElement("h2", { id: "turn-title" }, "Eine begrenzte Antwort"),
+    createElement(
+      "p",
+      { className: "authority-copy" },
+      workspace.kind === "bound"
+        ? `Keiko bindet „${workspace.displayLabel}“ nur als Sitzungsidentität.`
+        : "Wählen Sie zuerst ein lokales Repository als Keiko-Sitzungsidentität.",
+      " Codex erhält keinen Repository-Pfad, keine Repository-Inhalte, keine Werkzeuge und keine lokale Aktionsberechtigung.",
+    ),
+    createElement(
+      "label",
+      { htmlFor: "codex-task" },
+      "Repository-unabhängiger Textauftrag",
+    ),
+    createElement("textarea", {
+      id: "codex-task",
+      rows: 4,
+      disabled: active,
+      "aria-describedby": `${descriptionId} ${countId}`,
+      ref: (node: HTMLTextAreaElement | null) => {
+        taskInput = node;
+        refresh();
+      },
+      onInput: refresh,
+      onCompositionStart: () => {
+        composing = true;
+        refresh();
+      },
+      onCompositionEnd: () => {
+        composing = false;
+        refresh();
+      },
+    }),
+    createElement(
+      "p",
+      { id: descriptionId, className: "hint" },
+      "1–4096 UTF-8-Bytes. Nach dem Absenden kann dieser Auftrag nicht bearbeitet werden.",
+    ),
+    createElement(
+      "p",
+      {
+        id: countId,
+        className: "byte-count",
+        "aria-live": "polite",
+        ref: (node: HTMLElement | null) => {
+          countNode = node;
+          refresh();
+        },
+      },
+      `${taskBytes} von 4096 Bytes`,
+    ),
+    createElement(
+      "button",
+      {
+        type: "button",
+        // `refresh` owns the live DOM state. A literal disabled prop remains
+        // disabled in React's event metadata even after the ref enables the
+        // element, which suppresses otherwise valid click activation.
+        ref: (node: HTMLButtonElement | null) => {
+          submitButton = node;
+          refresh();
+        },
+        onClick: submit,
+      },
+      active ? "Codex antwortet" : "Begrenzten Auftrag starten",
+    ),
+    turnResult(turn),
+  );
+}
+
+function turnResult(turn: TurnView | null): ReactElement | null {
+  if (turn === null) return null;
+  const terminal = !["preflighting", "streaming"].includes(turn.state);
+  return createElement(
+    "div",
+    { className: "turn-result" },
+    createElement(
+      "p",
+      {
+        className: `turn-status turn-status-${turn.state}`,
+        role: "status",
+        "aria-live": "polite",
+        "aria-atomic": "true",
+        "data-turn-state": turn.state,
+      },
+      turnPresentation(turn),
+    ),
+    turn.agentText.length > 0
+      ? createElement(
+          "div",
+          {
+            className: "agent-response",
+            "aria-label": "Codex-Antwort",
+            "aria-live": "polite",
+          },
+          turn.agentText,
+        )
+      : null,
+    terminal
+      ? createElement(
+          "p",
+          { className: "hint" },
+          turn.state === "completed"
+            ? "Die Anbieter-Antwort ist abgeschlossen. Sie ist weder akzeptiert noch ausgeliefert."
+            : "Der Lauf wurde ohne Akzeptanz oder Auslieferung beendet. Ein neuer Versuch erzeugt neue Identitäten.",
+        )
+      : null,
+  );
+}
+
+function turnPresentation(turn: TurnView): string {
+  return {
+    preflighting:
+      "Keiko prüft Arbeitsbereich, Laufzeit, Anmeldung und Grenzen.",
+    streaming: "Codex antwortet innerhalb der Nur-Text-Grenze.",
+    completed: "Codex hat normal geantwortet und die Laufzeit wurde beendet.",
+    failed: "Der Codex-Lauf ist sicher fehlgeschlagen und wurde beendet.",
+    "timed-out": "Das Zeitlimit wurde erreicht und die Laufzeit wurde beendet.",
+    "containment-failed":
+      "Eine nicht erlaubte Anbieteraktivität wurde abgefangen; die Laufzeit wurde beendet.",
+    "cleanup-failed":
+      "Die Laufzeit konnte nicht vollständig bereinigt werden. Beenden Sie Keiko Native.",
+  }[turn.state];
+}
+
+function observeTurnAction(action: Promise<void>): void {
+  action.catch(() => {
+    console.error("Codex turn action failed after controller recovery.");
+  });
 }
 
 function runtimePanel(

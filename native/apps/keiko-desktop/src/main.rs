@@ -27,7 +27,8 @@ fn main() {
             keiko_host_macos::tauri_adapter::application_cancel,
             keiko_host_macos::tauri_adapter::foundation_request,
             keiko_host_macos::tauri_adapter::workspace_request,
-            keiko_host_macos::tauri_adapter::runtime_request
+            keiko_host_macos::tauri_adapter::runtime_request,
+            keiko_host_macos::tauri_adapter::codex_turn_request
         ])
         .on_page_load(handle_page_load)
         .on_web_content_process_terminate(handle_web_content_process_terminate)

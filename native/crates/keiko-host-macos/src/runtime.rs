@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ffi::c_void;
 use std::fs::{self, File, Metadata};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -18,6 +19,7 @@ use crate::{AcceptedRequest, HostLifecycle, SenderContext};
 use keiko_application::runtime::{
     CODEX_RUNTIME_SHA256, RuntimeReadinessState, RuntimeReadinessView,
 };
+use keiko_application::turn::{MAX_AGENT_TEXT_BYTES, TurnReason, TurnState};
 use keiko_application::{ApplicationResult, application_response};
 use keiko_ui_port::{
     Operation, ReasonCode, encode_error, encode_success, request_metadata, request_operation,
@@ -40,6 +42,52 @@ const WNOWAIT: i32 = 0x0000_0020;
 const BINARY_ENV: &str = "KEIKO_CODEX_0_145_0_BINARY";
 const HOME_ENV: &str = "KEIKO_CODEX_0_145_0_HOME";
 const WORK_ROOT_ENV: &str = "KEIKO_CODEX_0_145_0_WORK_ROOT";
+const TURN_CLEANUP_RESERVE: Duration = Duration::from_secs(5);
+const CODEX_CONTAINMENT_ARGUMENTS: &[&str] = &[
+    "-c",
+    "features.multi_agent=false",
+    "-c",
+    "features.multi_agent_v2=false",
+    "-c",
+    "tools.experimental_request_user_input.enabled=false",
+    "-c",
+    "cli_auth_credentials_store=\"keyring\"",
+    "-c",
+    "history.persistence=\"none\"",
+    "-c",
+    "features.apps=false",
+    "-c",
+    "features.plugins=false",
+    "-c",
+    "features.remote_plugin=false",
+    "-c",
+    "features.plugin_sharing=false",
+    "-c",
+    "features.skill_search=false",
+    "-c",
+    "features.skill_mcp_dependency_install=false",
+    "-c",
+    "features.hooks=false",
+    "-c",
+    "features.browser_use=false",
+    "-c",
+    "features.browser_use_external=false",
+    "-c",
+    "features.browser_use_full_cdp_access=false",
+    "-c",
+    "features.in_app_browser=false",
+    "-c",
+    "features.computer_use=false",
+    "-c",
+    "features.image_generation=false",
+    "-c",
+    "features.workspace_dependencies=false",
+    "-c",
+    "features.tool_suggest=false",
+    "app-server",
+    "--listen",
+    "stdio://",
+];
 
 unsafe extern "C" {
     #[link_name = "kill"]
@@ -175,6 +223,51 @@ impl RuntimeHost {
         }
     }
 
+    pub fn run_turn(
+        &self,
+        request_id: &str,
+        selected_workspace: &Path,
+        task: &str,
+        timeout: Duration,
+        mut update: impl FnMut(TurnRuntimeUpdate),
+    ) -> TurnRuntimeOutcome {
+        let deadline = Instant::now() + timeout;
+        if self
+            .active
+            .running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return TurnRuntimeOutcome::terminal(
+                TurnState::ContainmentFailed,
+                TurnReason::InternalFailure,
+            );
+        }
+        self.active.cancelled.store(false, Ordering::Release);
+        if let Ok(mut active_request_id) = self.active.request_id.lock() {
+            *active_request_id = Some(request_id.to_owned());
+        }
+        let result = self.configuration.as_ref().map_or_else(
+            || TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::RuntimeUnavailable),
+            |configuration| {
+                perform_turn(
+                    configuration,
+                    selected_workspace,
+                    task,
+                    &self.active,
+                    &self.work_generation,
+                    deadline,
+                    &mut update,
+                )
+            },
+        );
+        if let Ok(mut active_request_id) = self.active.request_id.lock() {
+            *active_request_id = None;
+        }
+        self.active.running.store(false, Ordering::Release);
+        result
+    }
+
     #[cfg(test)]
     fn for_test(
         binary: PathBuf,
@@ -191,6 +284,47 @@ impl RuntimeHost {
             }),
             active: Arc::new(ActiveRuntime::default()),
             work_generation: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn unavailable_for_test() -> Self {
+        Self {
+            configuration: None,
+            active: Arc::new(ActiveRuntime::default()),
+            work_generation: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TurnRuntimeUpdate {
+    StreamingStarted,
+    AgentDelta(String),
+    ProviderEventQuarantined,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TurnRuntimeOutcome {
+    pub state: TurnState,
+    pub reason: Option<TurnReason>,
+    pub agent_text: String,
+    pub provider_thread_established: bool,
+    pub provider_turn_established: bool,
+    pub quarantined_events: u16,
+    pub cleaned: bool,
+}
+
+impl TurnRuntimeOutcome {
+    fn terminal(state: TurnState, reason: TurnReason) -> Self {
+        Self {
+            state,
+            reason: Some(reason),
+            agent_text: String::new(),
+            provider_thread_established: false,
+            provider_turn_established: false,
+            quarantined_events: 0,
+            cleaned: true,
         }
     }
 }
@@ -298,6 +432,307 @@ fn perform_check(
     } else {
         RuntimeReadinessView::terminal(outcome.state, outcome.quarantined_events)
     }
+}
+
+fn perform_turn(
+    configuration: &RuntimeConfiguration,
+    selected_workspace: &Path,
+    task: &str,
+    active: &ActiveRuntime,
+    work_generation: &AtomicU64,
+    deadline: Instant,
+    update: &mut impl FnMut(TurnRuntimeUpdate),
+) -> TurnRuntimeOutcome {
+    if active.cancelled.load(Ordering::Acquire) {
+        return TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::RendererLost);
+    }
+    if Instant::now() >= deadline {
+        return TurnRuntimeOutcome::terminal(TurnState::TimedOut, TurnReason::TimedOut);
+    }
+    let mut verified = match bind_configuration(configuration, Some(selected_workspace)) {
+        Ok(verified) => verified,
+        Err(RuntimeReadinessState::Unavailable) => {
+            return TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::RuntimeUnavailable);
+        }
+        Err(RuntimeReadinessState::Incompatible) => {
+            return TurnRuntimeOutcome::terminal(
+                TurnState::Failed,
+                TurnReason::RuntimeIncompatible,
+            );
+        }
+        Err(_) => {
+            return TurnRuntimeOutcome::terminal(
+                TurnState::ContainmentFailed,
+                TurnReason::ProtocolRejected,
+            );
+        }
+    };
+    let generation = work_generation.fetch_add(1, Ordering::AcqRel) + 1;
+    let work_directory = verified
+        .work_root
+        .join(format!("turn-{}-{generation}", std::process::id()));
+    if fs::create_dir(&work_directory).is_err()
+        || fs::set_permissions(&work_directory, fs::Permissions::from_mode(0o700)).is_err()
+    {
+        return TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::RuntimeUnavailable);
+    }
+    let mut outcome = run_turn_protocol(
+        &mut verified,
+        &work_directory,
+        task,
+        active,
+        deadline,
+        update,
+    );
+    let work_cleaned = fs::remove_dir_all(&work_directory).is_ok();
+    outcome.cleaned = outcome.cleaned && work_cleaned;
+    if !outcome.cleaned {
+        outcome.state = TurnState::CleanupFailed;
+        outcome.reason = Some(TurnReason::CleanupFailed);
+    }
+    outcome
+}
+
+fn run_turn_protocol(
+    configuration: &mut VerifiedConfiguration,
+    work_directory: &Path,
+    task: &str,
+    active: &ActiveRuntime,
+    deadline: Instant,
+    update: &mut impl FnMut(TurnRuntimeUpdate),
+) -> TurnRuntimeOutcome {
+    if configuration.revalidate_binary().is_err() {
+        return TurnRuntimeOutcome::terminal(
+            TurnState::ContainmentFailed,
+            TurnReason::RuntimeIncompatible,
+        );
+    }
+    let mut command = Command::new(&configuration.binary);
+    command
+        .args(CODEX_CONTAINMENT_ARGUMENTS)
+        .current_dir(work_directory)
+        .env_clear()
+        .env("CODEX_HOME", &configuration.codex_home)
+        .env("CODEX_SQLITE_HOME", work_directory)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(_) => {
+            return TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::RuntimeUnavailable);
+        }
+    };
+    let process_group = child.id() as i32;
+    if let Ok(mut active_group) = active.process_group.lock() {
+        *active_group = Some(process_group);
+    }
+    if configuration.revalidate_binary().is_err() {
+        return cleanup_turn(
+            child,
+            process_group,
+            TurnRuntimeOutcome::terminal(
+                TurnState::ContainmentFailed,
+                TurnReason::RuntimeIncompatible,
+            ),
+            active,
+            deadline,
+        );
+    }
+    let Some(((mut stdin, stdout), stderr)) = child
+        .stdin
+        .take()
+        .zip(child.stdout.take())
+        .zip(child.stderr.take())
+    else {
+        return cleanup_turn(
+            child,
+            process_group,
+            TurnRuntimeOutcome::terminal(
+                TurnState::ContainmentFailed,
+                TurnReason::ProtocolRejected,
+            ),
+            active,
+            deadline,
+        );
+    };
+    let queued_bytes = Arc::new(AtomicUsize::new(0));
+    let stderr_saturated = Arc::new(AtomicBool::new(false));
+    let (sender, receiver) = mpsc::sync_channel(MAX_QUEUE_FRAMES);
+    spawn_stdout_reader(stdout, sender, Arc::clone(&queued_bytes));
+    spawn_stderr_reader(stderr, Arc::clone(&stderr_saturated));
+    if write_json_line(
+        &mut stdin,
+        &json!({
+            "method": "initialize",
+            "id": 1,
+            "params": {
+                "clientInfo": {
+                    "name": "keiko_native",
+                    "title": "Keiko Native",
+                    "version": env!("CARGO_PKG_VERSION")
+                },
+                "capabilities": {"experimentalApi": true}
+            }
+        }),
+    )
+    .is_err()
+    {
+        return cleanup_turn(
+            child,
+            process_group,
+            TurnRuntimeOutcome::terminal(
+                TurnState::ContainmentFailed,
+                TurnReason::ProtocolRejected,
+            ),
+            active,
+            deadline,
+        );
+    }
+    let mut projection = TurnProtocolProjection::new(&configuration.codex_home, work_directory);
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let cleanup_reserve = TURN_CLEANUP_RESERVE.min(remaining / 5);
+    let protocol_deadline = deadline.checked_sub(cleanup_reserve).unwrap_or(deadline);
+    let (state, reason) = loop {
+        if active.cancelled.load(Ordering::Acquire) {
+            break (TurnState::Failed, TurnReason::RendererLost);
+        }
+        if stderr_saturated.load(Ordering::Acquire) {
+            break (TurnState::ContainmentFailed, TurnReason::BufferLimit);
+        }
+        let now = Instant::now();
+        if now >= protocol_deadline {
+            break (TurnState::TimedOut, TurnReason::TimedOut);
+        }
+        match receiver.recv_timeout((protocol_deadline - now).min(Duration::from_millis(20))) {
+            Ok(FrameEvent::Frame(frame)) => {
+                queued_bytes.fetch_sub(frame.len(), Ordering::AcqRel);
+                match projection.accept(&frame) {
+                    TurnProjectionAction::Quarantine => {
+                        update(TurnRuntimeUpdate::ProviderEventQuarantined);
+                    }
+                    TurnProjectionAction::SendAccountRead => {
+                        if write_json_line(&mut stdin, &json!({"method":"initialized"})).is_err()
+                            || write_json_line(
+                                &mut stdin,
+                                &json!({
+                                    "method": "account/read",
+                                    "id": 2,
+                                    "params": {"refreshToken": false}
+                                }),
+                            )
+                            .is_err()
+                        {
+                            break (TurnState::ContainmentFailed, TurnReason::ProtocolRejected);
+                        }
+                    }
+                    TurnProjectionAction::SendThreadStart => {
+                        let work = work_directory.to_string_lossy();
+                        if write_json_line(
+                            &mut stdin,
+                            &json!({
+                                "method": "thread/start",
+                                "id": 3,
+                                "params": {
+                                    "cwd": work,
+                                    "runtimeWorkspaceRoots": [],
+                                    "approvalPolicy": "never",
+                                    "approvalsReviewer": "user",
+                                    "sandbox": "read-only",
+                                    "ephemeral": true,
+                                    "environments": [],
+                                    "dynamicTools": [],
+                                    "selectedCapabilityRoots": [],
+                                    "experimentalRawEvents": false
+                                }
+                            }),
+                        )
+                        .is_err()
+                        {
+                            break (TurnState::ContainmentFailed, TurnReason::ProtocolRejected);
+                        }
+                    }
+                    TurnProjectionAction::SendTurnStart(thread_id) => {
+                        if write_json_line(
+                            &mut stdin,
+                            &json!({
+                                "method": "turn/start",
+                                "id": 4,
+                                "params": {
+                                    "threadId": thread_id,
+                                    "input": [{
+                                        "type": "text",
+                                        "text": task,
+                                        "text_elements": []
+                                    }],
+                                    "environments": [],
+                                    "runtimeWorkspaceRoots": [],
+                                    "approvalPolicy": "never",
+                                    "approvalsReviewer": "user",
+                                    "sandboxPolicy": {
+                                        "type": "readOnly",
+                                        "networkAccess": false
+                                    }
+                                }
+                            }),
+                        )
+                        .is_err()
+                        {
+                            break (TurnState::ContainmentFailed, TurnReason::ProtocolRejected);
+                        }
+                    }
+                    TurnProjectionAction::StreamingStarted => {
+                        update(TurnRuntimeUpdate::StreamingStarted);
+                    }
+                    TurnProjectionAction::AgentDelta(delta) => {
+                        update(TurnRuntimeUpdate::AgentDelta(delta));
+                    }
+                    TurnProjectionAction::Complete => {
+                        break (TurnState::Completed, TurnReason::InternalFailure);
+                    }
+                    TurnProjectionAction::Terminal(state, reason) => break (state, reason),
+                }
+            }
+            Ok(FrameEvent::Rejected) => {
+                break (TurnState::ContainmentFailed, TurnReason::BufferLimit);
+            }
+            Ok(FrameEvent::Eof) | Err(RecvTimeoutError::Disconnected) => {
+                break if active.cancelled.load(Ordering::Acquire) {
+                    (TurnState::Failed, TurnReason::RendererLost)
+                } else {
+                    (TurnState::Failed, TurnReason::ProviderFailed)
+                };
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+    };
+    drop(stdin);
+    let mut outcome = TurnRuntimeOutcome {
+        state,
+        reason: (state != TurnState::Completed).then_some(reason),
+        agent_text: projection.agent_text,
+        provider_thread_established: projection.thread_id.is_some(),
+        provider_turn_established: projection.turn_id.is_some(),
+        quarantined_events: projection.quarantined_events,
+        cleaned: true,
+    };
+    if outcome.state == TurnState::Completed && outcome.agent_text.is_empty() {
+        outcome.state = TurnState::ContainmentFailed;
+        outcome.reason = Some(TurnReason::ProtocolRejected);
+    }
+    cleanup_turn(child, process_group, outcome, active, deadline)
+}
+
+fn cleanup_turn(
+    mut child: Child,
+    process_group: i32,
+    mut outcome: TurnRuntimeOutcome,
+    active: &ActiveRuntime,
+    deadline: Instant,
+) -> TurnRuntimeOutcome {
+    outcome.cleaned = stop_process_group(&mut child, process_group, active, deadline);
+    outcome
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -444,24 +879,11 @@ fn run_protocol(
     }
     let mut command = Command::new(&configuration.binary);
     command
-        .args([
-            "-c",
-            "features.multi_agent=false",
-            "-c",
-            "features.multi_agent_v2=false",
-            "-c",
-            "tools.experimental_request_user_input.enabled=false",
-            "-c",
-            "cli_auth_credentials_store=\"keyring\"",
-            "-c",
-            "history.persistence=\"none\"",
-            "app-server",
-            "--listen",
-            "stdio://",
-        ])
+        .args(CODEX_CONTAINMENT_ARGUMENTS)
         .current_dir(work_directory)
         .env_clear()
         .env("CODEX_HOME", &configuration.codex_home)
+        .env("CODEX_SQLITE_HOME", work_directory)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -858,8 +1280,427 @@ fn account_state(object: &serde_json::Map<String, Value>) -> ProjectionAction {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TurnProjectionStage {
+    Initialize,
+    Account,
+    Thread,
+    Turn,
+    Active,
+    Terminal,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum TurnProjectionAction {
+    Quarantine,
+    SendAccountRead,
+    SendThreadStart,
+    SendTurnStart(String),
+    StreamingStarted,
+    AgentDelta(String),
+    Complete,
+    Terminal(TurnState, TurnReason),
+}
+
+struct TurnProtocolProjection<'a> {
+    stage: TurnProjectionStage,
+    codex_home: &'a Path,
+    work_directory: &'a Path,
+    thread_id: Option<String>,
+    turn_id: Option<String>,
+    streaming_announced: bool,
+    agent_text: String,
+    quarantined_events: u16,
+    started_items: HashSet<String>,
+    completed_items: HashSet<String>,
+}
+
+impl<'a> TurnProtocolProjection<'a> {
+    fn new(codex_home: &'a Path, work_directory: &'a Path) -> Self {
+        Self {
+            stage: TurnProjectionStage::Initialize,
+            codex_home,
+            work_directory,
+            thread_id: None,
+            turn_id: None,
+            streaming_announced: false,
+            agent_text: String::new(),
+            quarantined_events: 0,
+            started_items: HashSet::new(),
+            completed_items: HashSet::new(),
+        }
+    }
+
+    fn accept(&mut self, frame: &[u8]) -> TurnProjectionAction {
+        let Ok(value) = serde_json::from_slice::<Value>(frame) else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
+        let Some(object) = value.as_object() else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
+        if object.contains_key("method") {
+            return self.accept_event(object);
+        }
+        match self.stage {
+            TurnProjectionStage::Initialize => {
+                if valid_initialize_response(object, self.codex_home) {
+                    self.stage = TurnProjectionStage::Account;
+                    TurnProjectionAction::SendAccountRead
+                } else {
+                    self.containment(TurnReason::ProtocolRejected)
+                }
+            }
+            TurnProjectionStage::Account => match account_state(object) {
+                ProjectionAction::Terminal(RuntimeReadinessState::Ready) => {
+                    self.stage = TurnProjectionStage::Thread;
+                    TurnProjectionAction::SendThreadStart
+                }
+                ProjectionAction::Terminal(RuntimeReadinessState::AuthenticationRequired) => {
+                    TurnProjectionAction::Terminal(
+                        TurnState::Failed,
+                        TurnReason::AuthenticationRequired,
+                    )
+                }
+                _ => self.containment(TurnReason::ProtocolRejected),
+            },
+            TurnProjectionStage::Thread => self.accept_thread_response(object),
+            TurnProjectionStage::Turn => self.accept_turn_response(object),
+            TurnProjectionStage::Active | TurnProjectionStage::Terminal => {
+                self.containment(TurnReason::ProtocolRejected)
+            }
+        }
+    }
+
+    fn accept_thread_response(
+        &mut self,
+        object: &serde_json::Map<String, Value>,
+    ) -> TurnProjectionAction {
+        if !has_exact_keys(object, &["id", "result"]) || object.get("id") != Some(&json!(3)) {
+            return self.containment(TurnReason::ProtocolRejected);
+        }
+        let Some(result) = object.get("result").and_then(Value::as_object) else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
+        let Some(thread) = result.get("thread").and_then(Value::as_object) else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
+        let Some(thread_id) = thread.get("id").and_then(Value::as_str) else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
+        let work = self.work_directory.to_str();
+        let safe = !thread_id.is_empty()
+            && thread_id.len() <= 128
+            && result
+                .get("runtimeWorkspaceRoots")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty)
+            && result
+                .get("instructionSources")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty)
+            && result.get("approvalPolicy").and_then(Value::as_str) == Some("never")
+            && result.get("approvalsReviewer").and_then(Value::as_str) == Some("user")
+            && result
+                .get("activePermissionProfile")
+                .is_some_and(Value::is_null)
+            && result.get("multiAgentMode").and_then(Value::as_str) == Some("explicitRequestOnly")
+            && result.get("cwd").and_then(Value::as_str) == work
+            && thread.get("ephemeral") == Some(&Value::Bool(true))
+            && thread.get("path").is_some_and(Value::is_null)
+            && thread.get("gitInfo").is_some_and(Value::is_null)
+            && thread.get("parentThreadId").is_some_and(Value::is_null)
+            && thread.get("cwd").and_then(Value::as_str) == work
+            && thread.get("canAcceptDirectInput") == Some(&Value::Bool(true));
+        if !safe {
+            return self.containment(TurnReason::EffectDenied);
+        }
+        self.thread_id = Some(thread_id.to_owned());
+        self.stage = TurnProjectionStage::Turn;
+        TurnProjectionAction::SendTurnStart(thread_id.to_owned())
+    }
+
+    fn accept_turn_response(
+        &mut self,
+        object: &serde_json::Map<String, Value>,
+    ) -> TurnProjectionAction {
+        if !has_exact_keys(object, &["id", "result"]) || object.get("id") != Some(&json!(4)) {
+            return self.containment(TurnReason::ProtocolRejected);
+        }
+        let Some(turn) = object
+            .get("result")
+            .and_then(|result| result.get("turn"))
+            .and_then(Value::as_object)
+        else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
+        let Some(turn_id) = turn.get("id").and_then(Value::as_str) else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
+        if turn_id.is_empty()
+            || turn_id.len() > 128
+            || turn.get("status").and_then(Value::as_str) != Some("inProgress")
+            || self
+                .turn_id
+                .as_deref()
+                .is_some_and(|known| known != turn_id)
+        {
+            return self.containment(TurnReason::ProtocolRejected);
+        }
+        self.turn_id = Some(turn_id.to_owned());
+        self.stage = TurnProjectionStage::Active;
+        self.streaming_action()
+    }
+
+    fn accept_event(&mut self, object: &serde_json::Map<String, Value>) -> TurnProjectionAction {
+        if object.contains_key("id")
+            || object
+                .keys()
+                .any(|key| !matches!(key.as_str(), "emittedAtMs" | "method" | "params"))
+            || object
+                .get("emittedAtMs")
+                .is_some_and(|value| !value.is_i64() && !value.is_u64())
+        {
+            return self.containment(TurnReason::EffectDenied);
+        }
+        let Some(method) = object.get("method").and_then(Value::as_str) else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
+        let params = object.get("params");
+        match method {
+            "remoteControl/status/changed" if remote_control_is_disabled(params) => {
+                self.quarantine()
+            }
+            "thread/started" => self.quarantine_thread_event(params),
+            "thread/status/changed" => self.quarantine_correlated_thread(params),
+            "thread/tokenUsage/updated" => self.quarantine_correlated_turn(params),
+            "account/rateLimits/updated" => self.quarantine(),
+            "turn/started" => self.accept_turn_started(params),
+            "item/started" => self.accept_item_event(params, true),
+            "item/completed" => self.accept_item_event(params, false),
+            "item/agentMessage/delta" => self.accept_delta(params),
+            "turn/completed" => self.accept_turn_completed(params),
+            _ => self.containment(TurnReason::EffectDenied),
+        }
+    }
+
+    fn quarantine_thread_event(&mut self, params: Option<&Value>) -> TurnProjectionAction {
+        let Some(thread) = params
+            .and_then(|params| params.get("thread"))
+            .and_then(Value::as_object)
+        else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
+        if self.thread_id.as_deref() == thread.get("id").and_then(Value::as_str) {
+            self.quarantine()
+        } else {
+            self.containment(TurnReason::ProtocolRejected)
+        }
+    }
+
+    fn quarantine_correlated_thread(&mut self, params: Option<&Value>) -> TurnProjectionAction {
+        if self.thread_id.as_deref()
+            == params
+                .and_then(|params| params.get("threadId"))
+                .and_then(Value::as_str)
+        {
+            self.quarantine()
+        } else {
+            self.containment(TurnReason::ProtocolRejected)
+        }
+    }
+
+    fn quarantine_correlated_turn(&mut self, params: Option<&Value>) -> TurnProjectionAction {
+        let Some(params) = params.and_then(Value::as_object) else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
+        if has_exact_keys(params, &["threadId", "turnId", "tokenUsage"])
+            && token_usage_is_bounded(params.get("tokenUsage"))
+            && self.correlations_match(params)
+        {
+            self.quarantine()
+        } else {
+            self.containment(TurnReason::ProtocolRejected)
+        }
+    }
+
+    fn accept_turn_started(&mut self, params: Option<&Value>) -> TurnProjectionAction {
+        let Some(params) = params.and_then(Value::as_object) else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
+        let Some(turn) = params.get("turn").and_then(Value::as_object) else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
+        let Some(turn_id) = turn.get("id").and_then(Value::as_str) else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
+        if self.thread_id.as_deref() != params.get("threadId").and_then(Value::as_str)
+            || turn.get("status").and_then(Value::as_str) != Some("inProgress")
+            || self
+                .turn_id
+                .as_deref()
+                .is_some_and(|known| known != turn_id)
+        {
+            return self.containment(TurnReason::ProtocolRejected);
+        }
+        self.turn_id = Some(turn_id.to_owned());
+        self.streaming_action()
+    }
+
+    fn accept_item_event(&mut self, params: Option<&Value>, started: bool) -> TurnProjectionAction {
+        let Some(params) = params.and_then(Value::as_object) else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
+        if !self.correlations_match(params) {
+            return self.containment(TurnReason::ProtocolRejected);
+        }
+        let Some(item) = params.get("item").and_then(Value::as_object) else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
+        let Some(item_id) = item.get("id").and_then(Value::as_str) else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
+        let inert = matches!(
+            item.get("type").and_then(Value::as_str),
+            Some("userMessage" | "agentMessage" | "reasoning" | "plan")
+        );
+        if !inert || item_id.is_empty() || item_id.len() > 128 {
+            return self.containment(TurnReason::EffectDenied);
+        }
+        if started {
+            if !self.started_items.insert(item_id.to_owned()) {
+                return self.containment(TurnReason::ProtocolRejected);
+            }
+        } else if !self.started_items.contains(item_id)
+            || !self.completed_items.insert(item_id.to_owned())
+        {
+            return self.containment(TurnReason::ProtocolRejected);
+        }
+        self.quarantine()
+    }
+
+    fn accept_delta(&mut self, params: Option<&Value>) -> TurnProjectionAction {
+        let Some(params) = params.and_then(Value::as_object) else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
+        if !self.correlations_match(params) {
+            return self.containment(TurnReason::ProtocolRejected);
+        }
+        let Some(item_id) = params.get("itemId").and_then(Value::as_str) else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
+        let Some(delta) = params.get("delta").and_then(Value::as_str) else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
+        if delta.is_empty()
+            || !self.started_items.contains(item_id)
+            || self.completed_items.contains(item_id)
+            || self.agent_text.len().saturating_add(delta.len()) > MAX_AGENT_TEXT_BYTES
+        {
+            return self.containment(TurnReason::BufferLimit);
+        }
+        self.agent_text.push_str(delta);
+        TurnProjectionAction::AgentDelta(delta.to_owned())
+    }
+
+    fn accept_turn_completed(&mut self, params: Option<&Value>) -> TurnProjectionAction {
+        let Some(params) = params.and_then(Value::as_object) else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
+        let Some(turn) = params.get("turn").and_then(Value::as_object) else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
+        if self.thread_id.as_deref() != params.get("threadId").and_then(Value::as_str)
+            || self.turn_id.as_deref() != turn.get("id").and_then(Value::as_str)
+        {
+            return self.containment(TurnReason::ProtocolRejected);
+        }
+        match turn.get("status").and_then(Value::as_str) {
+            Some("completed") if turn.get("error").is_none_or(Value::is_null) => {
+                self.stage = TurnProjectionStage::Terminal;
+                TurnProjectionAction::Complete
+            }
+            Some("failed" | "interrupted") => {
+                TurnProjectionAction::Terminal(TurnState::Failed, TurnReason::ProviderFailed)
+            }
+            _ => self.containment(TurnReason::ProtocolRejected),
+        }
+    }
+
+    fn correlations_match(&self, params: &serde_json::Map<String, Value>) -> bool {
+        self.thread_id.as_deref() == params.get("threadId").and_then(Value::as_str)
+            && self.turn_id.as_deref() == params.get("turnId").and_then(Value::as_str)
+    }
+
+    fn streaming_action(&mut self) -> TurnProjectionAction {
+        if self.streaming_announced {
+            self.quarantine()
+        } else {
+            self.streaming_announced = true;
+            TurnProjectionAction::StreamingStarted
+        }
+    }
+
+    fn quarantine(&mut self) -> TurnProjectionAction {
+        let Some(count) = self.quarantined_events.checked_add(1) else {
+            return self.containment(TurnReason::BufferLimit);
+        };
+        if count > MAX_QUARANTINED_EVENTS {
+            return self.containment(TurnReason::BufferLimit);
+        }
+        self.quarantined_events = count;
+        TurnProjectionAction::Quarantine
+    }
+
+    fn containment(&mut self, reason: TurnReason) -> TurnProjectionAction {
+        self.stage = TurnProjectionStage::Terminal;
+        TurnProjectionAction::Terminal(TurnState::ContainmentFailed, reason)
+    }
+}
+
 fn has_exact_keys(object: &serde_json::Map<String, Value>, keys: &[&str]) -> bool {
     object.len() == keys.len() && keys.iter().all(|key| object.contains_key(*key))
+}
+
+fn token_usage_is_bounded(value: Option<&Value>) -> bool {
+    let Some(usage) = value.and_then(Value::as_object) else {
+        return false;
+    };
+    let valid_keys = usage
+        .keys()
+        .all(|key| matches!(key.as_str(), "last" | "modelContextWindow" | "total"));
+    let valid_context_window = usage.get("modelContextWindow").is_none_or(|value| {
+        value.is_null() || value.as_u64().is_some_and(|count| count <= i64::MAX as u64)
+    });
+    valid_keys
+        && valid_context_window
+        && token_usage_breakdown_is_bounded(usage.get("last"))
+        && token_usage_breakdown_is_bounded(usage.get("total"))
+}
+
+fn token_usage_breakdown_is_bounded(value: Option<&Value>) -> bool {
+    const REQUIRED: [&str; 5] = [
+        "cachedInputTokens",
+        "inputTokens",
+        "outputTokens",
+        "reasoningOutputTokens",
+        "totalTokens",
+    ];
+    let Some(breakdown) = value.and_then(Value::as_object) else {
+        return false;
+    };
+    let valid_keys = breakdown
+        .keys()
+        .all(|key| REQUIRED.contains(&key.as_str()) || key == "cacheWriteInputTokens");
+    valid_keys
+        && REQUIRED.iter().all(|key| {
+            breakdown
+                .get(*key)
+                .and_then(Value::as_u64)
+                .is_some_and(|count| count <= i64::MAX as u64)
+        })
+        && breakdown
+            .get("cacheWriteInputTokens")
+            .is_none_or(|value| value.as_u64().is_some_and(|count| count <= i64::MAX as u64))
 }
 
 fn cleanup_after(
@@ -1005,6 +1846,32 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     static PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn turn_and_readiness_share_the_closed_no_effect_runtime_arguments() {
+        let joined = CODEX_CONTAINMENT_ARGUMENTS.join(" ");
+        for disabled in [
+            "features.multi_agent=false",
+            "features.multi_agent_v2=false",
+            "tools.experimental_request_user_input.enabled=false",
+            "features.apps=false",
+            "features.plugins=false",
+            "features.remote_plugin=false",
+            "features.hooks=false",
+            "features.browser_use=false",
+            "features.computer_use=false",
+            "features.image_generation=false",
+            "features.workspace_dependencies=false",
+            "features.tool_suggest=false",
+        ] {
+            assert!(joined.contains(disabled), "{disabled}");
+        }
+        assert!(joined.contains("history.persistence=\"none\""));
+        assert_eq!(
+            &CODEX_CONTAINMENT_ARGUMENTS[CODEX_CONTAINMENT_ARGUMENTS.len() - 3..],
+            &["app-server", "--listen", "stdio://"]
+        );
+    }
 
     #[test]
     fn protocol_requires_exact_initialize_then_chatgpt_account() {
@@ -1703,6 +2570,590 @@ printf '%s\n' '{"method":"item/tool/call","id":7,"params":{"path":"/private/secr
             effect_request.check("request-effect", None).state,
             RuntimeReadinessState::ContainmentFailed
         );
+    }
+
+    fn valid_turn_thread_response() -> Value {
+        json!({
+            "id": 3,
+            "result": {
+                "thread": {
+                    "id": "thread-1",
+                    "ephemeral": true,
+                    "path": null,
+                    "gitInfo": null,
+                    "parentThreadId": null,
+                    "cwd": "/private/tmp/codex-work",
+                    "canAcceptDirectInput": true
+                },
+                "runtimeWorkspaceRoots": [],
+                "instructionSources": [],
+                "approvalPolicy": "never",
+                "approvalsReviewer": "user",
+                "activePermissionProfile": null,
+                "multiAgentMode": "explicitRequestOnly",
+                "cwd": "/private/tmp/codex-work"
+            }
+        })
+    }
+
+    fn active_turn_projection<'a>(home: &'a Path, work: &'a Path) -> TurnProtocolProjection<'a> {
+        let mut projection = TurnProtocolProjection::new(home, work);
+        projection.stage = TurnProjectionStage::Active;
+        projection.thread_id = Some("thread-1".to_owned());
+        projection.turn_id = Some("turn-1".to_owned());
+        projection.streaming_announced = true;
+        projection
+    }
+
+    fn assert_turn_containment(action: TurnProjectionAction, reason: TurnReason) {
+        assert_eq!(
+            action,
+            TurnProjectionAction::Terminal(TurnState::ContainmentFailed, reason)
+        );
+    }
+
+    #[test]
+    fn turn_projection_rejects_malformed_stage_and_thread_contract_drift() {
+        let home = Path::new("/private/tmp/codex-home");
+        let work = Path::new("/private/tmp/codex-work");
+        for frame in [b"{".as_slice(), b"[]".as_slice()] {
+            assert_turn_containment(
+                TurnProtocolProjection::new(home, work).accept(frame),
+                TurnReason::ProtocolRejected,
+            );
+        }
+
+        let mut invalid_initialize = TurnProtocolProjection::new(home, work);
+        assert_turn_containment(
+            invalid_initialize.accept(br#"{"id":1,"result":{}}"#),
+            TurnReason::ProtocolRejected,
+        );
+
+        let mut unauthenticated = TurnProtocolProjection::new(home, work);
+        unauthenticated.stage = TurnProjectionStage::Account;
+        assert_eq!(
+            unauthenticated
+                .accept(br#"{"id":2,"result":{"account":null,"requiresOpenaiAuth":true}}"#),
+            TurnProjectionAction::Terminal(TurnState::Failed, TurnReason::AuthenticationRequired)
+        );
+        let mut invalid_account = TurnProtocolProjection::new(home, work);
+        invalid_account.stage = TurnProjectionStage::Account;
+        assert_turn_containment(
+            invalid_account.accept(br#"{"id":2,"result":{}}"#),
+            TurnReason::ProtocolRejected,
+        );
+
+        for stage in [TurnProjectionStage::Active, TurnProjectionStage::Terminal] {
+            let mut projection = TurnProtocolProjection::new(home, work);
+            projection.stage = stage;
+            assert_turn_containment(
+                projection.accept(br#"{"id":9,"result":{}}"#),
+                TurnReason::ProtocolRejected,
+            );
+        }
+
+        let protocol_drift = [
+            json!({"id": 9, "result": {}}),
+            json!({"id": 3}),
+            json!({"id": 3, "result": {}, "extra": true}),
+            json!({"id": 3, "result": []}),
+            json!({"id": 3, "result": {}}),
+            json!({"id": 3, "result": {"thread": []}}),
+            json!({"id": 3, "result": {"thread": {}}}),
+        ];
+        for response in protocol_drift {
+            let mut projection = TurnProtocolProjection::new(home, work);
+            projection.stage = TurnProjectionStage::Thread;
+            assert_turn_containment(
+                projection.accept(&serde_json::to_vec(&response).unwrap()),
+                TurnReason::ProtocolRejected,
+            );
+        }
+
+        let mut unsafe_responses = Vec::new();
+        for (pointer, replacement) in [
+            ("/result/thread/id", json!("")),
+            ("/result/thread/id", json!("x".repeat(129))),
+            ("/result/runtimeWorkspaceRoots", json!(["/private/secret"])),
+            ("/result/instructionSources", json!(["AGENTS.md"])),
+            ("/result/approvalPolicy", json!("on-request")),
+            ("/result/approvalsReviewer", json!("model")),
+            (
+                "/result/activePermissionProfile",
+                json!("danger-full-access"),
+            ),
+            ("/result/multiAgentMode", json!("auto")),
+            ("/result/cwd", json!("/private/other")),
+            ("/result/thread/ephemeral", json!(false)),
+            ("/result/thread/path", json!("/private/thread.jsonl")),
+            ("/result/thread/gitInfo", json!({})),
+            ("/result/thread/parentThreadId", json!("parent")),
+            ("/result/thread/cwd", json!("/private/other")),
+            ("/result/thread/canAcceptDirectInput", json!(false)),
+        ] {
+            let mut response = valid_turn_thread_response();
+            *response
+                .pointer_mut(pointer)
+                .expect("valid response pointer") = replacement;
+            unsafe_responses.push(response);
+        }
+        for response in unsafe_responses {
+            let mut projection = TurnProtocolProjection::new(home, work);
+            projection.stage = TurnProjectionStage::Thread;
+            assert_turn_containment(
+                projection.accept(&serde_json::to_vec(&response).unwrap()),
+                TurnReason::EffectDenied,
+            );
+        }
+    }
+
+    #[test]
+    fn turn_projection_rejects_turn_and_event_envelope_drift() {
+        let home = Path::new("/private/tmp/codex-home");
+        let work = Path::new("/private/tmp/codex-work");
+        for response in [
+            json!({"id": 9, "result": {}}),
+            json!({"id": 4}),
+            json!({"id": 4, "result": {}, "extra": true}),
+            json!({"id": 4, "result": {}}),
+            json!({"id": 4, "result": {"turn": []}}),
+            json!({"id": 4, "result": {"turn": {}}}),
+            json!({"id": 4, "result": {"turn": {"id": "", "status": "inProgress"}}}),
+            json!({"id": 4, "result": {"turn": {"id": "x".repeat(129), "status": "inProgress"}}}),
+            json!({"id": 4, "result": {"turn": {"id": "turn-1", "status": "pending"}}}),
+        ] {
+            let mut projection = TurnProtocolProjection::new(home, work);
+            projection.stage = TurnProjectionStage::Turn;
+            assert_turn_containment(
+                projection.accept(&serde_json::to_vec(&response).unwrap()),
+                TurnReason::ProtocolRejected,
+            );
+        }
+        let mut mismatched = TurnProtocolProjection::new(home, work);
+        mismatched.stage = TurnProjectionStage::Turn;
+        mismatched.turn_id = Some("other-turn".to_owned());
+        assert_turn_containment(
+            mismatched
+                .accept(br#"{"id":4,"result":{"turn":{"id":"turn-1","status":"inProgress"}}}"#),
+            TurnReason::ProtocolRejected,
+        );
+
+        for event in [
+            json!({"method": "account/rateLimits/updated", "id": 1}),
+            json!({"method": "account/rateLimits/updated", "extra": true}),
+            json!({"method": "account/rateLimits/updated", "emittedAtMs": "now"}),
+            json!({"method": 7}),
+            json!({"method": "remoteControl/status/changed", "params": {"status": "enabled"}}),
+        ] {
+            assert_turn_containment(
+                active_turn_projection(home, work).accept(&serde_json::to_vec(&event).unwrap()),
+                if event.get("method") == Some(&json!(7)) {
+                    TurnReason::ProtocolRejected
+                } else {
+                    TurnReason::EffectDenied
+                },
+            );
+        }
+        assert_eq!(
+            active_turn_projection(home, work)
+                .accept(br#"{"method":"account/rateLimits/updated","params":{},"emittedAtMs":1}"#),
+            TurnProjectionAction::Quarantine
+        );
+    }
+
+    #[test]
+    fn turn_projection_rejects_uncorrelated_lifecycle_items_and_deltas() {
+        let home = Path::new("/private/tmp/codex-home");
+        let work = Path::new("/private/tmp/codex-work");
+
+        for event in [
+            json!({"method": "thread/started"}),
+            json!({"method": "thread/started", "params": {}}),
+            json!({"method": "thread/started", "params": {"thread": {"id": "other"}}}),
+            json!({"method": "thread/status/changed"}),
+            json!({"method": "thread/status/changed", "params": {"threadId": "other"}}),
+            json!({"method": "turn/started"}),
+            json!({"method": "turn/started", "params": {}}),
+            json!({"method": "turn/started", "params": {"turn": {}}}),
+            json!({"method": "turn/started", "params": {"threadId": "other", "turn": {"id": "turn-1", "status": "inProgress"}}}),
+            json!({"method": "turn/started", "params": {"threadId": "thread-1", "turn": {"id": "turn-1", "status": "pending"}}}),
+            json!({"method": "turn/started", "params": {"threadId": "thread-1", "turn": {"id": "other", "status": "inProgress"}}}),
+        ] {
+            assert_turn_containment(
+                active_turn_projection(home, work).accept(&serde_json::to_vec(&event).unwrap()),
+                TurnReason::ProtocolRejected,
+            );
+        }
+
+        for event in [
+            json!({"method": "item/started"}),
+            json!({"method": "item/started", "params": {"threadId": "other", "turnId": "turn-1"}}),
+            json!({"method": "item/started", "params": {"threadId": "thread-1", "turnId": "turn-1"}}),
+            json!({"method": "item/started", "params": {"threadId": "thread-1", "turnId": "turn-1", "item": {}}}),
+        ] {
+            assert_turn_containment(
+                active_turn_projection(home, work).accept(&serde_json::to_vec(&event).unwrap()),
+                TurnReason::ProtocolRejected,
+            );
+        }
+        for item in [
+            json!({"id": "item-1", "type": "commandExecution"}),
+            json!({"id": "", "type": "agentMessage"}),
+            json!({"id": "x".repeat(129), "type": "agentMessage"}),
+        ] {
+            assert_turn_containment(
+                active_turn_projection(home, work).accept(
+                    &serde_json::to_vec(&json!({
+                        "method": "item/started",
+                        "params": {
+                            "threadId": "thread-1",
+                            "turnId": "turn-1",
+                            "item": item
+                        }
+                    }))
+                    .unwrap(),
+                ),
+                TurnReason::EffectDenied,
+            );
+        }
+
+        let completed = json!({
+            "method": "item/completed",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "item": {"id": "item-1", "type": "agentMessage"}
+            }
+        });
+        assert_turn_containment(
+            active_turn_projection(home, work).accept(&serde_json::to_vec(&completed).unwrap()),
+            TurnReason::ProtocolRejected,
+        );
+        let mut duplicate_completion = active_turn_projection(home, work);
+        duplicate_completion
+            .started_items
+            .insert("item-1".to_owned());
+        assert_eq!(
+            duplicate_completion.accept(&serde_json::to_vec(&completed).unwrap()),
+            TurnProjectionAction::Quarantine
+        );
+        assert_turn_containment(
+            duplicate_completion.accept(&serde_json::to_vec(&completed).unwrap()),
+            TurnReason::ProtocolRejected,
+        );
+
+        for event in [
+            json!({"method": "item/agentMessage/delta"}),
+            json!({"method": "item/agentMessage/delta", "params": {"threadId": "other", "turnId": "turn-1"}}),
+            json!({"method": "item/agentMessage/delta", "params": {"threadId": "thread-1", "turnId": "turn-1"}}),
+            json!({"method": "item/agentMessage/delta", "params": {"threadId": "thread-1", "turnId": "turn-1", "itemId": "item-1"}}),
+        ] {
+            assert_turn_containment(
+                active_turn_projection(home, work).accept(&serde_json::to_vec(&event).unwrap()),
+                TurnReason::ProtocolRejected,
+            );
+        }
+        for (started, completed, delta) in
+            [(true, false, ""), (false, false, "x"), (true, true, "x")]
+        {
+            let mut projection = active_turn_projection(home, work);
+            if started {
+                projection.started_items.insert("item-1".to_owned());
+            }
+            if completed {
+                projection.completed_items.insert("item-1".to_owned());
+            }
+            assert_turn_containment(
+                projection.accept(
+                    &serde_json::to_vec(&json!({
+                        "method": "item/agentMessage/delta",
+                        "params": {
+                            "threadId": "thread-1",
+                            "turnId": "turn-1",
+                            "itemId": "item-1",
+                            "delta": delta
+                        }
+                    }))
+                    .unwrap(),
+                ),
+                TurnReason::BufferLimit,
+            );
+        }
+    }
+
+    #[test]
+    fn turn_projection_rejects_invalid_completion_and_quarantine_overflow() {
+        let home = Path::new("/private/tmp/codex-home");
+        let work = Path::new("/private/tmp/codex-work");
+        for event in [
+            json!({"method": "turn/completed"}),
+            json!({"method": "turn/completed", "params": {}}),
+            json!({"method": "turn/completed", "params": {"threadId": "other", "turn": {"id": "turn-1", "status": "completed"}}}),
+            json!({"method": "turn/completed", "params": {"threadId": "thread-1", "turn": {"id": "other", "status": "completed"}}}),
+            json!({"method": "turn/completed", "params": {"threadId": "thread-1", "turn": {"id": "turn-1", "status": "completed", "error": {"message": "redacted"}}}}),
+            json!({"method": "turn/completed", "params": {"threadId": "thread-1", "turn": {"id": "turn-1", "status": "pending"}}}),
+        ] {
+            assert_turn_containment(
+                active_turn_projection(home, work).accept(&serde_json::to_vec(&event).unwrap()),
+                TurnReason::ProtocolRejected,
+            );
+        }
+        for status in ["failed", "interrupted"] {
+            assert_eq!(
+                active_turn_projection(home, work).accept(
+                    &serde_json::to_vec(&json!({
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": "thread-1",
+                            "turn": {"id": "turn-1", "status": status}
+                        }
+                    }))
+                    .unwrap()
+                ),
+                TurnProjectionAction::Terminal(TurnState::Failed, TurnReason::ProviderFailed)
+            );
+        }
+
+        let mut saturated = active_turn_projection(home, work);
+        saturated.quarantined_events = MAX_QUARANTINED_EVENTS;
+        assert_turn_containment(
+            saturated.accept(br#"{"method":"account/rateLimits/updated","params":{}}"#),
+            TurnReason::BufferLimit,
+        );
+        let mut overflowed = active_turn_projection(home, work);
+        overflowed.quarantined_events = u16::MAX;
+        assert_turn_containment(
+            overflowed.accept(br#"{"method":"account/rateLimits/updated","params":{}}"#),
+            TurnReason::BufferLimit,
+        );
+    }
+
+    #[test]
+    fn turn_projection_streams_only_correlated_agent_text_and_quarantines_inert_items() {
+        let home = Path::new("/private/tmp/codex-home");
+        let work = Path::new("/private/tmp/codex-work");
+        let mut projection = TurnProtocolProjection::new(home, work);
+        assert_eq!(
+            projection.accept(
+                br#"{"id":1,"result":{"userAgent":"codex_cli_rs/0.145.0","codexHome":"/private/tmp/codex-home","platformFamily":"unix","platformOs":"macos"}}"#
+            ),
+            TurnProjectionAction::SendAccountRead
+        );
+        assert_eq!(
+            projection.accept(
+                br#"{"id":2,"result":{"account":{"type":"chatgpt","email":"redacted","planType":"plus"},"requiresOpenaiAuth":true}}"#
+            ),
+            TurnProjectionAction::SendThreadStart
+        );
+        let thread = json!({
+            "id": "thread-1",
+            "ephemeral": true,
+            "path": null,
+            "gitInfo": null,
+            "parentThreadId": null,
+            "cwd": "/private/tmp/codex-work",
+            "canAcceptDirectInput": true
+        });
+        let thread_response = json!({
+            "id": 3,
+            "result": {
+                "thread": thread,
+                "runtimeWorkspaceRoots": [],
+                "instructionSources": [],
+                "approvalPolicy": "never",
+                "approvalsReviewer": "user",
+                "activePermissionProfile": null,
+                "multiAgentMode": "explicitRequestOnly",
+                "cwd": "/private/tmp/codex-work"
+            }
+        });
+        assert_eq!(
+            projection.accept(&serde_json::to_vec(&thread_response).unwrap()),
+            TurnProjectionAction::SendTurnStart("thread-1".to_owned())
+        );
+        assert_eq!(
+            projection
+                .accept(br#"{"id":4,"result":{"turn":{"id":"turn-1","status":"inProgress"}}}"#),
+            TurnProjectionAction::StreamingStarted
+        );
+        assert_eq!(
+            projection.accept(
+                br#"{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"inProgress"}}}"#
+            ),
+            TurnProjectionAction::Quarantine
+        );
+        assert_eq!(
+            projection.accept(
+                br#"{"method":"item/started","params":{"threadId":"thread-1","turnId":"turn-1","startedAtMs":1,"item":{"type":"agentMessage","id":"item-1","text":"","phase":null,"memoryCitation":null}}}"#
+            ),
+            TurnProjectionAction::Quarantine
+        );
+        assert_eq!(
+            projection.accept(
+                br#"{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","delta":"Bounded answer."}}"#
+            ),
+            TurnProjectionAction::AgentDelta("Bounded answer.".to_owned())
+        );
+        assert_eq!(projection.agent_text, "Bounded answer.");
+        assert_eq!(
+            projection.accept(
+                br#"{"method":"item/completed","params":{"threadId":"thread-1","turnId":"turn-1","completedAtMs":2,"item":{"type":"agentMessage","id":"item-1","text":"Bounded answer.","phase":null,"memoryCitation":null}}}"#
+            ),
+            TurnProjectionAction::Quarantine
+        );
+        assert_eq!(
+            projection.accept(
+                br#"{"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","turnId":"turn-1","tokenUsage":{"total":{"inputTokens":12,"cachedInputTokens":0,"outputTokens":3,"reasoningOutputTokens":0,"totalTokens":15},"last":{"inputTokens":12,"cachedInputTokens":0,"outputTokens":3,"reasoningOutputTokens":0,"totalTokens":15},"modelContextWindow":128000}}}"#
+            ),
+            TurnProjectionAction::Quarantine
+        );
+        assert_eq!(
+            projection.accept(
+                br#"{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","error":null}}}"#
+            ),
+            TurnProjectionAction::Complete
+        );
+    }
+
+    #[test]
+    fn turn_projection_rejects_effects_duplicates_wrong_correlations_and_floods() {
+        let home = Path::new("/private/tmp/codex-home");
+        let work = Path::new("/private/tmp/codex-work");
+        let active = || {
+            let mut projection = TurnProtocolProjection::new(home, work);
+            projection.stage = TurnProjectionStage::Active;
+            projection.thread_id = Some("thread-1".to_owned());
+            projection.turn_id = Some("turn-1".to_owned());
+            projection.streaming_announced = true;
+            projection
+        };
+        for event in [
+            json!({"method":"item/commandExecution/outputDelta","params":{}}),
+            json!({"method":"fs/changed","params":{}}),
+            json!({"method":"item/started","id":9,"params":{}}),
+            json!({"method":"unknown/event","params":{}}),
+        ] {
+            assert!(matches!(
+                active().accept(&serde_json::to_vec(&event).unwrap()),
+                TurnProjectionAction::Terminal(
+                    TurnState::ContainmentFailed,
+                    TurnReason::EffectDenied
+                )
+            ));
+        }
+
+        for event in [
+            json!({"method":"thread/tokenUsage/updated"}),
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","turnId":"turn-1"}}),
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":"other","turnId":"turn-1","tokenUsage":{}}}),
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","turnId":"other","tokenUsage":{}}}),
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","turnId":"turn-1","tokenUsage":0}}),
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","turnId":"turn-1","tokenUsage":{}}}),
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","turnId":"turn-1","tokenUsage":{"last":{"inputTokens":-1,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":0},"total":{"inputTokens":0,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":0}}}}),
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","turnId":"turn-1","tokenUsage":{"last":{"inputTokens":0,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":0,"content":"forbidden"},"total":{"inputTokens":0,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":0}}}}),
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","turnId":"turn-1","tokenUsage":{},"unexpected":true}}),
+        ] {
+            assert!(matches!(
+                active().accept(&serde_json::to_vec(&event).unwrap()),
+                TurnProjectionAction::Terminal(
+                    TurnState::ContainmentFailed,
+                    TurnReason::ProtocolRejected
+                )
+            ));
+        }
+
+        let mut duplicate = active();
+        let started = br#"{"method":"item/started","params":{"threadId":"thread-1","turnId":"turn-1","startedAtMs":1,"item":{"type":"agentMessage","id":"item-1"}}}"#;
+        assert_eq!(duplicate.accept(started), TurnProjectionAction::Quarantine);
+        assert!(matches!(
+            duplicate.accept(started),
+            TurnProjectionAction::Terminal(
+                TurnState::ContainmentFailed,
+                TurnReason::ProtocolRejected
+            )
+        ));
+
+        let mut wrong = active();
+        assert!(matches!(
+            wrong.accept(
+                br#"{"method":"item/agentMessage/delta","params":{"threadId":"other","turnId":"turn-1","itemId":"item-1","delta":"x"}}"#
+            ),
+            TurnProjectionAction::Terminal(
+                TurnState::ContainmentFailed,
+                TurnReason::ProtocolRejected
+            )
+        ));
+
+        let mut flooded = active();
+        flooded.started_items.insert("item-1".to_owned());
+        flooded.agent_text = "x".repeat(MAX_AGENT_TEXT_BYTES);
+        assert!(matches!(
+            flooded.accept(
+                br#"{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","delta":"x"}}"#
+            ),
+            TurnProjectionAction::Terminal(
+                TurnState::ContainmentFailed,
+                TurnReason::BufferLimit
+            )
+        ));
+    }
+
+    #[test]
+    fn fake_turn_uses_disposable_sqlite_home_streams_and_cleans_every_descendant() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let repository = fixture.root.join("repository");
+        fs::create_dir(&repository).expect("repository identity");
+        let home = fixture.home.to_string_lossy();
+        let script = format!(
+            r#"#!/bin/sh
+set -eu
+work=$(/bin/pwd -P)
+test "$CODEX_SQLITE_HOME" = "$work"
+test "$(/usr/bin/stat -f '%Lp' "$work")" = "700"
+printf 'transient provider state' > "$CODEX_SQLITE_HOME/logs_2.sqlite"
+read -r initialize
+printf '%s\n' '{{"id":1,"result":{{"userAgent":"codex_cli_rs/0.145.0","codexHome":"{home}","platformFamily":"unix","platformOs":"macos"}}}}'
+read -r initialized
+read -r account
+printf '%s\n' '{{"id":2,"result":{{"account":{{"type":"chatgpt","email":"redacted","planType":"plus"}},"requiresOpenaiAuth":true}}}}'
+read -r thread
+printf '%s\n' '{{"id":3,"result":{{"thread":{{"id":"thread-1","ephemeral":true,"path":null,"gitInfo":null,"parentThreadId":null,"cwd":"'"$work"'","canAcceptDirectInput":true}},"runtimeWorkspaceRoots":[],"instructionSources":[],"approvalPolicy":"never","approvalsReviewer":"user","activePermissionProfile":null,"multiAgentMode":"explicitRequestOnly","cwd":"'"$work"'"}}}}'
+printf '%s\n' '{{"method":"thread/started","params":{{"thread":{{"id":"thread-1"}}}}}}'
+read -r turn
+printf '%s\n' '{{"id":4,"result":{{"turn":{{"id":"turn-1","status":"inProgress"}}}}}}'
+printf '%s\n' '{{"method":"turn/started","params":{{"threadId":"thread-1","turn":{{"id":"turn-1","status":"inProgress"}}}}}}'
+printf '%s\n' '{{"method":"item/started","params":{{"threadId":"thread-1","turnId":"turn-1","startedAtMs":1,"item":{{"type":"agentMessage","id":"item-1"}}}}}}'
+printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","delta":"Bounded answer."}}}}'
+printf '%s\n' '{{"method":"item/completed","params":{{"threadId":"thread-1","turnId":"turn-1","completedAtMs":2,"item":{{"type":"agentMessage","id":"item-1"}}}}}}'
+printf '%s\n' '{{"method":"thread/tokenUsage/updated","params":{{"threadId":"thread-1","turnId":"turn-1","tokenUsage":{{"total":{{"inputTokens":12,"cachedInputTokens":0,"outputTokens":3,"reasoningOutputTokens":0,"totalTokens":15}},"last":{{"inputTokens":12,"cachedInputTokens":0,"outputTokens":3,"reasoningOutputTokens":0,"totalTokens":15}},"modelContextWindow":128000}}}}}}'
+/bin/sleep 30 &
+printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"thread-1","turn":{{"id":"turn-1","status":"completed","error":null}}}}}}'
+wait
+"#
+        );
+        let host = fixture.scripted_host(&script);
+        let mut updates = Vec::new();
+        let outcome = host.run_turn(
+            "request-turn",
+            &repository,
+            "Repository-independent prompt.",
+            Duration::from_secs(5),
+            |update| updates.push(update),
+        );
+        assert_eq!(outcome.state, TurnState::Completed, "{outcome:?}");
+        assert_eq!(outcome.agent_text, "Bounded answer.");
+        assert!(outcome.cleaned);
+        assert!(outcome.provider_thread_established);
+        assert!(outcome.provider_turn_established);
+        assert!(updates.contains(&TurnRuntimeUpdate::StreamingStarted));
+        assert!(updates.contains(&TurnRuntimeUpdate::AgentDelta("Bounded answer.".to_owned())));
+        assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
+        assert!(!fixture.home.join("logs_2.sqlite").exists());
+        assert!(!host.active.running.load(Ordering::Acquire));
+        assert_eq!(*host.active.process_group.lock().unwrap(), None);
     }
 
     #[test]

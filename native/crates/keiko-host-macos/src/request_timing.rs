@@ -7,7 +7,7 @@ pub(crate) struct InFlight {
     pub(crate) cancelled_at_ms: Option<u64>,
     pub(crate) generation: u64,
     pub(crate) started_at_ms: u64,
-    pub(crate) timeout_ms: u16,
+    pub(crate) timeout_ms: u32,
 }
 
 #[derive(Debug)]

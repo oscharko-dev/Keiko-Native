@@ -6,8 +6,10 @@ import {
   type FoundationController,
   type FoundationView,
   type RuntimeController,
+  type TurnController,
   type WorkspaceController,
 } from "./foundation";
+import type { TurnView } from "./port";
 
 const controller: FoundationController = {
   dismissWelcome: async () => ({ kind: "canvas", committedText: "" }),
@@ -406,6 +408,130 @@ describe("closed Foundation presentation", () => {
     (check?.props.onClick as () => void)();
     await Promise.resolve();
     expect(runtimeController.checkRuntime).toHaveBeenCalledOnce();
+  });
+
+  it("keeps one text-only no-repository turn gated, accessible and distinct from delivery", async () => {
+    const startTurn = vi.fn(async () => undefined);
+    const turnController: TurnController = { startTurn };
+    const completed: TurnView = {
+      taskId: "task-0000000000000007-0000000000000001",
+      runId: "run-0000000000000007-0000000000000001",
+      workspaceGeneration: 3,
+      state: "completed",
+      agentText: "Eine begrenzte Antwort.",
+      providerThreadEstablished: true,
+      providerTurnEstablished: true,
+      evidence: {
+        runtimeVersion: "0.145.0",
+        runtimeArtifactSha256:
+          "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
+        containmentProfile: "keiko-codex-readiness-v1",
+        authorityProfile: "keiko-codex-no-effect-v1",
+        messageBytes: 24,
+        quarantinedEvents: 2,
+        acceptedEffects: 0,
+        cleanupComplete: true,
+        terminalState: "completed",
+      },
+    };
+    const rendered = renderFoundation(
+      { kind: "canvas", committedText: "" },
+      controller,
+      { kind: "bound", generation: 3, displayLabel: "Keiko Native" },
+      undefined,
+      {
+        state: "ready",
+        quarantinedEvents: 0,
+        descriptor: {
+          version: "0.145.0",
+          artifactSha256:
+            "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
+          containmentProfile: "keiko-codex-readiness-v1",
+          freshStartRequired: true,
+        },
+      },
+      undefined,
+      completed,
+      turnController,
+    );
+    const text = textContent(rendered);
+    expect(text).toContain("keinen Repository-Pfad");
+    expect(text).toContain("keine Werkzeuge");
+    expect(text).toContain("weder akzeptiert noch ausgeliefert");
+    expect(text).toContain("Eine begrenzte Antwort.");
+    const status = elements(rendered).find(
+      ({ props }) => props["data-turn-state"] === "completed",
+    );
+    expect(status?.props.role).toBe("status");
+    expect(status?.props["aria-live"]).toBe("polite");
+    const response = elements(rendered).find(
+      ({ props }) => props["aria-label"] === "Codex-Antwort",
+    );
+    expect(response?.props["aria-live"]).toBe("polite");
+
+    const task = elements(rendered).find(
+      ({ props }) => props.id === "codex-task",
+    )?.props;
+    const submit = elements(rendered).find(
+      ({ type, props }) =>
+        type === "button" && props.children === "Begrenzten Auftrag starten",
+    )?.props;
+    const count = elements(rendered).find(
+      ({ props }) => props.id === "codex-task-count",
+    )?.props;
+    const textareaNode = {
+      value: "Erkläre eine Invariante.",
+      disabled: false,
+    };
+    const buttonNode = { disabled: true };
+    const countNode = { textContent: "" };
+    (task?.ref as (node: unknown) => void)(textareaNode);
+    (count?.ref as (node: unknown) => void)(countNode);
+    (submit?.ref as (node: unknown) => void)(buttonNode);
+    (task?.onInput as () => void)();
+    expect(buttonNode.disabled).toBe(false);
+    (task?.onCompositionStart as () => void)();
+    expect(buttonNode.disabled).toBe(true);
+    (task?.onCompositionEnd as () => void)();
+    expect(buttonNode.disabled).toBe(false);
+    expect(countNode.textContent).toMatch(/von 4096 Bytes/u);
+    (submit?.onClick as () => void)();
+    await Promise.resolve();
+    expect(startTurn).toHaveBeenCalledExactlyOnceWith(
+      "Erkläre eine Invariante.",
+    );
+    expect(textareaNode.disabled).toBe(true);
+  });
+
+  it("keeps the turn disabled until both workspace identity and exact runtime are ready", () => {
+    for (const [workspace, runtime] of [
+      [{ kind: "empty", generation: 0 } as const, null],
+      [
+        { kind: "bound", generation: 3, displayLabel: "Keiko Native" } as const,
+        { state: "unavailable" as const, quarantinedEvents: 0 },
+      ],
+    ] as const) {
+      const rendered = renderFoundation(
+        { kind: "canvas", committedText: "" },
+        controller,
+        workspace,
+        undefined,
+        runtime,
+      );
+      const task = elements(rendered).find(
+        ({ props }) => props.id === "codex-task",
+      )?.props;
+      const submit = elements(rendered).find(
+        ({ type, props }) =>
+          type === "button" && props.children === "Begrenzten Auftrag starten",
+      )?.props;
+      const textareaNode = { value: "Bounded.", disabled: false };
+      const buttonNode = { disabled: false };
+      (task?.ref as (node: unknown) => void)(textareaNode);
+      (submit?.ref as (node: unknown) => void)(buttonNode);
+      (task?.onInput as () => void)();
+      expect(buttonNode.disabled).toBe(true);
+    }
   });
 
   it("discards a superseded composition commit when a new composition starts without focus loss", async () => {

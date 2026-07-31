@@ -90,6 +90,57 @@ export interface RuntimeReadinessResponse {
   };
 }
 
+export type TurnState =
+  | "preflighting"
+  | "streaming"
+  | "completed"
+  | "failed"
+  | "timed-out"
+  | "containment-failed"
+  | "cleanup-failed";
+
+export type TurnReason =
+  | "stale-workspace"
+  | "runtime-unavailable"
+  | "runtime-incompatible"
+  | "authentication-required"
+  | "provider-failed"
+  | "renderer-lost"
+  | "protocol-rejected"
+  | "effect-denied"
+  | "buffer-limit"
+  | "timed-out"
+  | "cleanup-failed"
+  | "internal-failure";
+
+export interface TurnView {
+  taskId: string;
+  runId: string;
+  workspaceGeneration: number;
+  state: TurnState;
+  reason?: TurnReason;
+  agentText: string;
+  providerThreadEstablished: boolean;
+  providerTurnEstablished: boolean;
+  evidence: {
+    runtimeVersion: "0.145.0";
+    runtimeArtifactSha256: "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590";
+    containmentProfile: "keiko-codex-readiness-v1";
+    authorityProfile: "keiko-codex-no-effect-v1";
+    messageBytes: number;
+    quarantinedEvents: number;
+    acceptedEffects: 0;
+    cleanupComplete: boolean;
+    terminalState: TurnState;
+  };
+}
+
+export interface TurnResponse {
+  schemaVersion: 1;
+  requestId: string;
+  result: { kind: "codex-turn"; state: TurnView };
+}
+
 type FoundationOperation =
   | { kind: "foundation-load" }
   | { kind: "dismiss-welcome" }
@@ -109,8 +160,17 @@ type RuntimeOperation = { kind: "runtime-readiness" };
 
 export type Invoke = (
   command: string,
-  arguments_: { documentNonce: string; generation: number; request: string },
+  arguments_: {
+    documentNonce: string;
+    generation: number;
+    request: string;
+    onEvent?: TurnChannel;
+  },
 ) => Promise<string>;
+export interface TurnChannel {
+  onmessage: (view: TurnView) => void;
+}
+export type TurnChannelFactory = () => TurnChannel;
 export interface RendererAuthority {
   documentNonce: string;
   generation: number;
@@ -143,6 +203,9 @@ export async function rendererAuthority(): Promise<RendererAuthority> {
 export function createRendererPort(
   invoke: Invoke,
   authorityProvider: AuthorityProvider = rendererAuthority,
+  channelFactory: TurnChannelFactory = () => {
+    throw new Error("codex-turn-channel-unavailable");
+  },
 ) {
   let sequence = 0;
 
@@ -423,6 +486,108 @@ export function createRendererPort(
     });
   }
 
+  async function codexTurn(
+    workspaceGeneration: number,
+    task: string,
+    onUpdate: (view: TurnView) => void,
+    signal?: AbortSignal,
+  ): Promise<TurnResponse> {
+    if (signal?.aborted) throw new Error("codex-turn-cancelled");
+    if (
+      !Number.isSafeInteger(workspaceGeneration) ||
+      workspaceGeneration <= 0 ||
+      !validTurnTask(task)
+    ) {
+      throw new Error("codex-turn-invalid");
+    }
+    const authority = await authorityProvider();
+    if (signal?.aborted) throw new Error("codex-turn-cancelled");
+    sequence += 1;
+    const request = {
+      schemaVersion: 1 as const,
+      requestId: canonicalRequestId(authority.generation, sequence),
+      sequence,
+      timeoutMs: 120_000,
+      operation: {
+        kind: "codex-turn-start" as const,
+        workspaceGeneration,
+        task,
+      },
+    };
+    return new Promise((resolve, reject) => {
+      let terminal = false;
+      let latest: TurnView | null = null;
+      const finish = () => signal?.removeEventListener("abort", cancel);
+      const fail = (message: string) => {
+        if (terminal) return;
+        terminal = true;
+        finish();
+        reject(new Error(message));
+      };
+      const cancel = () => {
+        if (terminal) return;
+        const cancellation: CancelRequest = {
+          schemaVersion: 1,
+          requestId: request.requestId,
+        };
+        void invoke("application_cancel", {
+          generation: authority.generation,
+          documentNonce: authority.documentNonce,
+          request: JSON.stringify(cancellation),
+        }).catch(() => undefined);
+        fail("codex-turn-cancelled");
+      };
+      const onEvent = channelFactory();
+      onEvent.onmessage = (candidate) => {
+        if (
+          terminal ||
+          !isTurnView(candidate) ||
+          candidate.workspaceGeneration !== workspaceGeneration ||
+          !validTurnProgression(latest, candidate)
+        ) {
+          fail("codex-turn-failed");
+          return;
+        }
+        latest = candidate;
+        onUpdate(candidate);
+      };
+      signal?.addEventListener("abort", cancel, { once: true });
+      void invoke("codex_turn_request", {
+        documentNonce: authority.documentNonce,
+        generation: authority.generation,
+        request: JSON.stringify(request),
+        onEvent,
+      }).then(
+        (encoded) => {
+          if (terminal) return;
+          let response: unknown;
+          try {
+            response = JSON.parse(encoded);
+          } catch {
+            fail("codex-turn-failed");
+            return;
+          }
+          if (
+            !isTurnResponse(response) ||
+            response.requestId !== request.requestId ||
+            !validTurnProgression(latest, response.result.state) ||
+            !isTerminalTurn(response.result.state)
+          ) {
+            fail("codex-turn-failed");
+            return;
+          }
+          latest = response.result.state;
+          onUpdate(response.result.state);
+          terminal = true;
+          finish();
+          resolve(response);
+        },
+        () => fail("codex-turn-failed"),
+      );
+      if (signal?.aborted) cancel();
+    });
+  }
+
   return {
     health,
     loadFoundation: (signal?: AbortSignal) =>
@@ -444,6 +609,7 @@ export function createRendererPort(
       workspace({ kind: "workspace-clear" }, signal),
     runtimeReadiness: (signal?: AbortSignal) =>
       runtime({ kind: "runtime-readiness" }, signal),
+    codexTurn,
   };
 }
 
@@ -663,6 +829,175 @@ export function isRuntimeReadinessResponse(
   return (
     (kind === "checking" || terminalStates.includes(kind)) &&
     hasExactKeys(state, ["state", "quarantinedEvents"])
+  );
+}
+
+export function isTurnResponse(value: unknown): value is TurnResponse {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ["schemaVersion", "requestId", "result"]) &&
+    value.schemaVersion === 1 &&
+    typeof value.requestId === "string" &&
+    isRecord(value.result) &&
+    hasExactKeys(value.result, ["kind", "state"]) &&
+    value.result.kind === "codex-turn" &&
+    isTurnView(value.result.state)
+  );
+}
+
+export function isTurnView(value: unknown): value is TurnView {
+  if (
+    !isRecord(value) ||
+    !hasExactOptionalReason(value) ||
+    !/^task-[0-9]{16}-[0-9]{16}$/u.test(String(value.taskId)) ||
+    !/^run-[0-9]{16}-[0-9]{16}$/u.test(String(value.runId)) ||
+    value.taskId === value.runId ||
+    !validWorkspaceGeneration(value.workspaceGeneration) ||
+    Number(value.workspaceGeneration) === 0 ||
+    !isTurnState(value.state) ||
+    typeof value.agentText !== "string" ||
+    new TextEncoder().encode(value.agentText).length > 256 * 1024 ||
+    typeof value.providerThreadEstablished !== "boolean" ||
+    typeof value.providerTurnEstablished !== "boolean" ||
+    !isRecord(value.evidence)
+  ) {
+    return false;
+  }
+  const evidence = value.evidence;
+  const messageBytes = new TextEncoder().encode(value.agentText).length;
+  return (
+    hasExactKeys(evidence, [
+      "runtimeVersion",
+      "runtimeArtifactSha256",
+      "containmentProfile",
+      "authorityProfile",
+      "messageBytes",
+      "quarantinedEvents",
+      "acceptedEffects",
+      "cleanupComplete",
+      "terminalState",
+    ]) &&
+    evidence.runtimeVersion === "0.145.0" &&
+    evidence.runtimeArtifactSha256 ===
+      "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590" &&
+    evidence.containmentProfile === "keiko-codex-readiness-v1" &&
+    evidence.authorityProfile === "keiko-codex-no-effect-v1" &&
+    evidence.messageBytes === messageBytes &&
+    Number.isInteger(evidence.quarantinedEvents) &&
+    Number(evidence.quarantinedEvents) >= 0 &&
+    Number(evidence.quarantinedEvents) <= 64 &&
+    evidence.acceptedEffects === 0 &&
+    typeof evidence.cleanupComplete === "boolean" &&
+    evidence.terminalState === value.state &&
+    (value.state === "preflighting"
+      ? !value.providerThreadEstablished &&
+        !value.providerTurnEstablished &&
+        value.agentText.length === 0 &&
+        value.reason === undefined &&
+        evidence.cleanupComplete === false
+      : true) &&
+    (value.state === "streaming"
+      ? value.providerThreadEstablished &&
+        value.providerTurnEstablished &&
+        value.reason === undefined &&
+        evidence.cleanupComplete === false
+      : true) &&
+    (!["preflighting", "streaming"].includes(String(value.state))
+      ? evidence.cleanupComplete &&
+        (value.state === "completed"
+          ? value.reason === undefined && value.agentText.length > 0
+          : isTurnReason(value.reason))
+      : true)
+  );
+}
+
+function validTurnTask(task: string): boolean {
+  const bytes = new TextEncoder().encode(task).length;
+  return (
+    task.trim().length > 0 &&
+    bytes <= 4096 &&
+    !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(task)
+  );
+}
+
+function validTurnProgression(
+  previous: TurnView | null,
+  next: TurnView,
+): boolean {
+  if (previous === null) return next.state === "preflighting";
+  if (previous.evidence.cleanupComplete) {
+    return JSON.stringify(previous) === JSON.stringify(next);
+  }
+  if (
+    previous.taskId !== next.taskId ||
+    previous.runId !== next.runId ||
+    previous.workspaceGeneration !== next.workspaceGeneration ||
+    !next.agentText.startsWith(previous.agentText) ||
+    next.evidence.quarantinedEvents < previous.evidence.quarantinedEvents
+  ) {
+    return false;
+  }
+  if (previous.state === next.state) {
+    return (
+      next.state === "preflighting" ||
+      next.state === "streaming" ||
+      isTerminalTurn(next)
+    );
+  }
+  return (
+    (previous.state === "preflighting" &&
+      (next.state === "streaming" || isTerminalTurn(next))) ||
+    (previous.state === "streaming" && isTerminalTurn(next))
+  );
+}
+
+function isTerminalTurn(value: TurnView): boolean {
+  return !["preflighting", "streaming"].includes(value.state);
+}
+
+function isTurnState(value: unknown): value is TurnState {
+  return [
+    "preflighting",
+    "streaming",
+    "completed",
+    "failed",
+    "timed-out",
+    "containment-failed",
+    "cleanup-failed",
+  ].includes(String(value));
+}
+
+function isTurnReason(value: unknown): value is TurnReason {
+  return [
+    "stale-workspace",
+    "runtime-unavailable",
+    "runtime-incompatible",
+    "authentication-required",
+    "provider-failed",
+    "renderer-lost",
+    "protocol-rejected",
+    "effect-denied",
+    "buffer-limit",
+    "timed-out",
+    "cleanup-failed",
+    "internal-failure",
+  ].includes(String(value));
+}
+
+function hasExactOptionalReason(value: Record<string, unknown>): boolean {
+  const required = [
+    "taskId",
+    "runId",
+    "workspaceGeneration",
+    "state",
+    "agentText",
+    "providerThreadEstablished",
+    "providerTurnEstablished",
+    "evidence",
+  ];
+  return (
+    hasExactKeys(value, required) ||
+    (hasExactKeys(value, [...required, "reason"]) && isTurnReason(value.reason))
   );
 }
 

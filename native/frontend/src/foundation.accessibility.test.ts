@@ -3,11 +3,12 @@
 import axe from "axe-core";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   renderFoundation,
   type FoundationController,
   type FoundationView,
+  type TurnController,
 } from "./foundation";
 
 const controller: FoundationController = {
@@ -105,6 +106,61 @@ describe("rendered Foundation accessibility", () => {
       ),
     );
     expect(document.activeElement).toBe(textarea);
+
+    root.unmount();
+    container.remove();
+  });
+
+  it("starts a ready turn from a real rendered button activation", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const startTurn = vi.fn<TurnController["startTurn"]>(async () => undefined);
+
+    flushSync(() =>
+      root.render(
+        renderFoundation(
+          canvas,
+          controller,
+          { kind: "bound", generation: 3, displayLabel: "Sanitized fixture" },
+          undefined,
+          {
+            state: "ready",
+            quarantinedEvents: 0,
+            descriptor: {
+              version: "0.145.0",
+              artifactSha256:
+                "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
+              containmentProfile: "keiko-codex-readiness-v1",
+              freshStartRequired: true,
+            },
+          },
+          undefined,
+          null,
+          { startTurn },
+        ),
+      ),
+    );
+
+    const textarea =
+      container.querySelector<HTMLTextAreaElement>("#codex-task");
+    const submit = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Begrenzten Auftrag starten",
+    );
+    expect(textarea).not.toBeNull();
+    expect(submit).not.toBeUndefined();
+
+    textarea!.value =
+      "In two short sentences, explain why cancellation needs one terminal state.";
+    textarea!.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    expect(submit!.disabled).toBe(false);
+
+    submit!.click();
+    await Promise.resolve();
+
+    expect(startTurn).toHaveBeenCalledExactlyOnceWith(textarea!.value);
+    expect(textarea!.disabled).toBe(true);
+    expect(submit!.disabled).toBe(true);
 
     root.unmount();
     container.remove();
