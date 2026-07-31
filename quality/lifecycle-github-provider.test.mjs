@@ -10,6 +10,7 @@ import {
 import {
   createRecordEnvelope,
   digestAuxiliaryIdentity,
+  encodeAuxiliaryPreimage,
   parseRecordEnvelope,
 } from "./lifecycle-record-protocol.mjs";
 
@@ -44,6 +45,124 @@ const graphComment = {
   },
   updatedAt: "2026-07-29T10:00:00Z",
 };
+
+function storedZip(name, contents) {
+  const filename = Buffer.from(name, "utf8");
+  const local = Buffer.alloc(30 + filename.length + contents.length);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(20, 4);
+  local.writeUInt16LE(contents.length, 18);
+  local.writeUInt16LE(contents.length, 22);
+  local.writeUInt16LE(filename.length, 26);
+  filename.copy(local, 30);
+  contents.copy(local, 30 + filename.length);
+
+  const central = Buffer.alloc(46 + filename.length);
+  central.writeUInt32LE(0x02014b50, 0);
+  central.writeUInt16LE(20, 4);
+  central.writeUInt16LE(20, 6);
+  central.writeUInt16LE(contents.length, 20);
+  central.writeUInt16LE(contents.length, 24);
+  central.writeUInt16LE(filename.length, 28);
+  filename.copy(central, 46);
+
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(1, 8);
+  end.writeUInt16LE(1, 10);
+  end.writeUInt32LE(central.length, 12);
+  end.writeUInt32LE(local.length, 16);
+  return Buffer.concat([local, central, end]);
+}
+
+function anchorInventoryFixture(anchorBytes) {
+  const repository = "oscharko-dev/Keiko-Native";
+  const issueNumber = 141;
+  const name = `keiko-lifecycle-anchor-v1-issue-${issueNumber}`;
+  const provider = createLifecycleGithubProvider({
+    binary: async (path) => {
+      assert.equal(path, `/repos/${repository}/actions/artifacts/701/zip`);
+      return storedZip("artifact-anchor.bin", anchorBytes);
+    },
+    graphql: async () => {
+      throw new Error("GraphQL access is unexpected");
+    },
+    json: async (path) => {
+      assert.equal(
+        path,
+        `/repos/${repository}/actions/artifacts?name=${name}&per_page=100&page=1`,
+      );
+      return {
+        artifacts: [
+          {
+            expired: false,
+            id: 701,
+            name,
+            workflow_run: { id: 77 },
+          },
+        ],
+        total_count: 1,
+      };
+    },
+  });
+  return { issueNumber, name, provider };
+}
+
+const identityFields = {
+  repository: "oscharko-dev/Keiko-Native",
+  issue_number: 141,
+  record_type: "generation-request",
+  record_digest: "1".repeat(64),
+  comment_id: 501,
+  comment_body_sha256: "2".repeat(64),
+  generation_identity: "3".repeat(64),
+  attempt: 1,
+  workflow_path: ".github/workflows/issue-lifecycle.yml",
+  workflow_run_id: 77,
+  workflow_run_attempt: 1,
+  protected_dev_sha: "a".repeat(40),
+};
+
+test("derives the unchanged identity from canonical writer-produced anchor bytes", async () => {
+  const anchorBytes = encodeAuxiliaryPreimage(
+    "artifact anchor",
+    identityFields,
+  );
+  const { issueNumber, name, provider } = anchorInventoryFixture(anchorBytes);
+  assert.deepEqual(await provider.listAnchorArtifacts({ issueNumber, name }), {
+    complete: true,
+    items: [
+      {
+        anchorIdentity: digestAuxiliaryIdentity(
+          "artifact anchor",
+          identityFields,
+        ),
+        commentId: identityFields.comment_id,
+        expired: false,
+        id: 701,
+        immutable: true,
+        name,
+        workflowRunId: identityFields.workflow_run_id,
+      },
+    ],
+  });
+  assert.equal(provider.requestCount(), 2);
+});
+
+test("validates canonical anchor bytes before deriving their identity", async () => {
+  const anchorBytes = encodeAuxiliaryPreimage(
+    "artifact anchor",
+    identityFields,
+  );
+  const { issueNumber, name, provider } = anchorInventoryFixture(
+    Buffer.concat([anchorBytes, Buffer.from("hostile suffix")]),
+  );
+  await assert.rejects(
+    provider.listAnchorArtifacts({ issueNumber, name }),
+    /trailing bytes/u,
+  );
+  assert.equal(provider.requestCount(), 2);
+});
 
 test("authenticates a recovery command through exactly two REST/GraphQL/permission reads", async () => {
   const calls = [];
