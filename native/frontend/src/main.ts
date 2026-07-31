@@ -161,21 +161,38 @@ export async function startRenderer(
       present(currentView);
     },
   };
+  let activeTurnCancellation: AbortController | null = null;
   turnController = {
     startTurn: async (task) => {
-      if (workspaceState.kind !== "bound" || runtimeState?.state !== "ready") {
+      if (
+        activeTurnCancellation !== null ||
+        workspaceState.kind !== "bound" ||
+        runtimeState?.state !== "ready"
+      ) {
         return;
       }
       const workspaceGeneration = workspaceState.generation;
+      const cancellation = new AbortController();
+      activeTurnCancellation = cancellation;
       try {
-        await port.codexTurn(workspaceGeneration, task, (state) => {
-          turnState = state;
-          present(currentView);
-        });
+        await port.codexTurn(
+          workspaceGeneration,
+          task,
+          (state) => {
+            turnState = state;
+            present(currentView);
+          },
+          cancellation.signal,
+        );
       } catch {
         present(currentView);
+      } finally {
+        if (activeTurnCancellation === cancellation) {
+          activeTurnCancellation = null;
+        }
       }
     },
+    cancelTurn: () => activeTurnCancellation?.abort(),
   };
   present(initial.result);
 }

@@ -3,10 +3,8 @@ use std::time::Duration;
 
 use keiko_application::runtime::RuntimeDescriptor;
 use keiko_application::turn::{TurnReason, TurnSession, TurnState, TurnView};
-use keiko_application::{ApplicationResult, application_response};
 use keiko_ui_port::{
-    Operation, ReasonCode, encode_error, encode_success, request_metadata, request_operation,
-    turn_input,
+    Operation, ReasonCode, encode_error, request_metadata, request_operation, turn_input,
 };
 
 use crate::runtime::{RuntimeHost, TurnRuntimeOutcome, TurnRuntimeUpdate};
@@ -95,6 +93,7 @@ pub fn turn_request(
                 return;
             }
             let applied = match runtime_update {
+                TurnRuntimeUpdate::Stopping(reason) => session.request_stop(reason),
                 TurnRuntimeUpdate::StreamingStarted => session.mark_streaming(),
                 TurnRuntimeUpdate::AgentDelta(delta) => session.append_agent_delta(&delta),
                 TurnRuntimeUpdate::ProviderEventQuarantined => session.quarantine_provider_event(),
@@ -118,6 +117,12 @@ fn settle_session(session: &mut TurnSession, outcome: TurnRuntimeOutcome, projec
     } else {
         match outcome.state {
             TurnState::Completed => session.complete(),
+            TurnState::Cancelled => {
+                session.cancel(outcome.reason.unwrap_or(TurnReason::InternalFailure))
+            }
+            TurnState::CleanupFailed if session.view().state == TurnState::Stopping => {
+                session.settle_cleanup(false)
+            }
             state => session.fail(state, outcome.reason.unwrap_or(TurnReason::InternalFailure)),
         }
     };
@@ -132,12 +137,11 @@ fn finish_turn(
     accepted: AcceptedRequest,
     state: TurnView,
 ) -> TurnRequestOutput {
-    let (request_id, _, _) = request_metadata(&accepted.request);
-    let encoded = encode_success(&application_response(
-        request_id,
-        ApplicationResult::CodexTurn { state },
-    ));
-    finish_encoded(lifecycle, accepted, encoded)
+    let encoded = lifecycle.lock().map_or_else(
+        |_| encode_error("unknown-request", ReasonCode::InternalFailure),
+        |mut lifecycle| lifecycle.complete_turn_request(accepted, state),
+    );
+    TurnRequestOutput { encoded }
 }
 
 fn finish_encoded(
@@ -277,5 +281,283 @@ mod tests {
             |_| panic!("no turn update"),
         );
         assert!(output.encoded.contains(r#""unknown-operation""#));
+    }
+
+    #[test]
+    fn settlement_enforces_each_cancellation_terminal_precedence() {
+        let outcome = |state, reason, cleaned| TurnRuntimeOutcome {
+            state,
+            reason,
+            agent_text: String::new(),
+            provider_thread_established: false,
+            provider_turn_established: false,
+            quarantined_events: 0,
+            cleaned,
+        };
+        let new_session = || {
+            TurnSession::new(
+                1,
+                1,
+                1,
+                "Bounded task.".to_owned(),
+                RuntimeDescriptor::approved(),
+            )
+            .unwrap()
+        };
+
+        let mut completed = new_session();
+        completed.mark_streaming().unwrap();
+        completed.append_agent_delta("answer").unwrap();
+        settle_session(
+            &mut completed,
+            outcome(TurnState::Completed, None, true),
+            false,
+        );
+        assert_eq!(completed.view().state, TurnState::Completed);
+
+        let mut cancelled = new_session();
+        cancelled.request_stop(TurnReason::UserCancelled).unwrap();
+        settle_session(
+            &mut cancelled,
+            outcome(TurnState::Cancelled, Some(TurnReason::UserCancelled), true),
+            false,
+        );
+        assert_eq!(cancelled.view().state, TurnState::Cancelled);
+
+        let mut cleanup_failed = new_session();
+        cleanup_failed
+            .request_stop(TurnReason::AppShutdown)
+            .unwrap();
+        settle_session(
+            &mut cleanup_failed,
+            outcome(
+                TurnState::CleanupFailed,
+                Some(TurnReason::CleanupFailed),
+                false,
+            ),
+            false,
+        );
+        assert_eq!(cleanup_failed.view().state, TurnState::CleanupFailed);
+
+        let mut projection_failed = new_session();
+        settle_session(
+            &mut projection_failed,
+            outcome(TurnState::Completed, None, true),
+            true,
+        );
+        assert_eq!(projection_failed.view().state, TurnState::ContainmentFailed);
+
+        let mut invalid_completion = new_session();
+        settle_session(
+            &mut invalid_completion,
+            outcome(TurnState::Completed, None, true),
+            false,
+        );
+        assert_eq!(
+            invalid_completion.view().state,
+            TurnState::ContainmentFailed
+        );
+    }
+
+    #[test]
+    fn accepted_cancel_wins_a_raced_runtime_completion() {
+        let (lifecycle, sender) = session();
+        let encoded_request = request(sender.generation, 3, "Bounded task.");
+        let accepted = lifecycle
+            .lock()
+            .unwrap()
+            .begin_application_request(&sender, encoded_request.as_bytes())
+            .unwrap();
+        let cancellation = serde_json::to_vec(&json!({
+            "schemaVersion": 1,
+            "requestId": canonical_request_id(sender.generation, 1).unwrap()
+        }))
+        .unwrap();
+        assert!(
+            lifecycle
+                .lock()
+                .unwrap()
+                .cancel_application_request(&sender, &cancellation)
+                .contains("cancelled")
+        );
+
+        let mut raced = TurnSession::new(
+            sender.generation,
+            1,
+            3,
+            "Bounded task.".to_owned(),
+            RuntimeDescriptor::approved(),
+        )
+        .unwrap();
+        raced.mark_streaming().unwrap();
+        raced.append_agent_delta("late completion").unwrap();
+        raced.complete().unwrap();
+        raced.settle_cleanup(true).unwrap();
+        let encoded = lifecycle
+            .lock()
+            .unwrap()
+            .complete_turn_request(accepted, raced.view());
+        assert!(encoded.contains(r#""state":"cancelled""#));
+        assert!(encoded.contains(r#""reason":"user-cancelled""#));
+        assert!(encoded.contains(r#""cleanupComplete":true"#));
+        assert!(!encoded.contains(r#""state":"completed""#));
+
+        let (settled_lifecycle, settled_sender) = session();
+        let settled_request = request(settled_sender.generation, 3, "Bounded task.");
+        let settled_accepted = settled_lifecycle
+            .lock()
+            .unwrap()
+            .begin_application_request(&settled_sender, settled_request.as_bytes())
+            .unwrap();
+        let settled_cancellation = serde_json::to_vec(&json!({
+            "schemaVersion": 1,
+            "requestId": canonical_request_id(settled_sender.generation, 1).unwrap()
+        }))
+        .unwrap();
+        settled_lifecycle
+            .lock()
+            .unwrap()
+            .cancel_application_request(&settled_sender, &settled_cancellation);
+        let mut settled = TurnSession::new(
+            settled_sender.generation,
+            1,
+            3,
+            "Bounded task.".to_owned(),
+            RuntimeDescriptor::approved(),
+        )
+        .unwrap();
+        settled.request_stop(TurnReason::UserCancelled).unwrap();
+        settled.cancel(TurnReason::UserCancelled).unwrap();
+        settled.settle_cleanup(true).unwrap();
+        let settled_encoded = settled_lifecycle
+            .lock()
+            .unwrap()
+            .complete_turn_request(settled_accepted, settled.view());
+        assert!(settled_encoded.contains(r#""state":"cancelled""#));
+        assert!(settled_encoded.contains(r#""reason":"user-cancelled""#));
+    }
+
+    #[test]
+    fn renderer_loss_and_shutdown_classify_raced_completion() {
+        for (shutdown, expected_reason) in [(false, "renderer-lost"), (true, "app-shutdown")] {
+            let (lifecycle, sender) = session();
+            let encoded_request = request(sender.generation, 3, "Bounded task.");
+            let accepted = lifecycle
+                .lock()
+                .unwrap()
+                .begin_application_request(&sender, encoded_request.as_bytes())
+                .unwrap();
+            if shutdown {
+                lifecycle.lock().unwrap().shutdown();
+            } else {
+                lifecycle.lock().unwrap().renderer_lost();
+            }
+
+            let mut raced = TurnSession::new(
+                sender.generation,
+                1,
+                3,
+                "Bounded task.".to_owned(),
+                RuntimeDescriptor::approved(),
+            )
+            .unwrap();
+            raced.mark_streaming().unwrap();
+            raced.append_agent_delta("late completion").unwrap();
+            raced.complete().unwrap();
+            raced.settle_cleanup(true).unwrap();
+            let encoded = lifecycle
+                .lock()
+                .unwrap()
+                .complete_turn_request(accepted, raced.view());
+            assert!(encoded.contains(r#""state":"cancelled""#));
+            assert!(encoded.contains(&format!(r#""reason":"{expected_reason}""#)));
+        }
+    }
+
+    #[test]
+    fn cleanup_failure_outweighs_cancel_and_timeout_completion() {
+        let cleanup_view = || {
+            let mut session = TurnSession::new(
+                1,
+                1,
+                3,
+                "Bounded task.".to_owned(),
+                RuntimeDescriptor::approved(),
+            )
+            .unwrap();
+            session.request_stop(TurnReason::UserCancelled).unwrap();
+            session.cancel(TurnReason::UserCancelled).unwrap();
+            session.settle_cleanup(false).unwrap();
+            session.view()
+        };
+
+        let (cancelled_lifecycle, cancelled_sender) = session();
+        let cancelled_request = request(cancelled_sender.generation, 3, "Bounded task.");
+        let cancelled_accepted = cancelled_lifecycle
+            .lock()
+            .unwrap()
+            .begin_application_request(&cancelled_sender, cancelled_request.as_bytes())
+            .unwrap();
+        let cancellation = serde_json::to_vec(&json!({
+            "schemaVersion": 1,
+            "requestId": canonical_request_id(cancelled_sender.generation, 1).unwrap()
+        }))
+        .unwrap();
+        cancelled_lifecycle
+            .lock()
+            .unwrap()
+            .cancel_application_request(&cancelled_sender, &cancellation);
+        let cancelled_encoded = cancelled_lifecycle
+            .lock()
+            .unwrap()
+            .complete_turn_request(cancelled_accepted, cleanup_view());
+        assert!(cancelled_encoded.contains(r#""state":"cleanup-failed""#));
+
+        let (timed_lifecycle, timed_sender) = session();
+        let timed_request = request(timed_sender.generation, 3, "Bounded task.");
+        let timed_accepted = timed_lifecycle
+            .lock()
+            .unwrap()
+            .begin_application_request(&timed_sender, timed_request.as_bytes())
+            .unwrap();
+        timed_lifecycle.lock().unwrap().set_test_now_ms(120_000);
+        let timed_encoded = timed_lifecycle
+            .lock()
+            .unwrap()
+            .complete_turn_request(timed_accepted, cleanup_view());
+        assert!(timed_encoded.contains(r#""state":"cleanup-failed""#));
+
+        let (ordinary_timeout_lifecycle, ordinary_timeout_sender) = session();
+        let ordinary_timeout_request =
+            request(ordinary_timeout_sender.generation, 3, "Bounded task.");
+        let ordinary_timeout_accepted = ordinary_timeout_lifecycle
+            .lock()
+            .unwrap()
+            .begin_application_request(
+                &ordinary_timeout_sender,
+                ordinary_timeout_request.as_bytes(),
+            )
+            .unwrap();
+        ordinary_timeout_lifecycle
+            .lock()
+            .unwrap()
+            .set_test_now_ms(120_000);
+        let mut failed = TurnSession::new(
+            1,
+            1,
+            3,
+            "Bounded task.".to_owned(),
+            RuntimeDescriptor::approved(),
+        )
+        .unwrap();
+        failed
+            .fail(TurnState::Failed, TurnReason::ProviderFailed)
+            .unwrap();
+        failed.settle_cleanup(true).unwrap();
+        let ordinary_timeout_encoded = ordinary_timeout_lifecycle
+            .lock()
+            .unwrap()
+            .complete_turn_request(ordinary_timeout_accepted, failed.view());
+        assert!(ordinary_timeout_encoded.contains(r#""state":"timed-out""#));
     }
 }

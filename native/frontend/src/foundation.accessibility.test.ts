@@ -10,6 +10,7 @@ import {
   type FoundationView,
   type TurnController,
 } from "./foundation";
+import type { TurnView } from "./port";
 
 const controller: FoundationController = {
   dismissWelcome: async () => ({ kind: "canvas", committedText: "" }),
@@ -116,6 +117,7 @@ describe("rendered Foundation accessibility", () => {
     document.body.append(container);
     const root = createRoot(container);
     const startTurn = vi.fn<TurnController["startTurn"]>(async () => undefined);
+    const cancelTurn = vi.fn<TurnController["cancelTurn"]>();
 
     flushSync(() =>
       root.render(
@@ -137,7 +139,7 @@ describe("rendered Foundation accessibility", () => {
           },
           undefined,
           null,
-          { startTurn },
+          { startTurn, cancelTurn },
         ),
       ),
     );
@@ -161,6 +163,60 @@ describe("rendered Foundation accessibility", () => {
     expect(startTurn).toHaveBeenCalledExactlyOnceWith(textarea!.value);
     expect(textarea!.disabled).toBe(true);
     expect(submit!.disabled).toBe(true);
+
+    const streaming: TurnView = {
+      taskId: "task-0000000000000007-0000000000000001",
+      runId: "run-0000000000000007-0000000000000001",
+      workspaceGeneration: 3,
+      state: "streaming",
+      agentText: "Partial",
+      providerThreadEstablished: true,
+      providerTurnEstablished: true,
+      evidence: {
+        runtimeVersion: "0.145.0",
+        runtimeArtifactSha256:
+          "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
+        containmentProfile: "keiko-codex-readiness-v1",
+        authorityProfile: "keiko-codex-no-effect-v1",
+        messageBytes: 7,
+        quarantinedEvents: 0,
+        acceptedEffects: 0,
+        cleanupComplete: false,
+        terminalState: "streaming",
+      },
+    };
+    flushSync(() =>
+      root.render(
+        renderFoundation(
+          canvas,
+          controller,
+          { kind: "bound", generation: 3, displayLabel: "Sanitized fixture" },
+          undefined,
+          {
+            state: "ready",
+            quarantinedEvents: 0,
+            descriptor: {
+              version: "0.145.0",
+              artifactSha256:
+                "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
+              containmentProfile: "keiko-codex-readiness-v1",
+              freshStartRequired: true,
+            },
+          },
+          undefined,
+          streaming,
+          { startTurn, cancelTurn },
+        ),
+      ),
+    );
+    const cancel = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Codex-Lauf abbrechen",
+    );
+    expect(cancel?.disabled).toBe(false);
+    cancel?.focus();
+    expect(document.activeElement).toBe(cancel);
+    cancel?.click();
+    expect(cancelTurn).toHaveBeenCalledOnce();
 
     root.unmount();
     container.remove();

@@ -93,13 +93,17 @@ export interface RuntimeReadinessResponse {
 export type TurnState =
   | "preflighting"
   | "streaming"
+  | "stopping"
   | "completed"
+  | "cancelled"
   | "failed"
   | "timed-out"
   | "containment-failed"
   | "cleanup-failed";
 
 export type TurnReason =
+  | "user-cancelled"
+  | "app-shutdown"
   | "stale-workspace"
   | "runtime-unavailable"
   | "runtime-incompatible"
@@ -517,6 +521,7 @@ export function createRendererPort(
     return new Promise((resolve, reject) => {
       let terminal = false;
       let latest: TurnView | null = null;
+      let cancellationAccepted = false;
       const finish = () => signal?.removeEventListener("abort", cancel);
       const fail = (message: string) => {
         if (terminal) return;
@@ -524,8 +529,28 @@ export function createRendererPort(
         finish();
         reject(new Error(message));
       };
+      const projectStopping = () => {
+        if (
+          !cancellationAccepted ||
+          latest === null ||
+          !["preflighting", "streaming"].includes(latest.state)
+        ) {
+          return;
+        }
+        latest = {
+          ...latest,
+          state: "stopping",
+          reason: "user-cancelled",
+          evidence: {
+            ...latest.evidence,
+            cleanupComplete: false,
+            terminalState: "stopping",
+          },
+        };
+        onUpdate(latest);
+      };
       const cancel = () => {
-        if (terminal) return;
+        if (terminal || (latest !== null && isTerminalTurn(latest))) return;
         const cancellation: CancelRequest = {
           schemaVersion: 1,
           requestId: request.requestId,
@@ -534,11 +559,25 @@ export function createRendererPort(
           generation: authority.generation,
           documentNonce: authority.documentNonce,
           request: JSON.stringify(cancellation),
-        }).catch(() => undefined);
-        fail("codex-turn-cancelled");
+        })
+          .then((encoded) => {
+            if (isAcceptedCancellation(encoded, request.requestId)) {
+              cancellationAccepted = true;
+              projectStopping();
+            }
+          })
+          .catch(() => undefined);
       };
       const onEvent = channelFactory();
       onEvent.onmessage = (candidate) => {
+        if (
+          cancellationAccepted &&
+          latest?.state === "stopping" &&
+          isTurnView(candidate) &&
+          ["preflighting", "streaming"].includes(candidate.state)
+        ) {
+          return;
+        }
         if (
           terminal ||
           !isTurnView(candidate) ||
@@ -550,6 +589,7 @@ export function createRendererPort(
         }
         latest = candidate;
         onUpdate(candidate);
+        projectStopping();
       };
       signal?.addEventListener("abort", cancel, { once: true });
       void invoke("codex_turn_request", {
@@ -845,6 +885,25 @@ export function isTurnResponse(value: unknown): value is TurnResponse {
   );
 }
 
+function isAcceptedCancellation(encoded: string, requestId: string): boolean {
+  let value: unknown;
+  try {
+    value = JSON.parse(encoded);
+  } catch {
+    return false;
+  }
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ["schemaVersion", "requestId", "result"]) &&
+    value.schemaVersion === 1 &&
+    value.requestId === requestId &&
+    isRecord(value.result) &&
+    hasExactKeys(value.result, ["kind", "status"]) &&
+    value.result.kind === "application-cancel" &&
+    value.result.status === "cancelled"
+  );
+}
+
 export function isTurnView(value: unknown): value is TurnView {
   if (
     !isRecord(value) ||
@@ -902,8 +961,14 @@ export function isTurnView(value: unknown): value is TurnView {
         value.reason === undefined &&
         evidence.cleanupComplete === false
       : true) &&
-    (!["preflighting", "streaming"].includes(String(value.state))
-      ? evidence.cleanupComplete &&
+    (value.state === "stopping"
+      ? isTurnReason(value.reason) && evidence.cleanupComplete === false
+      : true) &&
+    (!["preflighting", "streaming", "stopping"].includes(String(value.state))
+      ? (value.state === "cleanup-failed"
+          ? evidence.cleanupComplete === false &&
+            value.reason === "cleanup-failed"
+          : evidence.cleanupComplete) &&
         (value.state === "completed"
           ? value.reason === undefined && value.agentText.length > 0
           : isTurnReason(value.reason))
@@ -938,28 +1003,37 @@ function validTurnProgression(
     return false;
   }
   if (previous.state === next.state) {
+    if (previous.reason !== next.reason) return false;
     return (
       next.state === "preflighting" ||
       next.state === "streaming" ||
+      next.state === "stopping" ||
       isTerminalTurn(next)
     );
   }
   return (
     (previous.state === "preflighting" &&
-      (next.state === "streaming" || isTerminalTurn(next))) ||
-    (previous.state === "streaming" && isTerminalTurn(next))
+      (next.state === "streaming" ||
+        next.state === "stopping" ||
+        isTerminalTurn(next))) ||
+    (previous.state === "streaming" &&
+      (next.state === "stopping" || isTerminalTurn(next))) ||
+    (previous.state === "stopping" &&
+      (next.state === "cancelled" || next.state === "cleanup-failed"))
   );
 }
 
 function isTerminalTurn(value: TurnView): boolean {
-  return !["preflighting", "streaming"].includes(value.state);
+  return !["preflighting", "streaming", "stopping"].includes(value.state);
 }
 
 function isTurnState(value: unknown): value is TurnState {
   return [
     "preflighting",
     "streaming",
+    "stopping",
     "completed",
+    "cancelled",
     "failed",
     "timed-out",
     "containment-failed",
@@ -969,6 +1043,8 @@ function isTurnState(value: unknown): value is TurnState {
 
 function isTurnReason(value: unknown): value is TurnReason {
   return [
+    "user-cancelled",
+    "app-shutdown",
     "stale-workspace",
     "runtime-unavailable",
     "runtime-incompatible",

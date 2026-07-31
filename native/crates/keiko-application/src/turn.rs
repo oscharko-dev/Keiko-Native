@@ -14,7 +14,9 @@ pub const NO_EFFECT_AUTHORITY_PROFILE: &str = "keiko-codex-no-effect-v1";
 pub enum TurnState {
     Preflighting,
     Streaming,
+    Stopping,
     Completed,
+    Cancelled,
     Failed,
     TimedOut,
     ContainmentFailed,
@@ -24,6 +26,8 @@ pub enum TurnState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TurnReason {
+    UserCancelled,
+    AppShutdown,
     StaleWorkspace,
     RuntimeUnavailable,
     RuntimeIncompatible,
@@ -180,6 +184,28 @@ impl TurnSession {
         Ok(())
     }
 
+    pub fn request_stop(&mut self, reason: TurnReason) -> Result<(), TurnError> {
+        if !matches!(self.state, TurnState::Preflighting | TurnState::Streaming)
+            || !matches!(
+                reason,
+                TurnReason::UserCancelled | TurnReason::RendererLost | TurnReason::AppShutdown
+            )
+        {
+            return Err(TurnError::InvalidTransition);
+        }
+        self.state = TurnState::Stopping;
+        self.reason = Some(reason);
+        Ok(())
+    }
+
+    pub fn cancel(&mut self, reason: TurnReason) -> Result<(), TurnError> {
+        if self.state != TurnState::Stopping || self.reason != Some(reason) {
+            return Err(TurnError::InvalidTransition);
+        }
+        self.state = TurnState::Cancelled;
+        Ok(())
+    }
+
     pub fn fail(&mut self, state: TurnState, reason: TurnReason) -> Result<(), TurnError> {
         if !matches!(self.state, TurnState::Preflighting | TurnState::Streaming)
             || !matches!(
@@ -198,9 +224,16 @@ impl TurnSession {
     }
 
     pub fn settle_cleanup(&mut self, cleaned: bool) -> Result<(), TurnError> {
+        if self.state == TurnState::Stopping && !cleaned {
+            self.cleanup_complete = false;
+            self.state = TurnState::CleanupFailed;
+            self.reason = Some(TurnReason::CleanupFailed);
+            return Ok(());
+        }
         if !matches!(
             self.state,
             TurnState::Completed
+                | TurnState::Cancelled
                 | TurnState::Failed
                 | TurnState::TimedOut
                 | TurnState::ContainmentFailed
@@ -410,6 +443,70 @@ mod tests {
                 Err(TurnError::InvalidTransition)
             );
         }
+    }
+
+    #[test]
+    fn cancellation_stops_projection_and_one_terminal_state_wins() {
+        for reason in [
+            TurnReason::UserCancelled,
+            TurnReason::RendererLost,
+            TurnReason::AppShutdown,
+        ] {
+            let mut current = session("Explain one terminal state.");
+            current.mark_streaming().unwrap();
+            current.append_agent_delta("partial").unwrap();
+            current.request_stop(reason).unwrap();
+            assert_eq!(current.view().state, TurnState::Stopping);
+            assert_eq!(current.view().reason, Some(reason));
+            assert_eq!(
+                current.append_agent_delta(" late"),
+                Err(TurnError::InvalidTransition)
+            );
+            assert_eq!(
+                current.quarantine_provider_event(),
+                Err(TurnError::InvalidTransition)
+            );
+            current.cancel(reason).unwrap();
+            current.settle_cleanup(true).unwrap();
+            assert_eq!(current.view().state, TurnState::Cancelled);
+            assert_eq!(current.view().evidence.terminal_state, TurnState::Cancelled);
+            assert_eq!(
+                current.complete(),
+                Err(TurnError::InvalidTransition),
+                "late completion must not replace cancellation"
+            );
+        }
+
+        let mut completed = session("Explain one terminal state.");
+        completed.mark_streaming().unwrap();
+        completed.append_agent_delta("answer").unwrap();
+        completed.complete().unwrap();
+        assert_eq!(
+            completed.request_stop(TurnReason::UserCancelled),
+            Err(TurnError::InvalidTransition),
+            "completion observed first must remain terminal"
+        );
+
+        let mut cleanup_failed = session("Explain one terminal state.");
+        cleanup_failed
+            .request_stop(TurnReason::UserCancelled)
+            .unwrap();
+        cleanup_failed.cancel(TurnReason::UserCancelled).unwrap();
+        cleanup_failed.settle_cleanup(false).unwrap();
+        assert_eq!(cleanup_failed.view().state, TurnState::CleanupFailed);
+
+        let first = session("First attempt.").view();
+        let retry = TurnSession::new(
+            7,
+            12,
+            13,
+            "Fresh retry.".to_owned(),
+            RuntimeDescriptor::approved(),
+        )
+        .unwrap()
+        .view();
+        assert_ne!(first.task_id, retry.task_id);
+        assert_ne!(first.run_id, retry.run_id);
     }
 
     #[test]

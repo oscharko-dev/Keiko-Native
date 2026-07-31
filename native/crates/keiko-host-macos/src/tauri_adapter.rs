@@ -93,7 +93,11 @@ pub fn lose_renderer(lifecycle: &Mutex<HostLifecycle>) {
 }
 
 pub fn stop_runtime(runtime: &RuntimeHost) {
-    runtime.cancel_all();
+    runtime.cancel_for_renderer_loss();
+}
+
+pub fn stop_runtime_for_shutdown(runtime: &RuntimeHost) -> bool {
+    runtime.cancel_for_app_shutdown_and_wait()
 }
 
 pub(crate) fn runtime_isolation_root(
@@ -402,7 +406,9 @@ pub fn handle_window_event<R: Runtime>(window: &Window<R>, event: &tauri::Window
 pub fn handle_run_event<R: Runtime>(handle: &AppHandle<R>, event: RunEvent) {
     if matches!(event, RunEvent::Exit | RunEvent::ExitRequested { .. }) {
         shut_down(handle.state::<Mutex<HostLifecycle>>().inner());
-        stop_runtime(handle.state::<RuntimeHost>().inner());
+        if !stop_runtime_for_shutdown(handle.state::<RuntimeHost>().inner()) {
+            eprintln!("keiko-native-runtime-shutdown-cleanup-failed");
+        }
     }
 }
 

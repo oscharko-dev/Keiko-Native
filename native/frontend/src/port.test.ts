@@ -873,7 +873,9 @@ describe("closed streamed Codex turn port", () => {
       messageBytes: new TextEncoder().encode(agentText).length,
       quarantinedEvents: state === "preflighting" ? 0 : 1,
       acceptedEffects: 0,
-      cleanupComplete: !["preflighting", "streaming"].includes(state),
+      cleanupComplete:
+        !["preflighting", "streaming", "stopping"].includes(state) &&
+        state !== "cleanup-failed",
       terminalState: state,
     },
   });
@@ -935,6 +937,7 @@ describe("closed streamed Codex turn port", () => {
     };
     expect(isTurnView(completed)).toBe(true);
     expect(isTurnResponse(response)).toBe(true);
+    expect(isTurnView(turn("cleanup-failed", "", "cleanup-failed"))).toBe(true);
     for (const hostile of [
       { ...completed, path: "/private/repository" },
       { ...completed, taskId: completed.runId },
@@ -967,7 +970,7 @@ describe("closed streamed Codex turn port", () => {
     }
   });
 
-  it("rejects invalid tasks, out-of-order streams, correlation drift and cancellation", async () => {
+  it("rejects invalid tasks, out-of-order streams and correlation drift", async () => {
     const unused = vi.fn(async () => "");
     const port = createRendererPort(
       unused,
@@ -1005,11 +1008,49 @@ describe("closed streamed Codex turn port", () => {
         ).codexTurn(3, "Bounded.", () => undefined),
       ).rejects.toThrow("codex-turn-failed");
     }
+  });
 
+  it("requests cancellation but waits for the authoritative cleaned terminal", async () => {
+    const updates: TurnView[] = [];
+    const preflight = turn("preflighting");
+    const stopping: TurnView = {
+      ...preflight,
+      state: "stopping",
+      reason: "user-cancelled",
+      evidence: { ...preflight.evidence, terminalState: "stopping" },
+    };
+    const cancelled: TurnView = {
+      ...stopping,
+      state: "cancelled",
+      evidence: {
+        ...stopping.evidence,
+        cleanupComplete: true,
+        terminalState: "cancelled",
+      },
+    };
     let resolveTurn: ((value: string) => void) | undefined;
+    let requestId = "";
+    const channel = { onmessage: (_value: TurnView) => undefined };
     const raced = vi.fn(
       (command: string, arguments_: { request: string }): Promise<string> => {
-        if (command === "application_cancel") return Promise.resolve("{}");
+        if (command === "application_cancel") {
+          const cancellation = JSON.parse(arguments_.request) as {
+            requestId: string;
+          };
+          return Promise.resolve(
+            JSON.stringify({
+              schemaVersion: 1,
+              requestId: cancellation.requestId,
+              result: {
+                kind: "application-cancel",
+                status: "cancelled",
+              },
+            }),
+          );
+        }
+        requestId = (JSON.parse(arguments_.request) as { requestId: string })
+          .requestId;
+        channel.onmessage(preflight);
         return new Promise((resolve) => {
           resolveTurn = resolve;
         });
@@ -1019,12 +1060,32 @@ describe("closed streamed Codex turn port", () => {
     const pending = createRendererPort(
       raced,
       async () => authority,
-      () => ({ onmessage: () => undefined }),
-    ).codexTurn(3, "Bounded.", () => undefined, cancellation.signal);
+      () => channel,
+    ).codexTurn(
+      3,
+      "Bounded.",
+      (update) => updates.push(update),
+      cancellation.signal,
+    );
     await Promise.resolve();
     cancellation.abort();
-    resolveTurn?.("{}");
-    await expect(pending).rejects.toThrow("codex-turn-cancelled");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(updates).toEqual([preflight, stopping]);
+    channel.onmessage(cancelled);
+    resolveTurn?.(
+      JSON.stringify({
+        schemaVersion: 1,
+        requestId,
+        result: { kind: "codex-turn", state: cancelled },
+      }),
+    );
+    await expect(pending).resolves.toEqual(
+      expect.objectContaining({
+        result: { kind: "codex-turn", state: cancelled },
+      }),
+    );
+    expect(updates).toEqual([preflight, stopping, cancelled, cancelled]);
     expect(raced).toHaveBeenCalledWith(
       "application_cancel",
       expect.objectContaining({ generation: authority.generation }),
