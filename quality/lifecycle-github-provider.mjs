@@ -695,10 +695,7 @@ export function createLifecycleGithubProvider({
           artifact.workflow_run?.id !== fields.workflow_run_id
         )
           throw new Error("anchor-artifact-identity-mismatch");
-        const anchorIdentity = digestAuxiliaryIdentity(
-          "artifact anchor",
-          fields,
-        );
+        const anchorIdentity = sha256(bytes);
         const normalized = {
           anchorIdentity,
           commentId: fields.comment_id,
