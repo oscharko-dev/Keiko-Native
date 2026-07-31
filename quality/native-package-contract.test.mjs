@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   evidenceFailures,
   packagePolicyFailures,
+  redactionClasses,
   redactionMatches,
 } from "./native-contract.mjs";
 
@@ -172,15 +173,18 @@ test("package policy requires exact paths, dependencies, notices and SPDX", () =
   }
   const redactedFiles = structuredClone(files);
   redactedFiles[1].bytes = Buffer.from("/Users/operator/work");
-  assert.ok(
-    packagePolicyFailures({
-      cargo: dependencies,
-      fileClasses,
-      files: redactedFiles,
-      npm: [],
-      policy,
-    }).includes("package-redaction:Contents/MacOS/keiko-native-desktop"),
-  );
+  const redactionFailures = packagePolicyFailures({
+    cargo: dependencies,
+    fileClasses,
+    files: redactedFiles,
+    npm: [],
+    policy,
+  });
+  assert.deepEqual(redactionFailures, [
+    "package-redaction:macos-home-path:" +
+      "Contents/MacOS/keiko-native-desktop",
+  ]);
+  assert.doesNotMatch(redactionFailures.join(","), /\/Users\/operator/u);
   for (const hostile of [
     "operator@example.invalid",
     "https://10.0.0.7/private",
@@ -328,6 +332,33 @@ test("evidence schema and redaction fail closed", () => {
   assert.equal(redactionMatches("password:!0").length, 0);
   assert.ok(redactionMatches('password="actual-value"').length > 0);
   assert.ok(redactionMatches("/Users/operator/project").length > 0);
+  assert.deepEqual(redactionClasses("/Users/operator/project"), [
+    "macos-home-path",
+  ]);
+  assert.deepEqual(redactionClasses("C:\\Users\\operator\\project"), [
+    "windows-home-path",
+  ]);
+  assert.deepEqual(redactionClasses("/home/operator/project"), [
+    "linux-home-path",
+  ]);
+  assert.deepEqual(
+    redactionClasses(
+      [
+        "-----BEGIN PRIVATE KEY-----",
+        'password="actual-value"',
+        "operator@example.invalid",
+        "https://service.example/private",
+        "https://10.0.0.7/private",
+      ].join("\n"),
+    ),
+    [
+      "private-key",
+      "credential-assignment",
+      "email-address",
+      "reserved-endpoint",
+      "private-endpoint",
+    ],
+  );
   for (const hostile of [
     "operator@example.invalid",
     "https://192.168.1.10/private",
