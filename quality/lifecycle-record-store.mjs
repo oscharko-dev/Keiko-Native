@@ -141,6 +141,7 @@ async function loadSnapshot(input) {
   const inventory = await callLifecycleProvider(input.budget, () =>
     input.provider.listAnchorArtifacts({
       repository: input.repository,
+      issueNumber: input.issueNumber,
       name: `keiko-lifecycle-anchor-v1-issue-${input.issueNumber}`,
       direction: "newest-first",
     }),
