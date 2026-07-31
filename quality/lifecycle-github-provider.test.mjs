@@ -51,8 +51,8 @@ function storedZip(name, contents) {
   const local = Buffer.alloc(30 + filename.length + contents.length);
   local.writeUInt32LE(0x04034b50, 0);
   local.writeUInt16LE(20, 4);
-  local.writeUInt16LE(contents.length, 18);
-  local.writeUInt16LE(contents.length, 22);
+  local.writeUInt32LE(contents.length, 18);
+  local.writeUInt32LE(contents.length, 22);
   local.writeUInt16LE(filename.length, 26);
   filename.copy(local, 30);
   contents.copy(local, 30 + filename.length);
@@ -61,8 +61,8 @@ function storedZip(name, contents) {
   central.writeUInt32LE(0x02014b50, 0);
   central.writeUInt16LE(20, 4);
   central.writeUInt16LE(20, 6);
-  central.writeUInt16LE(contents.length, 20);
-  central.writeUInt16LE(contents.length, 24);
+  central.writeUInt32LE(contents.length, 20);
+  central.writeUInt32LE(contents.length, 24);
   central.writeUInt16LE(filename.length, 28);
   filename.copy(central, 46);
 

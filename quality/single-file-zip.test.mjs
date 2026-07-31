@@ -25,8 +25,8 @@ function singleFileZip({
   local.writeUInt32LE(localSignature, 0);
   local.writeUInt16LE(20, 4);
   local.writeUInt16LE(method, 8);
-  local.writeUInt16LE(compressedSize, 18);
-  local.writeUInt16LE(contents.length, 22);
+  local.writeUInt32LE(compressedSize, 18);
+  local.writeUInt32LE(contents.length, 22);
   local.writeUInt16LE(localFilename.length, 26);
   localFilename.copy(local, 30);
   compressed.copy(local, 30 + localFilename.length);
@@ -37,8 +37,8 @@ function singleFileZip({
   central.writeUInt16LE(20, 4);
   central.writeUInt16LE(20, 6);
   central.writeUInt16LE(method, 10);
-  central.writeUInt16LE(compressedSize, 20);
-  central.writeUInt16LE(contents.length, 24);
+  central.writeUInt32LE(compressedSize, 20);
+  central.writeUInt32LE(contents.length, 24);
   central.writeUInt16LE(centralFilename.length, 28);
   centralFilename.copy(central, 46);
 
