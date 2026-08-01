@@ -2,6 +2,21 @@ import { compareCodeUnits } from "./deterministic-order.mjs";
 import * as closed from "./native-package-policy.mjs";
 import { FUNCTIONAL_ACKNOWLEDGEMENT_WATCHDOG_MS } from "./native-lifecycle.mjs";
 
+const PRIVATE_ENDPOINT_PATTERNS = [
+  /\b(?:https?|wss?):\/\/[^/\s]+@/iu,
+  /\b(?:https?|wss?):\/\/localhost(?=[:/\s]|$)/iu,
+  /\b(?:https?|wss?):\/\/[A-Z0-9.-]+\.(?:local|internal)(?=[:/\s]|$)/iu,
+  /\b(?:https?|wss?):\/\/0\.0\.0\.0(?=[:/\s]|$)/iu,
+  /\b(?:https?|wss?):\/\/127(?:\.\d{1,3}){3}(?=[:/\s]|$)/iu,
+  /\b(?:https?|wss?):\/\/10(?:\.\d{1,3}){3}(?=[:/\s]|$)/iu,
+  /\b(?:https?|wss?):\/\/169\.254(?:\.\d{1,3}){2}(?=[:/\s]|$)/iu,
+  /\b(?:https?|wss?):\/\/192\.168(?:\.\d{1,3}){2}(?=[:/\s]|$)/iu,
+  /\b(?:https?|wss?):\/\/172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}(?=[:/\s]|$)/iu,
+  /\b(?:https?|wss?):\/\/\[::1\](?=[:/\s]|$)/iu,
+  /\b(?:https?|wss?):\/\/\[f[cd][A-F0-9:]*\](?=[:/\s]|$)/iu,
+  /\b(?:https?|wss?):\/\/\[fe[89ab][A-F0-9:]*(?:%(?:25)?[A-Z0-9._~-]+)?\](?=[:/\s]|$)/iu,
+];
+
 const DENIED_REDACTION_CLASSES = [
   {
     code: "private-key",
@@ -23,8 +38,7 @@ const DENIED_REDACTION_CLASSES = [
   },
   {
     code: "private-endpoint",
-    pattern:
-      /\b(?:https?|wss?):\/\/(?:[^/\s]+@|localhost(?=[:/\s]|$)|(?:[A-Z0-9.-]+\.(?:local|internal))(?=[:/\s]|$)|(?:0\.0\.0\.0|127(?:\.\d{1,3}){3}|10(?:\.\d{1,3}){3}|169\.254(?:\.\d{1,3}){2}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})(?=[:/\s]|$)|\[(?:::1|f[cd][A-F0-9:]*|fe[89ab][A-F0-9:]*(?:%(?:25)?[A-Z0-9._~-]+)?)\](?=[:/\s]|$))/iu,
+    patterns: PRIVATE_ENDPOINT_PATTERNS,
   },
   {
     code: "macos-home-path",
@@ -40,16 +54,24 @@ const DENIED_REDACTION_CLASSES = [
   },
 ];
 
-export function redactionClasses(value) {
-  return DENIED_REDACTION_CLASSES.filter(({ pattern }) =>
+function firstMatchingPattern(redactionClass, value) {
+  return (redactionClass.patterns ?? [redactionClass.pattern]).find((pattern) =>
     pattern.test(value),
+  );
+}
+
+export function redactionClasses(value) {
+  return DENIED_REDACTION_CLASSES.filter(
+    (redactionClass) =>
+      firstMatchingPattern(redactionClass, value) !== undefined,
   ).map(({ code }) => code);
 }
 
 export function redactionMatches(value) {
-  return DENIED_REDACTION_CLASSES.filter(({ pattern }) =>
-    pattern.test(value),
-  ).map(({ pattern }) => String(pattern));
+  return DENIED_REDACTION_CLASSES.flatMap((redactionClass) => {
+    const pattern = firstMatchingPattern(redactionClass, value);
+    return pattern === undefined ? [] : [String(pattern)];
+  });
 }
 
 export function coverageFailures(report) {

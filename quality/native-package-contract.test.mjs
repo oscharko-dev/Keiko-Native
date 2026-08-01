@@ -358,6 +358,16 @@ test("evidence schema and redaction fail closed", () => {
   assert.deepEqual(
     redactionClasses(
       [
+        "http://localhost/",
+        "https://10.0.0.7/private",
+        "https://[fe80::1%25en0]/",
+      ].join("\n"),
+    ),
+    ["private-endpoint"],
+  );
+  assert.deepEqual(
+    redactionClasses(
+      [
         "-----BEGIN PRIVATE KEY-----",
         'password="actual-value"',
         "operator@example.invalid",
