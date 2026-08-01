@@ -163,13 +163,17 @@ function canonicalRunPath(path) {
     : path;
 }
 
-function referencedWorkflow(entry) {
+function recoveryReferencedWorkflow(entry) {
   const path = canonicalRunPath(entry?.path);
   const ref =
     entry?.ref === "dev" || entry?.ref === "refs/heads/dev"
       ? DEV_REF
       : entry?.ref;
   return { path, ref, sha: entry?.sha };
+}
+
+function referencedWorkflow(entry) {
+  return { path: entry?.path, ref: entry?.ref, sha: entry?.sha };
 }
 
 function exactOne(values, code) {
@@ -521,7 +525,7 @@ export function createLifecycleGithubProvider({
       `/repos/${REPOSITORY}/actions/runs/${runId}`,
     );
     const referenced = (run?.referenced_workflows ?? []).map(
-      referencedWorkflow,
+      recoveryReferencedWorkflow,
     );
     if (
       run?.id !== runId ||
@@ -847,14 +851,9 @@ export function createLifecycleGithubProvider({
       const protectedDevSha = runProtectedShas.get(runId);
       if (protectedDevSha === undefined)
         throw new Error("record-run-protected-sha-missing");
-      const referenced = (response?.referenced_workflows ?? [])
-        .map(referencedWorkflow)
-        .filter((entry) => entry.path !== CALLER)
-        .toSorted((left, right) => {
-          if (left.path === COORDINATOR) return -1;
-          if (right.path === COORDINATOR) return 1;
-          return left.path.localeCompare(right.path, "en");
-        });
+      const referenced = (response?.referenced_workflows ?? []).map(
+        referencedWorkflow,
+      );
       return {
         attempt: response?.run_attempt,
         eventSha: response?.head_sha,
@@ -874,6 +873,7 @@ export function createLifecycleGithubProvider({
       if (cached === undefined)
         throw new Error("record-job-workflow-path-missing");
       return {
+        id: response?.id,
         runId: response?.run_id ?? runId,
         workflowPath: cached.workflowPath,
         workflowSha: cached.protectedDevSha,

@@ -123,6 +123,60 @@ const identityFields = {
   protected_dev_sha: "a".repeat(40),
 };
 
+function workflowRunFixture(referencedWorkflows) {
+  const anchorBytes = encodeAuxiliaryPreimage(
+    "artifact anchor",
+    identityFields,
+  );
+  const artifactName = `keiko-lifecycle-anchor-v1-issue-${identityFields.issue_number}`;
+  return createLifecycleGithubProvider({
+    binary: async () => storedZip("artifact-anchor.bin", anchorBytes),
+    graphql: async () => {
+      throw new Error("GraphQL access is unexpected");
+    },
+    json: async (path) => {
+      if (path.includes("/actions/artifacts?"))
+        return {
+          artifacts: [
+            {
+              expired: false,
+              id: 701,
+              name: artifactName,
+              workflow_run: { id: identityFields.workflow_run_id },
+            },
+          ],
+          total_count: 1,
+        };
+      if (path.endsWith("/jobs?filter=all&per_page=100"))
+        return {
+          jobs: [
+            {
+              id: 801,
+              name: "Publish authenticated lifecycle record",
+              run_id: identityFields.workflow_run_id,
+            },
+          ],
+          total_count: 1,
+        };
+      if (path.endsWith("/actions/jobs/801"))
+        return {
+          id: 801,
+          run_id: identityFields.workflow_run_id,
+        };
+      if (path.endsWith(`/actions/runs/${identityFields.workflow_run_id}`))
+        return {
+          head_branch: "dev",
+          head_sha: identityFields.protected_dev_sha,
+          id: identityFields.workflow_run_id,
+          path: "/.github/workflows/lifecycle-wakeup.yml",
+          referenced_workflows: referencedWorkflows,
+          run_attempt: identityFields.workflow_run_attempt,
+        };
+      throw new Error(`unexpected route: ${path}`);
+    },
+  });
+}
+
 test("derives the unchanged identity from canonical writer-produced anchor bytes", async () => {
   const anchorBytes = encodeAuxiliaryPreimage(
     "artifact anchor",
@@ -162,6 +216,57 @@ test("validates canonical anchor bytes before deriving their identity", async ()
     /trailing bytes/u,
   );
   assert.equal(provider.requestCount(), 2);
+});
+
+test("retains referenced-workflow tuples without repair or projection", async () => {
+  const exactPath = (workflowPath) =>
+    `oscharko-dev/Keiko-Native/${workflowPath}@${identityFields.protected_dev_sha}`;
+  const referencedWorkflows = [
+    {
+      path: exactPath(".github/workflows/pr-contract.yml"),
+      ref: "refs/heads/dev",
+      sha: identityFields.protected_dev_sha,
+    },
+    {
+      path: "/.github/workflows/issue-lifecycle.yml",
+      ref: "dev",
+      sha: identityFields.protected_dev_sha,
+    },
+    {
+      path: ".github/workflows/lifecycle-wakeup.yml",
+      ref: "refs/heads/dev",
+      sha: identityFields.protected_dev_sha,
+    },
+    {
+      path: exactPath(".github/workflows/issue-lifecycle.yml"),
+      ref: "refs/heads/dev",
+      sha: identityFields.protected_dev_sha,
+    },
+    {
+      path: exactPath(".github/workflows/contract-publication.yml"),
+      ref: "refs/heads/dev",
+      sha: identityFields.protected_dev_sha,
+    },
+  ];
+  const provider = workflowRunFixture(referencedWorkflows);
+  await provider.listAnchorArtifacts({
+    issueNumber: identityFields.issue_number,
+    name: `keiko-lifecycle-anchor-v1-issue-${identityFields.issue_number}`,
+  });
+  await provider.getArtifactForComment({
+    issueNumber: identityFields.issue_number,
+    commentId: identityFields.comment_id,
+  });
+  const run = await provider.getWorkflowRun({
+    runId: identityFields.workflow_run_id,
+  });
+  const job = await provider.getWorkflowJob({
+    runId: identityFields.workflow_run_id,
+    jobId: 801,
+  });
+  assert.deepEqual(run.referencedWorkflows, referencedWorkflows);
+  assert.equal(job.id, 801);
+  assert.equal(provider.requestCount(), 5);
 });
 
 test("authenticates a recovery command through exactly two REST/GraphQL/permission reads", async () => {
