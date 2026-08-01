@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -42,6 +42,7 @@ const WNOWAIT: i32 = 0x0000_0020;
 const BINARY_ENV: &str = "KEIKO_CODEX_0_145_0_BINARY";
 const HOME_ENV: &str = "KEIKO_CODEX_0_145_0_HOME";
 const WORK_ROOT_ENV: &str = "KEIKO_CODEX_0_145_0_WORK_ROOT";
+const CANCEL_TERM_GRACE: Duration = Duration::from_millis(500);
 const TURN_CLEANUP_RESERVE: Duration = Duration::from_secs(5);
 const CODEX_CONTAINMENT_ARGUMENTS: &[&str] = &[
     "-c",
@@ -119,9 +120,121 @@ struct RuntimeConfiguration {
 #[derive(Debug, Default)]
 struct ActiveRuntime {
     process_group: Mutex<Option<i32>>,
-    request_id: Mutex<Option<String>>,
-    cancelled: AtomicBool,
+    control: Mutex<RuntimeControl>,
+    finished: Condvar,
+    #[cfg(test)]
+    idle_waiting: AtomicBool,
     running: AtomicBool,
+}
+
+#[derive(Debug, Default)]
+struct RuntimeControl {
+    request_id: Option<String>,
+    pending_request_id: Option<String>,
+    cancellation: Option<RuntimeCancellation>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+enum RuntimeCancellation {
+    User = 1,
+    RendererLost = 2,
+    AppShutdown = 3,
+    ContainmentFailure = 4,
+}
+
+impl RuntimeCancellation {
+    fn readiness_state(self) -> RuntimeReadinessState {
+        match self {
+            Self::ContainmentFailure => RuntimeReadinessState::ContainmentFailed,
+            Self::User | Self::RendererLost | Self::AppShutdown => RuntimeReadinessState::Cancelled,
+        }
+    }
+
+    fn turn_state(self) -> TurnState {
+        match self {
+            Self::ContainmentFailure => TurnState::ContainmentFailed,
+            Self::User | Self::RendererLost | Self::AppShutdown => TurnState::Cancelled,
+        }
+    }
+
+    fn turn_reason(self) -> TurnReason {
+        match self {
+            Self::User => TurnReason::UserCancelled,
+            Self::RendererLost => TurnReason::RendererLost,
+            Self::AppShutdown => TurnReason::AppShutdown,
+            Self::ContainmentFailure => TurnReason::InternalFailure,
+        }
+    }
+}
+
+impl ActiveRuntime {
+    fn begin_request(&self, request_id: &str) -> bool {
+        let Ok(mut control) = self.control.lock() else {
+            self.running.store(false, Ordering::Release);
+            self.finished.notify_all();
+            return false;
+        };
+        if control
+            .pending_request_id
+            .as_deref()
+            .is_some_and(|pending| pending != request_id)
+        {
+            control.cancellation = None;
+        }
+        control.pending_request_id = None;
+        control.request_id = Some(request_id.to_owned());
+        true
+    }
+
+    fn finish_request(&self) {
+        if let Ok(mut control) = self.control.lock() {
+            *control = RuntimeControl::default();
+            self.running.store(false, Ordering::Release);
+        } else {
+            self.running.store(false, Ordering::Release);
+        }
+        self.finished.notify_all();
+    }
+
+    fn cancel(&self, reason: RuntimeCancellation) {
+        let Ok(mut control) = self.control.lock() else {
+            return;
+        };
+        if self.running.load(Ordering::Acquire) && control.cancellation.is_none() {
+            control.cancellation = Some(reason);
+        }
+    }
+
+    fn cancellation(&self) -> Option<RuntimeCancellation> {
+        self.control
+            .lock()
+            .map_or(Some(RuntimeCancellation::ContainmentFailure), |control| {
+                control.cancellation
+            })
+    }
+
+    fn cancellation_state(&self) -> Option<RuntimeReadinessState> {
+        self.cancellation()
+            .map(RuntimeCancellation::readiness_state)
+    }
+
+    fn wait_for_idle(&self, timeout: Duration) -> bool {
+        let Ok(control) = self.control.lock() else {
+            return false;
+        };
+        #[cfg(test)]
+        self.idle_waiting.store(true, Ordering::Release);
+        let wait = self
+            .finished
+            .wait_timeout_while(control, timeout, |_| self.running.load(Ordering::Acquire));
+        #[cfg(test)]
+        self.idle_waiting.store(false, Ordering::Release);
+        let Ok((_control, _wait)) = wait else {
+            return false;
+        };
+        !self.running.load(Ordering::Acquire)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -176,9 +289,8 @@ impl RuntimeHost {
         {
             return RuntimeReadinessView::terminal(RuntimeReadinessState::ContainmentFailed, 0);
         }
-        self.active.cancelled.store(false, Ordering::Release);
-        if let Ok(mut active_request_id) = self.active.request_id.lock() {
-            *active_request_id = Some(request_id.to_owned());
+        if !self.active.begin_request(request_id) {
+            return RuntimeReadinessView::terminal(RuntimeReadinessState::ContainmentFailed, 0);
         }
         let result = self.configuration.as_ref().map_or_else(
             || RuntimeReadinessView::terminal(RuntimeReadinessState::Unavailable, 0),
@@ -192,26 +304,56 @@ impl RuntimeHost {
                 )
             },
         );
-        if let Ok(mut active_request_id) = self.active.request_id.lock() {
-            *active_request_id = None;
-        }
-        self.active.running.store(false, Ordering::Release);
+        self.active.finish_request();
         result
     }
 
     pub fn cancel_request(&self, request_id: &str) {
-        let matches = self
-            .active
-            .request_id
-            .lock()
-            .is_ok_and(|active| active.as_deref() == Some(request_id));
-        if matches {
-            self.cancel_all();
+        let mut accepted = false;
+        if let Ok(mut control) = self.active.control.lock()
+            && self.active.running.load(Ordering::Acquire)
+        {
+            if control.request_id.as_deref() == Some(request_id) {
+                control
+                    .cancellation
+                    .get_or_insert(RuntimeCancellation::User);
+                accepted = true;
+            } else if control.request_id.is_none() {
+                control.pending_request_id = Some(request_id.to_owned());
+                control
+                    .cancellation
+                    .get_or_insert(RuntimeCancellation::User);
+                accepted = true;
+            }
+        }
+        if accepted {
+            self.signal_active_process();
         }
     }
 
-    pub fn cancel_all(&self) {
-        self.active.cancelled.store(true, Ordering::Release);
+    pub fn cancel_for_renderer_loss(&self) {
+        self.cancel_with_reason(RuntimeCancellation::RendererLost);
+    }
+
+    pub fn cancel_for_containment_failure(&self) {
+        self.cancel_with_reason(RuntimeCancellation::ContainmentFailure);
+    }
+
+    pub fn cancel_for_app_shutdown(&self) {
+        self.cancel_with_reason(RuntimeCancellation::AppShutdown);
+    }
+
+    pub fn cancel_for_app_shutdown_and_wait(&self) -> bool {
+        self.cancel_for_app_shutdown();
+        self.active.wait_for_idle(TURN_CLEANUP_RESERVE)
+    }
+
+    fn cancel_with_reason(&self, reason: RuntimeCancellation) {
+        self.active.cancel(reason);
+        self.signal_active_process();
+    }
+
+    fn signal_active_process(&self) {
         let process_group = self
             .active
             .process_group
@@ -243,9 +385,11 @@ impl RuntimeHost {
                 TurnReason::InternalFailure,
             );
         }
-        self.active.cancelled.store(false, Ordering::Release);
-        if let Ok(mut active_request_id) = self.active.request_id.lock() {
-            *active_request_id = Some(request_id.to_owned());
+        if !self.active.begin_request(request_id) {
+            return TurnRuntimeOutcome::terminal(
+                TurnState::ContainmentFailed,
+                TurnReason::InternalFailure,
+            );
         }
         let result = self.configuration.as_ref().map_or_else(
             || TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::RuntimeUnavailable),
@@ -261,10 +405,7 @@ impl RuntimeHost {
                 )
             },
         );
-        if let Ok(mut active_request_id) = self.active.request_id.lock() {
-            *active_request_id = None;
-        }
-        self.active.running.store(false, Ordering::Release);
+        self.active.finish_request();
         result
     }
 
@@ -299,6 +440,7 @@ impl RuntimeHost {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TurnRuntimeUpdate {
+    Stopping(TurnReason),
     StreamingStarted,
     AgentDelta(String),
     ProviderEventQuarantined,
@@ -409,8 +551,8 @@ fn perform_check(
         Ok(verified) => verified,
         Err(state) => return RuntimeReadinessView::terminal(state, 0),
     };
-    if active.cancelled.load(Ordering::Acquire) {
-        return RuntimeReadinessView::terminal(RuntimeReadinessState::Cancelled, 0);
+    if let Some(state) = active.cancellation_state() {
+        return RuntimeReadinessView::terminal(state, 0);
     }
     if Instant::now() >= deadline {
         return RuntimeReadinessView::terminal(RuntimeReadinessState::TimedOut, 0);
@@ -443,8 +585,13 @@ fn perform_turn(
     deadline: Instant,
     update: &mut impl FnMut(TurnRuntimeUpdate),
 ) -> TurnRuntimeOutcome {
-    if active.cancelled.load(Ordering::Acquire) {
-        return TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::RendererLost);
+    if let Some(cancellation) = active.cancellation() {
+        let state = cancellation.turn_state();
+        let reason = cancellation.turn_reason();
+        if state == TurnState::Cancelled {
+            update(TurnRuntimeUpdate::Stopping(reason));
+        }
+        return TurnRuntimeOutcome::terminal(state, reason);
     }
     if Instant::now() >= deadline {
         return TurnRuntimeOutcome::terminal(TurnState::TimedOut, TurnReason::TimedOut);
@@ -595,8 +742,13 @@ fn run_turn_protocol(
     let cleanup_reserve = TURN_CLEANUP_RESERVE.min(remaining / 5);
     let protocol_deadline = deadline.checked_sub(cleanup_reserve).unwrap_or(deadline);
     let (state, reason) = loop {
-        if active.cancelled.load(Ordering::Acquire) {
-            break (TurnState::Failed, TurnReason::RendererLost);
+        if let Some(cancellation) = active.cancellation() {
+            let state = cancellation.turn_state();
+            let reason = cancellation.turn_reason();
+            if state == TurnState::Cancelled {
+                update(TurnRuntimeUpdate::Stopping(reason));
+            }
+            break (state, reason);
         }
         if stderr_saturated.load(Ordering::Acquire) {
             break (TurnState::ContainmentFailed, TurnReason::BufferLimit);
@@ -698,8 +850,13 @@ fn run_turn_protocol(
                 break (TurnState::ContainmentFailed, TurnReason::BufferLimit);
             }
             Ok(FrameEvent::Eof) | Err(RecvTimeoutError::Disconnected) => {
-                break if active.cancelled.load(Ordering::Acquire) {
-                    (TurnState::Failed, TurnReason::RendererLost)
+                break if let Some(cancellation) = active.cancellation() {
+                    let state = cancellation.turn_state();
+                    let reason = cancellation.turn_reason();
+                    if state == TurnState::Cancelled {
+                        update(TurnRuntimeUpdate::Stopping(reason));
+                    }
+                    (state, reason)
                 } else {
                     (TurnState::Failed, TurnReason::ProviderFailed)
                 };
@@ -731,7 +888,22 @@ fn cleanup_turn(
     active: &ActiveRuntime,
     deadline: Instant,
 ) -> TurnRuntimeOutcome {
-    outcome.cleaned = stop_process_group(&mut child, process_group, active, deadline);
+    let cleanup_deadline = if outcome.state == TurnState::Cancelled {
+        deadline.min(Instant::now() + TURN_CLEANUP_RESERVE)
+    } else {
+        deadline
+    };
+    outcome.cleaned = if outcome.state == TurnState::Cancelled {
+        stop_process_group_with_term_grace(
+            &mut child,
+            process_group,
+            active,
+            cleanup_deadline,
+            Some(CANCEL_TERM_GRACE),
+        )
+    } else {
+        stop_process_group(&mut child, process_group, active, cleanup_deadline)
+    };
     outcome
 }
 
@@ -958,8 +1130,8 @@ fn run_protocol(
     let cleanup_reserve = remaining / 5;
     let protocol_deadline = deadline.checked_sub(cleanup_reserve).unwrap_or(deadline);
     let state = loop {
-        if active.cancelled.load(Ordering::Acquire) {
-            break RuntimeReadinessState::Cancelled;
+        if let Some(state) = active.cancellation_state() {
+            break state;
         }
         if stderr_saturated.load(Ordering::Acquire) {
             break RuntimeReadinessState::ContainmentFailed;
@@ -993,19 +1165,15 @@ fn run_protocol(
             }
             Ok(FrameEvent::Rejected) => break RuntimeReadinessState::ContainmentFailed,
             Ok(FrameEvent::Eof) => {
-                break if active.cancelled.load(Ordering::Acquire) {
-                    RuntimeReadinessState::Cancelled
-                } else {
-                    RuntimeReadinessState::Incompatible
-                };
+                break active
+                    .cancellation_state()
+                    .unwrap_or(RuntimeReadinessState::Incompatible);
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
-                break if active.cancelled.load(Ordering::Acquire) {
-                    RuntimeReadinessState::Cancelled
-                } else {
-                    RuntimeReadinessState::Incompatible
-                };
+                break active
+                    .cancellation_state()
+                    .unwrap_or(RuntimeReadinessState::Incompatible);
             }
         }
     };
@@ -1725,9 +1893,22 @@ fn stop_process_group(
     active: &ActiveRuntime,
     deadline: Instant,
 ) -> bool {
+    stop_process_group_with_term_grace(child, process_group, active, deadline, None)
+}
+
+fn stop_process_group_with_term_grace(
+    child: &mut Child,
+    process_group: i32,
+    active: &ActiveRuntime,
+    deadline: Instant,
+    term_grace: Option<Duration>,
+) -> bool {
     let cleanup_started = Instant::now();
     let remaining = deadline.saturating_duration_since(cleanup_started);
-    let term_deadline = cleanup_started + remaining.saturating_sub(remaining / 5);
+    let term_deadline = term_grace.map_or_else(
+        || cleanup_started + remaining.saturating_sub(remaining / 5),
+        |grace| deadline.min(cleanup_started + grace),
+    );
     signal_active_process_group(active, process_group, SIGTERM);
     while Instant::now() < term_deadline {
         if ready_to_reap(child.id() as i32, process_group) {
@@ -2392,7 +2573,7 @@ mod tests {
             .process_group
             .lock()
             .expect("process-group state") = Some(i32::MAX);
-        host.cancel_all();
+        host.cancel_for_renderer_loss();
         *host
             .active
             .process_group
@@ -2401,7 +2582,8 @@ mod tests {
 
         let configuration = host.configuration.as_ref().expect("configuration");
         let active = ActiveRuntime::default();
-        active.cancelled.store(true, Ordering::Release);
+        active.running.store(true, Ordering::Release);
+        active.cancel(RuntimeCancellation::RendererLost);
         assert_eq!(
             perform_check(
                 configuration,
@@ -2421,6 +2603,43 @@ mod tests {
         assert_eq!(
             host.check("collision", None).state,
             RuntimeReadinessState::Unavailable
+        );
+    }
+
+    #[test]
+    fn request_scoped_cancel_survives_registration_gap_without_leaking_to_retry() {
+        let host = RuntimeHost {
+            configuration: None,
+            active: Arc::new(ActiveRuntime::default()),
+            work_generation: Arc::new(AtomicU64::new(0)),
+        };
+        host.active.running.store(true, Ordering::Release);
+        host.cancel_request("request-in-registration");
+        assert!(host.active.begin_request("request-in-registration"));
+        assert_eq!(host.active.cancellation(), Some(RuntimeCancellation::User));
+        host.active.finish_request();
+        host.active.running.store(false, Ordering::Release);
+
+        host.active.running.store(true, Ordering::Release);
+        assert!(host.active.begin_request("fresh-retry"));
+        assert_eq!(host.active.cancellation(), None);
+        host.cancel_request("wrong-request");
+        assert_eq!(host.active.cancellation(), None);
+        host.active.finish_request();
+        host.active.running.store(false, Ordering::Release);
+    }
+
+    #[test]
+    fn first_observed_shutdown_reason_wins_for_the_active_request() {
+        let active = ActiveRuntime::default();
+        active.running.store(true, Ordering::Release);
+        active.cancel(RuntimeCancellation::AppShutdown);
+        assert!(active.begin_request("request"));
+        active.cancel(RuntimeCancellation::RendererLost);
+        active.cancel(RuntimeCancellation::User);
+        assert_eq!(
+            active.cancellation(),
+            Some(RuntimeCancellation::AppShutdown)
         );
     }
 
@@ -2465,7 +2684,7 @@ mod tests {
             unavailable.check("unconfigured", None).state,
             RuntimeReadinessState::Unavailable
         );
-        unavailable.cancel_all();
+        unavailable.cancel_for_renderer_loss();
 
         let fixture = Fixture::new();
         let unspawnable = RuntimeHost::for_test(
@@ -2489,16 +2708,63 @@ mod tests {
         };
         let active = Arc::clone(&host.active);
         let _ = thread::spawn(move || {
-            let _guard = active.request_id.lock().expect("request bookkeeping");
+            let _guard = active.control.lock().expect("request bookkeeping");
             panic!("poison request bookkeeping");
         })
         .join();
 
         assert_eq!(
             host.check("poisoned-bookkeeping", None).state,
-            RuntimeReadinessState::Unavailable
+            RuntimeReadinessState::ContainmentFailed
+        );
+        assert_eq!(
+            host.active
+                .cancellation()
+                .map(RuntimeCancellation::turn_reason),
+            Some(TurnReason::InternalFailure),
+            "poisoned runtime control must not masquerade as renderer loss"
         );
         host.cancel_request("poisoned-bookkeeping");
+    }
+
+    #[test]
+    fn poisoned_runtime_control_is_containment_failure_for_readiness_and_turns() {
+        let fixture = Fixture::new();
+        let host = fixture.scripted_host("#!/bin/sh\nexit 0\n");
+        let active = Arc::new(ActiveRuntime::default());
+        let poison_target = Arc::clone(&active);
+        let _ = thread::spawn(move || {
+            let _guard = poison_target
+                .control
+                .lock()
+                .expect("runtime control before poisoning");
+            panic!("poison runtime control");
+        })
+        .join();
+        let configuration = host.configuration.as_ref().expect("configuration");
+
+        let readiness = perform_check(
+            configuration,
+            None,
+            &active,
+            &AtomicU64::new(0),
+            Instant::now() + DEFAULT_REQUEST_TIMEOUT,
+        );
+        assert_eq!(readiness.state, RuntimeReadinessState::ContainmentFailed);
+
+        let mut updates = Vec::new();
+        let turn = perform_turn(
+            configuration,
+            &fixture.root,
+            "Bounded task.",
+            &active,
+            &AtomicU64::new(0),
+            Instant::now() + DEFAULT_REQUEST_TIMEOUT,
+            &mut |update| updates.push(update),
+        );
+        assert_eq!(turn.state, TurnState::ContainmentFailed);
+        assert_eq!(turn.reason, Some(TurnReason::InternalFailure));
+        assert!(updates.is_empty());
     }
 
     #[test]
@@ -3195,6 +3461,209 @@ while :; do /bin/sleep 1; done
 
         let retry = host.check("request-retry", Some(&fixture.work));
         assert_eq!(retry.state, RuntimeReadinessState::ContainmentFailed);
+    }
+
+    #[test]
+    fn user_cancel_turn_reports_stopping_then_cancelled_and_cleans_the_tree() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let repository = fixture.root.join("repository");
+        fs::create_dir(&repository).expect("repository identity");
+        let host = fixture.scripted_host(
+            r#"#!/bin/sh
+trap '' TERM
+: > cancel-ready
+read -r initialize
+while :; do /bin/sleep 1; done
+"#,
+        );
+        let running_host = host.clone();
+        let pending = thread::spawn(move || {
+            let mut updates = Vec::new();
+            let outcome = running_host.run_turn(
+                "request-cancel-turn",
+                &repository,
+                "Bounded task.",
+                Duration::from_secs(5),
+                |update| updates.push(update),
+            );
+            (outcome, updates)
+        });
+        let wait_deadline = Instant::now() + Duration::from_secs(2);
+        let cancellation_ready = || {
+            fs::read_dir(&fixture.work).is_ok_and(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .any(|entry| entry.path().join("cancel-ready").is_file())
+            })
+        };
+        while (!cancellation_ready()
+            || host
+                .active
+                .process_group
+                .lock()
+                .expect("process-group state")
+                .is_none())
+            && Instant::now() < wait_deadline
+        {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            cancellation_ready(),
+            "stubborn runtime did not become ready"
+        );
+
+        let stopping_started = Instant::now();
+        host.cancel_request("request-cancel-turn");
+        let (cancelled, updates) = pending.join().expect("turn thread");
+        assert!(
+            stopping_started.elapsed() < Duration::from_secs(2),
+            "cancel escalation exceeded its bounded grace: {:?}",
+            stopping_started.elapsed()
+        );
+        assert_eq!(cancelled.state, TurnState::Cancelled);
+        assert_eq!(cancelled.reason, Some(TurnReason::UserCancelled));
+        assert!(cancelled.cleaned);
+        assert_eq!(
+            updates,
+            vec![TurnRuntimeUpdate::Stopping(TurnReason::UserCancelled)]
+        );
+        assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
+        assert!(!host.active.running.load(Ordering::Acquire));
+        assert_eq!(*host.active.process_group.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn app_shutdown_waits_for_turn_cleanup_before_returning() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let repository = fixture.root.join("repository");
+        fs::create_dir(&repository).expect("repository identity");
+        let host = fixture.scripted_host(
+            r#"#!/bin/sh
+: > shutdown-ready
+read -r initialize
+while :; do /bin/sleep 1; done
+"#,
+        );
+        let running_host = host.clone();
+        let pending = thread::spawn(move || {
+            running_host.run_turn(
+                "request-app-shutdown",
+                &repository,
+                "Bounded task.",
+                Duration::from_secs(5),
+                |_| {},
+            )
+        });
+        let wait_deadline = Instant::now() + Duration::from_secs(2);
+        let shutdown_ready = || {
+            fs::read_dir(&fixture.work).is_ok_and(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .any(|entry| entry.path().join("shutdown-ready").is_file())
+            })
+        };
+        while !shutdown_ready() && Instant::now() < wait_deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            shutdown_ready(),
+            "runtime did not become ready for shutdown"
+        );
+
+        assert!(host.cancel_for_app_shutdown_and_wait());
+        assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
+        let cancelled = pending.join().expect("turn thread");
+        assert_eq!(cancelled.state, TurnState::Cancelled);
+        assert_eq!(cancelled.reason, Some(TurnReason::AppShutdown));
+        assert!(cancelled.cleaned);
+    }
+
+    #[test]
+    fn wait_for_idle_times_out_when_request_never_finishes() {
+        let never_idle = ActiveRuntime::default();
+        never_idle.running.store(true, Ordering::Release);
+        assert!(never_idle.begin_request("never-idle"));
+        assert!(!never_idle.wait_for_idle(Duration::from_millis(1)));
+        never_idle.finish_request();
+    }
+
+    #[test]
+    fn wait_for_idle_rejects_already_poisoned_control() {
+        let poisoned = Arc::new(ActiveRuntime::default());
+        let poison_target = Arc::clone(&poisoned);
+        let _ = thread::spawn(move || {
+            let _guard = poison_target
+                .control
+                .lock()
+                .expect("control before poisoning");
+            panic!("poison runtime control");
+        })
+        .join();
+        assert!(!poisoned.wait_for_idle(Duration::from_millis(1)));
+    }
+
+    #[test]
+    fn wait_for_idle_rejects_control_poisoned_while_waiting() {
+        let poisoned_while_waiting = Arc::new(ActiveRuntime::default());
+        poisoned_while_waiting
+            .running
+            .store(true, Ordering::Release);
+        assert!(poisoned_while_waiting.begin_request("poisoned-wait"));
+        let waiting_target = Arc::clone(&poisoned_while_waiting);
+        let waiting = thread::spawn(move || waiting_target.wait_for_idle(Duration::from_secs(1)));
+        while !poisoned_while_waiting.idle_waiting.load(Ordering::Acquire) {
+            thread::yield_now();
+        }
+        let poison_target = Arc::clone(&poisoned_while_waiting);
+        let _ = thread::spawn(move || {
+            let _guard = poison_target
+                .control
+                .lock()
+                .expect("control while waiter sleeps");
+            panic!("poison sleeping runtime waiter");
+        })
+        .join();
+        poisoned_while_waiting.finished.notify_all();
+        assert!(!waiting.join().expect("idle waiter"));
+    }
+
+    #[test]
+    fn provider_crash_is_terminal_and_retry_repeats_fresh_preflight() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let repository = fixture.root.join("repository");
+        fs::create_dir(&repository).expect("repository identity");
+        let host = fixture.scripted_host(
+            r#"#!/bin/sh
+read -r initialize
+exit 9
+"#,
+        );
+
+        for request_id in ["crashed-attempt", "fresh-retry"] {
+            let outcome = host.run_turn(
+                request_id,
+                &repository,
+                "Bounded task.",
+                Duration::from_secs(2),
+                |_| {},
+            );
+            assert_eq!(outcome.state, TurnState::Failed);
+            assert_eq!(outcome.reason, Some(TurnReason::ProviderFailed));
+            assert!(outcome.cleaned);
+            assert_eq!(fs::read_dir(&fixture.work).unwrap().count(), 0);
+        }
+        assert_eq!(host.work_generation.load(Ordering::Acquire), 2);
+        assert!(!host.active.running.load(Ordering::Acquire));
+        assert_eq!(*host.active.process_group.lock().unwrap(), None);
     }
 
     #[test]

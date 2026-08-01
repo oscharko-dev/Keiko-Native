@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { expectedSourceRevision } from "./port";
+import { expectedSourceRevision, type Invoke, type TurnView } from "./port";
 
 const authority = { documentNonce: "a".repeat(64), generation: 7 };
 
@@ -100,7 +100,12 @@ const invoke = vi.fn(
 );
 const render = vi.fn();
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke,
+  Channel: class<T> {
+    onmessage = (_value: T): void => undefined;
+  },
+}));
 vi.mock("react-dom/client", () => ({ createRoot: () => ({ render }) }));
 
 describe("production renderer composition", () => {
@@ -312,5 +317,111 @@ describe("production renderer composition", () => {
     expect(rendered).toContain("Die Grundlage läuft.");
     expect(rendered).toContain("nicht mehr verfügbar");
     expect(rendered).not.toContain("raw workspace transport detail");
+  });
+
+  it("clears a non-terminal turn after a redacted request failure", async () => {
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: { getElementById: () => ({}) },
+    });
+    const { startRenderer } = await import("./main");
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const failingTurn = vi.fn<Invoke>(
+      async (
+        command: string,
+        arguments_: {
+          documentNonce: string;
+          generation: number;
+          request: string;
+          onEvent?: { onmessage: (value: TurnView) => void };
+        },
+      ) => {
+        if (command !== "codex_turn_request") {
+          return invoke(command, arguments_);
+        }
+        const request = JSON.parse(arguments_.request) as {
+          operation: { workspaceGeneration: number };
+        };
+        arguments_.onEvent?.onmessage({
+          taskId: "task-0000000000000007-0000000000000001",
+          runId: "run-0000000000000007-0000000000000001",
+          workspaceGeneration: request.operation.workspaceGeneration,
+          state: "preflighting",
+          agentText: "",
+          providerThreadEstablished: false,
+          providerTurnEstablished: false,
+          evidence: {
+            runtimeVersion: "0.145.0",
+            runtimeArtifactSha256:
+              "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
+            containmentProfile: "keiko-codex-readiness-v1",
+            authorityProfile: "keiko-codex-no-effect-v1",
+            messageBytes: 0,
+            quarantinedEvents: 0,
+            acceptedEffects: 0,
+            cleanupComplete: false,
+            terminalState: "preflighting",
+          },
+        });
+        throw new Error("raw provider detail");
+      },
+    );
+    const all = (
+      value: unknown,
+    ): Array<{ type: unknown; props: Record<string, unknown> }> => {
+      if (Array.isArray(value)) return value.flatMap(all);
+      if (typeof value !== "object" || value === null) return [];
+      const props = Reflect.get(value, "props") as
+        | Record<string, unknown>
+        | undefined;
+      if (props === undefined) return [];
+      return [
+        { type: Reflect.get(value, "type"), props },
+        ...all(props.children),
+      ];
+    };
+    const click = async (label: string) => {
+      const button = all(render.mock.calls.at(-1)?.[0]).find(
+        ({ type, props }) => type === "button" && props.children === label,
+      );
+      (button?.props.onClick as () => void)();
+      for (let index = 0; index < 6; index += 1) await Promise.resolve();
+    };
+
+    render.mockClear();
+    await startRenderer(failingTurn, async () => authority);
+    await click("Foundation öffnen");
+    await click("Repository auswählen");
+    await click("Codex-Bereitschaft prüfen");
+
+    const turnElements = all(render.mock.calls.at(-1)?.[0]);
+    const task = turnElements.find(
+      ({ props }) => props.id === "codex-task",
+    )?.props;
+    const submit = turnElements.find(
+      ({ type, props }) =>
+        type === "button" && props.children === "Begrenzten Auftrag starten",
+    )?.props;
+    const taskNode = { disabled: false, value: "Bounded task." };
+    const submitNode = { disabled: true };
+    (task?.ref as (node: typeof taskNode) => void)(taskNode);
+    (submit?.ref as (node: typeof submitNode) => void)(submitNode);
+    (task?.onInput as () => void)();
+    expect(submitNode.disabled).toBe(false);
+    (submit?.onClick as () => void)();
+    for (let index = 0; index < 8; index += 1) await Promise.resolve();
+
+    const recovered = JSON.stringify(render.mock.calls.at(-1)?.[0]);
+    expect(recovered).toContain("Begrenzten Auftrag starten");
+    expect(recovered).not.toContain("Codex antwortet");
+    expect(consoleError).toHaveBeenCalledWith(
+      "Codex turn ended before a verified terminal state; retry is available.",
+    );
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain(
+      "raw provider detail",
+    );
+    consoleError.mockRestore();
   });
 });

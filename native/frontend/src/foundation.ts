@@ -51,6 +51,7 @@ export interface RuntimeController {
 
 export interface TurnController {
   startTurn(task: string): Promise<void>;
+  cancelTurn(): void;
 }
 
 const MAX_COMMITTED_TEXT_BYTES = 2048;
@@ -64,6 +65,7 @@ const INERT_RUNTIME_CONTROLLER: RuntimeController = {
 };
 const INERT_TURN_CONTROLLER: TurnController = {
   startTurn: async () => undefined,
+  cancelTurn: () => undefined,
 };
 
 export class ImeHarnessState {
@@ -351,7 +353,11 @@ function turnPanel(
   turn: TurnView | null,
   controller: TurnController,
 ): ReactElement {
-  const active = turn?.state === "preflighting" || turn?.state === "streaming";
+  const active = ["preflighting", "streaming", "stopping"].includes(
+    turn?.state ?? "",
+  );
+  const cancellable =
+    turn?.state === "preflighting" || turn?.state === "streaming";
   const authorized = workspace.kind === "bound" && runtime?.state === "ready";
   const descriptionId = "codex-task-description";
   const countId = "codex-task-count";
@@ -440,19 +446,38 @@ function turnPanel(
       `${taskBytes} von 4096 Bytes`,
     ),
     createElement(
-      "button",
-      {
-        type: "button",
-        // `refresh` owns the live DOM state. A literal disabled prop remains
-        // disabled in React's event metadata even after the ref enables the
-        // element, which suppresses otherwise valid click activation.
-        ref: (node: HTMLButtonElement | null) => {
-          submitButton = node;
-          refresh();
+      "div",
+      { className: "button-row" },
+      createElement(
+        "button",
+        {
+          type: "button",
+          // `refresh` owns the live DOM state. A literal disabled prop remains
+          // disabled in React's event metadata even after the ref enables the
+          // element, which suppresses otherwise valid click activation.
+          ref: (node: HTMLButtonElement | null) => {
+            submitButton = node;
+            refresh();
+          },
+          onClick: submit,
         },
-        onClick: submit,
-      },
-      active ? "Codex antwortet" : "Begrenzten Auftrag starten",
+        active ? "Codex antwortet" : "Begrenzten Auftrag starten",
+      ),
+      active
+        ? createElement(
+            "button",
+            {
+              type: "button",
+              className: "quiet",
+              "aria-disabled": cancellable ? undefined : "true",
+              onClick: () => {
+                if (!cancellable) return;
+                controller.cancelTurn();
+              },
+            },
+            cancellable ? "Codex-Lauf abbrechen" : "Codex-Lauf wird beendet",
+          )
+        : null,
     ),
     turnResult(turn),
   );
@@ -460,7 +485,9 @@ function turnPanel(
 
 function turnResult(turn: TurnView | null): ReactElement | null {
   if (turn === null) return null;
-  const terminal = !["preflighting", "streaming"].includes(turn.state);
+  const terminal = !["preflighting", "streaming", "stopping"].includes(
+    turn.state,
+  );
   return createElement(
     "div",
     { className: "turn-result" },
@@ -503,7 +530,9 @@ function turnPresentation(turn: TurnView): string {
     preflighting:
       "Keiko prüft Arbeitsbereich, Laufzeit, Anmeldung und Grenzen.",
     streaming: "Codex antwortet innerhalb der Nur-Text-Grenze.",
+    stopping: "Keiko beendet den Codex-Lauf sicher.",
     completed: "Codex hat normal geantwortet und die Laufzeit wurde beendet.",
+    cancelled: "Der Codex-Lauf wurde abgebrochen und vollständig beendet.",
     failed: "Der Codex-Lauf ist sicher fehlgeschlagen und wurde beendet.",
     "timed-out": "Das Zeitlimit wurde erreicht und die Laufzeit wurde beendet.",
     "containment-failed":

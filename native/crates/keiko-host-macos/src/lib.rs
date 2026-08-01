@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 
-use keiko_application::current_build_identity;
+use keiko_application::turn::{TurnReason, TurnState, TurnView};
+use keiko_application::{ApplicationResult, application_response, current_build_identity};
 #[cfg(test)]
 use keiko_ui_port::canonical_request_id;
 use keiko_ui_port::{
@@ -27,7 +28,7 @@ pub use foundation::{FoundationHost, FoundationRequestOutput, foundation_request
 pub use request_adapter::{
     ApplicationCancelOutput, ApplicationRequestOutput, application_cancel, application_request,
 };
-use request_timing::{InFlight, MonotonicClock, terminal_reason};
+use request_timing::{CancellationSource, InFlight, MonotonicClock, terminal_reason};
 pub use runtime::{RuntimeHost, RuntimeRequestOutput, runtime_request};
 pub use turn::{TurnRequestOutput, turn_request};
 pub use workspace::{FolderPickerResult, WorkspaceHost, WorkspaceRequestOutput, workspace_request};
@@ -162,7 +163,7 @@ impl HostLifecycle {
         self.accepting = false;
         let now_ms = self.clock.now_ms();
         for request in self.in_flight.values_mut() {
-            request.cancelled_at_ms.get_or_insert(now_ms);
+            request.cancel(now_ms, CancellationSource::AppShutdown);
         }
         self.page_load_ambiguous = false;
         self.pending_page_loads = 0;
@@ -228,6 +229,7 @@ impl HostLifecycle {
             request_id,
             InFlight {
                 cancelled_at_ms: None,
+                cancellation_source: None,
                 generation: context.generation,
                 started_at_ms,
                 timeout_ms,
@@ -274,7 +276,7 @@ impl HostLifecycle {
         if in_flight.generation != context.generation {
             return encode_error(request_id, ReasonCode::Unauthorized);
         }
-        let cancelled_at_ms = *in_flight.cancelled_at_ms.get_or_insert(now_ms);
+        let cancelled_at_ms = in_flight.cancel(now_ms, CancellationSource::User);
         if cancelled_at_ms.saturating_sub(in_flight.started_at_ms)
             >= u64::from(in_flight.timeout_ms)
         {
@@ -295,6 +297,53 @@ impl HostLifecycle {
         quit_requested: bool,
     ) -> FoundationCompletion {
         self.complete_foundation_request_with_availability(accepted, encoded, quit_requested, true)
+    }
+
+    fn complete_turn_request(&mut self, accepted: AcceptedRequest, mut state: TurnView) -> String {
+        let completed_at_ms = self.clock.now_ms();
+        let (request_id, _, _) = request_metadata(&accepted.request);
+        let request_id = request_id.to_owned();
+        let Some(in_flight) = self.in_flight.remove(&request_id) else {
+            return encode_error(&request_id, ReasonCode::InternalFailure);
+        };
+        // Turn shutdown first records AppShutdown on every in-flight request.
+        // Treating completion as unavailable here would erase that precise
+        // terminal outcome and replace it with a generic host failure.
+        let terminal_reason = terminal_reason(&in_flight, completed_at_ms, true);
+        if !state.evidence.cleanup_complete {
+            state.state = TurnState::CleanupFailed;
+            state.reason = Some(TurnReason::CleanupFailed);
+            state.evidence.terminal_state = TurnState::CleanupFailed;
+        } else {
+            match terminal_reason {
+                None => {}
+                Some(ReasonCode::Cancelled) => {
+                    if state.state != TurnState::CleanupFailed {
+                        if state.state != TurnState::Cancelled {
+                            state.reason = Some(match in_flight.cancellation_source {
+                                Some(CancellationSource::RendererLost) => TurnReason::RendererLost,
+                                Some(CancellationSource::AppShutdown) => TurnReason::AppShutdown,
+                                Some(CancellationSource::User) | None => TurnReason::UserCancelled,
+                            });
+                        }
+                        state.state = TurnState::Cancelled;
+                        state.evidence.terminal_state = TurnState::Cancelled;
+                    }
+                }
+                Some(ReasonCode::TimedOut) => {
+                    if state.state != TurnState::CleanupFailed {
+                        state.state = TurnState::TimedOut;
+                        state.reason = Some(TurnReason::TimedOut);
+                        state.evidence.terminal_state = TurnState::TimedOut;
+                    }
+                }
+                Some(reason) => return encode_error(&request_id, reason),
+            }
+        }
+        encode_success(&application_response(
+            &request_id,
+            ApplicationResult::CodexTurn { state },
+        ))
     }
 
     fn complete_foundation_request_with_availability(
@@ -382,7 +431,7 @@ impl HostLifecycle {
         let now_ms = self.clock.now_ms();
         for request in self.in_flight.values_mut() {
             if Some(request.generation) == generation {
-                request.cancelled_at_ms.get_or_insert(now_ms);
+                request.cancel(now_ms, CancellationSource::RendererLost);
             }
         }
     }

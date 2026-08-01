@@ -59,6 +59,16 @@ function elements(
   return [{ type, props }, ...elements(props.children)];
 }
 
+function completedRuntimeDescriptor() {
+  return {
+    version: "0.145.0" as const,
+    artifactSha256:
+      "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590" as const,
+    containmentProfile: "keiko-codex-readiness-v1" as const,
+    freshStartRequired: true as const,
+  };
+}
+
 describe("closed Foundation presentation", () => {
   it("contains exactly the four accepted surface kinds", () => {
     expect(closedSurfaceKinds).toEqual([
@@ -412,7 +422,8 @@ describe("closed Foundation presentation", () => {
 
   it("keeps one text-only no-repository turn gated, accessible and distinct from delivery", async () => {
     const startTurn = vi.fn(async () => undefined);
-    const turnController: TurnController = { startTurn };
+    const cancelTurn = vi.fn();
+    const turnController: TurnController = { startTurn, cancelTurn };
     const completed: TurnView = {
       taskId: "task-0000000000000007-0000000000000001",
       runId: "run-0000000000000007-0000000000000001",
@@ -501,6 +512,72 @@ describe("closed Foundation presentation", () => {
       "Erkläre eine Invariante.",
     );
     expect(textareaNode.disabled).toBe(true);
+
+    const streaming = {
+      ...completed,
+      state: "streaming" as const,
+      reason: undefined,
+      evidence: {
+        ...completed.evidence,
+        cleanupComplete: false,
+        terminalState: "streaming" as const,
+      },
+    };
+    const active = renderFoundation(
+      { kind: "canvas", committedText: "" },
+      controller,
+      { kind: "bound", generation: 3, displayLabel: "Keiko Native" },
+      undefined,
+      {
+        state: "ready",
+        quarantinedEvents: 0,
+        descriptor: completedRuntimeDescriptor(),
+      },
+      undefined,
+      streaming,
+      turnController,
+    );
+    const cancel = elements(active).find(
+      ({ type, props }) =>
+        type === "button" && props.children === "Codex-Lauf abbrechen",
+    )?.props;
+    expect(cancel?.["aria-disabled"]).toBeUndefined();
+    (cancel?.onClick as () => void)();
+    expect(cancelTurn).toHaveBeenCalledOnce();
+
+    const stopping = {
+      ...streaming,
+      state: "stopping" as const,
+      reason: "user-cancelled" as const,
+      evidence: {
+        ...streaming.evidence,
+        terminalState: "stopping" as const,
+      },
+    };
+    const stoppingView = renderFoundation(
+      { kind: "canvas", committedText: "" },
+      controller,
+      { kind: "bound", generation: 3, displayLabel: "Keiko Native" },
+      undefined,
+      {
+        state: "ready",
+        quarantinedEvents: 0,
+        descriptor: completedRuntimeDescriptor(),
+      },
+      undefined,
+      stopping,
+      turnController,
+    );
+    const stoppingButton = elements(stoppingView).find(
+      ({ type, props }) =>
+        type === "button" && props.children === "Codex-Lauf wird beendet",
+    )?.props;
+    expect(stoppingButton?.["aria-disabled"]).toBe("true");
+    (stoppingButton?.onClick as () => void)();
+    expect(cancelTurn).toHaveBeenCalledOnce();
+    expect(textContent(stoppingView)).toContain(
+      "Keiko beendet den Codex-Lauf sicher.",
+    );
   });
 
   it("keeps the turn disabled until both workspace identity and exact runtime are ready", () => {
