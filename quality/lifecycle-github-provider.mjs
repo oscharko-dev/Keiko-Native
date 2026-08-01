@@ -297,7 +297,6 @@ export async function verifyLifecycleAttestationBundle({
         "--cert-oidc-issuer",
         ISSUER,
         "--deny-self-hosted-runners",
-        "--no-public-good",
         "--format",
         "json",
       ],
