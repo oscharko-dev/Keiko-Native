@@ -580,7 +580,7 @@ test("qualifies both stable orphan-recovery attestation absence reads", async ()
   assert.equal(provider.requestCount(), 12);
 });
 
-test("cryptographically verifies the exact bundle with closed signer and source flags", async () => {
+test("cryptographically verifies the exact public-good bundle with closed signer and source flags", async () => {
   const bundle = { mediaType: "application/vnd.dev.sigstore.bundle.v0.3+json" };
   const calls = [];
   const claims = await verifyLifecycleAttestationBundle({
@@ -589,6 +589,10 @@ test("cryptographically verifies the exact bundle with closed signer and source 
     execute: async (commandName, argumentsList, options) => {
       calls.push({ argumentsList, commandName, options });
       assert.equal(commandName, "gh");
+      if (argumentsList.includes("--no-public-good"))
+        throw new Error(
+          "failed to choose verifier based on provided bundle issuer: detected public good instance but requested verification without public good instance",
+        );
       assert.deepEqual(
         JSON.parse(
           await readFile(
@@ -656,10 +660,11 @@ test("cryptographically verifies the exact bundle with closed signer and source 
     ["--signer-digest", "a".repeat(40)],
     ["--source-ref", "refs/heads/dev"],
     ["--source-digest", "a".repeat(40)],
+    ["--cert-oidc-issuer", "https://token.actions.githubusercontent.com"],
   ])
     assert.equal(argumentsList[argumentsList.indexOf(pair[0]) + 1], pair[1]);
   assert.ok(argumentsList.includes("--deny-self-hosted-runners"));
-  assert.ok(argumentsList.includes("--no-public-good"));
+  assert.ok(!argumentsList.includes("--no-public-good"));
 });
 
 test("bounds checkpoint predecessor traversal to the live suffix", async () => {
