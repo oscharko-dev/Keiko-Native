@@ -541,7 +541,7 @@ describe("closed Foundation presentation", () => {
       ({ type, props }) =>
         type === "button" && props.children === "Codex-Lauf abbrechen",
     )?.props;
-    expect(cancel?.disabled).toBe(false);
+    expect(cancel?.["aria-disabled"]).toBeUndefined();
     (cancel?.onClick as () => void)();
     expect(cancelTurn).toHaveBeenCalledOnce();
 
@@ -572,7 +572,9 @@ describe("closed Foundation presentation", () => {
       ({ type, props }) =>
         type === "button" && props.children === "Codex-Lauf wird beendet",
     )?.props;
-    expect(stoppingButton?.disabled).toBe(true);
+    expect(stoppingButton?.["aria-disabled"]).toBe("true");
+    (stoppingButton?.onClick as () => void)();
+    expect(cancelTurn).toHaveBeenCalledOnce();
     expect(textContent(stoppingView)).toContain(
       "Keiko beendet den Codex-Lauf sicher.",
     );

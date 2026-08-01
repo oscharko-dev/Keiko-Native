@@ -185,6 +185,15 @@ export async function startRenderer(
           cancellation.signal,
         );
       } catch {
+        if (
+          turnState !== null &&
+          ["preflighting", "streaming", "stopping"].includes(turnState.state)
+        ) {
+          turnState = null;
+        }
+        console.error(
+          "Codex turn ended before a verified terminal state; retry is available.",
+        );
         present(currentView);
       } finally {
         if (activeTurnCancellation === cancellation) {

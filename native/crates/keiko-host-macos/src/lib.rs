@@ -306,29 +306,39 @@ impl HostLifecycle {
         let Some(in_flight) = self.in_flight.remove(&request_id) else {
             return encode_error(&request_id, ReasonCode::InternalFailure);
         };
-        match terminal_reason(&in_flight, completed_at_ms, true) {
-            None => {}
-            Some(ReasonCode::Cancelled) => {
-                if state.state != TurnState::CleanupFailed {
-                    if state.state != TurnState::Cancelled {
-                        state.reason = Some(match in_flight.cancellation_source {
-                            Some(CancellationSource::RendererLost) => TurnReason::RendererLost,
-                            Some(CancellationSource::AppShutdown) => TurnReason::AppShutdown,
-                            Some(CancellationSource::User) | None => TurnReason::UserCancelled,
-                        });
+        // Turn shutdown first records AppShutdown on every in-flight request.
+        // Treating completion as unavailable here would erase that precise
+        // terminal outcome and replace it with a generic host failure.
+        let terminal_reason = terminal_reason(&in_flight, completed_at_ms, true);
+        if !state.evidence.cleanup_complete {
+            state.state = TurnState::CleanupFailed;
+            state.reason = Some(TurnReason::CleanupFailed);
+            state.evidence.terminal_state = TurnState::CleanupFailed;
+        } else {
+            match terminal_reason {
+                None => {}
+                Some(ReasonCode::Cancelled) => {
+                    if state.state != TurnState::CleanupFailed {
+                        if state.state != TurnState::Cancelled {
+                            state.reason = Some(match in_flight.cancellation_source {
+                                Some(CancellationSource::RendererLost) => TurnReason::RendererLost,
+                                Some(CancellationSource::AppShutdown) => TurnReason::AppShutdown,
+                                Some(CancellationSource::User) | None => TurnReason::UserCancelled,
+                            });
+                        }
+                        state.state = TurnState::Cancelled;
+                        state.evidence.terminal_state = TurnState::Cancelled;
                     }
-                    state.state = TurnState::Cancelled;
-                    state.evidence.terminal_state = TurnState::Cancelled;
                 }
-            }
-            Some(ReasonCode::TimedOut) => {
-                if state.state != TurnState::CleanupFailed {
-                    state.state = TurnState::TimedOut;
-                    state.reason = Some(TurnReason::TimedOut);
-                    state.evidence.terminal_state = TurnState::TimedOut;
+                Some(ReasonCode::TimedOut) => {
+                    if state.state != TurnState::CleanupFailed {
+                        state.state = TurnState::TimedOut;
+                        state.reason = Some(TurnReason::TimedOut);
+                        state.evidence.terminal_state = TurnState::TimedOut;
+                    }
                 }
+                Some(reason) => return encode_error(&request_id, reason),
             }
-            Some(reason) => return encode_error(&request_id, reason),
         }
         encode_success(&application_response(
             &request_id,

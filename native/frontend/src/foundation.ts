@@ -469,8 +469,11 @@ function turnPanel(
             {
               type: "button",
               className: "quiet",
-              disabled: !cancellable,
-              onClick: () => controller.cancelTurn(),
+              "aria-disabled": cancellable ? undefined : "true",
+              onClick: () => {
+                if (!cancellable) return;
+                controller.cancelTurn();
+              },
             },
             cancellable ? "Codex-Lauf abbrechen" : "Codex-Lauf wird beendet",
           )

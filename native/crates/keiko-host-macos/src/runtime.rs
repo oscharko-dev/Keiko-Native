@@ -42,6 +42,7 @@ const WNOWAIT: i32 = 0x0000_0020;
 const BINARY_ENV: &str = "KEIKO_CODEX_0_145_0_BINARY";
 const HOME_ENV: &str = "KEIKO_CODEX_0_145_0_HOME";
 const WORK_ROOT_ENV: &str = "KEIKO_CODEX_0_145_0_WORK_ROOT";
+const CANCEL_TERM_GRACE: Duration = Duration::from_millis(500);
 const TURN_CLEANUP_RESERVE: Duration = Duration::from_secs(5);
 const CODEX_CONTAINMENT_ARGUMENTS: &[&str] = &[
     "-c",
@@ -139,14 +140,30 @@ enum RuntimeCancellation {
     User = 1,
     RendererLost = 2,
     AppShutdown = 3,
+    ContainmentFailure = 4,
 }
 
 impl RuntimeCancellation {
+    fn readiness_state(self) -> RuntimeReadinessState {
+        match self {
+            Self::ContainmentFailure => RuntimeReadinessState::ContainmentFailed,
+            Self::User | Self::RendererLost | Self::AppShutdown => RuntimeReadinessState::Cancelled,
+        }
+    }
+
+    fn turn_state(self) -> TurnState {
+        match self {
+            Self::ContainmentFailure => TurnState::ContainmentFailed,
+            Self::User | Self::RendererLost | Self::AppShutdown => TurnState::Cancelled,
+        }
+    }
+
     fn turn_reason(self) -> TurnReason {
         match self {
             Self::User => TurnReason::UserCancelled,
             Self::RendererLost => TurnReason::RendererLost,
             Self::AppShutdown => TurnReason::AppShutdown,
+            Self::ContainmentFailure => TurnReason::InternalFailure,
         }
     }
 }
@@ -192,13 +209,14 @@ impl ActiveRuntime {
     fn cancellation(&self) -> Option<RuntimeCancellation> {
         self.control
             .lock()
-            .map_or(Some(RuntimeCancellation::RendererLost), |control| {
+            .map_or(Some(RuntimeCancellation::ContainmentFailure), |control| {
                 control.cancellation
             })
     }
 
-    fn is_cancelled(&self) -> bool {
-        self.cancellation().is_some()
+    fn cancellation_state(&self) -> Option<RuntimeReadinessState> {
+        self.cancellation()
+            .map(RuntimeCancellation::readiness_state)
     }
 
     fn wait_for_idle(&self, timeout: Duration) -> bool {
@@ -313,12 +331,12 @@ impl RuntimeHost {
         }
     }
 
-    pub fn cancel_all(&self) {
-        self.cancel_for_renderer_loss();
-    }
-
     pub fn cancel_for_renderer_loss(&self) {
         self.cancel_with_reason(RuntimeCancellation::RendererLost);
+    }
+
+    pub fn cancel_for_containment_failure(&self) {
+        self.cancel_with_reason(RuntimeCancellation::ContainmentFailure);
     }
 
     pub fn cancel_for_app_shutdown(&self) {
@@ -533,8 +551,8 @@ fn perform_check(
         Ok(verified) => verified,
         Err(state) => return RuntimeReadinessView::terminal(state, 0),
     };
-    if active.is_cancelled() {
-        return RuntimeReadinessView::terminal(RuntimeReadinessState::Cancelled, 0);
+    if let Some(state) = active.cancellation_state() {
+        return RuntimeReadinessView::terminal(state, 0);
     }
     if Instant::now() >= deadline {
         return RuntimeReadinessView::terminal(RuntimeReadinessState::TimedOut, 0);
@@ -568,9 +586,12 @@ fn perform_turn(
     update: &mut impl FnMut(TurnRuntimeUpdate),
 ) -> TurnRuntimeOutcome {
     if let Some(cancellation) = active.cancellation() {
+        let state = cancellation.turn_state();
         let reason = cancellation.turn_reason();
-        update(TurnRuntimeUpdate::Stopping(reason));
-        return TurnRuntimeOutcome::terminal(TurnState::Cancelled, reason);
+        if state == TurnState::Cancelled {
+            update(TurnRuntimeUpdate::Stopping(reason));
+        }
+        return TurnRuntimeOutcome::terminal(state, reason);
     }
     if Instant::now() >= deadline {
         return TurnRuntimeOutcome::terminal(TurnState::TimedOut, TurnReason::TimedOut);
@@ -722,9 +743,12 @@ fn run_turn_protocol(
     let protocol_deadline = deadline.checked_sub(cleanup_reserve).unwrap_or(deadline);
     let (state, reason) = loop {
         if let Some(cancellation) = active.cancellation() {
+            let state = cancellation.turn_state();
             let reason = cancellation.turn_reason();
-            update(TurnRuntimeUpdate::Stopping(reason));
-            break (TurnState::Cancelled, reason);
+            if state == TurnState::Cancelled {
+                update(TurnRuntimeUpdate::Stopping(reason));
+            }
+            break (state, reason);
         }
         if stderr_saturated.load(Ordering::Acquire) {
             break (TurnState::ContainmentFailed, TurnReason::BufferLimit);
@@ -827,9 +851,12 @@ fn run_turn_protocol(
             }
             Ok(FrameEvent::Eof) | Err(RecvTimeoutError::Disconnected) => {
                 break if let Some(cancellation) = active.cancellation() {
+                    let state = cancellation.turn_state();
                     let reason = cancellation.turn_reason();
-                    update(TurnRuntimeUpdate::Stopping(reason));
-                    (TurnState::Cancelled, reason)
+                    if state == TurnState::Cancelled {
+                        update(TurnRuntimeUpdate::Stopping(reason));
+                    }
+                    (state, reason)
                 } else {
                     (TurnState::Failed, TurnReason::ProviderFailed)
                 };
@@ -872,7 +899,7 @@ fn cleanup_turn(
             process_group,
             active,
             cleanup_deadline,
-            Some(Duration::from_millis(500)),
+            Some(CANCEL_TERM_GRACE),
         )
     } else {
         stop_process_group(&mut child, process_group, active, cleanup_deadline)
@@ -1103,8 +1130,8 @@ fn run_protocol(
     let cleanup_reserve = remaining / 5;
     let protocol_deadline = deadline.checked_sub(cleanup_reserve).unwrap_or(deadline);
     let state = loop {
-        if active.is_cancelled() {
-            break RuntimeReadinessState::Cancelled;
+        if let Some(state) = active.cancellation_state() {
+            break state;
         }
         if stderr_saturated.load(Ordering::Acquire) {
             break RuntimeReadinessState::ContainmentFailed;
@@ -1138,19 +1165,15 @@ fn run_protocol(
             }
             Ok(FrameEvent::Rejected) => break RuntimeReadinessState::ContainmentFailed,
             Ok(FrameEvent::Eof) => {
-                break if active.is_cancelled() {
-                    RuntimeReadinessState::Cancelled
-                } else {
-                    RuntimeReadinessState::Incompatible
-                };
+                break active
+                    .cancellation_state()
+                    .unwrap_or(RuntimeReadinessState::Incompatible);
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
-                break if active.is_cancelled() {
-                    RuntimeReadinessState::Cancelled
-                } else {
-                    RuntimeReadinessState::Incompatible
-                };
+                break active
+                    .cancellation_state()
+                    .unwrap_or(RuntimeReadinessState::Incompatible);
             }
         }
     };
@@ -2550,7 +2573,7 @@ mod tests {
             .process_group
             .lock()
             .expect("process-group state") = Some(i32::MAX);
-        host.cancel_all();
+        host.cancel_for_renderer_loss();
         *host
             .active
             .process_group
@@ -2661,7 +2684,7 @@ mod tests {
             unavailable.check("unconfigured", None).state,
             RuntimeReadinessState::Unavailable
         );
-        unavailable.cancel_all();
+        unavailable.cancel_for_renderer_loss();
 
         let fixture = Fixture::new();
         let unspawnable = RuntimeHost::for_test(
@@ -2693,6 +2716,13 @@ mod tests {
         assert_eq!(
             host.check("poisoned-bookkeeping", None).state,
             RuntimeReadinessState::ContainmentFailed
+        );
+        assert_eq!(
+            host.active
+                .cancellation()
+                .map(RuntimeCancellation::turn_reason),
+            Some(TurnReason::InternalFailure),
+            "poisoned runtime control must not masquerade as renderer loss"
         );
         host.cancel_request("poisoned-bookkeeping");
     }
@@ -3512,13 +3542,19 @@ while :; do /bin/sleep 1; done
         assert_eq!(cancelled.state, TurnState::Cancelled);
         assert_eq!(cancelled.reason, Some(TurnReason::AppShutdown));
         assert!(cancelled.cleaned);
+    }
 
+    #[test]
+    fn wait_for_idle_times_out_when_request_never_finishes() {
         let never_idle = ActiveRuntime::default();
         never_idle.running.store(true, Ordering::Release);
         assert!(never_idle.begin_request("never-idle"));
         assert!(!never_idle.wait_for_idle(Duration::from_millis(1)));
         never_idle.finish_request();
+    }
 
+    #[test]
+    fn wait_for_idle_rejects_already_poisoned_control() {
         let poisoned = Arc::new(ActiveRuntime::default());
         let poison_target = Arc::clone(&poisoned);
         let _ = thread::spawn(move || {
@@ -3530,7 +3566,10 @@ while :; do /bin/sleep 1; done
         })
         .join();
         assert!(!poisoned.wait_for_idle(Duration::from_millis(1)));
+    }
 
+    #[test]
+    fn wait_for_idle_rejects_control_poisoned_while_waiting() {
         let poisoned_while_waiting = Arc::new(ActiveRuntime::default());
         poisoned_while_waiting
             .running

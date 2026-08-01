@@ -100,7 +100,7 @@ pub fn turn_request(
             };
             if applied.is_err() {
                 projection_failed = true;
-                runtime.cancel_all();
+                runtime.cancel_for_containment_failure();
                 return;
             }
             update(session.view());
@@ -559,5 +559,86 @@ mod tests {
             .unwrap()
             .complete_turn_request(ordinary_timeout_accepted, failed.view());
         assert!(ordinary_timeout_encoded.contains(r#""state":"timed-out""#));
+    }
+
+    #[test]
+    fn incomplete_cleanup_cannot_be_rewritten_as_clean_cancellation() {
+        let (lifecycle, sender) = session();
+        let encoded_request = request(sender.generation, 3, "Bounded task.");
+        let accepted = lifecycle
+            .lock()
+            .unwrap()
+            .begin_application_request(&sender, encoded_request.as_bytes())
+            .unwrap();
+        let cancellation = serde_json::to_vec(&json!({
+            "schemaVersion": 1,
+            "requestId": canonical_request_id(sender.generation, 1).unwrap()
+        }))
+        .unwrap();
+        lifecycle
+            .lock()
+            .unwrap()
+            .cancel_application_request(&sender, &cancellation);
+
+        let mut completed = TurnSession::new(
+            sender.generation,
+            1,
+            3,
+            "Bounded task.".to_owned(),
+            RuntimeDescriptor::approved(),
+        )
+        .unwrap();
+        completed.mark_streaming().unwrap();
+        completed.append_agent_delta("late completion").unwrap();
+        completed.complete().unwrap();
+        completed.settle_cleanup(true).unwrap();
+        let mut inconsistent = completed.view();
+        inconsistent.evidence.cleanup_complete = false;
+
+        let encoded = lifecycle
+            .lock()
+            .unwrap()
+            .complete_turn_request(accepted, inconsistent);
+        assert!(encoded.contains(r#""state":"cleanup-failed""#));
+        assert!(encoded.contains(r#""reason":"cleanup-failed""#));
+        assert!(encoded.contains(r#""cleanupComplete":false"#));
+    }
+
+    #[test]
+    fn duplicate_turn_completion_fails_closed() {
+        let (lifecycle, sender) = session();
+        let encoded_request = request(sender.generation, 3, "Bounded task.");
+        let accepted = lifecycle
+            .lock()
+            .unwrap()
+            .begin_application_request(&sender, encoded_request.as_bytes())
+            .unwrap();
+        let duplicate = AcceptedRequest {
+            generation: accepted.generation,
+            request: accepted.request.clone(),
+        };
+        let mut completed = TurnSession::new(
+            sender.generation,
+            1,
+            3,
+            "Bounded task.".to_owned(),
+            RuntimeDescriptor::approved(),
+        )
+        .unwrap();
+        completed.mark_streaming().unwrap();
+        completed.append_agent_delta("answer").unwrap();
+        completed.complete().unwrap();
+        completed.settle_cleanup(true).unwrap();
+
+        let first = lifecycle
+            .lock()
+            .unwrap()
+            .complete_turn_request(accepted, completed.view());
+        assert!(first.contains(r#""kind":"codex-turn""#));
+        let second = lifecycle
+            .lock()
+            .unwrap()
+            .complete_turn_request(duplicate, completed.view());
+        assert!(second.contains(r#""code":"internal-failure""#));
     }
 }

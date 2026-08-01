@@ -288,7 +288,7 @@ pub async fn codex_turn_request(
             &request,
             |view| {
                 if on_event.send(view).is_err() {
-                    runtime.cancel_all();
+                    runtime.cancel_for_renderer_loss();
                 }
             },
         )

@@ -488,9 +488,19 @@ mod tests {
         );
 
         let mut cleanup_failed = session("Explain one terminal state.");
+        assert_eq!(
+            cleanup_failed.request_stop(TurnReason::TimedOut),
+            Err(TurnError::InvalidTransition),
+            "only approved stop reasons may enter stopping"
+        );
         cleanup_failed
             .request_stop(TurnReason::UserCancelled)
             .unwrap();
+        assert_eq!(
+            cleanup_failed.cancel(TurnReason::AppShutdown),
+            Err(TurnError::InvalidTransition),
+            "cancellation must match the recorded stop reason"
+        );
         cleanup_failed.cancel(TurnReason::UserCancelled).unwrap();
         cleanup_failed.settle_cleanup(false).unwrap();
         assert_eq!(cleanup_failed.view().state, TurnState::CleanupFailed);

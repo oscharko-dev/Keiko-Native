@@ -218,6 +218,43 @@ describe("rendered Foundation accessibility", () => {
     cancel?.click();
     expect(cancelTurn).toHaveBeenCalledOnce();
 
+    const stopping: TurnView = {
+      ...streaming,
+      state: "stopping",
+      reason: "user-cancelled",
+      evidence: { ...streaming.evidence, terminalState: "stopping" },
+    };
+    flushSync(() =>
+      root.render(
+        renderFoundation(
+          canvas,
+          controller,
+          { kind: "bound", generation: 3, displayLabel: "Sanitized fixture" },
+          undefined,
+          {
+            state: "ready",
+            quarantinedEvents: 0,
+            descriptor: {
+              version: "0.145.0",
+              artifactSha256:
+                "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
+              containmentProfile: "keiko-codex-readiness-v1",
+              freshStartRequired: true,
+            },
+          },
+          undefined,
+          stopping,
+          { startTurn, cancelTurn },
+        ),
+      ),
+    );
+    const stoppingCancel = Array.from(
+      container.querySelectorAll("button"),
+    ).find((button) => button.textContent === "Codex-Lauf wird beendet");
+    expect(stoppingCancel).toBe(cancel);
+    expect(document.activeElement).toBe(stoppingCancel);
+    expect(stoppingCancel?.getAttribute("aria-disabled")).toBe("true");
+
     root.unmount();
     container.remove();
   });

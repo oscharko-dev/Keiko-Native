@@ -16,6 +16,11 @@ import {
   type TurnView,
 } from "./port";
 
+async function drainCancellationDispatch(): Promise<void> {
+  // Drain the cancel dispatch chain: invoke -> then -> projectStopping.
+  for (let step = 0; step < 3; step += 1) await Promise.resolve();
+}
+
 const build = {
   version: "0.1.0",
   sourceRevision: expectedSourceRevision,
@@ -1069,8 +1074,7 @@ describe("closed streamed Codex turn port", () => {
     );
     await Promise.resolve();
     cancellation.abort();
-    await Promise.resolve();
-    await Promise.resolve();
+    await drainCancellationDispatch();
     expect(updates).toEqual([preflight, stopping]);
     channel.onmessage(cancelled);
     resolveTurn?.(
