@@ -90,7 +90,7 @@ test("the action boundary accepts only the frozen task and bounded workspace ide
   const run = () => assert.fail("must not start a subprocess");
   for (const request of [
     { action: "unknown", input: undefined, pid: 1 },
-    { action: "probe-welcome", input: "unexpected", pid: 1 },
+    { action: "probe-start", input: "unexpected", pid: 1 },
     { action: "set-task", input: "", pid: 1 },
     { action: "set-task", input: "x".repeat(4_097), pid: 1 },
     { action: "set-task", input: "bounded", pid: 1 },
@@ -159,7 +159,7 @@ test("bounded semantic waits retry only missing targets and stop on permission d
 
   let attempts = 0;
   const denied = await waitForTracerAccessibilityAction({
-    action: "probe-welcome",
+    action: "probe-start",
     binary: "/bounded/adapter",
     execute: () => {
       attempts += 1;
@@ -202,8 +202,8 @@ test("the packaged journey drives only the fixed semantic sequence", async () =>
   assert.deepEqual(
     calls.map(({ action }) => action),
     [
-      "probe-welcome",
-      "open-foundation",
+      "probe-start",
+      "open-canvas",
       "probe-canvas",
       "open-workspace-picker",
       "cancel-workspace-picker",

@@ -1,6 +1,6 @@
 export const tracerAccessibilityActions = Object.freeze([
-  "probe-welcome",
-  "open-foundation",
+  "probe-start",
+  "open-canvas",
   "probe-canvas",
   "open-workspace-picker",
   "select-workspace",
@@ -272,12 +272,14 @@ ${tracerAccessibilityActions.map((action) => `      @"${action}",`).join("\n")}
     }
     AXUIElementRef application = AXUIElementCreateApplication(pid);
     BOOL passed = NO;
-    if ([action isEqualToString:@"probe-welcome"]) {
-      passed =
-          HasUnique(application, CFSTR("Foundation öffnen")) &&
+    if ([action isEqualToString:@"probe-start"]) {
+      BOOL welcome = HasUnique(application, CFSTR("Foundation öffnen"));
+      BOOL canvas = HasUnique(application, CFSTR("codex-task"));
+      passed = (welcome || canvas) &&
           HasUnique(application, CFSTR("Keiko Native beenden"));
-    } else if ([action isEqualToString:@"open-foundation"]) {
-      passed = Press(application, CFSTR("Foundation öffnen"));
+    } else if ([action isEqualToString:@"open-canvas"]) {
+      passed = HasUnique(application, CFSTR("codex-task")) ||
+          Press(application, CFSTR("Foundation öffnen"));
     } else if ([action isEqualToString:@"probe-canvas"]) {
       passed =
           HasUnique(application, CFSTR("ime-harness")) &&

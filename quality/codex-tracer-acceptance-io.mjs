@@ -421,7 +421,7 @@ async function measureFirstVisibleP95(internal, adapterBinary) {
     const ownership = await authenticateOwnedProcessGroup(child);
     try {
       const visible = await waitForTracerAccessibilityAction({
-        action: "probe-welcome",
+        action: "probe-start",
         binary: adapterBinary,
         pid: child.pid,
         timeoutMs: 2_000,

@@ -12,8 +12,8 @@ import {
 
 test("the packaged tracer adapter is a closed AXUIElement-only action surface", () => {
   assert.deepEqual(tracerAccessibilityActions, [
-    "probe-welcome",
-    "open-foundation",
+    "probe-start",
+    "open-canvas",
     "probe-canvas",
     "open-workspace-picker",
     "select-workspace",

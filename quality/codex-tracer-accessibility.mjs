@@ -223,8 +223,8 @@ export async function runPackagedTracerJourney({
     return elapsedMs;
   };
 
-  await step("probe-welcome");
-  await project("open-foundation", "probe-canvas");
+  await step("probe-start");
+  await project("open-canvas", "probe-canvas");
 
   await step("open-workspace-picker");
   await project("cancel-workspace-picker", "observe-workspace-cancelled");
