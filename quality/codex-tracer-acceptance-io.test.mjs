@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  acceptanceProcessEnvironment,
   acceptanceEnvironmentFailures,
   canonicalRuntimeRoot,
   packageArtifactFailures,
@@ -15,6 +16,39 @@ const runtimeSha256 =
   "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590";
 const promptSha256 =
   "e1a92579b1ca673135331829beb97792c1289a6bccdfe0303302256c546960f6";
+
+test("acceptance-owned processes receive only non-secret system context and explicit bindings", () => {
+  const environment = acceptanceProcessEnvironment(
+    {
+      HOME: "/Users/acceptance",
+      LANG: "en_US.UTF-8",
+      PATH: "/usr/bin:/bin",
+      TMPDIR: "/private/tmp/acceptance/",
+      GH_TOKEN: "must-not-cross",
+      OPENAI_API_KEY: "must-not-cross",
+      SSH_AUTH_SOCK: "/private/tmp/agent.sock",
+    },
+    {
+      CODEX_HOME: "/private/tmp/codex-home",
+      KEIKO_CODEX_0_145_0_BINARY: "/private/tmp/codex",
+    },
+  );
+
+  assert.deepEqual(environment, {
+    CODEX_HOME: "/private/tmp/codex-home",
+    HOME: "/Users/acceptance",
+    KEIKO_CODEX_0_145_0_BINARY: "/private/tmp/codex",
+    LANG: "en_US.UTF-8",
+    PATH: "/usr/bin:/bin",
+    TMPDIR: "/private/tmp/acceptance/",
+  });
+  assert.equal(JSON.stringify(environment).includes("must-not-cross"), false);
+  assert.equal("SSH_AUTH_SOCK" in environment, false);
+  assert.throws(
+    () => acceptanceProcessEnvironment({}, { CODEX_HOME: "" }),
+    /acceptance-process-environment-invalid/u,
+  );
+});
 
 test("runtime work roots use their canonical macOS identity", async () => {
   const alias = "/var/folders/private-run";

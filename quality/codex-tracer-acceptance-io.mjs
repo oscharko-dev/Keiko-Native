@@ -49,6 +49,17 @@ const runtimeBinary =
 const runtimeHome = "/private/tmp/keiko-codex-0.145.0-home-v104";
 const physicalObservationPath =
   "/private/tmp/keiko-native-codex-tracer-104-observation.json";
+const acceptanceProcessEnvironmentKeys = Object.freeze([
+  "HOME",
+  "LANG",
+  "LC_ALL",
+  "LOGNAME",
+  "PATH",
+  "SHELL",
+  "TMPDIR",
+  "USER",
+  "__CF_USER_TEXT_ENCODING",
+]);
 
 const acceptedEnvironment = Object.freeze({
   architecture: "arm64",
@@ -264,11 +275,32 @@ export function selectCommandOutput(result, channel = "stdout") {
   return String(result?.[channel] ?? "").trim();
 }
 
+export function acceptanceProcessEnvironment(
+  environment = process.env,
+  explicitBindings = {},
+) {
+  const selected = {};
+  for (const key of acceptanceProcessEnvironmentKeys) {
+    const value = environment[key];
+    if (typeof value === "string" && value.length > 0) selected[key] = value;
+  }
+  for (const [key, value] of Object.entries(explicitBindings)) {
+    if (typeof value !== "string" || value.length === 0)
+      throw new TypeError("acceptance-process-environment-invalid");
+    selected[key] = value;
+  }
+  return selected;
+}
+
 function run(command, args, options = {}) {
+  const environment =
+    options.inheritEnvironment === false
+      ? acceptanceProcessEnvironment(process.env, options.env)
+      : { ...process.env, ...options.env };
   const result = spawnSync(command, args, {
     cwd: options.cwd ?? repositoryRoot,
     encoding: "utf8",
-    env: noReplaceGitEnvironment({ ...process.env, ...options.env }),
+    env: noReplaceGitEnvironment(environment),
     maxBuffer: 50 * 1024 * 1024,
     shell: false,
   });
@@ -306,7 +338,11 @@ async function inspectEnvironment() {
     authStatus: run(
       runtimeBinary,
       ["-c", 'cli_auth_credentials_store="keyring"', "login", "status"],
-      { env: { CODEX_HOME: runtimeHome }, output: "stderr" },
+      {
+        env: { CODEX_HOME: runtimeHome },
+        inheritEnvironment: false,
+        output: "stderr",
+      },
     ),
     nodeVersion: process.versions.node,
     npmVersion: exactNpmVersion(),
@@ -314,7 +350,9 @@ async function inspectEnvironment() {
     promptBytes: promptBytes.byteLength,
     promptSha256: sha256(promptBytes),
     runtimeSha256: sha256(runtimeBytes),
-    runtimeVersion: run(runtimeBinary, ["--version"]),
+    runtimeVersion: run(runtimeBinary, ["--version"], {
+      inheritEnvironment: false,
+    }),
   };
 }
 
@@ -406,12 +444,11 @@ async function createIdentityWorkspace(prefix) {
 function launchPackagedApp(internal) {
   return spawn(internal.packageExecutable, [], {
     detached: true,
-    env: {
-      ...process.env,
+    env: acceptanceProcessEnvironment(process.env, {
       KEIKO_CODEX_0_145_0_BINARY: internal.runtimeBinary,
       KEIKO_CODEX_0_145_0_HOME: internal.runtimeHome,
       KEIKO_CODEX_0_145_0_WORK_ROOT: internal.runtimeWorkRoot,
-    },
+    }),
     stdio: "ignore",
   });
 }
