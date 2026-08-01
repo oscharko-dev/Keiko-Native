@@ -485,9 +485,10 @@ mod tests {
                 RuntimeDescriptor::approved(),
             )
             .unwrap();
-            session.request_stop(TurnReason::UserCancelled).unwrap();
-            session.cancel(TurnReason::UserCancelled).unwrap();
-            session.settle_cleanup(false).unwrap();
+            session
+                .fail(TurnState::CleanupFailed, TurnReason::CleanupFailed)
+                .unwrap();
+            session.settle_cleanup(true).unwrap();
             session.view()
         };
 

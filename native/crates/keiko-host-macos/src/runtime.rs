@@ -2728,6 +2728,46 @@ mod tests {
     }
 
     #[test]
+    fn poisoned_runtime_control_is_containment_failure_for_readiness_and_turns() {
+        let fixture = Fixture::new();
+        let host = fixture.scripted_host("#!/bin/sh\nexit 0\n");
+        let active = Arc::new(ActiveRuntime::default());
+        let poison_target = Arc::clone(&active);
+        let _ = thread::spawn(move || {
+            let _guard = poison_target
+                .control
+                .lock()
+                .expect("runtime control before poisoning");
+            panic!("poison runtime control");
+        })
+        .join();
+        let configuration = host.configuration.as_ref().expect("configuration");
+
+        let readiness = perform_check(
+            configuration,
+            None,
+            &active,
+            &AtomicU64::new(0),
+            Instant::now() + DEFAULT_REQUEST_TIMEOUT,
+        );
+        assert_eq!(readiness.state, RuntimeReadinessState::ContainmentFailed);
+
+        let mut updates = Vec::new();
+        let turn = perform_turn(
+            configuration,
+            &fixture.root,
+            "Bounded task.",
+            &active,
+            &AtomicU64::new(0),
+            Instant::now() + DEFAULT_REQUEST_TIMEOUT,
+            &mut |update| updates.push(update),
+        );
+        assert_eq!(turn.state, TurnState::ContainmentFailed);
+        assert_eq!(turn.reason, Some(TurnReason::InternalFailure));
+        assert!(updates.is_empty());
+    }
+
+    #[test]
     fn fake_runtime_proves_ready_only_after_cleanup_and_exports_no_live_state() {
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
