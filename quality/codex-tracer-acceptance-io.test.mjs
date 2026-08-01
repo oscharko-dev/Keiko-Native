@@ -5,6 +5,7 @@ import {
   acceptanceEnvironmentFailures,
   packageArtifactFailures,
   physicalObservationFailures,
+  selectCommandOutput,
 } from "./codex-tracer-acceptance-io.mjs";
 import { acceptancePhysicalContract } from "./codex-tracer-acceptance.mjs";
 import { nativeGateTestSupport } from "./native-gate.mjs";
@@ -13,6 +14,16 @@ const runtimeSha256 =
   "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590";
 const promptSha256 =
   "e1a92579b1ca673135331829beb97792c1289a6bccdfe0303302256c546960f6";
+
+test("the exact auth probe reads the CLI status stream without merging output", () => {
+  const result = {
+    stderr: "Logged in using ChatGPT\n",
+    stdout: "",
+  };
+  assert.equal(selectCommandOutput(result, "stderr"), "Logged in using ChatGPT");
+  assert.equal(selectCommandOutput(result, "stdout"), "");
+  assert.throws(() => selectCommandOutput(result, "combined"));
+});
 
 test("the external environment is the exact authoritative toolchain, runtime, prompt, and auth class", () => {
   const environment = {

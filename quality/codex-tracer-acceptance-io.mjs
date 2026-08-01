@@ -257,6 +257,12 @@ function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+export function selectCommandOutput(result, channel = "stdout") {
+  if (channel !== "stdout" && channel !== "stderr")
+    throw new TypeError("acceptance-output-channel-invalid");
+  return String(result?.[channel] ?? "").trim();
+}
+
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: options.cwd ?? repositoryRoot,
@@ -267,7 +273,7 @@ function run(command, args, options = {}) {
   });
   if (result.status !== 0 || result.error)
     throw new Error("acceptance-subprocess-failed");
-  return String(result.stdout).trim();
+  return selectCommandOutput(result, options.output);
 }
 
 function exactNpmVersion() {
@@ -299,7 +305,7 @@ async function inspectEnvironment() {
     authStatus: run(
       runtimeBinary,
       ["-c", 'cli_auth_credentials_store="keyring"', "login", "status"],
-      { env: { CODEX_HOME: runtimeHome } },
+      { env: { CODEX_HOME: runtimeHome }, output: "stderr" },
     ),
     nodeVersion: process.versions.node,
     npmVersion: exactNpmVersion(),
