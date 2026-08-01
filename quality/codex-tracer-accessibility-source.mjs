@@ -69,28 +69,47 @@ static void CollectMatches(
       CFArrayGetCount(matches) > 1)
     return;
   *visited += 1;
-  if (ElementMatches(root, expected)) CFArrayAppendValue(matches, root);
-  const CFStringRef container =
-      depth == 0 ? kAXWindowsAttribute : kAXChildrenAttribute;
-  CFTypeRef value = NULL;
-  if (AXUIElementCopyAttributeValue(root, container, &value) !=
-          kAXErrorSuccess ||
-      value == NULL)
-    return;
-  if (CFGetTypeID(value) == CFArrayGetTypeID()) {
-    CFArrayRef children = (CFArrayRef)value;
-    CFIndex count = MIN(CFArrayGetCount(children), 512);
-    for (CFIndex index = 0; index < count; index += 1) {
-      CollectMatches(
-          (AXUIElementRef)CFArrayGetValueAtIndex(children, index),
-          expected,
-          depth + 1,
-          matches,
-          visited);
-      if (CFArrayGetCount(matches) > 1) break;
+  if (ElementMatches(root, expected) &&
+      !CFArrayContainsValue(
+          matches, CFRangeMake(0, CFArrayGetCount(matches)), root))
+    CFArrayAppendValue(matches, root);
+  const CFStringRef rootContainers[] = {kAXWindowsAttribute};
+  const CFStringRef childContainers[] = {
+    kAXChildrenAttribute,
+    kAXRowsAttribute,
+    kAXColumnsAttribute,
+    kAXVisibleChildrenAttribute,
+    kAXContentsAttribute,
+  };
+  const CFStringRef *containers =
+      depth == 0 ? rootContainers : childContainers;
+  NSUInteger containerCount = depth == 0 ? 1 : 5;
+  for (NSUInteger containerIndex = 0;
+       containerIndex < containerCount;
+       containerIndex += 1) {
+    BOOL traversedChildren = NO;
+    CFTypeRef value = NULL;
+    if (AXUIElementCopyAttributeValue(
+            root, containers[containerIndex], &value) != kAXErrorSuccess ||
+        value == NULL)
+      continue;
+    if (CFGetTypeID(value) == CFArrayGetTypeID()) {
+      CFArrayRef children = (CFArrayRef)value;
+      CFIndex count = MIN(CFArrayGetCount(children), 512);
+      traversedChildren = count > 0;
+      for (CFIndex index = 0; index < count; index += 1) {
+        CollectMatches(
+            (AXUIElementRef)CFArrayGetValueAtIndex(children, index),
+            expected,
+            depth + 1,
+            matches,
+            visited);
+        if (CFArrayGetCount(matches) > 1) break;
+      }
     }
+    CFRelease(value);
+    if (traversedChildren || CFArrayGetCount(matches) > 1) break;
   }
-  CFRelease(value);
 }
 
 static AXUIElementRef FindUnique(
@@ -107,6 +126,220 @@ static AXUIElementRef FindUnique(
   return result;
 }
 
+static AXUIElementRef FindPickerPanel(AXUIElementRef application) {
+  CFTypeRef value = NULL;
+  if (AXUIElementCopyAttributeValue(
+          application, kAXWindowsAttribute, &value) != kAXErrorSuccess ||
+      value == NULL || CFGetTypeID(value) != CFArrayGetTypeID()) {
+    if (value != NULL) CFRelease(value);
+    return NULL;
+  }
+  AXUIElementRef result = NULL;
+  CFArrayRef windows = (CFArrayRef)value;
+  for (CFIndex index = 0; index < CFArrayGetCount(windows); index += 1) {
+    AXUIElementRef window =
+        (AXUIElementRef)CFArrayGetValueAtIndex(windows, index);
+    if (StringAttributeEquals(
+            window, kAXIdentifierAttribute, CFSTR("open-panel"))) {
+      result = (AXUIElementRef)CFRetain(window);
+      break;
+    }
+  }
+  CFRelease(value);
+  return result;
+}
+
+static AXUIElementRef FindDescendantByIdentifier(
+    AXUIElementRef root, CFStringRef identifier) {
+  CFMutableArrayRef queue =
+      CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
+  CFArrayAppendValue(queue, root);
+  AXUIElementRef result = NULL;
+  for (CFIndex cursor = 0;
+       cursor < CFArrayGetCount(queue) && cursor < 128;
+       cursor += 1) {
+    AXUIElementRef element =
+        (AXUIElementRef)CFArrayGetValueAtIndex(queue, cursor);
+    if (StringAttributeEquals(element, kAXIdentifierAttribute, identifier)) {
+      result = (AXUIElementRef)CFRetain(element);
+      break;
+    }
+    CFTypeRef value = NULL;
+    if (AXUIElementCopyAttributeValue(
+            element, kAXChildrenAttribute, &value) != kAXErrorSuccess ||
+        value == NULL)
+      continue;
+    if (CFGetTypeID(value) == CFArrayGetTypeID()) {
+      CFArrayRef children = (CFArrayRef)value;
+      CFIndex count = MIN(CFArrayGetCount(children), 64);
+      for (CFIndex index = 0;
+           index < count && CFArrayGetCount(queue) < 128;
+           index += 1)
+        CFArrayAppendValue(queue, CFArrayGetValueAtIndex(children, index));
+    }
+    CFRelease(value);
+  }
+  CFRelease(queue);
+  return result;
+}
+
+static AXUIElementRef FindInRow(
+    AXUIElementRef root, CFStringRef expected, NSUInteger depth) {
+  if (depth > 4) return NULL;
+  if (ElementMatches(root, expected) &&
+      StringAttributeEquals(root, kAXRoleAttribute, kAXTextFieldRole))
+    return (AXUIElementRef)CFRetain(root);
+  CFTypeRef value = NULL;
+  if (AXUIElementCopyAttributeValue(
+          root, kAXChildrenAttribute, &value) != kAXErrorSuccess ||
+      value == NULL)
+    return NULL;
+  AXUIElementRef result = NULL;
+  if (CFGetTypeID(value) == CFArrayGetTypeID()) {
+    CFArrayRef children = (CFArrayRef)value;
+    CFIndex count = MIN(CFArrayGetCount(children), 32);
+    for (CFIndex index = 0; index < count; index += 1) {
+      result = FindInRow(
+          (AXUIElementRef)CFArrayGetValueAtIndex(children, index),
+          expected,
+          depth + 1);
+      if (result != NULL) break;
+    }
+  }
+  CFRelease(value);
+  return result;
+}
+
+static AXUIElementRef FindPickerItem(
+    AXUIElementRef application, CFStringRef expected) {
+  AXUIElementRef panel = FindPickerPanel(application);
+  if (panel == NULL) return NULL;
+  AXUIElementRef list =
+      FindDescendantByIdentifier(panel, CFSTR("ListView"));
+  CFRelease(panel);
+  if (list == NULL) return NULL;
+  CFTypeRef value = NULL;
+  if (AXUIElementCopyAttributeValue(
+          list, kAXRowsAttribute, &value) != kAXErrorSuccess ||
+      value == NULL || CFGetTypeID(value) != CFArrayGetTypeID()) {
+    if (value != NULL) CFRelease(value);
+    CFRelease(list);
+    return NULL;
+  }
+  AXUIElementRef result = NULL;
+  CFArrayRef rows = (CFArrayRef)value;
+  CFIndex count = MIN(CFArrayGetCount(rows), 512);
+  for (CFIndex index = 0; index < count; index += 1) {
+    result = FindInRow(
+        (AXUIElementRef)CFArrayGetValueAtIndex(rows, index), expected, 0);
+    if (result != NULL) break;
+  }
+  CFRelease(value);
+  CFRelease(list);
+  return result;
+}
+
+static BOOL OpenPickerItem(
+    AXUIElementRef application, CFStringRef expected) {
+  AXUIElementRef item = FindPickerItem(application, expected);
+  if (item == NULL) return NO;
+  AXError error = AXUIElementPerformAction(item, CFSTR("AXOpen"));
+  CFRelease(item);
+  return error == kAXErrorSuccess;
+}
+
+static BOOL PickerIsAt(
+    AXUIElementRef application, CFStringRef expected) {
+  AXUIElementRef panel = FindPickerPanel(application);
+  if (panel == NULL) return NO;
+  AXUIElementRef location =
+      FindDescendantByIdentifier(panel, CFSTR("where popup"));
+  CFRelease(panel);
+  if (location == NULL) return NO;
+  BOOL matches =
+      StringAttributeEquals(location, kAXValueAttribute, expected);
+  CFRelease(location);
+  return matches;
+}
+
+static BOOL PressPickerControl(
+    AXUIElementRef application, CFStringRef identifier) {
+  AXUIElementRef panel = FindPickerPanel(application);
+  if (panel == NULL) return NO;
+  AXUIElementRef control =
+      FindDescendantByIdentifier(panel, identifier);
+  CFRelease(panel);
+  if (control == NULL) return NO;
+  AXError error = AXUIElementPerformAction(control, kAXPressAction);
+  CFRelease(control);
+  return error == kAXErrorSuccess;
+}
+
+static AXUIElementRef FindMenuItem(
+    AXUIElementRef application, CFStringRef expected) {
+  CFMutableArrayRef queue =
+      CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
+  CFArrayAppendValue(queue, application);
+  AXUIElementRef result = NULL;
+  const CFStringRef containers[] = {
+    kAXWindowsAttribute,
+    kAXChildrenAttribute,
+    kAXVisibleChildrenAttribute,
+  };
+  for (CFIndex cursor = 0;
+       cursor < CFArrayGetCount(queue) && cursor < 128;
+       cursor += 1) {
+    AXUIElementRef element =
+        (AXUIElementRef)CFArrayGetValueAtIndex(queue, cursor);
+    if (ElementMatches(element, expected) &&
+        StringAttributeEquals(element, kAXRoleAttribute, kAXMenuItemRole)) {
+      result = (AXUIElementRef)CFRetain(element);
+      break;
+    }
+    for (NSUInteger containerIndex = 0;
+         containerIndex < 3;
+         containerIndex += 1) {
+      CFTypeRef value = NULL;
+      if (AXUIElementCopyAttributeValue(
+              element, containers[containerIndex], &value) !=
+              kAXErrorSuccess ||
+          value == NULL)
+        continue;
+      BOOL appended = NO;
+      if (CFGetTypeID(value) == CFArrayGetTypeID()) {
+        CFArrayRef children = (CFArrayRef)value;
+        CFIndex count = MIN(CFArrayGetCount(children), 64);
+        for (CFIndex index = 0;
+             index < count && CFArrayGetCount(queue) < 128;
+             index += 1)
+          CFArrayAppendValue(queue, CFArrayGetValueAtIndex(children, index));
+        appended = count > 0;
+      }
+      CFRelease(value);
+      if (appended) break;
+    }
+  }
+  CFRelease(queue);
+  return result;
+}
+
+static BOOL NavigatePickerToDocuments(AXUIElementRef application) {
+  if (PickerIsAt(application, CFSTR("Documents")) ||
+      PickerIsAt(application, CFSTR("Dokumente")))
+    return YES;
+  if (!PressPickerControl(application, CFSTR("where popup"))) return NO;
+  usleep(100 * 1000);
+  AXUIElementRef item = FindMenuItem(application, CFSTR("Documents"));
+  if (item == NULL) item = FindMenuItem(application, CFSTR("Dokumente"));
+  if (item == NULL) return NO;
+  AXError error = AXUIElementPerformAction(item, kAXPressAction);
+  CFRelease(item);
+  if (error != kAXErrorSuccess) return NO;
+  usleep(100 * 1000);
+  return PickerIsAt(application, CFSTR("Documents")) ||
+      PickerIsAt(application, CFSTR("Dokumente"));
+}
+
 static BOOL HasUnique(AXUIElementRef application, CFStringRef expected) {
   AXUIElementRef element = FindUnique(application, expected);
   if (element == NULL) return NO;
@@ -114,12 +347,19 @@ static BOOL HasUnique(AXUIElementRef application, CFStringRef expected) {
   return YES;
 }
 
-static BOOL Press(AXUIElementRef application, CFStringRef expected) {
+static BOOL Perform(
+    AXUIElementRef application,
+    CFStringRef expected,
+    CFStringRef action) {
   AXUIElementRef element = FindUnique(application, expected);
   if (element == NULL) return NO;
-  AXError error = AXUIElementPerformAction(element, kAXPressAction);
+  AXError error = AXUIElementPerformAction(element, action);
   CFRelease(element);
   return error == kAXErrorSuccess;
+}
+
+static BOOL Press(AXUIElementRef application, CFStringRef expected) {
+  return Perform(application, expected, kAXPressAction);
 }
 
 static BOOL PressEither(
@@ -168,28 +408,47 @@ static void CollectPrefixMatches(
       CFArrayGetCount(matches) > 1)
     return;
   *visited += 1;
-  if (ElementHasPrefix(root, prefix)) CFArrayAppendValue(matches, root);
-  const CFStringRef container =
-      depth == 0 ? kAXWindowsAttribute : kAXChildrenAttribute;
-  CFTypeRef value = NULL;
-  if (AXUIElementCopyAttributeValue(root, container, &value) !=
-          kAXErrorSuccess ||
-      value == NULL)
-    return;
-  if (CFGetTypeID(value) == CFArrayGetTypeID()) {
-    CFArrayRef children = (CFArrayRef)value;
-    CFIndex count = MIN(CFArrayGetCount(children), 512);
-    for (CFIndex index = 0; index < count; index += 1) {
-      CollectPrefixMatches(
-          (AXUIElementRef)CFArrayGetValueAtIndex(children, index),
-          prefix,
-          depth + 1,
-          matches,
-          visited);
-      if (CFArrayGetCount(matches) > 1) break;
+  if (ElementHasPrefix(root, prefix) &&
+      !CFArrayContainsValue(
+          matches, CFRangeMake(0, CFArrayGetCount(matches)), root))
+    CFArrayAppendValue(matches, root);
+  const CFStringRef rootContainers[] = {kAXWindowsAttribute};
+  const CFStringRef childContainers[] = {
+    kAXChildrenAttribute,
+    kAXRowsAttribute,
+    kAXColumnsAttribute,
+    kAXVisibleChildrenAttribute,
+    kAXContentsAttribute,
+  };
+  const CFStringRef *containers =
+      depth == 0 ? rootContainers : childContainers;
+  NSUInteger containerCount = depth == 0 ? 1 : 5;
+  for (NSUInteger containerIndex = 0;
+       containerIndex < containerCount;
+       containerIndex += 1) {
+    BOOL traversedChildren = NO;
+    CFTypeRef value = NULL;
+    if (AXUIElementCopyAttributeValue(
+            root, containers[containerIndex], &value) != kAXErrorSuccess ||
+        value == NULL)
+      continue;
+    if (CFGetTypeID(value) == CFArrayGetTypeID()) {
+      CFArrayRef children = (CFArrayRef)value;
+      CFIndex count = MIN(CFArrayGetCount(children), 512);
+      traversedChildren = count > 0;
+      for (CFIndex index = 0; index < count; index += 1) {
+        CollectPrefixMatches(
+            (AXUIElementRef)CFArrayGetValueAtIndex(children, index),
+            prefix,
+            depth + 1,
+            matches,
+            visited);
+        if (CFArrayGetCount(matches) > 1) break;
+      }
     }
+    CFRelease(value);
+    if (traversedChildren || CFArrayGetCount(matches) > 1) break;
   }
-  CFRelease(value);
 }
 
 static BOOL HasUniquePrefix(
@@ -287,7 +546,9 @@ ${tracerAccessibilityActions.map((action) => `      @"${action}",`).join("\n")}
           HasUnique(application, CFSTR("Repository auswählen")) &&
           HasUnique(application, CFSTR("Codex-Bereitschaft prüfen"));
     } else if ([action isEqualToString:@"open-workspace-picker"]) {
-      passed = Press(application, CFSTR("Repository auswählen"));
+      passed =
+          Press(application, CFSTR("Repository auswählen")) ||
+          Press(application, CFSTR("Anderes Repository auswählen"));
     } else if ([action isEqualToString:@"select-workspace"]) {
       NSString *label = ReadBoundedInput();
       NSCharacterSet *invalid =
@@ -297,12 +558,15 @@ ${tracerAccessibilityActions.map((action) => `      @"${action}",`).join("\n")}
           [label hasPrefix:@"KeikoAcceptanceIdentity104"] &&
           [label rangeOfCharacterFromSet:invalid].location == NSNotFound;
       passed = labelValid &&
-          PressEither(application, CFSTR("Documents"), CFSTR("Dokumente"));
+          (PickerIsAt(application, (__bridge CFStringRef)label) ||
+           (NavigatePickerToDocuments(application) &&
+            OpenPickerItem(application, (__bridge CFStringRef)label)));
       if (passed) {
-        usleep(100 * 1000);
-        passed = Press(
-            application, (__bridge CFStringRef)label) &&
-            PressEither(application, CFSTR("Open"), CFSTR("Öffnen"));
+        passed = NO;
+        for (NSUInteger attempt = 0; attempt < 20 && !passed; attempt += 1) {
+          usleep(50 * 1000);
+          passed = PressPickerControl(application, CFSTR("OKButton"));
+        }
       }
     } else if ([action isEqualToString:@"cancel-workspace-picker"]) {
       passed = PressEither(application, CFSTR("Cancel"), CFSTR("Abbrechen"));

@@ -40,6 +40,32 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
     assert.ok(tracerAccessibilitySource.includes(`@\"${action}\"`));
   assert.match(tracerAccessibilitySource, /AXUIElementCreateApplication/u);
   assert.match(tracerAccessibilitySource, /AXIsProcessTrustedWithOptions/u);
+  for (const attribute of [
+    "kAXChildrenAttribute",
+    "kAXRowsAttribute",
+    "kAXColumnsAttribute",
+    "kAXVisibleChildrenAttribute",
+    "kAXContentsAttribute",
+  ]) {
+    assert.match(tracerAccessibilitySource, new RegExp(attribute, "u"));
+  }
+  assert.match(tracerAccessibilitySource, /CFArrayContainsValue/u);
+  assert.match(tracerAccessibilitySource, /kAXTextFieldRole/u);
+  assert.match(tracerAccessibilitySource, /kAXMenuItemRole/u);
+  assert.match(tracerAccessibilitySource, /CFSTR\("ListView"\)/u);
+  assert.match(tracerAccessibilitySource, /CFSTR\("AXOpen"\)/u);
+  assert.match(
+    tracerAccessibilitySource,
+    /OpenPickerItem\(\s*application,\s*\(__bridge CFStringRef\)label\)/u,
+  );
+  assert.match(
+    tracerAccessibilitySource,
+    /PressPickerControl\(application, CFSTR\("OKButton"\)\)/u,
+  );
+  assert.match(
+    tracerAccessibilitySource,
+    /NavigatePickerToDocuments\(application\)/u,
+  );
   assert.match(
     tracerAccessibilitySource,
     /accessibility-permission-denied"\);\s+return 1;/u,
