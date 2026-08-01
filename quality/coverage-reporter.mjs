@@ -3,6 +3,10 @@ import { isAbsolute, relative, sep } from "node:path";
 
 const coverageModules = Object.freeze([
   "codex-compatibility.mjs",
+  "codex-tracer-acceptance.mjs",
+  "codex-tracer-acceptance-io.mjs",
+  "codex-tracer-accessibility.mjs",
+  "codex-tracer-accessibility-source.mjs",
   "deterministic-order.mjs",
   "git-integrity.mjs",
   "contract.mjs",

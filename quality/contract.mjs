@@ -1240,6 +1240,14 @@ async function productiveCommandFailures(root, ci, manifest) {
     if (typeof packageJson.scripts?.[command] !== "string")
       failures.push(`Native acceptance package script is missing: ${command}.`);
   }
+  if (
+    packageJson.scripts?.["acceptance:codex-tracer:macos"] !==
+    "node quality/run-codex-tracer-acceptance.mjs"
+  ) {
+    failures.push(
+      "Codex tracer acceptance package script is missing or drifted.",
+    );
+  }
   failures.push(...nativeMatrixCommandFailures(ci, nativeCiCommands));
   for (const marker of ["macos-14", "macos-26", 'test "$(uname -m)" = arm64']) {
     if (!ci.includes(marker))
