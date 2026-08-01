@@ -30,6 +30,22 @@ permission is not dispatch-only: the same repository permission also reaches wor
 cancellation and rerun, workflow enablement and disablement, and deletion of workflow runs, logs,
 and artifacts. That capability could damage the run and artifact evidence ADR-0011 relies on.
 
+Post-merge production evidence from issue #146 found an additional provider-compatibility
+constraint. For protected runs
+[`30541669361`](https://github.com/oscharko-dev/Keiko-Native/actions/runs/30541669361) and
+[`30619496330`](https://github.com/oscharko-dev/Keiko-Native/actions/runs/30619496330), GitHub's
+workflow-run API returns the complete static reusable-workflow graph reachable from the caller:
+the coordinator and both approved producers appear even when the producer jobs were skipped. The
+API does not project that flat inventory as only the dynamically executed writer chain. Record
+authentication must therefore validate that exact closed static graph and bind the actual writer
+separately through the record, job, and attestation evidence.
+
+Run `30541669361` is provider-shape evidence only. Its issue #137 tuple was non-authoritative at
+that observation because final attestation-inventory read-back failed. Issue #139 and PR #140
+subsequently delivered the algorithm-qualified attestation selector. That closed defect does not
+own the remaining static-graph mismatch; issue #147 owns the correction required by this
+amendment.
+
 The remaining GitHub-native topology is a protected top-level caller whose per-issue job invokes
 the sole coordinator as a reusable workflow. This needs no workflow dispatch and no Actions-write
 permission. It requires authentication to prove the fixed caller and the exact called writer as
@@ -344,12 +360,23 @@ writer job. The fixed caller path does not need a new record field.
 
 Authentication of a coordinator record requires all of the following:
 
+For this inventory, one exact referenced-workflow identity is the complete provider tuple. Its
+`path` is exactly
+`oscharko-dev/Keiko-Native/{workflow path}@{protected_dev_sha}`, its `ref` is exactly
+`refs/heads/dev`, and its `sha` is exactly the same `protected_dev_sha`. Comparison retains the
+repository-qualified path, the `@` SHA suffix, the separate ref, and the separate SHA; no relative
+path or projected subset is equivalent.
+
 1. the provider run exists and names `.github/workflows/lifecycle-wakeup.yml` on
    `refs/heads/dev`;
 2. its verified `workflow_sha` and event `sha` equal the record's `protected_dev_sha`, while its
    REST `head_sha` is checked only against the event correlation it represents;
-3. its referenced-workflow inventory contains exactly the expected
-   `.github/workflows/issue-lifecycle.yml` call at that same protected commit;
+3. its referenced-workflow inventory contains exactly the three complete tuples whose workflow
+   paths are
+   `.github/workflows/issue-lifecycle.yml`,
+   `.github/workflows/contract-publication.yml`, and
+   `.github/workflows/pr-contract.yml`, each repository-qualified as defined above at
+   `refs/heads/dev` and the same protected commit;
 4. the called job exists in that run and is the record-producing job;
 5. verified OIDC and attestation claims contain the exact repository, issuer, run ID, run attempt,
    `ref`, `sha`, `workflow_ref`, `workflow_sha`, `job_workflow_ref`, and
@@ -364,11 +391,13 @@ The artifact anchor's version-1 `workflow_path` remains the exact record-writer 
 `workflow_run_id`, `workflow_run_attempt`, and `protected_dev_sha` remain sufficient because the
 caller path is one fixed authenticated constant and the writer path is already recorded.
 
-A run that names only the caller, a claim that names only the callee, a different caller or callee,
-an unlisted referenced workflow, a caller/callee SHA mismatch, a mutable ref, an absent job, a
-deleted run or anchor, or any claim/body/provider disagreement rejects the record. Login, marker,
-author association, workflow display name, event timing, or a copied locator never authenticates
-it.
+A run that names only the caller, a claim that names only the callee, a missing, duplicated, or
+unlisted referenced workflow, a referenced-workflow ref or SHA mismatch, a different caller or
+writer, a caller/writer SHA mismatch, a mutable ref, an absent writer job, a deleted run or anchor,
+or any claim/body/provider disagreement rejects the record. Presence in the static workflow graph
+does not make a producer the actual writer. The record's `workflow_path`, the exact writer job, and
+the OIDC and attestation claims independently bind that identity. Login, marker, author
+association, workflow display name, event timing, or a copied locator never authenticates it.
 
 ### Nested protected producer invocation and authentication
 
@@ -448,20 +477,23 @@ capability.
 For a nested producer record, authentication requires the same top-level caller facts in the prior
 section plus:
 
-1. the run's referenced-workflow inventory proves the closed chain from
-   `.github/workflows/lifecycle-wakeup.yml` through
-   `.github/workflows/issue-lifecycle.yml` to the exact producer path;
-2. every workflow in that chain resolves to the same protected `dev` SHA;
+1. the run's referenced-workflow inventory proves the same exact closed static coordinator and
+   two-producer set of complete repository-qualified `path`, `ref`, and `sha` tuples required for
+   coordinator records;
+2. every tuple retains its `@{protected_dev_sha}` path suffix and independently equals
+   `refs/heads/dev` and the same protected SHA in its `ref` and `sha` fields;
 3. the record's `workflow_path` and `workflow_job_id` name the exact producer and record-writing job;
 4. verified OIDC and attestation claims bind `workflow_ref` and `workflow_sha` to the fixed caller,
    and `job_workflow_ref` and `job_workflow_sha` to the exact producer at that same SHA; and
 5. the complete typed inputs, recomputed generation, attempt, request, fence, producer identity,
    comment, record digest, anchor, run, job, and attestation independently agree.
 
-The intermediate coordinator path is authenticated from the closed referenced-workflow chain; it is
-not inferred from timing, a status name, or an event. This preserves ADR-0011's version-1
-`workflow_path`, run, attempt, and job fields: the top-level run identity stays fixed, while the
-existing writer-path field names the coordinator or producer that actually wrote the record.
+The intermediate coordinator path is authenticated from the exact closed static set; the actual
+producer is authenticated from the record, writer job, and OIDC and attestation claims rather than
+inferred from static presence, timing, a status name, or an event. This preserves ADR-0011's
+version-1 `workflow_path`, run, attempt, and job fields: the top-level run identity stays fixed,
+while the existing writer-path field names the coordinator or producer that actually wrote the
+record.
 
 ### Failure, duplicate, and recovery behavior
 
@@ -685,12 +717,27 @@ After an authorized maintainer manually merges this ADR to `dev`:
 5. issue #51 may salvage its guarded-off implementation only where it matches the refreshed
    contract and passes full verification plus independent audit.
 
+Issue #146's compatibility amendment adds one further ordered step. Run `30541669361` remains
+historical provider-shape evidence and its issue #137 tuple was non-authoritative when final
+attestation read-back failed. The closed issue #139 and merged PR #140 delivered that selector
+correction; they are not the owner of the later static-graph mismatch. Issue #147 must receive
+fresh readiness from the accepted ADR and deliver the exact closed-static-set authenticator
+correction through a separate human-only `dev` pull request. After that deployment, the existing
+issue #137 tuple must authenticate without recovery. A fresh protected guarded-off wake must then
+produce an authenticated non-applied tuple with zero lifecycle, issue, branch, pull-request,
+queue, auto-merge, merge, or repository-setting effect. Only after both proofs succeed may issue
+#52 be claimed.
+
 Every pull request targeting `dev` stops at `status: ready for human review`. An agent must not
 merge it, enable auto-merge, enqueue it, or use a human credential to bypass the maintainer action.
 
 ## References
 
 - Decision issue [#131](https://github.com/oscharko-dev/Keiko-Native/issues/131)
+- Static workflow-graph decision issue
+  [#146](https://github.com/oscharko-dev/Keiko-Native/issues/146)
+- Follow-up authentication defect
+  [#147](https://github.com/oscharko-dev/Keiko-Native/issues/147)
 - [ADR-0004](ADR-0004-readiness-authority-and-workflow-lifecycle.md)
 - [ADR-0011](ADR-0011-authenticated-lifecycle-handoff-record-protocol.md)
 - [GitHub OIDC claim reference][oidc]
@@ -702,6 +749,12 @@ merge it, enable auto-merge, enqueue it, or use a human credential to bypass the
 - [Actions artifact API][artifacts]
 - Repository evidence run
   [30393476770](https://github.com/oscharko-dev/Keiko-Native/actions/runs/30393476770)
+- Static referenced-workflow evidence runs
+  [30541669361](https://github.com/oscharko-dev/Keiko-Native/actions/runs/30541669361) and
+  [30619496330](https://github.com/oscharko-dev/Keiko-Native/actions/runs/30619496330)
+- Historical attestation-selector defect
+  [#139](https://github.com/oscharko-dev/Keiko-Native/issues/139) and merged correction
+  [PR #140](https://github.com/oscharko-dev/Keiko-Native/pull/140)
 - PR #132 post-publication review
   [finding record](https://github.com/oscharko-dev/Keiko-Native/pull/132#issuecomment-5111921934)
 - PR #132 exact-head recovery [finding record][rr]
