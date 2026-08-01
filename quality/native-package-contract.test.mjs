@@ -188,7 +188,10 @@ test("package policy requires exact paths, dependencies, notices and SPDX", () =
   for (const hostile of [
     "operator@example.invalid",
     "https://10.0.0.7/private",
+    "https://[fe80::1%en0]/",
+    "https://[fe80::1%25en0]/",
     "wss://service.local/socket",
+    "c:\\Users\\operator\\project",
     "authorization=Bearer-private-value",
     "http://dummy.test",
   ]) {
@@ -338,9 +341,20 @@ test("evidence schema and redaction fail closed", () => {
   assert.deepEqual(redactionClasses("C:\\Users\\operator\\project"), [
     "windows-home-path",
   ]);
+  assert.deepEqual(redactionClasses("c:\\Users\\operator\\project"), [
+    "windows-home-path",
+  ]);
   assert.deepEqual(redactionClasses("/home/operator/project"), [
     "linux-home-path",
   ]);
+  for (const scopedLinkLocalUrl of [
+    "https://[fe80::1%en0]/",
+    "https://[fe80::1%25en0]/",
+  ]) {
+    assert.deepEqual(redactionClasses(scopedLinkLocalUrl), [
+      "private-endpoint",
+    ]);
+  }
   assert.deepEqual(
     redactionClasses(
       [
