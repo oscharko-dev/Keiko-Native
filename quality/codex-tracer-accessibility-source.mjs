@@ -189,24 +189,33 @@ static AXUIElementRef FindInRow(
   if (ElementMatches(root, expected) &&
       StringAttributeEquals(root, kAXRoleAttribute, kAXTextFieldRole))
     return (AXUIElementRef)CFRetain(root);
-  CFTypeRef value = NULL;
-  if (AXUIElementCopyAttributeValue(
-          root, kAXChildrenAttribute, &value) != kAXErrorSuccess ||
-      value == NULL)
-    return NULL;
   AXUIElementRef result = NULL;
-  if (CFGetTypeID(value) == CFArrayGetTypeID()) {
-    CFArrayRef children = (CFArrayRef)value;
-    CFIndex count = MIN(CFArrayGetCount(children), 32);
-    for (CFIndex index = 0; index < count; index += 1) {
-      result = FindInRow(
-          (AXUIElementRef)CFArrayGetValueAtIndex(children, index),
-          expected,
-          depth + 1);
-      if (result != NULL) break;
+  const CFStringRef containers[] = {
+    kAXChildrenAttribute,
+    kAXVisibleChildrenAttribute,
+    kAXContentsAttribute,
+  };
+  for (NSUInteger containerIndex = 0;
+       containerIndex < 3 && result == NULL;
+       containerIndex += 1) {
+    CFTypeRef value = NULL;
+    if (AXUIElementCopyAttributeValue(
+            root, containers[containerIndex], &value) != kAXErrorSuccess ||
+        value == NULL)
+      continue;
+    if (CFGetTypeID(value) == CFArrayGetTypeID()) {
+      CFArrayRef children = (CFArrayRef)value;
+      CFIndex count = MIN(CFArrayGetCount(children), 32);
+      for (CFIndex index = 0; index < count; index += 1) {
+        result = FindInRow(
+            (AXUIElementRef)CFArrayGetValueAtIndex(children, index),
+            expected,
+            depth + 1);
+        if (result != NULL) break;
+      }
     }
+    CFRelease(value);
   }
-  CFRelease(value);
   return result;
 }
 
@@ -327,6 +336,13 @@ static BOOL NavigatePickerToDocuments(AXUIElementRef application) {
   if (PickerIsAt(application, CFSTR("Documents")) ||
       PickerIsAt(application, CFSTR("Dokumente")))
     return YES;
+  if (OpenPickerItem(application, CFSTR("Documents")) ||
+      OpenPickerItem(application, CFSTR("Dokumente"))) {
+    usleep(100 * 1000);
+    if (PickerIsAt(application, CFSTR("Documents")) ||
+        PickerIsAt(application, CFSTR("Dokumente")))
+      return YES;
+  }
   if (!PressPickerControl(application, CFSTR("where popup"))) return NO;
   usleep(100 * 1000);
   AXUIElementRef item = FindMenuItem(application, CFSTR("Documents"));
@@ -338,6 +354,31 @@ static BOOL NavigatePickerToDocuments(AXUIElementRef application) {
   usleep(100 * 1000);
   return PickerIsAt(application, CFSTR("Documents")) ||
       PickerIsAt(application, CFSTR("Dokumente"));
+}
+
+static BOOL PickerHasIdentifier(
+    AXUIElementRef application, CFStringRef identifier) {
+  AXUIElementRef panel = FindPickerPanel(application);
+  if (panel == NULL) return NO;
+  AXUIElementRef element =
+      FindDescendantByIdentifier(panel, identifier);
+  CFRelease(panel);
+  if (element == NULL) return NO;
+  CFRelease(element);
+  return YES;
+}
+
+static BOOL EnsurePickerListView(AXUIElementRef application) {
+  if (PickerHasIdentifier(application, CFSTR("ListView"))) return YES;
+  if (!PressPickerControl(application, CFSTR("View Options"))) return NO;
+  usleep(100 * 1000);
+  AXUIElementRef item = FindMenuItem(application, CFSTR("List"));
+  if (item == NULL) return NO;
+  AXError error = AXUIElementPerformAction(item, kAXPressAction);
+  CFRelease(item);
+  if (error != kAXErrorSuccess) return NO;
+  usleep(100 * 1000);
+  return PickerHasIdentifier(application, CFSTR("ListView"));
 }
 
 static BOOL HasUnique(AXUIElementRef application, CFStringRef expected) {
@@ -559,7 +600,8 @@ ${tracerAccessibilityActions.map((action) => `      @"${action}",`).join("\n")}
           [label rangeOfCharacterFromSet:invalid].location == NSNotFound;
       passed = labelValid &&
           (PickerIsAt(application, (__bridge CFStringRef)label) ||
-           (NavigatePickerToDocuments(application) &&
+           (EnsurePickerListView(application) &&
+            NavigatePickerToDocuments(application) &&
             OpenPickerItem(application, (__bridge CFStringRef)label)));
       if (passed) {
         passed = NO;

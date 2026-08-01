@@ -68,6 +68,14 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
   );
   assert.match(
     tracerAccessibilitySource,
+    /OpenPickerItem\(application, CFSTR\("Documents"\)\)/u,
+  );
+  assert.match(
+    tracerAccessibilitySource,
+    /EnsurePickerListView\(application\)/u,
+  );
+  assert.match(
+    tracerAccessibilitySource,
     /accessibility-permission-denied"\);\s+return 1;/u,
   );
   assert.doesNotMatch(
