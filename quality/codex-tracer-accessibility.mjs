@@ -213,8 +213,8 @@ export async function runPackagedTracerJourney({
     return result;
   };
   const project = async (action, observation, input) => {
-    const startedAt = monotonicNow();
     await step(action, input);
+    const startedAt = monotonicNow();
     await step(observation);
     const elapsedMs = Math.round(monotonicNow() - startedAt);
     if (!Number.isSafeInteger(elapsedMs) || elapsedMs < 0)

@@ -245,8 +245,8 @@ test("the packaged journey drives only the fixed semantic sequence", async () =>
     calls.find(({ action }) => action === "set-task").input,
     acceptedPrompt,
   );
-  assert.equal(result.cancellationProjectionMs, 90);
-  assert.equal(result.localProjectionP95Ms, 90);
+  assert.equal(result.cancellationProjectionMs, 80);
+  assert.equal(result.localProjectionP95Ms, 80);
   assert.equal(result.localProjectionSamples, 5);
   assert.equal(result.status, "passed");
   assert.equal(result.turnDurationMs, 30);
