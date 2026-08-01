@@ -2,18 +2,76 @@ import { compareCodeUnits } from "./deterministic-order.mjs";
 import * as closed from "./native-package-policy.mjs";
 import { FUNCTIONAL_ACKNOWLEDGEMENT_WATCHDOG_MS } from "./native-lifecycle.mjs";
 
+const PRIVATE_ENDPOINT_PATTERNS = [
+  /\b(?:https?|wss?):\/\/[^/\s]+@/iu,
+  /\b(?:https?|wss?):\/\/localhost(?=[:/\s]|$)/iu,
+  /\b(?:https?|wss?):\/\/[A-Z0-9.-]+\.(?:local|internal)(?=[:/\s]|$)/iu,
+  /\b(?:https?|wss?):\/\/0\.0\.0\.0(?=[:/\s]|$)/iu,
+  /\b(?:https?|wss?):\/\/127(?:\.\d{1,3}){3}(?=[:/\s]|$)/iu,
+  /\b(?:https?|wss?):\/\/10(?:\.\d{1,3}){3}(?=[:/\s]|$)/iu,
+  /\b(?:https?|wss?):\/\/169\.254(?:\.\d{1,3}){2}(?=[:/\s]|$)/iu,
+  /\b(?:https?|wss?):\/\/192\.168(?:\.\d{1,3}){2}(?=[:/\s]|$)/iu,
+  /\b(?:https?|wss?):\/\/172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}(?=[:/\s]|$)/iu,
+  /\b(?:https?|wss?):\/\/\[::1\](?=[:/\s]|$)/iu,
+  /\b(?:https?|wss?):\/\/\[f[cd][A-F0-9:]*\](?=[:/\s]|$)/iu,
+  /\b(?:https?|wss?):\/\/\[fe[89ab][A-F0-9:]*(?:%(?:25)?[A-Z0-9._~-]+)?\](?=[:/\s]|$)/iu,
+];
+
+const DENIED_REDACTION_CLASSES = [
+  {
+    code: "private-key",
+    pattern: /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----/u,
+  },
+  {
+    code: "credential-assignment",
+    pattern:
+      /(?:token|password|secret|credential|api[_-]?key|authorization)\s*[=:]\s*(?:["'][^"']+["']|[A-Za-z0-9_./\\ -]{4,})/iu,
+  },
+  {
+    code: "email-address",
+    pattern: /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/iu,
+  },
+  {
+    code: "reserved-endpoint",
+    pattern:
+      /\b[A-Z][A-Z0-9+.-]*:\/\/[A-Z0-9.-]+\.(?:invalid|test|example)(?=[:/\s]|$)/iu,
+  },
+  {
+    code: "private-endpoint",
+    patterns: PRIVATE_ENDPOINT_PATTERNS,
+  },
+  {
+    code: "macos-home-path",
+    pattern: /\/Users\/[^/\s]+/u,
+  },
+  {
+    code: "windows-home-path",
+    pattern: /[A-Z]:\\Users\\[^\\\s]+/iu,
+  },
+  {
+    code: "linux-home-path",
+    pattern: /\/home\/[^/\s]+/u,
+  },
+];
+
+function firstMatchingPattern(redactionClass, value) {
+  return (redactionClass.patterns ?? [redactionClass.pattern]).find((pattern) =>
+    pattern.test(value),
+  );
+}
+
+export function redactionClasses(value) {
+  return DENIED_REDACTION_CLASSES.filter(
+    (redactionClass) =>
+      firstMatchingPattern(redactionClass, value) !== undefined,
+  ).map(({ code }) => code);
+}
+
 export function redactionMatches(value) {
-  const denied = [
-    /-----BEGIN [A-Z ]+PRIVATE KEY-----/u,
-    /(?:token|password|secret|credential|api[_-]?key|authorization)\s*[=:]\s*(?:["'][^"']+["']|[A-Za-z0-9_./\\ -]{4,})/iu,
-    /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/iu,
-    /\b[A-Z][A-Z0-9+.-]*:\/\/[A-Z0-9.-]+\.(?:invalid|test|example)(?=[:/\s]|$)/iu,
-    /\b(?:https?|wss?):\/\/(?:[^/\s]+@|localhost(?=[:/\s]|$)|(?:[A-Z0-9.-]+\.(?:local|internal))(?=[:/\s]|$)|(?:0\.0\.0\.0|127(?:\.\d{1,3}){3}|10(?:\.\d{1,3}){3}|169\.254(?:\.\d{1,3}){2}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})(?=[:/\s]|$)|\[(?:::1|f[cd][A-F0-9:]*|fe[89ab][A-F0-9:]*)\](?=[:/\s]|$))/iu,
-    /\/Users\/[^/\s]+/u,
-    /[A-Z]:\\Users\\[^\\\s]+/u,
-    /\/home\/[^/\s]+/u,
-  ];
-  return denied.filter((pattern) => pattern.test(value)).map(String);
+  return DENIED_REDACTION_CLASSES.flatMap((redactionClass) => {
+    const pattern = firstMatchingPattern(redactionClass, value);
+    return pattern === undefined ? [] : [String(pattern)];
+  });
 }
 
 export function coverageFailures(report) {
@@ -286,8 +344,9 @@ export function packagePolicyFailures({
     ...markerFailures.map((failure) => `production-marker:${failure}`),
   );
   for (const { bytes, path } of files) {
-    if (redactionMatches(bytes.toString("latin1")).length > 0)
-      failures.push(`package-redaction:${path}`);
+    for (const redactionClass of redactionClasses(bytes.toString("latin1"))) {
+      failures.push(`package-redaction:${redactionClass}:${path}`);
+    }
   }
   for (const path of actualPaths) {
     if (prohibitedPathFragments.some((fragment) => path.includes(fragment))) {
