@@ -10,6 +10,7 @@
 /quality/evaluate-macos-accessibility-driver.mjs text eol=lf
 /quality/fixtures/macos-accessibility-foundation-acceptance.json text eol=lf
 /quality/fixtures/macos-accessibility-foundation-package-manifest.json text eol=lf
+/quality/fixtures/codex-tracer/no-effect-prompt.txt text eol=lf
 /quality/macos-accessibility-driver-evaluation.mjs text eol=lf
 /quality/macos-accessibility-driver-harness.mjs text eol=lf
 /quality/macos-accessibility-driver-source.mjs text eol=lf

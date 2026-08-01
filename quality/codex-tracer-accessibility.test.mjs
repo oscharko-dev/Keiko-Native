@@ -17,6 +17,18 @@ const acceptedPrompt = await readFile(
   new URL("./fixtures/codex-tracer/no-effect-prompt.txt", import.meta.url),
   "utf8",
 );
+const checkoutAttributes = await readFile(
+  new URL("../.gitattributes", import.meta.url),
+  "utf8",
+);
+
+test("the digest-bound prompt retains LF checkout bytes on every platform", () => {
+  assert.match(
+    checkoutAttributes,
+    /^\/quality\/fixtures\/codex-tracer\/no-effect-prompt\.txt text eol=lf$/mu,
+  );
+  assert.equal(acceptedPrompt.includes("\r"), false);
+});
 
 test("p95 uses the bounded nearest-rank observation", () => {
   assert.equal(percentile95([100, 5, 20, 10, 15]), 100);
