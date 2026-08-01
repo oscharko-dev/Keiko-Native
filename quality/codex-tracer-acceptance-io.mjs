@@ -5,6 +5,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -470,8 +471,8 @@ export function createCodexTracerAcceptanceIo() {
         throw new Error("acceptance-source-revision-invalid");
       packageAcceptance();
       const inspected = await inspectPackage(sourceRevision);
-      const runRoot = await mkdtemp(
-        join(tmpdir(), "keiko-native-codex-tracer-104-"),
+      const runRoot = await canonicalRuntimeRoot(
+        await mkdtemp(join(tmpdir(), "keiko-native-codex-tracer-104-")),
       );
       await chmod(runRoot, 0o700);
       const runtimeWorkRoot = join(runRoot, "runtime-work");
@@ -632,4 +633,8 @@ export function createCodexTracerAcceptanceIo() {
       );
     },
   };
+}
+
+export async function canonicalRuntimeRoot(root, canonicalize = realpath) {
+  return canonicalize(root);
 }

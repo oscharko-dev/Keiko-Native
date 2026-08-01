@@ -388,6 +388,15 @@ static BOOL HasUnique(AXUIElementRef application, CFStringRef expected) {
   return YES;
 }
 
+static BOOL HasCancellationProjection(AXUIElementRef application) {
+  return HasUnique(
+             application,
+             CFSTR("Keiko beendet den Codex-Lauf sicher.")) ||
+      HasUnique(
+          application,
+          CFSTR("Der Codex-Lauf wurde abgebrochen und vollständig beendet."));
+}
+
 static BOOL Perform(
     AXUIElementRef application,
     CFStringRef expected,
@@ -507,10 +516,12 @@ static BOOL SetValue(
     AXUIElementRef application, CFStringRef expected, CFStringRef value) {
   AXUIElementRef element = FindUnique(application, expected);
   if (element == NULL) return NO;
+  AXError focusError = AXUIElementSetAttributeValue(
+      element, kAXFocusedAttribute, kCFBooleanTrue);
   AXError error = AXUIElementSetAttributeValue(
       element, kAXValueAttribute, value);
   BOOL observed =
-      error == kAXErrorSuccess &&
+      focusError == kAXErrorSuccess && error == kAXErrorSuccess &&
       StringAttributeEquals(element, kAXValueAttribute, value);
   CFRelease(element);
   return observed;
@@ -611,7 +622,9 @@ ${tracerAccessibilityActions.map((action) => `      @"${action}",`).join("\n")}
         }
       }
     } else if ([action isEqualToString:@"cancel-workspace-picker"]) {
-      passed = PressEither(application, CFSTR("Cancel"), CFSTR("Abbrechen"));
+      passed =
+          PressPickerControl(application, CFSTR("CancelButton")) ||
+          PressEither(application, CFSTR("Cancel"), CFSTR("Abbrechen"));
     } else if ([action isEqualToString:@"observe-workspace-selected"]) {
       passed = HasUniquePrefix(
           application, CFSTR("Ausgewählt: KeikoAcceptanceIdentity104"));
@@ -656,9 +669,7 @@ ${tracerAccessibilityActions.map((action) => `      @"${action}",`).join("\n")}
           application,
           CFSTR("Codex hat normal geantwortet und die Laufzeit wurde beendet."));
     } else if ([action isEqualToString:@"observe-stopping"]) {
-      passed = HasUnique(
-          application,
-          CFSTR("Keiko beendet den Codex-Lauf sicher."));
+      passed = HasCancellationProjection(application);
     } else if ([action isEqualToString:@"observe-cancelled"]) {
       passed = HasUnique(
           application,

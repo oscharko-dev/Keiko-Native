@@ -76,6 +76,18 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
   );
   assert.match(
     tracerAccessibilitySource,
+    /PressPickerControl\(application, CFSTR\("CancelButton"\)\)/u,
+  );
+  assert.match(
+    tracerAccessibilitySource,
+    /HasCancellationProjection\(application\)/u,
+  );
+  const setValue = tracerAccessibilitySource.match(
+    /static BOOL SetValue\([\s\S]*?\n\}\n\nstatic BOOL Focus/u,
+  )?.[0];
+  assert.match(setValue ?? "", /kAXFocusedAttribute/u);
+  assert.match(
+    tracerAccessibilitySource,
     /accessibility-permission-denied"\);\s+return 1;/u,
   );
   assert.doesNotMatch(

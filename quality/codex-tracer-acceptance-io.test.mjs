@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   acceptanceEnvironmentFailures,
+  canonicalRuntimeRoot,
   packageArtifactFailures,
   physicalObservationFailures,
   selectCommandOutput,
@@ -15,12 +16,27 @@ const runtimeSha256 =
 const promptSha256 =
   "e1a92579b1ca673135331829beb97792c1289a6bccdfe0303302256c546960f6";
 
+test("runtime work roots use their canonical macOS identity", async () => {
+  const alias = "/var/folders/private-run";
+  const canonical = "/private/var/folders/private-run";
+  assert.equal(
+    await canonicalRuntimeRoot(alias, async (root) => {
+      assert.equal(root, alias);
+      return canonical;
+    }),
+    canonical,
+  );
+});
+
 test("the exact auth probe reads the CLI status stream without merging output", () => {
   const result = {
     stderr: "Logged in using ChatGPT\n",
     stdout: "",
   };
-  assert.equal(selectCommandOutput(result, "stderr"), "Logged in using ChatGPT");
+  assert.equal(
+    selectCommandOutput(result, "stderr"),
+    "Logged in using ChatGPT",
+  );
   assert.equal(selectCommandOutput(result, "stdout"), "");
   assert.throws(() => selectCommandOutput(result, "combined"));
 });
