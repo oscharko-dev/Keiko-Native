@@ -20,7 +20,18 @@ const commit = "a".repeat(40);
 const sha = (digit) => digit.repeat(64);
 const workflowPath = ".github/workflows/issue-lifecycle.yml";
 const callerPath = ".github/workflows/lifecycle-wakeup.yml";
+const producerPaths = [
+  ".github/workflows/contract-publication.yml",
+  ".github/workflows/pr-contract.yml",
+];
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+const staticWorkflowGraph = () =>
+  [workflowPath, ...producerPaths].map((path) => ({
+    path: `${repository}/${path}@${commit}`,
+    ref: "refs/heads/dev",
+    sha: commit,
+  }));
 
 function recordBody() {
   return createRecordEnvelope("generation-request", {
@@ -53,6 +64,42 @@ function recordBody() {
   });
 }
 
+function producerRecordBody(expectedProducer, producerPath, workflowJobId) {
+  return createRecordEnvelope("producer-result", {
+    record_type: "producer-result",
+    schema_version: 1,
+    digest_algorithm: "sha-256",
+    digest_domain: "keiko-native.lifecycle-record.producer-result",
+    repository,
+    issue_number: 51,
+    pull_request_number: null,
+    exact_head_sha: null,
+    exact_target: null,
+    generation_identity: sha("1"),
+    attempt: 1,
+    request_identity: sha("2"),
+    generation_request_comment_id: 19,
+    generation_request_digest: sha("3"),
+    phase_fence_comment_id: 20,
+    phase_fence_digest: sha("4"),
+    expected_producer: expectedProducer,
+    producer_contract_version: 1,
+    workflow_path: producerPath,
+    workflow_id: 12,
+    workflow_run_id: 10,
+    workflow_run_attempt: 1,
+    workflow_job_id: workflowJobId,
+    result_identity: sha("5"),
+    protected_dev_sha: commit,
+    provider_observation_identity: sha("6"),
+    conclusion: "success",
+    reason_code: "ok",
+    predecessor_comment_id: 19,
+    predecessor_record_digest: sha("3"),
+    recorded_at: "2026-07-28T20:00:00Z",
+  });
+}
+
 function createProvider(body = recordBody()) {
   const comment = {
     id: 100,
@@ -64,6 +111,7 @@ function createProvider(body = recordBody()) {
   let attestation = {};
   const buildArtifact = () => {
     const parsed = parseRecordEnvelope(comment.body);
+    const writerPath = parsed.fields.workflow_path;
     const fields = {
       repository,
       issue_number: 51,
@@ -73,7 +121,7 @@ function createProvider(body = recordBody()) {
       comment_body_sha256: digest(Buffer.from(comment.body, "utf8")),
       generation_identity: parsed.fields.generation_identity,
       attempt: parsed.fields.attempt,
-      workflow_path: workflowPath,
+      workflow_path: writerPath,
       workflow_run_id: 10,
       workflow_run_attempt: 1,
       protected_dev_sha: commit,
@@ -100,7 +148,7 @@ function createProvider(body = recordBody()) {
         repository,
         workflow_ref: `${repository}/${callerPath}@refs/heads/dev`,
         workflow_sha: commit,
-        job_workflow_ref: `${repository}/${workflowPath}@refs/heads/dev`,
+        job_workflow_ref: `${repository}/${writerPath}@refs/heads/dev`,
         job_workflow_sha: commit,
         ref: "refs/heads/dev",
         sha: commit,
@@ -155,19 +203,18 @@ function createProvider(body = recordBody()) {
         workflowPath: callerPath,
         workflowSha: commit,
         eventSha: commit,
-        referencedWorkflows: [
-          {
-            path: workflowPath,
-            ref: "refs/heads/dev",
-            sha: commit,
-          },
-        ],
+        referencedWorkflows: staticWorkflowGraph(),
         ref: "refs/heads/dev",
         headSha: commit,
       };
     },
     async getWorkflowJob() {
-      return { id: 11, runId: 10, workflowPath, workflowSha: commit };
+      return {
+        id: 11,
+        runId: 10,
+        workflowPath: provider.state.artifact.fields.workflow_path,
+        workflowSha: commit,
+      };
     },
     async isCommitReachableFromDev() {
       return true;
@@ -196,10 +243,181 @@ test("authenticates an exact stable comment/anchor/attestation/run tuple", async
     result.artifact.anchorIdentity,
     result.verified.subject.digest.slice(7),
   );
+  assert.equal(result.job.id, 11);
+  assert.equal(result.parsed.fields.workflow_job_id, undefined);
   assert.deepEqual(provider.attestationSubjects, [
     result.artifact.anchorIdentity,
     result.artifact.anchorIdentity,
   ]);
+});
+
+test("authenticates the complete static referenced-workflow graph", async () => {
+  const provider = createProvider();
+  const original = provider.getWorkflowRun;
+  provider.getWorkflowRun = async () => ({
+    ...(await original()),
+    referencedWorkflows: staticWorkflowGraph().reverse(),
+  });
+  const result = await verifyLifecycleRecordTuple({
+    provider,
+    repository,
+    issueNumber: 51,
+    commentId: 100,
+  });
+  assert.deepEqual(
+    result.run.referencedWorkflows,
+    staticWorkflowGraph().reverse(),
+  );
+});
+
+test("binds both producer records to the exact writer job ID", async () => {
+  for (const [expectedProducer, producerPath] of [
+    ["contract-publication", producerPaths[0]],
+    ["pr-contract", producerPaths[1]],
+  ]) {
+    const validProvider = createProvider(
+      producerRecordBody(expectedProducer, producerPath, 11),
+    );
+    const valid = await verifyLifecycleRecordTuple({
+      provider: validProvider,
+      repository,
+      issueNumber: 51,
+      commentId: 100,
+    });
+    assert.equal(valid.job.id, 11);
+    assert.equal(valid.parsed.fields.workflow_job_id, 11);
+
+    const mismatchedProvider = createProvider(
+      producerRecordBody(expectedProducer, producerPath, 999),
+    );
+    await assert.rejects(
+      verifyLifecycleRecordTuple({
+        provider: mismatchedProvider,
+        repository,
+        issueNumber: 51,
+        commentId: 100,
+      }),
+      { code: "record-workflow-run-mismatch" },
+    );
+
+    const wrongJobProvider = createProvider(
+      producerRecordBody(expectedProducer, producerPath, 11),
+    );
+    wrongJobProvider.getWorkflowJob = async () => ({
+      id: 12,
+      runId: 10,
+      workflowPath: producerPath,
+      workflowSha: commit,
+    });
+    await assert.rejects(
+      verifyLifecycleRecordTuple({
+        provider: wrongJobProvider,
+        repository,
+        issueNumber: 51,
+        commentId: 100,
+      }),
+      { code: "record-workflow-run-mismatch" },
+    );
+  }
+});
+
+test("rejects producer OIDC writer path, run, and SHA mismatches", async () => {
+  for (const [expectedProducer, producerPath] of [
+    ["contract-publication", producerPaths[0]],
+    ["pr-contract", producerPaths[1]],
+  ]) {
+    for (const mutate of [
+      (provider) => {
+        provider.state.attestation.claims.job_workflow_ref = `${repository}/${workflowPath}@refs/heads/dev`;
+      },
+      (provider) => {
+        provider.state.attestation.claims.run_id = 999;
+      },
+      (provider) => {
+        provider.state.attestation.claims.job_workflow_sha = "b".repeat(40);
+      },
+    ]) {
+      const provider = createProvider(
+        producerRecordBody(expectedProducer, producerPath, 11),
+      );
+      mutate(provider);
+      await assert.rejects(
+        verifyLifecycleRecordTuple({
+          provider,
+          repository,
+          issueNumber: 51,
+          commentId: 100,
+        }),
+        { code: "record-attestation-invalid" },
+      );
+    }
+  }
+});
+
+test("rejects every non-exact static referenced-workflow graph", async () => {
+  const wrongSha = "b".repeat(40);
+  const graph = staticWorkflowGraph();
+  const cases = [
+    graph.slice(0, 2),
+    [graph[0], graph[2]],
+    [graph[1], graph[2]],
+    [graph[0], graph[0], graph[2]],
+    [
+      ...graph,
+      {
+        path: `${repository}/.github/workflows/unlisted.yml@${commit}`,
+        ref: "refs/heads/dev",
+        sha: commit,
+      },
+    ],
+    [{ ...graph[0], ref: "refs/heads/topic" }, graph[1], graph[2]],
+    [{ ...graph[0], sha: wrongSha }, graph[1], graph[2]],
+    [
+      {
+        ...graph[0],
+        path: `${repository}/${workflowPath}@${wrongSha}`,
+      },
+      graph[1],
+      graph[2],
+    ],
+    [null, graph[1], graph[2]],
+    [{ ...graph[0], path: workflowPath }, graph[1], graph[2]],
+    [
+      {
+        path: "/.github/workflows/issue-lifecycle.yml",
+        ref: "dev",
+        sha: commit,
+      },
+      graph[1],
+      graph[2],
+    ],
+    [
+      {
+        ...graph[0],
+        path: `/${repository}/${workflowPath}@${commit}`,
+      },
+      graph[1],
+      graph[2],
+    ],
+    [graph[0]],
+  ];
+  for (const referencedWorkflows of cases) {
+    const provider = createProvider();
+    const original = provider.getWorkflowRun;
+    provider.getWorkflowRun = async () => ({
+      ...(await original()),
+      referencedWorkflows,
+    });
+    await assert.rejects(
+      verifyLifecycleRecordTuple({
+        provider,
+        repository,
+        issueNumber: 51,
+        commentId: 100,
+      }),
+      { code: "record-workflow-run-mismatch" },
+    );
+  }
 });
 
 test("publishes comment, exact single-file anchor, attestation, and rereads", async () => {

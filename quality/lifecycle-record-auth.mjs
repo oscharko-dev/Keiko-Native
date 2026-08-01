@@ -22,6 +22,11 @@ const ISSUER = "https://token.actions.githubusercontent.com";
 const ANCHOR_FILE = "artifact-anchor.bin";
 const CALLER = ".github/workflows/lifecycle-wakeup.yml";
 const COORDINATOR = ".github/workflows/issue-lifecycle.yml";
+const STATIC_WORKFLOW_PATHS = Object.freeze([
+  COORDINATOR,
+  ".github/workflows/contract-publication.yml",
+  ".github/workflows/pr-contract.yml",
+]);
 
 export class LifecycleAuthenticationError extends Error {
   constructor(code) {
@@ -105,27 +110,32 @@ function verifyArtifact(artifact, download, expectedFields) {
     fail("record-artifact-digest-mismatch");
 }
 
-function verifyRun(run, job, fields) {
-  const expectedReferenced = [
-    { path: COORDINATOR, ref: DEV_REF, sha: fields.protected_dev_sha },
-    ...(fields.workflow_path === COORDINATOR
-      ? []
-      : [
-          {
-            path: fields.workflow_path,
-            ref: DEV_REF,
-            sha: fields.protected_dev_sha,
-          },
-        ]),
-  ];
+function hasExactStaticWorkflowGraph(referenced, repository, protectedDevSha) {
+  if (!Array.isArray(referenced) || referenced.length !== 3) return false;
+  const expected = STATIC_WORKFLOW_PATHS.map((workflowPath) => ({
+    path: `${repository}/${workflowPath}@${protectedDevSha}`,
+    ref: DEV_REF,
+    sha: protectedDevSha,
+  }));
+  return expected.every((workflow) =>
+    referenced.some((candidate) => isDeepStrictEqual(candidate, workflow)),
+  );
+}
+
+function verifyRun(run, job, repository, fields, workflowJobId) {
   if (
     run.id !== fields.workflow_run_id ||
     run.attempt !== fields.workflow_run_attempt ||
     run.workflowPath !== CALLER ||
     run.ref !== DEV_REF ||
     run.workflowSha !== fields.protected_dev_sha ||
-    !isDeepStrictEqual(run.referencedWorkflows, expectedReferenced) ||
+    !hasExactStaticWorkflowGraph(
+      run.referencedWorkflows,
+      repository,
+      fields.protected_dev_sha,
+    ) ||
     job.runId !== run.id ||
+    (workflowJobId !== undefined && job.id !== workflowJobId) ||
     job.workflowPath !== fields.workflow_path ||
     job.workflowSha !== fields.protected_dev_sha
   )
@@ -167,6 +177,7 @@ async function loadWorkflowEvidence(
   repository,
   artifact,
   fields,
+  recordFields,
 ) {
   const run = await callLifecycleProvider(budget, () =>
     provider.getWorkflowRun({ repository, runId: fields.workflow_run_id }),
@@ -178,7 +189,7 @@ async function loadWorkflowEvidence(
       jobId: artifact.writerJobId,
     }),
   );
-  verifyRun(run, job, fields);
+  verifyRun(run, job, repository, fields, recordFields.workflow_job_id);
   const reachable = await callLifecycleProvider(budget, () =>
     provider.isCommitReachableFromDev({
       repository,
@@ -215,6 +226,7 @@ async function loadTuple({
     repository,
     artifact,
     fields,
+    parsed.fields,
   );
   const attestations = await callLifecycleProvider(budget, () =>
     provider.listAttestations({
