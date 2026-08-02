@@ -253,4 +253,17 @@ test("rejects stale generations and duplicate or reordered producers", () => {
       records: [firstRecord, settledRecovery, request, fence],
     }),
   );
+  const supersededGeneration = {
+    comment: { id: 98 },
+    parsed: {
+      fields: { claim_outcome: "superseded", phase: "request" },
+      recordType: "phase-fence-claim",
+    },
+  };
+  assert.doesNotThrow(() =>
+    planInertLifecycleProducerResult({
+      ...input,
+      records: [firstRecord, supersededGeneration, request, fence],
+    }),
+  );
 });

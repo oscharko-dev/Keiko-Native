@@ -204,6 +204,107 @@ test("changes in authenticated provider facts begin a new generation", () => {
   );
 });
 
+test("active generation is superseded when authenticated facts change", () => {
+  const initialFacts = lifecycleCoordinatorFacts({
+    comments: [],
+    issue,
+    protectedDevSha: commit,
+  });
+  const requestStep = planInertLifecycleCoordinatorStep({
+    facts: initialFacts,
+    records: [],
+    runtime,
+  });
+  const requestPlan = JSON.parse(
+    Buffer.from(requestStep.recordPlan, "base64url").toString("utf8"),
+  );
+  const request = record(requestPlan.recordBody, 100);
+  const changedFacts = lifecycleCoordinatorFacts({
+    comments: [],
+    issue: { ...issue, updated_at: "2026-07-29T12:05:00Z" },
+    protectedDevSha: commit,
+    pullRequest: {
+      base: { ref: "dev" },
+      draft: true,
+      head: { sha: "b".repeat(40) },
+      merged: false,
+      number: 156,
+      state: "open",
+      updated_at: "2026-07-29T12:04:00Z",
+    },
+  });
+
+  const supersessionStep = planInertLifecycleCoordinatorStep({
+    facts: changedFacts,
+    records: [request],
+    runtime: { ...runtime, runId: 901 },
+  });
+  const supersessionPlan = JSON.parse(
+    Buffer.from(supersessionStep.recordPlan, "base64url").toString("utf8"),
+  );
+  const supersession = record(supersessionPlan.recordBody, 101);
+  assert.equal(supersession.parsed.recordType, "phase-fence-claim");
+  assert.equal(supersession.parsed.fields.claim_outcome, "superseded");
+  assert.equal(supersession.parsed.fields.phase, "request");
+  assert.equal(
+    supersession.parsed.fields.generation_identity,
+    request.parsed.fields.generation_identity,
+  );
+  assert.equal(
+    supersession.parsed.fields.request_identity,
+    request.parsed.fields.request_identity,
+  );
+  assert.equal(supersession.parsed.fields.pull_request_number, null);
+  assert.equal(supersession.parsed.fields.exact_head_sha, null);
+  assert.equal(supersession.parsed.fields.predecessor_comment_id, 100);
+  assert.equal(
+    supersession.parsed.fields.predecessor_record_digest,
+    request.parsed.recordDigest,
+  );
+  assert.equal(
+    supersession.parsed.fields.source_observation_identity,
+    changedFacts.sourceObservationIdentity,
+  );
+
+  const successorStep = planInertLifecycleCoordinatorStep({
+    facts: changedFacts,
+    records: [request, supersession],
+    runtime: { ...runtime, runId: 902 },
+  });
+  const successorPlan = JSON.parse(
+    Buffer.from(successorStep.recordPlan, "base64url").toString("utf8"),
+  );
+  const successor = record(successorPlan.recordBody, 102);
+  assert.equal(successor.parsed.recordType, "generation-request");
+  assert.equal(successor.parsed.fields.pull_request_number, 156);
+  assert.equal(successor.parsed.fields.exact_head_sha, "b".repeat(40));
+  assert.notEqual(
+    successor.parsed.fields.generation_identity,
+    request.parsed.fields.generation_identity,
+  );
+  assert.equal(successor.parsed.fields.predecessor_comment_id, 101);
+  assert.equal(
+    successor.parsed.fields.predecessor_record_digest,
+    supersession.parsed.recordDigest,
+  );
+
+  const nextStep = planInertLifecycleCoordinatorStep({
+    facts: changedFacts,
+    records: [request, supersession, successor],
+    runtime: { ...runtime, runId: 903 },
+  });
+  const nextPlan = JSON.parse(
+    Buffer.from(nextStep.recordPlan, "base64url").toString("utf8"),
+  );
+  const next = record(nextPlan.recordBody, 103);
+  assert.equal(next.parsed.recordType, "phase-fence-claim");
+  assert.equal(next.parsed.fields.claim_outcome, "claimed");
+  assert.equal(
+    next.parsed.fields.generation_identity,
+    successor.parsed.fields.generation_identity,
+  );
+});
+
 test("rejects malformed issue authority before creating a generation", () => {
   assert.throws(
     () =>

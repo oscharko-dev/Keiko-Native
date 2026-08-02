@@ -348,6 +348,65 @@ function phaseFence({
   return body;
 }
 
+function supersessionFence({
+  facts,
+  generationRequestRecord,
+  records,
+  runtime,
+}) {
+  const request = generationRequestRecord.parsed.fields;
+  const prior = predecessor(records);
+  const fenceSequence =
+    records.filter(
+      (record) =>
+        record.parsed.recordType === "phase-fence-claim" &&
+        record.parsed.fields.generation_identity ===
+          request.generation_identity &&
+        record.parsed.fields.attempt === request.attempt,
+    ).length + 1;
+  const identityFields = {
+    generation_identity: request.generation_identity,
+    attempt: request.attempt,
+    phase: "request",
+    fence_sequence: fenceSequence,
+    owner_workflow_path: COORDINATOR,
+    owner_run_id: runtime.runId,
+    owner_run_attempt: runtime.runAttempt,
+    source_observation_identity: facts.sourceObservationIdentity,
+    predecessor_comment_id: prior.commentId,
+    predecessor_record_digest: prior.recordDigest,
+  };
+  return createRecordEnvelope("phase-fence-claim", {
+    ...primaryHeader("phase-fence-claim"),
+    repository: REPOSITORY,
+    issue_number: facts.issueNumber,
+    pull_request_number: request.pull_request_number,
+    exact_head_sha: request.exact_head_sha,
+    generation_identity: request.generation_identity,
+    attempt: request.attempt,
+    request_identity: request.request_identity,
+    phase: "request",
+    fence_sequence: fenceSequence,
+    fence_identity: digestAuxiliaryIdentity("fence identity", identityFields),
+    owner_workflow_path: COORDINATOR,
+    owner_run_id: runtime.runId,
+    owner_run_attempt: runtime.runAttempt,
+    source_observation_identity: facts.sourceObservationIdentity,
+    claim_outcome: "superseded",
+    recovery_scan_identity: null,
+    recovery_scanned_page_count: 0,
+    recovery_scanned_comment_count: 0,
+    recovery_accumulated_suffix_identity: null,
+    recovery_provider_cursor: null,
+    recovery_scan_complete: false,
+    recovery_settlement_identity: null,
+    predecessor_comment_id: prior.commentId,
+    predecessor_record_digest: prior.recordDigest,
+    protected_dev_sha: facts.protectedDevSha,
+    recorded_at: runtime.recordedAt,
+  });
+}
+
 function priorCheckpoint(records) {
   const record = records.findLast(
     (candidate) => candidate.parsed.recordType === "transition-read-back",
@@ -503,8 +562,9 @@ function activeRecords(records) {
     (record) =>
       record.parsed.recordType === "transition-read-back" ||
       (record.parsed.recordType === "phase-fence-claim" &&
-        record.parsed.fields.phase === "recovery" &&
-        record.parsed.fields.claim_outcome === "settled"),
+        ((record.parsed.fields.phase === "recovery" &&
+          record.parsed.fields.claim_outcome === "settled") ||
+          record.parsed.fields.claim_outcome === "superseded")),
   );
   return records.slice(boundaryIndex + 1);
 }
@@ -667,12 +727,22 @@ export function planInertLifecycleCoordinatorStep({
     return recordOutput(facts, request.body, "coordinator");
   }
   const generationRequestRecord = active[0];
-  if (
-    generationRequestRecord.parsed.recordType !== "generation-request" ||
-    generationRequestRecord.parsed.fields.generation_identity !==
-      generation.identity
-  )
+  if (generationRequestRecord.parsed.recordType !== "generation-request")
     throw new TypeError("active generation does not match current facts");
+  if (
+    generationRequestRecord.parsed.fields.generation_identity !==
+    generation.identity
+  )
+    return recordOutput(
+      facts,
+      supersessionFence({
+        facts,
+        generationRequestRecord,
+        records,
+        runtime: normalized,
+      }),
+      "coordinator",
+    );
   const phaseFenceRecord = active.find(
     (record) => record.parsed.recordType === "phase-fence-claim",
   );

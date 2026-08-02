@@ -63,8 +63,9 @@ function activeRecords(records) {
     (record) =>
       record.parsed.recordType === "transition-read-back" ||
       (record.parsed.recordType === "phase-fence-claim" &&
-        record.parsed.fields.phase === "recovery" &&
-        record.parsed.fields.claim_outcome === "settled"),
+        ((record.parsed.fields.phase === "recovery" &&
+          record.parsed.fields.claim_outcome === "settled") ||
+          record.parsed.fields.claim_outcome === "superseded")),
   );
   return records.slice(boundary + 1);
 }
