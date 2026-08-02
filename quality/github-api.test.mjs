@@ -54,6 +54,11 @@ const validRoutes = [
     "GET",
   ],
   [
+    "GET combined commit status page",
+    `/repos/${repository}/commits/${sha}/status?per_page=100&page=2`,
+    "GET",
+  ],
+  [
     "GET collaborator permission",
     `/repos/${repository}/collaborators/github-actions%5Bbot%5D/permission`,
     "GET",
