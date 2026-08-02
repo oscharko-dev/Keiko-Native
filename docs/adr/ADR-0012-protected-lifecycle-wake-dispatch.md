@@ -30,6 +30,17 @@ permission is not dispatch-only: the same repository permission also reaches wor
 cancellation and rerun, workflow enablement and disablement, and deletion of workflow runs, logs,
 and artifacts. That capability could damage the run and artifact evidence ADR-0011 relies on.
 
+Post-merge protected run
+[`30750092712`](https://github.com/oscharko-dev/Keiko-Native/actions/runs/30750092712)
+proved that a direct comment on PR #156 correctly maps the pull request to accepted issue #52 but
+cannot also serve as an issue-side recovery locator. The comment's canonical provider resource is
+the pull request, so forwarding its ID into the issue-bound recovery authenticator fails with
+`recovery-comment-rest-mismatch`. The comparison run
+[`30750162059`](https://github.com/oscharko-dev/Keiko-Native/actions/runs/30750162059)
+proved that a plain issue comment retains the canonical resource identity required by the existing
+recovery path. Decision issue #163 therefore selected issue-only recovery with pull-request
+discussion retained as a direct reconciliation wake.
+
 Post-merge production evidence from issue #146 found an additional provider-compatibility
 constraint. For protected runs
 [`30541669361`](https://github.com/oscharko-dev/Keiko-Native/actions/runs/30541669361) and
@@ -81,6 +92,11 @@ coordinator at `./.github/workflows/issue-lifecycle.yml`. The only protected pro
 coordinator may call are `./.github/workflows/pr-contract.yml` and
 `./.github/workflows/contract-publication.yml`.
 
+Adopt decision issue #163's Option A for direct comments: recovery authority remains issue-only,
+while a comment on an exact pull request remains a direct ordinary-reconciliation wake. This
+amendment changes no schema, auxiliary identity, caller/coordinator/producer topology, permission,
+request budget, stable-read requirement, activation state, lifecycle effect, or merge boundary.
+
 The caller has two job roles:
 
 1. a read-only resolver derives a canonical issue locator or a bounded scheduled set of locators;
@@ -115,8 +131,8 @@ The caller's direct event allowlist is:
 | ------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | `issues`                        | `assigned`, `closed`, `edited`, `labeled`, `reopened`, `unassigned`, `unlabeled`                  | canonical event issue number                                  |
 | `pull_request_target`           | `opened`, `edited`, `reopened`, `synchronize`, `ready_for_review`, `converted_to_draft`, `closed` | canonical event pull request followed by a stable read        |
-| `issue_comment` (plain issue)   | `created`, `edited`, `deleted`                                                                    | canonical issue number and untrusted numeric comment ID       |
-| `issue_comment` (pull request)  | `created`, `edited`, `deleted`                                                                    | canonical pull request, comment ID, and stable read           |
+| `issue_comment` (plain issue)   | `created`, `edited`, `deleted`                                                                    | canonical issue number and untrusted recovery comment ID      |
+| `issue_comment` (pull request)  | `created`, `edited`, `deleted`                                                                    | canonical pull request followed by a stable read              |
 | `check_run` (external provider) | `completed`, `rerequested`                                                                        | exactly one associated pull request followed by a stable read |
 | `workflow_run`                  | `completed`                                                                                       | one closed source run and its exact locator facts             |
 | `schedule`                      | hourly at minute 17                                                                               | bounded stable enumeration of open issue locators             |
@@ -186,15 +202,21 @@ A direct-event resolver emits only:
 - canonical decimal issue number;
 - pull request number or explicit null;
 - canonical decimal recovery-comment-ID string for `issue_comment`, otherwise the empty string;
+  the non-empty form is valid only for the plain-issue resource class, while a pull-request
+  comment uses the empty-string form;
 - source event kind;
 - source run ID and attempt or explicit null; and
 - the resolver's protected caller SHA.
 
-The recovery comment ID is copied from the canonical event payload only after it is validated as an
-untrusted positive safe integer, then encoded as its unique non-zero ASCII decimal string. It is not
-a comment body, actor, command conclusion, target, or authority fact. A missing ID on
-`issue_comment`, a non-empty ID on another event, a non-canonical decimal encoding, zero, negative,
-fractional, or unsafe integer rejects the complete direct locator.
+Both `issue_comment` resource classes require the event's comment ID to be an untrusted positive
+safe integer before resolution continues. Only a plain-issue event copies that value into
+`recovery_comment_id`, encoded as its unique non-zero ASCII decimal string. A pull-request comment
+retains the exact pull request number and `source_event=issue_comment` identity but emits the empty
+string as explicit null recovery metadata. Its comment ID never enters issue-side recovery
+authentication. The ID is not a comment body, actor, command conclusion, target, or authority fact.
+A missing or malformed ID on either comment resource; a non-empty recovery ID on a pull-request
+comment or another event; or a non-canonical decimal encoding, zero, negative, fractional, or
+unsafe integer rejects the complete direct locator.
 
 The protected source-workflow locator uses domain
 `keiko-native.lifecycle-wake-locator`, schema version `1`, digest algorithm `sha-256`, and the
@@ -214,8 +236,9 @@ twice and must remain identical. The resolver rejects a missing, extra, repeated
 oversized, non-canonical, wrong-run, wrong-path, wrong-ref, wrong-SHA, or unstable locator. The
 artifact contains no issue body, pull-request body, comment, reason, credential, provider payload,
 requested state, lane, readiness result, producer result, activation value, or merge value.
-Source-workflow and scheduled locators always normalize `recovery_comment_id` to the empty string;
-only a direct canonical `issue_comment` event can carry it.
+Source-workflow, scheduled, and pull-request-comment locators always normalize
+`recovery_comment_id` to the empty string; only a direct canonical plain-issue `issue_comment`
+event can carry it.
 
 This locator artifact is deliberately not attested and is not an ADR-0011 record. It only selects
 a concurrency key. Compromise or staleness can cause one bounded coordinator call for a canonical
@@ -307,8 +330,9 @@ by which another caller can bypass this job.
 
 The coordinator's exact `workflow_call` locator inputs are required `issue_number` of type
 `number` and required `recovery_comment_id` of type `string`. The latter is either the empty string
-for explicit null or one canonical positive safe decimal integer. The coordinator rejects every
-other encoding before provider access. Neither input grants authority; the locked coordinator
+for explicit null or one canonical positive safe decimal integer from a direct plain-issue comment.
+A pull-request-comment wake always supplies the empty string. The coordinator rejects every other
+encoding before provider access. Neither input grants authority; the locked coordinator
 independently reloads all lifecycle, actor, comment, recovery-target, and record facts. No other
 caller input may select a recovery request.
 
@@ -541,14 +565,20 @@ roles are denied. Public provider principal IDs are authorization configuration,
 payload: no email, private profile field, credential, or customer identity may be joined to or
 emitted with them.
 
-For `issue_comment`, the resolver emits only the canonical issue number and the event's positive
-safe-integer comment ID. Both values are untrusted locators. Inside the per-issue lock, the
-coordinator fetches that exact comment twice and requires both complete reads to agree on comment
-ID, exact NFC body bytes, `createdAt`, `updatedAt`, `lastEditedAt`, `editor`, `includesCreatedEdit`,
-author login, immutable numeric author ID, actor type, and live repository permission.
+For a plain-issue `issue_comment`, the resolver emits only the canonical issue number and the
+event's positive safe-integer comment ID. Both values are untrusted locators. Inside the per-issue
+lock, the coordinator fetches that exact comment twice and requires both complete reads to agree on
+comment ID, exact NFC body bytes, `createdAt`, `updatedAt`, `lastEditedAt`, `editor`,
+`includesCreatedEdit`, author login, immutable numeric author ID, actor type, and live repository
+permission.
 `createdAt` must equal `updatedAt`, `lastEditedAt` and `editor` must be null, and
 `includesCreatedEdit` must be false. Those predicates reject a command edited before validation
 even when its current body matches exactly. The mutable login is retained only for attribution.
+
+A pull-request `issue_comment` never enters this authentication route. Its exact PR mapping and
+source-event kind request ordinary current-state reconciliation only. Comment text, ID, author,
+permission, or apparent recovery-command grammar on the pull request grants no recovery or
+lifecycle authority.
 
 One complete authentication read is exactly three provider requests:
 
@@ -602,16 +632,17 @@ binds the derived identity through ADR-0011's existing version-1
 serialize under the issue lock. The first valid settlement consumes the target, and every command
 for an already consumed target is a replay no-op regardless of provider order.
 
-The direct comment locator takes precedence and the coordinator considers only that candidate.
-Other wakes may inspect only ADR-0011's existing stable newest-first normal window of at most two
-100-comment pages. Before selecting a candidate, the coordinator prefilters the stable window by
-the exact command grammar, every never-edited predicate, actor type `User`, and immutable numeric
-actor-ID membership in the protected two-principal allowlist. For each distinct allowlisted actor
-that remains, it performs two live collaborator-permission reads and requires both to agree on
-`maintain` or `admin`. Because the allowlist contains exactly two actors, this step reads at most
-two actors and makes at most four permission requests. A stable `none` or other insufficient
-permission excludes every command by that actor; any disagreement, provider error, or unavailable
-actor lookup fails the complete invocation.
+The direct plain-issue recovery-comment locator takes precedence and the coordinator considers only
+that candidate. Other wakes, including a pull-request-comment wake with explicit null recovery
+metadata, may inspect only ADR-0011's existing stable newest-first normal window of at most two
+100-comment pages on the accepted issue. Before selecting a candidate, the coordinator prefilters
+the stable window by the exact command grammar, every never-edited predicate, actor type `User`,
+and immutable numeric actor-ID membership in the protected two-principal allowlist. For each
+distinct allowlisted actor that remains, it performs two live collaborator-permission reads and
+requires both to agree on `maintain` or `admin`. Because the allowlist contains exactly two actors,
+this step reads at most two actors and makes at most four permission requests. A stable `none` or
+other insufficient permission excludes every command by that actor; any disagreement, provider
+error, or unavailable actor lookup fails the complete invocation.
 
 Only after that complete prefilter does the coordinator deterministically select the lowest
 numeric comment ID from the eligible set. It processes at most one selected recovery candidate per
@@ -639,6 +670,14 @@ duplicate and reordered replay behavior, bounded non-starving fallback prefilter
 complete caller/coordinator/producer authentication, and disposable guarded-off GitHub behavior.
 Issue #55 must repeat the live proof after activation and cover all nine lifecycle states and the
 complete rejected-edge complement.
+
+Issue #162 is the separate implementation owner for this amendment. After an authorized maintainer
+manually merges decision issue #163's ADR-only pull request to `dev`, issue #162 must increment its
+semantic contract version, return to `status: new`, obtain fresh readiness, and then implement and
+prove the PR-comment routing correction while activation remains disabled. That implementation
+must preserve the existing locator schema, protected topology, permission ceilings, stable PR
+double read, exact accepted-issue mapping, plain-issue recovery authentication, and every
+activation-disabled zero-effect guarantee.
 
 ## Alternatives
 
@@ -734,6 +773,10 @@ merge it, enable auto-merge, enqueue it, or use a human credential to bypass the
 ## References
 
 - Decision issue [#131](https://github.com/oscharko-dev/Keiko-Native/issues/131)
+- PR-comment recovery-boundary decision
+  [#163](https://github.com/oscharko-dev/Keiko-Native/issues/163)
+- Separate PR-comment routing implementation
+  [#162](https://github.com/oscharko-dev/Keiko-Native/issues/162)
 - Static workflow-graph decision issue
   [#146](https://github.com/oscharko-dev/Keiko-Native/issues/146)
 - Follow-up authentication defect
