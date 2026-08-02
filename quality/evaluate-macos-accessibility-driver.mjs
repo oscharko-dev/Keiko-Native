@@ -54,7 +54,7 @@ function closedInvalid(reasonCode) {
 
 function exactHead() {
   const result = spawnSync(
-    "git",
+    "/usr/bin/git",
     [
       "-c",
       "core.fsmonitor=false",

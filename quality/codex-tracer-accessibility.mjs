@@ -7,6 +7,7 @@ import {
   tracerAccessibilityActions,
   tracerAccessibilitySource,
 } from "./codex-tracer-accessibility-source.mjs";
+import { compareCodeUnits } from "./deterministic-order.mjs";
 
 const reasonCodes = new Set([
   "accessibility-permission-denied",
@@ -44,7 +45,7 @@ export function classifyTracerAccessibilityResult({
       typeof parsed !== "object" ||
       parsed === null ||
       Array.isArray(parsed) ||
-      JSON.stringify(Object.keys(parsed).toSorted()) !==
+      JSON.stringify(Object.keys(parsed).toSorted(compareCodeUnits)) !==
         JSON.stringify(["prompted", "reasonCode", "status"]) ||
       parsed.prompted !== false
     ) {

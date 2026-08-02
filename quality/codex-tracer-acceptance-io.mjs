@@ -17,6 +17,7 @@ import {
   hardenedGitArguments,
   noReplaceGitEnvironment,
 } from "./git-integrity.mjs";
+import { compareCodeUnits } from "./deterministic-order.mjs";
 import { evidenceFailures, redactionMatches } from "./native-contract.mjs";
 import {
   acceptanceBudgetLimits,
@@ -44,11 +45,15 @@ const packageExecutable = join(
   packageRoot,
   "Keiko Native.app/Contents/MacOS/keiko-native-desktop",
 );
-const runtimeBinary =
-  "/private/tmp/keiko-codex-0.145.0-runtime/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex";
-const runtimeHome = "/private/tmp/keiko-codex-0.145.0-home-v104";
-const physicalObservationPath =
-  "/private/tmp/keiko-native-codex-tracer-104-observation.json";
+const runtimeBinary = join(
+  tmpdir(),
+  "keiko-codex-0.145.0-runtime/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
+);
+const runtimeHome = join(tmpdir(), "keiko-codex-0.145.0-home-v104");
+const physicalObservationPath = join(
+  tmpdir(),
+  "keiko-native-codex-tracer-104-observation.json",
+);
 const acceptanceProcessEnvironmentKeys = Object.freeze([
   "HOME",
   "LANG",
@@ -87,8 +92,10 @@ export function acceptanceEnvironmentFailures(environment) {
     typeof environment !== "object" ||
     environment === null ||
     Array.isArray(environment) ||
-    JSON.stringify(Object.keys(environment).toSorted()) !==
-      JSON.stringify(Object.keys(acceptedEnvironment).toSorted())
+    JSON.stringify(Object.keys(environment).toSorted(compareCodeUnits)) !==
+      JSON.stringify(
+        Object.keys(acceptedEnvironment).toSorted(compareCodeUnits),
+      )
   ) {
     failures.push("environment-fields");
   }
@@ -108,12 +115,12 @@ function manifestFailures(manifest, sourceRevision, executableSha256) {
     "schema",
     "sourceRevision",
     "target",
-  ].toSorted();
+  ].toSorted(compareCodeUnits);
   if (
     typeof manifest !== "object" ||
     manifest === null ||
     Array.isArray(manifest) ||
-    JSON.stringify(Object.keys(manifest).toSorted()) !==
+    JSON.stringify(Object.keys(manifest).toSorted(compareCodeUnits)) !==
       JSON.stringify(expectedKeys)
   ) {
     failures.push("package-manifest-fields");
@@ -142,7 +149,7 @@ function manifestFailures(manifest, sourceRevision, executableSha256) {
       typeof entry !== "object" ||
       entry === null ||
       Array.isArray(entry) ||
-      JSON.stringify(Object.keys(entry).toSorted()) !==
+      JSON.stringify(Object.keys(entry).toSorted(compareCodeUnits)) !==
         JSON.stringify(["mode", "path", "sha256"])
     ) {
       failures.push(`package-manifest-entry-${index}`);
@@ -180,8 +187,6 @@ export function packageArtifactFailures({
     failures.push("package-manifest-digest");
   failures.push(
     ...manifestFailures(manifest, sourceRevision, executableSha256),
-  );
-  failures.push(
     ...evidenceFailures(shellEvidence, {
       cargoLockSha256: shellEvidence?.cargoLockSha256,
       foundationReadinessFingerprint:
@@ -209,12 +214,12 @@ export function physicalObservationFailures(
     "redaction",
     "schemaVersion",
     "sourceRevision",
-  ].toSorted();
+  ].toSorted(compareCodeUnits);
   if (
     typeof observation !== "object" ||
     observation === null ||
     Array.isArray(observation) ||
-    JSON.stringify(Object.keys(observation).toSorted()) !==
+    JSON.stringify(Object.keys(observation).toSorted(compareCodeUnits)) !==
       JSON.stringify(expectedKeys)
   ) {
     failures.push("physical-observation-fields");
@@ -409,17 +414,31 @@ async function waitForProcessExit(pid, timeoutMs) {
   return !processExists(pid);
 }
 
+function parseProcessRow(line) {
+  const [pidText, ppidText, pgidText, ...commandParts] = line
+    .trim()
+    .split(/\s+/u);
+  if (
+    !/^\d+$/u.test(pidText ?? "") ||
+    !/^\d+$/u.test(ppidText ?? "") ||
+    !/^\d+$/u.test(pgidText ?? "") ||
+    commandParts.length === 0
+  ) {
+    return null;
+  }
+  return {
+    command: commandParts.join(" "),
+    pgid: Number.parseInt(pgidText, 10),
+    pid: Number.parseInt(pidText, 10),
+    ppid: Number.parseInt(ppidText, 10),
+  };
+}
+
 async function crashOwnedRuntime(appPid) {
   const processes = run("/bin/ps", ["-axo", "pid=,ppid=,pgid=,command="])
     .split("\n")
-    .map((line) => /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/u.exec(line))
+    .map(parseProcessRow)
     .filter(Boolean)
-    .map((match) => ({
-      command: match[4],
-      pgid: Number.parseInt(match[3], 10),
-      pid: Number.parseInt(match[1], 10),
-      ppid: Number.parseInt(match[2], 10),
-    }))
     .filter(
       (process) =>
         process.ppid === appPid &&

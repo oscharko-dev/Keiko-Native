@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
-import { mkdir } from "node:fs/promises";
+import { compareCodeUnits } from "./deterministic-order.mjs";
 
 const checkpointIds = Object.freeze([
   "workspace-select",
@@ -128,8 +129,10 @@ const NATURAL_EXIT_TIMEOUT_MS = 5_000;
 const PROCESS_CLEANUP_TIMEOUT_MS = 2_000;
 const authenticatedProcessGroups = new WeakSet();
 
-export const evaluationArtifactRoot =
-  "/private/tmp/keiko-native-macos-accessibility-driver/issue-111-v3";
+export const evaluationArtifactRoot = join(
+  tmpdir(),
+  "keiko-native-macos-accessibility-driver/issue-111-v3",
+);
 const operatorPhases = new Set(["allowed", "denied", "revoked", "recovered"]);
 const sha256Pattern = /^[0-9a-f]{64}$/u;
 const headPattern = /^[0-9a-f]{40}$/u;
@@ -329,7 +332,7 @@ int main(int argc, const char *argv[]) {
 `;
 }
 
-const axuielementSource = `#import <ApplicationServices/ApplicationServices.h>
+const axuielementSource = String.raw`#import <ApplicationServices/ApplicationServices.h>
 #import <Foundation/Foundation.h>
 #import <unistd.h>
 
@@ -467,15 +470,15 @@ int main(int argc, const char *argv[]) {
   @autoreleasepool {
     NSDictionary *options = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt: @NO};
     if (!AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options)) {
-      puts("{\\"status\\":\\"permission-denied\\",\\"reasonCode\\":\\"accessibility-permission-denied\\",\\"prompted\\":false,\\"checkpointPasses\\":0}");
+      puts("{\"status\":\"permission-denied\",\"reasonCode\":\"accessibility-permission-denied\",\"prompted\":false,\"checkpointPasses\":0}");
       return 0;
     }
     if (argc == 1) {
-      puts("{\\"status\\":\\"ready\\",\\"reasonCode\\":null,\\"prompted\\":false,\\"checkpointPasses\\":0}");
+      puts("{\"status\":\"ready\",\"reasonCode\":null,\"prompted\":false,\"checkpointPasses\":0}");
       return 0;
     }
     if (argc != 3) {
-      puts("{\\"status\\":\\"invalid-invocation\\"}");
+      puts("{\"status\":\"invalid-invocation\"}");
       return 2;
     }
     pid_t pid = (pid_t)strtol(argv[1], NULL, 10);
@@ -485,7 +488,7 @@ ${checkpointIds.map((id) => `      @${sourceLiteral(id)},`).join("\n")}
     ]];
     if (pid < 1 || identifier == nil ||
         ![allowedIdentifiers containsObject:identifier]) {
-      puts("{\\"status\\":\\"failed\\",\\"reasonCode\\":\\"checkpoint-action-failed\\",\\"prompted\\":false,\\"checkpointPasses\\":0}");
+      puts("{\"status\":\"failed\",\"reasonCode\":\"checkpoint-action-failed\",\"prompted\":false,\"checkpointPasses\":0}");
       return 2;
     }
     AXUIElementRef application = AXUIElementCreateApplication(pid);
@@ -493,7 +496,7 @@ ${checkpointIds.map((id) => `      @${sourceLiteral(id)},`).join("\n")}
         application, (__bridge CFStringRef)identifier);
     if (element == NULL) {
       CFRelease(application);
-      puts("{\\"status\\":\\"failed\\",\\"reasonCode\\":\\"missing-or-ambiguous-checkpoint\\",\\"prompted\\":false,\\"checkpointPasses\\":0}");
+      puts("{\"status\":\"failed\",\"reasonCode\":\"missing-or-ambiguous-checkpoint\",\"prompted\":false,\"checkpointPasses\":0}");
       return 0;
     }
 
@@ -544,23 +547,23 @@ ${checkpointIds.map((id) => `      @${sourceLiteral(id)},`).join("\n")}
     CFRelease(element);
     CFRelease(application);
     if (action != kAXErrorSuccess) {
-      puts("{\\"status\\":\\"failed\\",\\"reasonCode\\":\\"checkpoint-action-failed\\",\\"prompted\\":false,\\"checkpointPasses\\":0}");
+      puts("{\"status\":\"failed\",\"reasonCode\":\"checkpoint-action-failed\",\"prompted\":false,\"checkpointPasses\":0}");
       return 0;
     }
     if (!observed) {
-      puts("{\\"status\\":\\"failed\\",\\"reasonCode\\":\\"checkpoint-observation-failed\\",\\"prompted\\":false,\\"checkpointPasses\\":0}");
+      puts("{\"status\":\"failed\",\"reasonCode\":\"checkpoint-observation-failed\",\"prompted\":false,\"checkpointPasses\":0}");
       return 0;
     }
-    puts("{\\"status\\":\\"passed\\",\\"reasonCode\\":null,\\"prompted\\":false,\\"checkpointPasses\\":1}");
+    puts("{\"status\":\"passed\",\"reasonCode\":null,\"prompted\":false,\"checkpointPasses\":1}");
     return 0;
   }
 }
 `;
 
-const systemEventsSource = `-- Rejected without Apple Events execution.
+const systemEventsSource = String.raw`-- Rejected without Apple Events execution.
 -- A separate Automation-consent boundary prevents authoritative non-prompting evidence.
 on run argv
-  return "{\\"status\\":\\"rejected\\",\\"reasonCode\\":\\"authoritative-evidence-unavailable\\",\\"prompted\\":null,\\"checkpointPasses\\":0}"
+  return "{\"status\":\"rejected\",\"reasonCode\":\"authoritative-evidence-unavailable\",\"prompted\":null,\"checkpointPasses\":0}"
 end run
 `;
 
@@ -582,7 +585,7 @@ const informationPropertyList = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `;
 
-const processGroupLauncherSource = `#include <libproc.h>
+const processGroupLauncherSource = String.raw`#include <libproc.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -610,7 +613,7 @@ static int Inspect(void) {
         (int)sizeof(info));
     if (bytes != (int)sizeof(info)) continue;
     printf(
-        "%d %u %llu %llu\\n",
+        "%d %u %llu %llu\n",
         info.pbi_pid,
         info.pbi_pgid,
         (unsigned long long)info.pbi_start_tvsec,
@@ -633,7 +636,7 @@ int main(int argc, char **argv) {
       (int)sizeof(info));
   if (bytes != (int)sizeof(info)) return 66;
   printf(
-      "%d %u %llu %llu\\n",
+      "%d %u %llu %llu\n",
       info.pbi_pid,
       info.pbi_pgid,
       (unsigned long long)info.pbi_start_tvsec,
@@ -656,7 +659,7 @@ async function filesBelow(root) {
     else if (entry.isFile()) files.push(path);
     else throw new Error("evaluation-artifact-special-entry");
   }
-  return files.toSorted();
+  return files.toSorted(compareCodeUnits);
 }
 
 export async function createEvaluationArtifacts(root) {
@@ -904,7 +907,7 @@ function processTable(processInspector) {
     throw new Error("process-cleanup-inspection-failed");
   return result.stdout
     .split("\n")
-    .map((line) => line.match(/^(\d+) (\d+) (\d+) (\d+)$/u))
+    .map((line) => /^(\d+) (\d+) (\d+) (\d+)$/u.exec(line))
     .filter((match) => match !== null)
     .map((match) =>
       Object.freeze({
@@ -1070,7 +1073,7 @@ function authenticateLauncherHandshake(child) {
         reject(error);
         return;
       }
-      const match = raw.match(/^(\d+) (\d+) (\d+) (\d+)\n$/u);
+      const match = /^(\d+) (\d+) (\d+) (\d+)\n$/u.exec(raw);
       if (
         match === null ||
         Number.parseInt(match[1], 10) !== child.pid ||
@@ -1157,6 +1160,152 @@ export async function establishOwnedProcess({ authenticate, launch, reject }) {
   }
 }
 
+function candidateOutput({
+  candidate,
+  checkpointPasses,
+  cleanupOwnedDescendants,
+  elapsedMs,
+  includeTimings,
+  reasonCode,
+  repetition,
+  status,
+  timings = [],
+}) {
+  const output = {
+    candidate,
+    repetition,
+    status,
+    checkpointPasses,
+    boundedWait: true,
+    cleanupOwnedDescendants,
+    reasonCode,
+  };
+  if (includeTimings) output.timings = { checkpoints: timings, elapsedMs };
+  return output;
+}
+
+function runPermissionProbe({
+  candidate,
+  command,
+  includeTimings,
+  repetition,
+}) {
+  const probe = runClosed(command, [], CHECKPOINT_TIMEOUT_MS);
+  const result = classifyCandidateSubprocessOutcome(probe);
+  return candidateOutput({
+    candidate,
+    checkpointPasses: 0,
+    cleanupOwnedDescendants: 0,
+    elapsedMs: probe.durationMs,
+    includeTimings,
+    reasonCode: result.reasonCode,
+    repetition,
+    status: result.status,
+  });
+}
+
+async function executePhysicalCheckpoint({
+  candidate,
+  checkpoint,
+  command,
+  index,
+  startupDeadline,
+  surfacePid,
+}) {
+  let attemptDurationMs = 0;
+  let parsed;
+  do {
+    let durationMs = 0;
+    parsed = executeCandidateCheckpoint({
+      candidate,
+      checkpoint,
+      runCandidate: () => {
+        const result = runClosed(
+          command,
+          [String(surfacePid), checkpoint],
+          CHECKPOINT_TIMEOUT_MS,
+        );
+        durationMs = result.durationMs;
+        return result;
+      },
+      surfacePid,
+    });
+    attemptDurationMs += durationMs;
+    const retryableReason = [
+      "missing-or-ambiguous-checkpoint",
+      "surface-unavailable",
+    ].includes(parsed.reasonCode);
+    if (
+      parsed.status === "passed" ||
+      parsed.status === "permission-denied" ||
+      index !== 0 ||
+      !retryableReason ||
+      performance.now() >= startupDeadline
+    )
+      break;
+    await waitForEventLoopTurn(25);
+  } while (performance.now() < startupDeadline);
+  return { attemptDurationMs, parsed };
+}
+
+async function observeNaturalExit(surfacePid) {
+  const startedAt = performance.now();
+  const deadline = startedAt + NATURAL_EXIT_TIMEOUT_MS;
+  while (performance.now() < deadline) {
+    if (!processExists(surfacePid))
+      return {
+        elapsedMs: Math.round(performance.now() - startedAt),
+        passed: true,
+      };
+    await waitForEventLoopTurn(20);
+  }
+  return {
+    elapsedMs: Math.round(performance.now() - startedAt),
+    passed: false,
+  };
+}
+
+async function executePhysicalCheckpoints({
+  candidate,
+  command,
+  startupDeadline,
+  surfacePid,
+}) {
+  const checkpointTimings = [];
+  let checkpointPasses = 0;
+  let parsed;
+  for (const [index, checkpoint] of checkpointIds.entries()) {
+    const result = await executePhysicalCheckpoint({
+      candidate,
+      checkpoint,
+      command,
+      index,
+      startupDeadline,
+      surfacePid,
+    });
+    parsed = result.parsed;
+    if (checkpoint === "quit-zero-descendants" && parsed.status === "passed") {
+      const naturalExit = await observeNaturalExit(surfacePid);
+      result.attemptDurationMs += naturalExit.elapsedMs;
+      if (!naturalExit.passed)
+        parsed = {
+          checkpointPasses: 0,
+          prompted: false,
+          reasonCode: "checkpoint-observation-failed",
+          status: "failed",
+        };
+    }
+    checkpointTimings.push({
+      checkpoint,
+      elapsedMs: result.attemptDurationMs,
+      status: parsed.status,
+    });
+    checkpointPasses += parsed.checkpointPasses;
+    if (parsed.status !== "passed") break;
+  }
+  return { checkpointPasses, checkpointTimings, parsed };
+}
+
 export async function runPhysicalCandidate({
   candidate,
   includeTimings = false,
@@ -1167,41 +1316,26 @@ export async function runPhysicalCandidate({
   if (!new Set(["axuielement", "systemEvents"]).has(candidate))
     throw new TypeError("unknown-candidate");
   if (!operatorPhases.has(phase)) throw new TypeError("unknown-capture-phase");
-  if (candidate === "systemEvents") {
-    const output = {
+  if (candidate === "systemEvents")
+    return candidateOutput({
       candidate,
+      checkpointPasses: 0,
+      cleanupOwnedDescendants: 0,
+      elapsedMs: 0,
+      includeTimings,
+      reasonCode: "authoritative-evidence-unavailable",
       repetition,
       status: "rejected",
-      checkpointPasses: 0,
-      boundedWait: true,
-      cleanupOwnedDescendants: 0,
-      reasonCode: "authoritative-evidence-unavailable",
-    };
-    if (includeTimings) output.timings = { checkpoints: [], elapsedMs: 0 };
-    return output;
-  }
+    });
   const expectsPermission = phase === "allowed" || phase === "recovered";
   const command = join(root, "AXUIElementCandidate");
-  const probeArgs = [];
-  if (!expectsPermission) {
-    const probe = runClosed(command, probeArgs, CHECKPOINT_TIMEOUT_MS);
-    const result = classifyCandidateSubprocessOutcome(probe);
-    const output = {
+  if (!expectsPermission)
+    return runPermissionProbe({
       candidate,
+      command,
+      includeTimings,
       repetition,
-      status: result.status,
-      checkpointPasses: 0,
-      boundedWait: true,
-      cleanupOwnedDescendants: 0,
-      reasonCode: result.reasonCode,
-    };
-    if (includeTimings)
-      output.timings = {
-        checkpoints: [],
-        elapsedMs: probe.durationMs,
-      };
-    return output;
-  }
+    });
 
   const startedAt = performance.now();
   const surfaceExecutable = join(
@@ -1222,78 +1356,15 @@ export async function runPhysicalCandidate({
       reject: rejectUnauthenticatedLauncher,
     });
   const startupDeadline = performance.now() + SURFACE_STARTUP_TIMEOUT_MS;
-  const checkpointTimings = [];
-  let parsed = {
-    checkpointPasses: 0,
-    prompted: false,
-    reasonCode: "surface-unavailable",
-    status: "failed",
-  };
-  let checkpointPasses = 0;
+  let execution;
   let cleanupOwnedDescendants;
   try {
-    for (const [index, checkpoint] of checkpointIds.entries()) {
-      let attemptDurationMs = 0;
-      do {
-        const args = [String(surface.pid), checkpoint];
-        let durationMs = 0;
-        parsed = executeCandidateCheckpoint({
-          candidate,
-          checkpoint,
-          runCandidate: () => {
-            const result = runClosed(command, args, CHECKPOINT_TIMEOUT_MS);
-            durationMs = result.durationMs;
-            return result;
-          },
-          surfacePid: surface.pid,
-        });
-        attemptDurationMs += durationMs;
-        if (
-          parsed.status === "passed" ||
-          parsed.status === "permission-denied" ||
-          index !== 0 ||
-          !["missing-or-ambiguous-checkpoint", "surface-unavailable"].includes(
-            parsed.reasonCode,
-          ) ||
-          performance.now() >= startupDeadline
-        )
-          break;
-        await waitForEventLoopTurn(25);
-      } while (performance.now() < startupDeadline);
-      if (
-        checkpoint === "quit-zero-descendants" &&
-        parsed.status === "passed"
-      ) {
-        const naturalExitStartedAt = performance.now();
-        const naturalExitDeadline =
-          naturalExitStartedAt + NATURAL_EXIT_TIMEOUT_MS;
-        let naturalExitObserved = false;
-        while (performance.now() < naturalExitDeadline) {
-          if (!processExists(surface.pid)) {
-            naturalExitObserved = true;
-            break;
-          }
-          await waitForEventLoopTurn(20);
-        }
-        attemptDurationMs += Math.round(
-          performance.now() - naturalExitStartedAt,
-        );
-        if (!naturalExitObserved)
-          parsed = {
-            checkpointPasses: 0,
-            prompted: false,
-            reasonCode: "checkpoint-observation-failed",
-            status: "failed",
-          };
-      }
-      checkpointTimings.push({
-        checkpoint,
-        elapsedMs: attemptDurationMs,
-        status: parsed.status,
-      });
-      checkpointPasses += parsed.checkpointPasses;
-      if (parsed.status !== "passed") break;
-    }
+    execution = await executePhysicalCheckpoints({
+      candidate,
+      command,
+      startupDeadline,
+      surfacePid: surface.pid,
+    });
   } finally {
     try {
       cleanupOwnedDescendants = await terminateOwnedProcess(
@@ -1301,37 +1372,33 @@ export async function runPhysicalCandidate({
         cleanupDependencies,
       );
     } catch {
-      parsed = {
+      execution = {
         checkpointPasses: 0,
-        prompted: false,
-        reasonCode: "process-cleanup-failed",
-        status: "failed",
+        checkpointTimings: execution?.checkpointTimings ?? [],
+        parsed: {
+          checkpointPasses: 0,
+          prompted: false,
+          reasonCode: "process-cleanup-failed",
+          status: "failed",
+        },
       };
-      checkpointPasses = 0;
       cleanupOwnedDescendants = 1;
     }
   }
-  const output = {
+  const complete =
+    execution.parsed.status === "passed" &&
+    execution.checkpointPasses === checkpointIds.length;
+  return candidateOutput({
     candidate,
-    repetition,
-    status:
-      parsed.status === "passed" && checkpointPasses === checkpointIds.length
-        ? "passed"
-        : parsed.status,
-    checkpointPasses,
-    boundedWait: true,
+    checkpointPasses: execution.checkpointPasses,
     cleanupOwnedDescendants,
-    reasonCode:
-      parsed.status === "passed" && checkpointPasses === checkpointIds.length
-        ? null
-        : parsed.reasonCode,
-  };
-  if (includeTimings)
-    output.timings = {
-      checkpoints: checkpointTimings,
-      elapsedMs: Math.round(performance.now() - startedAt),
-    };
-  return output;
+    elapsedMs: Math.round(performance.now() - startedAt),
+    includeTimings,
+    reasonCode: complete ? null : execution.parsed.reasonCode,
+    repetition,
+    status: complete ? "passed" : execution.parsed.status,
+    timings: execution.checkpointTimings,
+  });
 }
 
 function closedAxuielementProbe(probe) {
@@ -1460,7 +1527,7 @@ function validPreparedIdentity(prepared) {
     prepared.bundleIdentifier ===
       "dev.oscharko.keiko-native.evaluation.accessibility" &&
     Object.keys(prepared.candidateDigests ?? {})
-      .toSorted()
+      .toSorted(compareCodeUnits)
       .join(",") === "axuielement,systemEvents" &&
     Object.values(prepared.candidateDigests).every((value) =>
       sha256Pattern.test(value),
@@ -1473,7 +1540,7 @@ export function representativeInspectionValid(inspection) {
     inspection !== null &&
     typeof inspection === "object" &&
     !Array.isArray(inspection) &&
-    Object.keys(inspection).toSorted().join("\0") ===
+    Object.keys(inspection).toSorted(compareCodeUnits).join("\0") ===
       [
         "candidateFilesInsidePackage",
         "missingCheckpoints",
@@ -1482,7 +1549,7 @@ export function representativeInspectionValid(inspection) {
         "productHooks",
         "status",
       ]
-        .toSorted()
+        .toSorted(compareCodeUnits)
         .join("\0") &&
     inspection.status === "prepared" &&
     inspection.candidateFilesInsidePackage === 0 &&
@@ -1528,6 +1595,10 @@ export function summarizePhysicalRuns(state, runs) {
         run.cleanupOwnedDescendants !== 0 ||
         run.boundedWait !== true,
   ).length;
+  let reasonCode = "permission-state-mismatch";
+  if (unexplainedFailures === 0)
+    reasonCode = expectsSuccess ? null : "accessibility-permission-denied";
+  else if (expectsSuccess) reasonCode = "unexplained-failed-repetition";
   return {
     status: state === "recovered" ? "allowed" : state,
     repetitions: runs.length,
@@ -1538,13 +1609,7 @@ export function summarizePhysicalRuns(state, runs) {
     ),
     boundedWaits: runs.every((run) => run.boundedWait === true),
     unexplainedFailures,
-    reasonCode: expectsSuccess
-      ? unexplainedFailures === 0
-        ? null
-        : "unexplained-failed-repetition"
-      : unexplainedFailures === 0
-        ? "accessibility-permission-denied"
-        : "permission-state-mismatch",
+    reasonCode,
     cleanupOwnedDescendants: runs.reduce(
       (maximum, run) =>
         Math.max(
@@ -1599,7 +1664,7 @@ export async function preparePhysicalMatrix(
 }
 
 export async function capturePhysicalMatrixPhase(
-  root = evaluationArtifactRoot,
+  root,
   { phase, prepared, priorCapture = null, runCandidate },
 ) {
   if (!operatorPhases.has(phase)) throw new TypeError("unknown-capture-phase");

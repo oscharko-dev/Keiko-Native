@@ -5,6 +5,8 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { compareCodeUnits } from "./deterministic-order.mjs";
+
 export const physicalEvaluationSourceNames = Object.freeze([
   "evaluate-macos-accessibility-driver.mjs",
   "macos-accessibility-driver-evaluation.mjs",
@@ -48,6 +50,15 @@ export const evaluationRuntimeInputPaths = Object.freeze([
 
 function checkoutInvalid(reasonCode) {
   return Object.freeze({ authenticated: false, reasonCode });
+}
+
+function gitCommandFailed(result) {
+  return (
+    result.exitCode !== 0 ||
+    result.signal !== null ||
+    !result.stderrEmpty ||
+    result.timedOut
+  );
 }
 
 export function authenticateEvaluationCheckout({
@@ -145,11 +156,11 @@ export function authenticateRuntimeInputState({
     inputs.length !== requiredPaths.length
   )
     return checkoutInvalid("evaluation-runtime-input-invalid");
-  const expectedPaths = [...requiredPaths].toSorted();
+  const expectedPaths = [...requiredPaths].toSorted(compareCodeUnits);
   if (
     inputs
       .map(({ path }) => path)
-      .toSorted()
+      .toSorted(compareCodeUnits)
       .some((path, index) => path !== expectedPaths[index])
   )
     return checkoutInvalid("evaluation-runtime-input-invalid");
@@ -272,22 +283,12 @@ export function authenticateCurrentEvaluationCheckout(
     ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
     repositoryRoot,
   );
-  if (
-    status.exitCode !== 0 ||
-    status.signal !== null ||
-    !status.stderrEmpty ||
-    status.timedOut
-  )
+  if (gitCommandFailed(status))
     return checkoutInvalid("evaluation-checkout-unavailable");
   if (status.stdout.length !== 0)
     return checkoutInvalid("evaluation-working-tree-dirty");
   const head = run(["rev-parse", "--verify", "HEAD"], repositoryRoot);
-  if (
-    head.exitCode !== 0 ||
-    head.signal !== null ||
-    !head.stderrEmpty ||
-    head.timedOut
-  )
+  if (gitCommandFailed(head))
     return checkoutInvalid("evaluation-checkout-unavailable");
   const currentHead = head.stdout.toString("utf8").trim();
   if (!headPattern.test(currentHead))
@@ -316,12 +317,7 @@ export function authenticateCurrentEvaluationCheckout(
     ],
     repositoryRoot,
   );
-  if (
-    diff.exitCode !== 0 ||
-    diff.signal !== null ||
-    !diff.stderrEmpty ||
-    diff.timedOut
-  )
+  if (gitCommandFailed(diff))
     return checkoutInvalid("evaluation-checkout-unavailable");
   const fields = diff.stdout.toString("utf8").split("\0");
   if (fields.at(-1) !== "")
@@ -338,12 +334,7 @@ export function authenticateCurrentEvaluationCheckout(
     if (header === null || path.length === 0)
       return checkoutInvalid("evaluation-checkout-diff-invalid");
     const object = run(["cat-file", "-t", header[4]], repositoryRoot);
-    if (
-      object.exitCode !== 0 ||
-      object.signal !== null ||
-      !object.stderrEmpty ||
-      object.timedOut
-    )
+    if (gitCommandFailed(object))
       return checkoutInvalid("evaluation-checkout-diff-invalid");
     changes.push({
       blobType: object.stdout.toString("utf8").trim(),

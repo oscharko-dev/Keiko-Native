@@ -24,7 +24,7 @@ export const tracerAccessibilityActions = Object.freeze([
   "quit",
 ]);
 
-export const tracerAccessibilitySource = `#import <ApplicationServices/ApplicationServices.h>
+export const tracerAccessibilitySource = String.raw`#import <ApplicationServices/ApplicationServices.h>
 #import <Foundation/Foundation.h>
 #import <unistd.h>
 
@@ -551,10 +551,10 @@ static NSString *ReadBoundedInput(void) {
 
 static void Emit(BOOL passed, const char *reasonCode) {
   if (passed) {
-    puts("{\\"status\\":\\"passed\\",\\"reasonCode\\":null,\\"prompted\\":false}");
+    puts("{\"status\":\"passed\",\"reasonCode\":null,\"prompted\":false}");
   } else {
     printf(
-        "{\\"status\\":\\"failed\\",\\"reasonCode\\":\\"%s\\",\\"prompted\\":false}\\n",
+        "{\"status\":\"failed\",\"reasonCode\":\"%s\",\"prompted\":false}\n",
         reasonCode);
   }
 }

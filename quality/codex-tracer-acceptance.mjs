@@ -1,4 +1,5 @@
 import { checkpointBehaviorContract } from "./macos-accessibility-driver-harness.mjs";
+import { compareCodeUnits } from "./deterministic-order.mjs";
 import { redactionMatches } from "./native-contract.mjs";
 
 const SCHEMA_VERSION = "keiko-native-codex-tracer-acceptance/v1";
@@ -127,7 +128,7 @@ const identityBindingKeys = Object.freeze(
     "packageExecutableSha256",
     "packageManifestSha256",
     "sourceRevision",
-  ].toSorted(),
+  ].toSorted(compareCodeUnits),
 );
 
 export function identityBindingFailures(bindings, expected) {
@@ -136,7 +137,7 @@ export function identityBindingFailures(bindings, expected) {
     typeof bindings !== "object" ||
     bindings === null ||
     Array.isArray(bindings) ||
-    JSON.stringify(Object.keys(bindings).toSorted()) !==
+    JSON.stringify(Object.keys(bindings).toSorted(compareCodeUnits)) !==
       JSON.stringify(identityBindingKeys)
   ) {
     failures.push("identity-fields");
@@ -163,8 +164,10 @@ export function journeyEvidenceFailures(journey) {
     typeof journey !== "object" ||
     journey === null ||
     Array.isArray(journey) ||
-    JSON.stringify(Object.keys(journey).toSorted()) !==
-      JSON.stringify(Object.keys(acceptanceJourneyContract).toSorted())
+    JSON.stringify(Object.keys(journey).toSorted(compareCodeUnits)) !==
+      JSON.stringify(
+        Object.keys(acceptanceJourneyContract).toSorted(compareCodeUnits),
+      )
   ) {
     failures.push("journey-fields");
   }
@@ -184,12 +187,12 @@ export function budgetEvidenceFailures(budgets) {
   const expectedKeys = [
     ...Object.keys(acceptanceBudgetLimits),
     ...Object.keys(budgetMeasurementLimits),
-  ].toSorted();
+  ].toSorted(compareCodeUnits);
   if (
     typeof budgets !== "object" ||
     budgets === null ||
     Array.isArray(budgets) ||
-    JSON.stringify(Object.keys(budgets).toSorted()) !==
+    JSON.stringify(Object.keys(budgets).toSorted(compareCodeUnits)) !==
       JSON.stringify(expectedKeys)
   ) {
     failures.push("budget-fields");
@@ -208,12 +211,14 @@ export function budgetEvidenceFailures(budgets) {
 
 export function safeguardEvidenceFailures(safeguards) {
   const failures = [];
-  const expectedKeys = Object.keys(acceptanceSafeguardContract).toSorted();
+  const expectedKeys = Object.keys(acceptanceSafeguardContract).toSorted(
+    compareCodeUnits,
+  );
   if (
     typeof safeguards !== "object" ||
     safeguards === null ||
     Array.isArray(safeguards) ||
-    JSON.stringify(Object.keys(safeguards).toSorted()) !==
+    JSON.stringify(Object.keys(safeguards).toSorted(compareCodeUnits)) !==
       JSON.stringify(expectedKeys)
   ) {
     failures.push("safeguard-fields");
@@ -230,9 +235,11 @@ function packageInspectionFailures(inspection) {
     typeof inspection !== "object" ||
     inspection === null ||
     Array.isArray(inspection) ||
-    JSON.stringify(Object.keys(inspection).toSorted()) !==
+    JSON.stringify(Object.keys(inspection).toSorted(compareCodeUnits)) !==
       JSON.stringify(
-        Object.keys(acceptancePackageInspectionContract).toSorted(),
+        Object.keys(acceptancePackageInspectionContract).toSorted(
+          compareCodeUnits,
+        ),
       )
   ) {
     failures.push("package-inspection-fields");
@@ -251,12 +258,12 @@ function physicalEvidenceFailures(physical, expected) {
     ...Object.keys(acceptancePhysicalContract),
     "packageExecutableSha256",
     "runner",
-  ].toSorted();
+  ].toSorted(compareCodeUnits);
   if (
     typeof physical !== "object" ||
     physical === null ||
     Array.isArray(physical) ||
-    JSON.stringify(Object.keys(physical).toSorted()) !==
+    JSON.stringify(Object.keys(physical).toSorted(compareCodeUnits)) !==
       JSON.stringify(expectedKeys)
   ) {
     failures.push("physical-fields");
@@ -290,12 +297,12 @@ export function acceptanceEvidenceFailures(evidence, expected) {
     "safeguards",
     "schemaVersion",
     "status",
-  ].toSorted();
+  ].toSorted(compareCodeUnits);
   if (
     typeof evidence !== "object" ||
     evidence === null ||
     Array.isArray(evidence) ||
-    JSON.stringify(Object.keys(evidence).toSorted()) !==
+    JSON.stringify(Object.keys(evidence).toSorted(compareCodeUnits)) !==
       JSON.stringify(expectedKeys)
   ) {
     failures.push("evidence-fields");
@@ -304,12 +311,14 @@ export function acceptanceEvidenceFailures(evidence, expected) {
     failures.push("evidence-schema");
   if (evidence?.status !== "complete") failures.push("evidence-status");
   if (evidence?.redaction !== "closed") failures.push("evidence-redaction");
-  failures.push(...identityBindingFailures(evidence?.bindings, expected));
-  failures.push(...budgetEvidenceFailures(evidence?.budgets));
-  failures.push(...journeyEvidenceFailures(evidence?.journey));
-  failures.push(...packageInspectionFailures(evidence?.packageInspection));
-  failures.push(...physicalEvidenceFailures(evidence?.physical, expected));
-  failures.push(...safeguardEvidenceFailures(evidence?.safeguards));
+  failures.push(
+    ...identityBindingFailures(evidence?.bindings, expected),
+    ...budgetEvidenceFailures(evidence?.budgets),
+    ...journeyEvidenceFailures(evidence?.journey),
+    ...packageInspectionFailures(evidence?.packageInspection),
+    ...physicalEvidenceFailures(evidence?.physical, expected),
+    ...safeguardEvidenceFailures(evidence?.safeguards),
+  );
   if (redactionMatches(JSON.stringify(evidence)).length > 0)
     failures.push("evidence-sensitive-content");
   return failures;

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { compareCodeUnits } from "./deterministic-order.mjs";
 import { representativeInspectionValid } from "./macos-accessibility-driver-harness.mjs";
 import { isAuthenticatedFoundationPackage } from "./macos-accessibility-foundation-attestation.mjs";
 
@@ -129,7 +130,8 @@ function hasExactKeys(value, keys) {
     value !== null &&
     typeof value === "object" &&
     !Array.isArray(value) &&
-    Object.keys(value).toSorted().join("\0") === keys.toSorted().join("\0")
+    Object.keys(value).toSorted(compareCodeUnits).join("\0") ===
+      keys.toSorted(compareCodeUnits).join("\0")
   );
 }
 
@@ -357,6 +359,9 @@ export function scoreOption(
     typeof option?.mechanism === "string" ? option.mechanism : "";
   const noDriver =
     mechanism === "existing-packaged-shell-and-manual-observation";
+  let permissionDiagnostics = 1;
+  if (complete)
+    permissionDiagnostics = mechanism.includes("system-events") ? 4 : 5;
   return {
     checkpointCoverage: complete ? 5 : 1,
     determinism: complete ? 5 : 1,
@@ -364,8 +369,7 @@ export function scoreOption(
       foundationPackageAuthenticated && representativePackageAuthenticated
         ? 5
         : 1,
-    permissionDiagnostics:
-      complete && mechanism.includes("system-events") ? 4 : complete ? 5 : 1,
+    permissionDiagnostics,
     dependencyCost: mechanism.includes("system-events") || noDriver ? 5 : 4,
     platformBoundary:
       noDriver ||
@@ -374,6 +378,11 @@ export function scoreOption(
         ? 5
         : 1,
   };
+}
+
+function expectedCaptureRepetitions(candidate, phase) {
+  if (candidate === "systemEvents") return 0;
+  return phase === "allowed" ? 20 : 1;
 }
 
 function weightedScore(scores) {
@@ -691,11 +700,10 @@ function captureArtifactValid(capture, expectedPhase, prepared, evidence) {
   const matrixKey = expectedPhase;
   return candidateIds.every((candidate) => {
     const rejected = candidate === "systemEvents";
-    const expectedRepetitions = rejected
-      ? 0
-      : expectedPhase === "allowed"
-        ? 20
-        : 1;
+    const expectedRepetitions = expectedCaptureRepetitions(
+      candidate,
+      expectedPhase,
+    );
     const aggregate = capture.options[candidate];
     const retainedAggregate =
       evidence.options[candidate].permissionMatrix[matrixKey];

@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import { compareCodeUnits } from "./deterministic-order.mjs";
+
 const sha256Pattern = /^[0-9a-f]{64}$/u;
 const headPattern = /^[0-9a-f]{40}$/u;
 const foundationReadinessFingerprint =
@@ -52,7 +54,8 @@ function exactKeys(value, expected) {
     value !== null &&
     typeof value === "object" &&
     !Array.isArray(value) &&
-    Object.keys(value).toSorted().join("\0") === expected.toSorted().join("\0")
+    Object.keys(value).toSorted(compareCodeUnits).join("\0") ===
+      expected.toSorted(compareCodeUnits).join("\0")
   );
 }
 
