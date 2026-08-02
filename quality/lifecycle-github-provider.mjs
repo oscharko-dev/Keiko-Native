@@ -17,6 +17,10 @@ import {
   parseRecordEnvelope,
 } from "./lifecycle-record-protocol.mjs";
 import { LIFECYCLE_LIVE_SUFFIX_LIMIT } from "./lifecycle-record-store.mjs";
+import {
+  hasExactLifecycleStaticWorkflowGraph,
+  lifecycleProtectedRunRef,
+} from "./lifecycle-record-auth.mjs";
 import { pullRequestIssueNumber } from "./pr-contract.mjs";
 import { readSingleFileZip } from "./single-file-zip.mjs";
 import {
@@ -161,15 +165,6 @@ function canonicalRunPath(path) {
   return typeof path === "string" && path.startsWith("/")
     ? path.slice(1)
     : path;
-}
-
-function recoveryReferencedWorkflow(entry) {
-  const path = canonicalRunPath(entry?.path);
-  const ref =
-    entry?.ref === "dev" || entry?.ref === "refs/heads/dev"
-      ? DEV_REF
-      : entry?.ref;
-  return { path, ref, sha: entry?.sha };
 }
 
 function referencedWorkflow(entry) {
@@ -524,26 +519,19 @@ export function createLifecycleGithubProvider({
       `/repos/${REPOSITORY}/actions/runs/${runId}`,
     );
     const referenced = (run?.referenced_workflows ?? []).map(
-      recoveryReferencedWorkflow,
+      referencedWorkflow,
     );
     if (
       run?.id !== runId ||
       run?.run_attempt !== runAttempt ||
       canonicalRunPath(run?.path) !== CALLER ||
-      run?.head_branch !== "dev" ||
-      !referenced.some(
-        (entry) =>
-          entry.path === COORDINATOR &&
-          entry.ref === DEV_REF &&
-          entry.sha === candidate.fields.protected_dev_sha,
-      ) ||
-      (workflowPath !== COORDINATOR &&
-        !referenced.some(
-          (entry) =>
-            entry.path === workflowPath &&
-            entry.ref === DEV_REF &&
-            entry.sha === candidate.fields.protected_dev_sha,
-        ))
+      lifecycleProtectedRunRef(run, candidate.fields.protected_dev_sha) !==
+        DEV_REF ||
+      !hasExactLifecycleStaticWorkflowGraph(
+        referenced,
+        REPOSITORY,
+        candidate.fields.protected_dev_sha,
+      )
     )
       throw new Error("recovery-orphan-run-invalid");
     const reachability = await providerJson(
@@ -855,7 +843,9 @@ export function createLifecycleGithubProvider({
       );
       return {
         attempt: response?.run_attempt,
+        event: response?.event,
         eventSha: response?.head_sha,
+        headBranch: response?.head_branch,
         id: response?.id,
         ref: response?.head_branch === "dev" ? DEV_REF : response?.head_branch,
         referencedWorkflows: referenced,

@@ -11,6 +11,8 @@ import {
   parseRecordEnvelope,
 } from "./lifecycle-record-protocol.mjs";
 import {
+  hasExactLifecycleStaticWorkflowGraph,
+  lifecycleProtectedRunRef,
   lifecycleAnchorArtifactName,
   lifecycleAnchorSubject,
 } from "./lifecycle-record-auth.mjs";
@@ -237,9 +239,16 @@ export async function verifyLifecycleRecordPublication({
     `/repos/${plan.repository}/actions/runs/${prepared.fields.workflow_run_id}`,
   );
   if (
+    run?.id !== prepared.fields.workflow_run_id ||
     run?.run_attempt !== prepared.fields.workflow_run_attempt ||
-    run?.head_branch !== "dev" ||
-    run?.path !== CALLER_PATH
+    lifecycleProtectedRunRef(run, prepared.fields.protected_dev_sha) !==
+      "refs/heads/dev" ||
+    run?.path !== CALLER_PATH ||
+    !hasExactLifecycleStaticWorkflowGraph(
+      run?.referenced_workflows,
+      plan.repository,
+      prepared.fields.protected_dev_sha,
+    )
   )
     throw new Error("record writer run mismatch");
   return Object.freeze({
