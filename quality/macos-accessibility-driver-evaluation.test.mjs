@@ -13,11 +13,13 @@ import {
   authenticateOwnedProcessGroup,
   capturePhysicalMatrixPhase,
   compileAndProbeEvaluation,
+  compileProcessGroupInspector,
   createEvaluationArtifacts,
   evaluationArtifactRoot,
   inspectEvaluationArtifacts,
   permissionProbeResult,
   preparePhysicalMatrix,
+  processCleanupDependencies,
   runPhysicalCandidate,
   summarizePhysicalRuns,
   terminateOwnedProcess,
@@ -467,6 +469,44 @@ test("cleanup rejects unauthenticated and reused process identities without sign
     /process-cleanup-identity-conflict/u,
   );
   assert.deepEqual(signals, []);
+});
+
+test("tracer cleanup owns a freshly compiled process inspector", async () => {
+  const root = await mkdtemp(join(tmpdir(), "keiko-process-inspector-"));
+  try {
+    const binary = await compileProcessGroupInspector(root, (command, args) => {
+      assert.equal(command, "/usr/bin/xcrun");
+      assert.deepEqual(args, [
+        "clang",
+        join(root, "ProcessGroupLauncher.c"),
+        "-o",
+        join(root, "ProcessGroupLauncher"),
+      ]);
+      return { exitCode: 0, signal: null, timedOut: false };
+    });
+    assert.equal(binary, join(root, "ProcessGroupLauncher"));
+    assert.match(
+      await readFile(join(root, "ProcessGroupLauncher.c"), "utf8"),
+      /proc_pidinfo/u,
+    );
+    assert.deepEqual(Object.keys(processCleanupDependencies(root)).toSorted(), [
+      "listProcessGroup",
+      "monotonicNow",
+      "readProcessIdentity",
+      "signalProcess",
+      "waitForTurn",
+    ]);
+    await assert.rejects(
+      compileProcessGroupInspector(root, () => ({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+      })),
+      /process-inspector-compile-failed/u,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
 });
 
 test("operator phases retain one exact identity and run 20 allowed repetitions", async () => {

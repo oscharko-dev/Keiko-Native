@@ -34,6 +34,8 @@ import {
 } from "./codex-tracer-accessibility.mjs";
 import {
   authenticateOwnedProcessGroup,
+  compileProcessGroupInspector,
+  processCleanupDependencies,
   terminateOwnedProcess,
 } from "./macos-accessibility-driver-harness.mjs";
 
@@ -434,7 +436,11 @@ function parseProcessRow(line) {
   };
 }
 
-async function crashOwnedRuntime(appPid, ownedRuntimeBinary) {
+async function crashOwnedRuntime(
+  appPid,
+  ownedRuntimeBinary,
+  cleanupDependencies,
+) {
   const processes = run("/bin/ps", ["-axo", "pid=,ppid=,pgid=,command="])
     .split("\n")
     .map(parseProcessRow)
@@ -449,7 +455,10 @@ async function crashOwnedRuntime(appPid, ownedRuntimeBinary) {
   if (processes.length !== 1)
     throw new Error("acceptance-runtime-ownership-invalid");
   const [runtime] = processes;
-  await authenticateOwnedProcessGroup({ pid: runtime.pid });
+  await authenticateOwnedProcessGroup(
+    { pid: runtime.pid },
+    cleanupDependencies,
+  );
   process.kill(-runtime.pgid, "SIGKILL");
 }
 
@@ -472,7 +481,11 @@ function launchPackagedApp(internal) {
   });
 }
 
-async function measureFirstVisibleP95(internal, adapterBinary) {
+async function measureFirstVisibleP95(
+  internal,
+  adapterBinary,
+  cleanupDependencies,
+) {
   const observations = [];
   for (
     let repetition = 0;
@@ -481,7 +494,10 @@ async function measureFirstVisibleP95(internal, adapterBinary) {
   ) {
     const startedAt = performance.now();
     const child = launchPackagedApp(internal);
-    const ownership = await authenticateOwnedProcessGroup(child);
+    const ownership = await authenticateOwnedProcessGroup(
+      child,
+      cleanupDependencies,
+    );
     try {
       const visible = await waitForTracerAccessibilityAction({
         action: "probe-start",
@@ -507,7 +523,7 @@ async function measureFirstVisibleP95(internal, adapterBinary) {
       )
         throw new Error("acceptance-first-visible-cleanup-failed");
     } finally {
-      await terminateOwnedProcess(ownership);
+      await terminateOwnedProcess(ownership, cleanupDependencies);
     }
   }
   return percentile95(observations);
@@ -601,6 +617,13 @@ export function createCodexTracerAcceptanceIo() {
       return { safeguards: structuredClone(acceptanceSafeguardContract) };
     },
     async runPhysicalJourney(prepared) {
+      const processInspectorRoot = join(
+        prepared.internal.runRoot,
+        "process-inspector",
+      );
+      await compileProcessGroupInspector(processInspectorRoot);
+      const cleanupDependencies =
+        processCleanupDependencies(processInspectorRoot);
       const adapter = await compileTracerAccessibility(
         join(prepared.internal.runRoot, "accessibility"),
       );
@@ -614,14 +637,22 @@ export function createCodexTracerAcceptanceIo() {
       const firstVisibleKeikoOverheadP95Ms = await measureFirstVisibleP95(
         prepared.internal,
         adapter.binary,
+        cleanupDependencies,
       );
       const child = launchPackagedApp(prepared.internal);
-      const ownership = await authenticateOwnedProcessGroup(child);
+      const ownership = await authenticateOwnedProcessGroup(
+        child,
+        cleanupDependencies,
+      );
       let cleaned = false;
       try {
         const journey = await runPackagedTracerJourney({
           crashRuntime: () =>
-            crashOwnedRuntime(child.pid, prepared.internal.runtimeBinary),
+            crashOwnedRuntime(
+              child.pid,
+              prepared.internal.runtimeBinary,
+              cleanupDependencies,
+            ),
           deniedWorkspaceLabel: basename(prepared.internal.deniedWorkspaceRoot),
           execute: (request) =>
             waitForTracerAccessibilityAction({
@@ -635,7 +666,7 @@ export function createCodexTracerAcceptanceIo() {
         const cleanupStartedAt = performance.now();
         if (!(await waitForProcessExit(child.pid, 5_000)))
           throw new Error("acceptance-app-quit-failed");
-        await terminateOwnedProcess(ownership);
+        await terminateOwnedProcess(ownership, cleanupDependencies);
         const cleanupMs = Math.round(performance.now() - cleanupStartedAt);
         cleaned = true;
         const physicalObservation = JSON.parse(
@@ -668,7 +699,8 @@ export function createCodexTracerAcceptanceIo() {
           safeguards: {},
         };
       } finally {
-        if (!cleaned) await terminateOwnedProcess(ownership);
+        if (!cleaned)
+          await terminateOwnedProcess(ownership, cleanupDependencies);
       }
     },
     async cleanup(prepared) {

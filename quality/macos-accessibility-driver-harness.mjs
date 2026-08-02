@@ -695,6 +695,22 @@ export async function createEvaluationArtifacts(root) {
   };
 }
 
+export async function compileProcessGroupInspector(root, compile = runClosed) {
+  await mkdir(root, { recursive: true });
+  const source = join(root, "ProcessGroupLauncher.c");
+  const binary = join(root, "ProcessGroupLauncher");
+  await writeFile(source, processGroupLauncherSource, "utf8");
+  const result = compile("/usr/bin/xcrun", ["clang", source, "-o", binary]);
+  if (
+    result?.exitCode !== 0 ||
+    result.signal !== null ||
+    result.timedOut === true
+  ) {
+    throw new Error("process-inspector-compile-failed");
+  }
+  return binary;
+}
+
 export async function inspectEvaluationArtifacts(root) {
   const packageRoot = join(root, "KeikoAccessibilityEvaluation.app");
   const packageFiles = await filesBelow(packageRoot);
@@ -938,6 +954,10 @@ function defaultCleanupDependencies(root = evaluationArtifactRoot) {
     },
     waitForTurn: waitForEventLoopTurn,
   };
+}
+
+export function processCleanupDependencies(root) {
+  return defaultCleanupDependencies(root);
 }
 
 function validProcessIdentity(identity, processGroupId) {
