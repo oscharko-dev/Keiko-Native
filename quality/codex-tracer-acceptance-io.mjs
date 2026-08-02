@@ -11,7 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, relative } from "node:path";
+import { basename, dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -557,7 +557,7 @@ export function selectOwnedStagedRuntime(
     const separator = process.command.indexOf(" ");
     const executable =
       separator === -1 ? process.command : process.command.slice(0, separator);
-    const parts = relative(runtimeWorkRoot, executable).split("/");
+    const parts = posix.relative(runtimeWorkRoot, executable).split("/");
     const ownedTurn = new RegExp(`^turn-${appPid}-[1-9][0-9]*$`, "u");
     return process.ppid === appPid &&
       process.pgid === process.pid &&
