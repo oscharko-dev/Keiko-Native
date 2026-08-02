@@ -5,6 +5,7 @@ import {
   acceptanceProcessEnvironment,
   acceptanceEnvironmentFailures,
   canonicalRuntimeRoot,
+  canonicalRuntimeResources,
   packageArtifactFailures,
   physicalObservationFailures,
   selectCommandOutput,
@@ -57,6 +58,24 @@ test("runtime work roots use their canonical macOS identity", async () => {
     await canonicalRuntimeRoot(alias, async (root) => {
       assert.equal(root, alias);
       return canonical;
+    }),
+    canonical,
+  );
+});
+
+test("runtime resources use their canonical macOS identities", async () => {
+  const aliases = {
+    binary: "/var/folders/runtime/bin/codex",
+    home: "/var/folders/runtime/home",
+  };
+  const canonical = {
+    binary: "/private/var/folders/runtime/bin/codex",
+    home: "/private/var/folders/runtime/home",
+  };
+  assert.deepEqual(
+    await canonicalRuntimeResources(aliases, async (path) => {
+      assert.ok(Object.values(aliases).includes(path));
+      return `/private${path}`;
     }),
     canonical,
   );

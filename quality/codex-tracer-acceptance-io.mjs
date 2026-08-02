@@ -328,9 +328,9 @@ function packageAcceptance() {
   run(process.execPath, [npmExecPath, "run", "--silent", "acceptance:macos"]);
 }
 
-async function inspectEnvironment() {
+async function inspectEnvironment({ binary, home }) {
   const [runtimeBytes, promptBytes] = await Promise.all([
-    readFile(runtimeBinary),
+    readFile(binary),
     readFile(
       join(
         repositoryRoot,
@@ -341,10 +341,10 @@ async function inspectEnvironment() {
   return {
     architecture: process.arch,
     authStatus: run(
-      runtimeBinary,
+      binary,
       ["-c", 'cli_auth_credentials_store="keyring"', "login", "status"],
       {
-        env: { CODEX_HOME: runtimeHome },
+        env: { CODEX_HOME: home },
         inheritEnvironment: false,
         output: "stderr",
       },
@@ -355,7 +355,7 @@ async function inspectEnvironment() {
     promptBytes: promptBytes.byteLength,
     promptSha256: sha256(promptBytes),
     runtimeSha256: sha256(runtimeBytes),
-    runtimeVersion: run(runtimeBinary, ["--version"], {
+    runtimeVersion: run(binary, ["--version"], {
       inheritEnvironment: false,
     }),
   };
@@ -434,7 +434,7 @@ function parseProcessRow(line) {
   };
 }
 
-async function crashOwnedRuntime(appPid) {
+async function crashOwnedRuntime(appPid, ownedRuntimeBinary) {
   const processes = run("/bin/ps", ["-axo", "pid=,ppid=,pgid=,command="])
     .split("\n")
     .map(parseProcessRow)
@@ -443,8 +443,8 @@ async function crashOwnedRuntime(appPid) {
       (process) =>
         process.ppid === appPid &&
         process.pgid === process.pid &&
-        (process.command === runtimeBinary ||
-          process.command.startsWith(`${runtimeBinary} `)),
+        (process.command === ownedRuntimeBinary ||
+          process.command.startsWith(`${ownedRuntimeBinary} `)),
     );
   if (processes.length !== 1)
     throw new Error("acceptance-runtime-ownership-invalid");
@@ -516,7 +516,11 @@ async function measureFirstVisibleP95(internal, adapterBinary) {
 export function createCodexTracerAcceptanceIo() {
   return {
     async preparePackage() {
-      const environment = await inspectEnvironment();
+      const runtime = await canonicalRuntimeResources({
+        binary: runtimeBinary,
+        home: runtimeHome,
+      });
+      const environment = await inspectEnvironment(runtime);
       if (acceptanceEnvironmentFailures(environment).length > 0)
         throw new Error("acceptance-environment-invalid");
       const sourceRevision = run(
@@ -585,8 +589,8 @@ export function createCodexTracerAcceptanceIo() {
           packageRoot,
           deniedWorkspaceRoot,
           runRoot,
-          runtimeBinary,
-          runtimeHome,
+          runtimeBinary: runtime.binary,
+          runtimeHome: runtime.home,
           runtimeWorkRoot,
           workspaceRoot,
         },
@@ -616,7 +620,8 @@ export function createCodexTracerAcceptanceIo() {
       let cleaned = false;
       try {
         const journey = await runPackagedTracerJourney({
-          crashRuntime: () => crashOwnedRuntime(child.pid),
+          crashRuntime: () =>
+            crashOwnedRuntime(child.pid, prepared.internal.runtimeBinary),
           deniedWorkspaceLabel: basename(prepared.internal.deniedWorkspaceRoot),
           execute: (request) =>
             waitForTracerAccessibilityAction({
@@ -693,4 +698,15 @@ export function createCodexTracerAcceptanceIo() {
 
 export async function canonicalRuntimeRoot(root, canonicalize = realpath) {
   return canonicalize(root);
+}
+
+export async function canonicalRuntimeResources(
+  { binary, home },
+  canonicalize = realpath,
+) {
+  const [canonicalBinary, canonicalHome] = await Promise.all([
+    canonicalize(binary),
+    canonicalize(home),
+  ]);
+  return { binary: canonicalBinary, home: canonicalHome };
 }
