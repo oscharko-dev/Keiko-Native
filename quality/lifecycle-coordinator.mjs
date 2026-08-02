@@ -288,51 +288,44 @@ function generationRequest({ facts, generation, attempt, records, runtime }) {
   return { body, expectedProducers, requestIdentity, requestPayloadDigest };
 }
 
-function phaseFence({
-  facts,
-  generation,
-  generationRequestRecord,
-  records,
-  runtime,
-}) {
-  const request = generationRequestRecord.parsed.fields;
-  const prior = predecessor(records);
-  const fenceSequence =
+function nextFenceSequence(records, generationIdentity, attempt) {
+  return (
     records.filter(
       (record) =>
         record.parsed.recordType === "phase-fence-claim" &&
-        record.parsed.fields.generation_identity === generation.identity &&
-        record.parsed.fields.attempt === request.attempt,
-    ).length + 1;
-  const identityFields = {
-    generation_identity: generation.identity,
-    attempt: request.attempt,
-    phase: "phase-one",
-    fence_sequence: fenceSequence,
-    owner_workflow_path: COORDINATOR,
-    owner_run_id: runtime.runId,
-    owner_run_attempt: runtime.runAttempt,
-    source_observation_identity: facts.sourceObservationIdentity,
-    predecessor_comment_id: prior.commentId,
-    predecessor_record_digest: prior.recordDigest,
-  };
-  const body = createRecordEnvelope("phase-fence-claim", {
+        record.parsed.fields.generation_identity === generationIdentity &&
+        record.parsed.fields.attempt === attempt,
+    ).length + 1
+  );
+}
+
+function inertFenceEnvelope({
+  claimOutcome,
+  exactHeadSha,
+  facts,
+  identityFields,
+  prior,
+  pullRequestNumber,
+  requestIdentity,
+  runtime,
+}) {
+  return createRecordEnvelope("phase-fence-claim", {
     ...primaryHeader("phase-fence-claim"),
     repository: REPOSITORY,
     issue_number: facts.issueNumber,
-    pull_request_number: facts.pullRequest?.number ?? null,
-    exact_head_sha: facts.pullRequest?.head ?? null,
-    generation_identity: generation.identity,
-    attempt: request.attempt,
-    request_identity: request.request_identity,
-    phase: "phase-one",
-    fence_sequence: fenceSequence,
+    pull_request_number: pullRequestNumber,
+    exact_head_sha: exactHeadSha,
+    generation_identity: identityFields.generation_identity,
+    attempt: identityFields.attempt,
+    request_identity: requestIdentity,
+    phase: identityFields.phase,
+    fence_sequence: identityFields.fence_sequence,
     fence_identity: digestAuxiliaryIdentity("fence identity", identityFields),
     owner_workflow_path: COORDINATOR,
     owner_run_id: runtime.runId,
     owner_run_attempt: runtime.runAttempt,
     source_observation_identity: facts.sourceObservationIdentity,
-    claim_outcome: "claimed",
+    claim_outcome: claimOutcome,
     recovery_scan_identity: null,
     recovery_scanned_page_count: 0,
     recovery_scanned_comment_count: 0,
@@ -345,7 +338,44 @@ function phaseFence({
     protected_dev_sha: facts.protectedDevSha,
     recorded_at: runtime.recordedAt,
   });
-  return body;
+}
+
+function phaseFence({
+  facts,
+  generation,
+  generationRequestRecord,
+  records,
+  runtime,
+}) {
+  const request = generationRequestRecord.parsed.fields;
+  const prior = predecessor(records);
+  const fenceSequence = nextFenceSequence(
+    records,
+    generation.identity,
+    request.attempt,
+  );
+  const identityFields = {
+    generation_identity: generation.identity,
+    attempt: request.attempt,
+    phase: "phase-one",
+    fence_sequence: fenceSequence,
+    owner_workflow_path: COORDINATOR,
+    owner_run_id: runtime.runId,
+    owner_run_attempt: runtime.runAttempt,
+    source_observation_identity: facts.sourceObservationIdentity,
+    predecessor_comment_id: prior.commentId,
+    predecessor_record_digest: prior.recordDigest,
+  };
+  return inertFenceEnvelope({
+    claimOutcome: "claimed",
+    exactHeadSha: facts.pullRequest?.head ?? null,
+    facts,
+    identityFields,
+    prior,
+    pullRequestNumber: facts.pullRequest?.number ?? null,
+    requestIdentity: request.request_identity,
+    runtime,
+  });
 }
 
 function supersessionFence({
@@ -356,14 +386,11 @@ function supersessionFence({
 }) {
   const request = generationRequestRecord.parsed.fields;
   const prior = predecessor(records);
-  const fenceSequence =
-    records.filter(
-      (record) =>
-        record.parsed.recordType === "phase-fence-claim" &&
-        record.parsed.fields.generation_identity ===
-          request.generation_identity &&
-        record.parsed.fields.attempt === request.attempt,
-    ).length + 1;
+  const fenceSequence = nextFenceSequence(
+    records,
+    request.generation_identity,
+    request.attempt,
+  );
   const identityFields = {
     generation_identity: request.generation_identity,
     attempt: request.attempt,
@@ -376,34 +403,15 @@ function supersessionFence({
     predecessor_comment_id: prior.commentId,
     predecessor_record_digest: prior.recordDigest,
   };
-  return createRecordEnvelope("phase-fence-claim", {
-    ...primaryHeader("phase-fence-claim"),
-    repository: REPOSITORY,
-    issue_number: facts.issueNumber,
-    pull_request_number: request.pull_request_number,
-    exact_head_sha: request.exact_head_sha,
-    generation_identity: request.generation_identity,
-    attempt: request.attempt,
-    request_identity: request.request_identity,
-    phase: "request",
-    fence_sequence: fenceSequence,
-    fence_identity: digestAuxiliaryIdentity("fence identity", identityFields),
-    owner_workflow_path: COORDINATOR,
-    owner_run_id: runtime.runId,
-    owner_run_attempt: runtime.runAttempt,
-    source_observation_identity: facts.sourceObservationIdentity,
-    claim_outcome: "superseded",
-    recovery_scan_identity: null,
-    recovery_scanned_page_count: 0,
-    recovery_scanned_comment_count: 0,
-    recovery_accumulated_suffix_identity: null,
-    recovery_provider_cursor: null,
-    recovery_scan_complete: false,
-    recovery_settlement_identity: null,
-    predecessor_comment_id: prior.commentId,
-    predecessor_record_digest: prior.recordDigest,
-    protected_dev_sha: facts.protectedDevSha,
-    recorded_at: runtime.recordedAt,
+  return inertFenceEnvelope({
+    claimOutcome: "superseded",
+    exactHeadSha: request.exact_head_sha,
+    facts,
+    identityFields,
+    prior,
+    pullRequestNumber: request.pull_request_number,
+    requestIdentity: request.request_identity,
+    runtime,
   });
 }
 
