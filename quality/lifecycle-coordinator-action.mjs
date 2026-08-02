@@ -88,13 +88,17 @@ export async function runLifecycleCoordinatorAction({
   githubOutput = process.env.GITHUB_OUTPUT,
   now = new Date(),
   provider,
+  providerFactory = createLifecycleGithubProvider,
   loadFacts,
 } = {}) {
   const route = routeFromEnvironment(environment);
+  const budget = createLifecycleProviderBudget("recovery", {
+    providerOwnsCounting: provider === undefined,
+  });
   const activeProvider =
     provider ??
-    createLifecycleGithubProvider({
-      maximumRequests: 150,
+    providerFactory({
+      budget,
     });
   const selectedRecoveryComment =
     route.recoveryCommentId === ""
@@ -102,6 +106,7 @@ export async function runLifecycleCoordinatorAction({
           issueNumber: route.issueNumber,
         })
       : Number(route.recoveryCommentId);
+  budget.selectMode(selectedRecoveryComment === null ? "normal" : "recovery");
   if (selectedRecoveryComment !== null) {
     const authorizedRecovery = await activeProvider.authenticateRecoveryComment(
       {
@@ -124,7 +129,6 @@ export async function runLifecycleCoordinatorAction({
       issueNumber: route.issueNumber,
       recoveryTargetIdentity: authorizedRecovery.recoveryTargetIdentity,
     });
-    const budget = createLifecycleProviderBudget("recovery");
     const history = await reconstructLifecycleHistory({
       budget,
       ignoredOrphan: {
@@ -244,7 +248,6 @@ export async function runLifecycleCoordinatorAction({
       plan,
     });
   }
-  const budget = createLifecycleProviderBudget("normal");
   const history = await reconstructLifecycleHistory({
     budget,
     issueNumber: route.issueNumber,

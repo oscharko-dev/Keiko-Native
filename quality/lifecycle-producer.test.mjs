@@ -172,6 +172,32 @@ test("the producer action reconstructs, evaluates, and writes the record plan", 
   assert.match(output, /^record-plan=[A-Za-z0-9_-]+$/mu);
   assert.match(output, /^result-identity=[0-9a-f]{64}$/mu);
 
+  let sharedBudget;
+  const composed = await runLifecycleProducerRecordAction({
+    environment,
+    loadFacts: async () => ({ issue, pullRequest: null }),
+    loadHistory: async ({ budget }) => {
+      assert.equal(budget, sharedBudget);
+      assert.equal(budget.mode, "normal");
+      assert.equal(budget.limit, 200);
+      budget.consume(184);
+      return { records: [request, fence], state: "authenticated" };
+    },
+    now: new Date("2026-07-29T12:03:00Z"),
+    providerFactory: ({ budget }) => {
+      sharedBudget = budget;
+      return {
+        comments: () => [readiness],
+        currentProducerRuntime: async () => {
+          budget.consume(3);
+          return { jobId: 903, workflowId: 44 };
+        },
+        requestCount: () => budget.used,
+      };
+    },
+  });
+  assert.equal(composed.budgetUsed, 187);
+
   for (const [name, value] of [
     ["GITHUB_WORKFLOW_SHA", "not-a-sha"],
     ["GITHUB_RUN_ID", "0"],
