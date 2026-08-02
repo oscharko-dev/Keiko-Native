@@ -111,6 +111,11 @@ const canonicalCommentId = (value) =>
   String(Number(value)) === value;
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
+export function validatedLifecycleWakeCommentId(value) {
+  if (!positive(value)) fail("direct-locator-invalid");
+  return value;
+}
+
 export function lifecycleWakeLocatorBytes(locator) {
   return encodeCanonical("lifecycle-wake-locator", locator);
 }
@@ -175,6 +180,7 @@ function pullRequestTargetProtectedSha(run, locator, protectedCallerSha) {
 
 export function directLifecycleWakeLocator({
   action,
+  commentId = null,
   eventName,
   issueNumber,
   protectedDevSha,
@@ -182,6 +188,11 @@ export function directLifecycleWakeLocator({
   recoveryCommentId = "",
   repository = LIFECYCLE_WAKE_REPOSITORY,
 }) {
+  const isComment = eventName === "issue_comment";
+  const isPullRequestComment = isComment && pullRequestNumber !== null;
+  const validatedCommentId = isComment
+    ? validatedLifecycleWakeCommentId(commentId)
+    : commentId;
   if (
     repository !== LIFECYCLE_WAKE_REPOSITORY ||
     !commit(protectedDevSha) ||
@@ -189,9 +200,13 @@ export function directLifecycleWakeLocator({
     !LIFECYCLE_WAKE_ACTIVITY[eventName].includes(action) ||
     !positive(issueNumber) ||
     (pullRequestNumber !== null && !positive(pullRequestNumber)) ||
-    (eventName === "issue_comment"
-      ? !canonicalCommentId(recoveryCommentId)
-      : recoveryCommentId !== "")
+    (!isComment && commentId !== null) ||
+    (isPullRequestComment
+      ? recoveryCommentId !== ""
+      : isComment
+        ? !canonicalCommentId(recoveryCommentId) ||
+          recoveryCommentId !== String(validatedCommentId)
+        : recoveryCommentId !== "")
   )
     fail("direct-locator-invalid");
   return Object.freeze({
