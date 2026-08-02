@@ -141,3 +141,60 @@ test("treats a direct non-recovery comment as a sanitized no-op", async () => {
   assert.equal(result.plan.kind, "noop");
   assert.match(result.plan.observation, /^[0-9a-f]{64}$/u);
 });
+
+test("counts preselection and widens to normal without resetting the shared budget", async () => {
+  let sharedBudget;
+  const providerFactory = ({ budget }) => {
+    sharedBudget = budget;
+    return {
+      ...emptyProvider(),
+      discoverRecoveryComment: async () => {
+        assert.equal(budget.mode, "recovery");
+        budget.consume(14);
+        return null;
+      },
+      listCommentsPage: async () => {
+        budget.consume();
+        return { hasMore: false, items: [], nextCursor: null };
+      },
+      listAnchorArtifacts: async () => {
+        budget.consume();
+        return { complete: true, items: [] };
+      },
+      requestCount: () => budget.used,
+    };
+  };
+  const result = await runLifecycleCoordinatorAction({
+    environment,
+    loadFacts: async () => ({ issue, pullRequest: null }),
+    providerFactory,
+  });
+  assert.equal(sharedBudget.mode, "normal");
+  assert.equal(sharedBudget.limit, 200);
+  assert.equal(result.budgetUsed, 18);
+});
+
+test("keeps direct recovery preselection inside the unchanged 150 ceiling", async () => {
+  let sharedBudget;
+  const result = await runLifecycleCoordinatorAction({
+    environment: {
+      ...environment,
+      KEIKO_ROUTED_RECOVERY_COMMENT_ID: "17",
+    },
+    providerFactory: ({ budget }) => {
+      sharedBudget = budget;
+      return {
+        ...emptyProvider(),
+        authenticateRecoveryComment: async () => {
+          budget.consume(6);
+          return null;
+        },
+        requestCount: () => budget.used,
+      };
+    },
+  });
+  assert.equal(result.plan.kind, "noop");
+  assert.equal(sharedBudget.mode, "recovery");
+  assert.equal(sharedBudget.limit, 150);
+  assert.equal(result.budgetUsed, 6);
+});
