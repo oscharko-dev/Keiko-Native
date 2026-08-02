@@ -11,7 +11,7 @@ import {
 
 test("enforces separate normal and recovery hard ceilings", () => {
   for (const [mode, limit] of [
-    ["normal", 136],
+    ["normal", 200],
     ["recovery", 150],
   ]) {
     const budget = createLifecycleProviderBudget(mode);
@@ -30,6 +30,30 @@ test("rejects invalid budget inputs", () => {
   for (const count of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
     assert.throws(() => budget.consume(count), /positive safe integer/iu);
   }
+});
+
+test("selects a final mode without resetting already consumed requests", () => {
+  const budget = createLifecycleProviderBudget("recovery");
+  budget.consume(14);
+  assert.equal(budget.selectMode("normal"), 200);
+  assert.equal(budget.mode, "normal");
+  assert.equal(budget.used, 14);
+  assert.equal(budget.remaining, 186);
+  assert.throws(() => budget.selectMode("recovery"), /already selected/iu);
+  assert.throws(
+    () => createLifecycleProviderBudget().selectMode("other"),
+    /unknown/iu,
+  );
+});
+
+test("does not double-count provider-owned outbound requests", async () => {
+  const budget = createLifecycleProviderBudget("normal", {
+    providerOwnsCounting: true,
+  });
+  await callLifecycleProvider(budget, async () => 42);
+  assert.equal(budget.used, 0);
+  budget.consume();
+  assert.equal(budget.used, 1);
 });
 
 test("classifies provider failures without preserving provider payloads", () => {

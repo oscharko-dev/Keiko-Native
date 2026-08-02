@@ -324,19 +324,31 @@ export async function verifyLifecycleAttestationBundle({
 }
 
 export function createLifecycleGithubProvider({
+  budget,
   binary = binaryRequest,
   graphql = graphqlRequest,
   json = request,
-  maximumRequests = 136,
+  maximumRequests = 200,
   verifyBundle = verifyLifecycleAttestationBundle,
 } = {}) {
+  if (
+    budget !== undefined &&
+    (typeof budget.consume !== "function" ||
+      !Number.isSafeInteger(budget.limit) ||
+      budget.limit <= 0)
+  )
+    throw new TypeError("provider request budget is invalid");
   if (!Number.isSafeInteger(maximumRequests) || maximumRequests <= 0)
     throw new TypeError("provider request ceiling is invalid");
   let requestCount = 0;
   const counted = async (operation) => {
     requestCount += 1;
-    if (requestCount > maximumRequests)
-      throw new Error("provider-request-ceiling");
+    if (budget === undefined) {
+      if (requestCount > maximumRequests)
+        throw new Error("provider-request-ceiling");
+    } else {
+      budget.consume();
+    }
     return operation();
   };
   const providerJson = (path, options) => counted(() => json(path, options));
@@ -635,6 +647,7 @@ export function createLifecycleGithubProvider({
     );
     jobPaths.set(job.id, {
       protectedDevSha: fields.protected_dev_sha,
+      runId: fields.workflow_run_id,
       workflowPath: fields.workflow_path,
     });
     runProtectedShas.set(fields.workflow_run_id, fields.protected_dev_sha);
@@ -855,15 +868,12 @@ export function createLifecycleGithubProvider({
     },
 
     async getWorkflowJob({ runId, jobId }) {
-      const response = await providerJson(
-        `/repos/${REPOSITORY}/actions/jobs/${jobId}`,
-      );
       const cached = jobPaths.get(jobId);
-      if (cached === undefined)
+      if (cached === undefined || cached.runId !== runId)
         throw new Error("record-job-workflow-path-missing");
       return {
-        id: response?.id,
-        runId: response?.run_id ?? runId,
+        id: jobId,
+        runId,
         workflowPath: cached.workflowPath,
         workflowSha: cached.protectedDevSha,
       };

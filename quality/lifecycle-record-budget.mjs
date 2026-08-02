@@ -1,5 +1,5 @@
 export const LIFECYCLE_PROVIDER_BUDGETS = Object.freeze({
-  normal: 136,
+  normal: 200,
   recovery: 150,
 });
 
@@ -25,26 +25,48 @@ export function classifyProviderFailure(error) {
   return "provider-unavailable";
 }
 
-export function createLifecycleProviderBudget(mode = "normal") {
-  const limit = LIFECYCLE_PROVIDER_BUDGETS[mode];
-  if (limit === undefined) throw new TypeError("unknown lifecycle budget mode");
+export function createLifecycleProviderBudget(
+  mode = "normal",
+  { providerOwnsCounting = false } = {},
+) {
+  if (LIFECYCLE_PROVIDER_BUDGETS[mode] === undefined)
+    throw new TypeError("unknown lifecycle budget mode");
+  let selectedMode = mode;
+  let modeSelected = false;
   let used = 0;
   return Object.freeze({
-    mode,
-    limit,
+    get mode() {
+      return selectedMode;
+    },
+    get limit() {
+      return LIFECYCLE_PROVIDER_BUDGETS[selectedMode];
+    },
+    providerOwnsCounting,
     get used() {
       return used;
     },
     get remaining() {
-      return limit - used;
+      return LIFECYCLE_PROVIDER_BUDGETS[selectedMode] - used;
     },
     consume(count = 1) {
       if (!Number.isSafeInteger(count) || count <= 0)
         throw new TypeError("request count must be a positive safe integer");
-      if (used + count > limit)
+      if (used + count > LIFECYCLE_PROVIDER_BUDGETS[selectedMode])
         throw new LifecycleProviderError("provider-rate-limited");
       used += count;
       return used;
+    },
+    selectMode(nextMode) {
+      const nextLimit = LIFECYCLE_PROVIDER_BUDGETS[nextMode];
+      if (nextLimit === undefined)
+        throw new TypeError("unknown lifecycle budget mode");
+      if (modeSelected)
+        throw new TypeError("lifecycle budget mode is already selected");
+      if (used > nextLimit)
+        throw new LifecycleProviderError("provider-rate-limited");
+      selectedMode = nextMode;
+      modeSelected = true;
+      return nextLimit;
     },
   });
 }
@@ -71,7 +93,7 @@ export function lifecycleSerializationContract(issueNumber) {
 }
 
 export async function callLifecycleProvider(budget, operation) {
-  budget.consume();
+  if (budget.providerOwnsCounting !== true) budget.consume();
   try {
     return await operation();
   } catch (error) {

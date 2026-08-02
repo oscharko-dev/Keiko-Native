@@ -9,6 +9,10 @@ import {
 } from "./lifecycle-github-provider.mjs";
 import { lifecycleProtectedRunRef } from "./lifecycle-record-auth.mjs";
 import {
+  LifecycleProviderError,
+  createLifecycleProviderBudget,
+} from "./lifecycle-record-budget.mjs";
+import {
   createRecordEnvelope,
   digestAuxiliaryIdentity,
   encodeAuxiliaryPreimage,
@@ -108,6 +112,37 @@ function anchorInventoryFixture(anchorBytes) {
   });
   return { issueNumber, name, provider };
 }
+
+test("binds the real outbound route to the shared budget and denies request 201", async () => {
+  const budget = createLifecycleProviderBudget("normal", {
+    providerOwnsCounting: true,
+  });
+  let outbound = 0;
+  const provider = createLifecycleGithubProvider({
+    budget,
+    json: async () => {
+      outbound += 1;
+      return [];
+    },
+  });
+  for (let requestNumber = 1; requestNumber <= 200; requestNumber += 1) {
+    const page = await provider.listCommentsPage({
+      cursor: null,
+      issueNumber: 51,
+    });
+    assert.deepEqual(page.items, []);
+  }
+  assert.equal(budget.used, 200);
+  assert.equal(provider.requestCount(), 200);
+  assert.equal(outbound, 200);
+  await assert.rejects(
+    provider.listCommentsPage({ cursor: null, issueNumber: 51 }),
+    (error) =>
+      error instanceof LifecycleProviderError &&
+      error.code === "provider-rate-limited",
+  );
+  assert.equal(outbound, 200);
+});
 
 const identityFields = {
   repository: "oscharko-dev/Keiko-Native",
@@ -271,7 +306,10 @@ test("retains referenced-workflow tuples without repair or projection", async ()
   });
   assert.deepEqual(run.referencedWorkflows, referencedWorkflows);
   assert.equal(job.id, 801);
-  assert.equal(provider.requestCount(), 5);
+  // Artifact inventory/download, one exact writer-job inventory, and one run
+  // read are the only outbound requests. getWorkflowJob reuses the exact job
+  // selected from that inventory instead of issuing a redundant lookup.
+  assert.equal(provider.requestCount(), 4);
 });
 
 test("retains pull_request_target event identity without trusting its source branch", async () => {

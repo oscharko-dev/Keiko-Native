@@ -7,6 +7,8 @@ import {
   readStableLifecycleSnapshot,
   reconstructLifecycleHistory,
 } from "./lifecycle-record-store.mjs";
+import { createLifecycleProviderBudget } from "./lifecycle-record-budget.mjs";
+import { buildCompactedPrefix } from "./lifecycle-record-checkpoint.mjs";
 
 const sha = (value) => String(value).padStart(64, "0");
 
@@ -157,6 +159,103 @@ test("reconstructs a unique authenticated predecessor chain", async () => {
     commentId: 3,
     recordDigest: sha(3),
   });
+});
+
+async function reconstructProductionRequestShape(
+  liveRecordCount,
+  { checkpoint = false } = {},
+) {
+  const recordCount = liveRecordCount + (checkpoint ? 2 : 0);
+  const records = [];
+  for (let id = recordCount; id >= 1; id -= 1) {
+    records.push(
+      record(
+        id,
+        id === 1 ? null : id - 1,
+        id === 1 ? "generation-request" : "phase-fence-claim",
+      ),
+    );
+  }
+  if (checkpoint) {
+    const checkpointRecord = records.find(({ comment }) => comment.id === 2);
+    const compactedMembers = [{ comment_id: 1, record_digest: sha(1) }];
+    const compacted = buildCompactedPrefix({
+      repository: "oscharko-dev/Keiko-Native",
+      issueNumber: 51,
+      checkpointSequence: 1,
+      priorCheckpointIdentity: null,
+      members: compactedMembers,
+    });
+    checkpointRecord.parsed = {
+      ...checkpointRecord.parsed,
+      recordType: "transition-read-back",
+      fields: {
+        ...checkpointRecord.parsed.fields,
+        record_type: "transition-read-back",
+        checkpoint_sequence: 1,
+        prior_checkpoint_comment_id: null,
+        prior_checkpoint_record_digest: null,
+        compacted_prefix_identity: compacted.identity,
+      },
+    };
+  }
+  const budget = createLifecycleProviderBudget("normal", {
+    providerOwnsCounting: true,
+  });
+  const provider = providerFor(records);
+  if (checkpoint) {
+    provider.getCheckpointEvidence = async () => ({
+      priorCheckpoint: null,
+      compactedMembers: [{ comment_id: 1, record_digest: sha(1) }],
+    });
+  }
+  const listCommentsPage = provider.listCommentsPage.bind(provider);
+  provider.listCommentsPage = async (input) => {
+    budget.consume();
+    return listCommentsPage(input);
+  };
+  const listAnchorArtifacts = provider.listAnchorArtifacts.bind(provider);
+  let inventoryRead = 0;
+  provider.listAnchorArtifacts = async (input) => {
+    // Both stable passes reload the inventory. Immutable anchor bytes are
+    // downloaded once and reused by the real provider on the second pass.
+    budget.consume(1 + (inventoryRead === 0 ? recordCount : 0));
+    inventoryRead += 1;
+    return listAnchorArtifacts(input);
+  };
+  const result = await reconstructLifecycleHistory({
+    budget,
+    provider,
+    repository: "oscharko-dev/Keiko-Native",
+    issueNumber: 51,
+    parseEnvelope: parser(records),
+    verifyTuple: async ({ commentId }) => {
+      // Two stable tuple passes, each with comment, run, job, reachability,
+      // and attestation inventory reads. Cached anchor bytes and bundle
+      // verification do not issue provider requests.
+      budget.consume(10);
+      return verifier(records)({ commentId });
+    },
+  });
+  return { budget, result };
+}
+
+test("authenticates the production nine-record history within actual request budget", async () => {
+  const { budget, result } = await reconstructProductionRequestShape(9);
+  assert.equal(result.state, "authenticated");
+  assert.equal(budget.used, 103);
+});
+
+test("authenticates one checkpoint plus all 15 live records within normal 200", async () => {
+  const { budget, result } = await reconstructProductionRequestShape(
+    LIFECYCLE_LIVE_SUFFIX_LIMIT,
+    { checkpoint: true },
+  );
+  assert.equal(result.state, "authenticated");
+  assert.equal(result.records.length, LIFECYCLE_LIVE_SUFFIX_LIMIT + 1);
+  assert.equal(result.checkpoint.sequence, 1);
+  assert.equal(budget.used, 181);
+  assert.equal(budget.remaining, 19);
 });
 
 test("detects unanchored comments and unreferenced suffix deletion", async () => {
