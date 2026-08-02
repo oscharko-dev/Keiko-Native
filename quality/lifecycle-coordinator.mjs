@@ -79,13 +79,24 @@ function issueKind(issue) {
 
 function acceptedReadiness(issue, comments) {
   const record = readinessRecordFromComments(comments);
+  const comment = comments.findLast(
+    (candidate) => candidate?.id === record?.commentId,
+  );
+  const evaluatedAt =
+    typeof comment?.body === "string"
+      ? /^- Evaluated at: `([^`]+)`$/mu.exec(comment.body)?.[1]
+      : undefined;
   const currentFingerprint = semanticIssueFingerprint(
     issue?.body ?? "",
     issue?.title ?? "",
   );
   return record?.status === "accepted" &&
-    record.fingerprint === currentFingerprint
-    ? record
+    record.fingerprint === currentFingerprint &&
+    evaluatedAt !== undefined
+    ? Object.freeze({
+        ...record,
+        evaluatedAt: timestamp(evaluatedAt, "readiness evaluated at"),
+      })
     : undefined;
 }
 
@@ -523,10 +534,11 @@ export function lifecycleCoordinatorFacts({
 }) {
   positive(issue?.number, "issue number");
   positive(issue?.id, "issue ID");
-  const updatedAt = timestamp(issue?.updated_at, "issue updated_at");
+  const providerUpdatedAt = timestamp(issue?.updated_at, "issue updated_at");
   const target = exactTarget(issue);
   const pr = pullRequestFacts(pullRequest, target);
   const readiness = acceptedReadiness(issue, comments);
+  const updatedAt = readiness?.evaluatedAt ?? providerUpdatedAt;
   const observedState = soleLifecycle(issue);
   const readinessIdentity =
     readiness === undefined

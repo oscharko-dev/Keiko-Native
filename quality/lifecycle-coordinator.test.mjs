@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
+import { semanticIssueFingerprint } from "./issue-contract.mjs";
+import { readinessComment } from "./issue-readiness-action.mjs";
 import {
   lifecycleCoordinatorFacts,
+  lifecycleCoordinatorGeneration,
   planInertLifecycleCoordinatorStep,
   planInertLifecycleRecoverySettlement,
 } from "./lifecycle-coordinator.mjs";
@@ -79,6 +82,26 @@ function producerBody(request, fence) {
     predecessor_record_digest: fence.parsed.recordDigest,
     recorded_at: "2026-07-29T12:02:00Z",
   });
+}
+
+function acceptedReadiness(now = "2026-07-29T11:55:00Z") {
+  return {
+    body: readinessComment({
+      actor: "Niko4417",
+      decision: { outcome: "accept", reasons: [] },
+      now,
+      validation: {
+        fingerprint: semanticIssueFingerprint(issue.body, issue.title),
+        version: "v1",
+      },
+    }),
+    id: 77,
+    user: {
+      id: 41898282,
+      login: "github-actions[bot]",
+      type: "Bot",
+    },
+  };
 }
 
 test("advances one authenticated inert record obligation per wake", () => {
@@ -201,6 +224,49 @@ test("changes in authenticated provider facts begin a new generation", () => {
   assert.equal(
     changedRequest.parsed.fields.predecessor_comment_id,
     transition.comment.id,
+  );
+});
+
+test("self-authored issue timestamps do not change the active generation", () => {
+  const readiness = acceptedReadiness();
+  const initialFacts = lifecycleCoordinatorFacts({
+    comments: [readiness],
+    issue: { ...issue, updated_at: "2026-07-29T11:55:00Z" },
+    protectedDevSha: commit,
+  });
+  const requestStep = planInertLifecycleCoordinatorStep({
+    facts: initialFacts,
+    records: [],
+    runtime,
+  });
+  const requestPlan = JSON.parse(
+    Buffer.from(requestStep.recordPlan, "base64url").toString("utf8"),
+  );
+  const request = record(requestPlan.recordBody, 100);
+  const selfUpdatedFacts = lifecycleCoordinatorFacts({
+    comments: [readiness],
+    issue: { ...issue, updated_at: "2026-07-29T12:00:01Z" },
+    protectedDevSha: commit,
+  });
+
+  assert.equal(
+    lifecycleCoordinatorGeneration(selfUpdatedFacts).identity,
+    lifecycleCoordinatorGeneration(initialFacts).identity,
+  );
+  const nextStep = planInertLifecycleCoordinatorStep({
+    facts: selfUpdatedFacts,
+    records: [request],
+    runtime: { ...runtime, runId: 901 },
+  });
+  const nextPlan = JSON.parse(
+    Buffer.from(nextStep.recordPlan, "base64url").toString("utf8"),
+  );
+  const next = record(nextPlan.recordBody, 101);
+  assert.equal(next.parsed.recordType, "phase-fence-claim");
+  assert.equal(next.parsed.fields.claim_outcome, "claimed");
+  assert.equal(
+    next.parsed.fields.generation_identity,
+    request.parsed.fields.generation_identity,
   );
 });
 
