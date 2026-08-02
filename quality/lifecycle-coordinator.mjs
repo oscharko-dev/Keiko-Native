@@ -79,13 +79,24 @@ function issueKind(issue) {
 
 function acceptedReadiness(issue, comments) {
   const record = readinessRecordFromComments(comments);
+  const comment = comments.findLast(
+    (candidate) => candidate?.id === record?.commentId,
+  );
+  const evaluatedAt =
+    typeof comment?.body === "string"
+      ? /^- Evaluated at: `([^`]+)`$/mu.exec(comment.body)?.[1]
+      : undefined;
   const currentFingerprint = semanticIssueFingerprint(
     issue?.body ?? "",
     issue?.title ?? "",
   );
   return record?.status === "accepted" &&
-    record.fingerprint === currentFingerprint
-    ? record
+    record.fingerprint === currentFingerprint &&
+    evaluatedAt !== undefined
+    ? Object.freeze({
+        ...record,
+        evaluatedAt: timestamp(evaluatedAt, "readiness evaluated at"),
+      })
     : undefined;
 }
 
@@ -288,51 +299,44 @@ function generationRequest({ facts, generation, attempt, records, runtime }) {
   return { body, expectedProducers, requestIdentity, requestPayloadDigest };
 }
 
-function phaseFence({
-  facts,
-  generation,
-  generationRequestRecord,
-  records,
-  runtime,
-}) {
-  const request = generationRequestRecord.parsed.fields;
-  const prior = predecessor(records);
-  const fenceSequence =
+function nextFenceSequence(records, generationIdentity, attempt) {
+  return (
     records.filter(
       (record) =>
         record.parsed.recordType === "phase-fence-claim" &&
-        record.parsed.fields.generation_identity === generation.identity &&
-        record.parsed.fields.attempt === request.attempt,
-    ).length + 1;
-  const identityFields = {
-    generation_identity: generation.identity,
-    attempt: request.attempt,
-    phase: "phase-one",
-    fence_sequence: fenceSequence,
-    owner_workflow_path: COORDINATOR,
-    owner_run_id: runtime.runId,
-    owner_run_attempt: runtime.runAttempt,
-    source_observation_identity: facts.sourceObservationIdentity,
-    predecessor_comment_id: prior.commentId,
-    predecessor_record_digest: prior.recordDigest,
-  };
-  const body = createRecordEnvelope("phase-fence-claim", {
+        record.parsed.fields.generation_identity === generationIdentity &&
+        record.parsed.fields.attempt === attempt,
+    ).length + 1
+  );
+}
+
+function inertFenceEnvelope({
+  claimOutcome,
+  exactHeadSha,
+  facts,
+  identityFields,
+  prior,
+  pullRequestNumber,
+  requestIdentity,
+  runtime,
+}) {
+  return createRecordEnvelope("phase-fence-claim", {
     ...primaryHeader("phase-fence-claim"),
     repository: REPOSITORY,
     issue_number: facts.issueNumber,
-    pull_request_number: facts.pullRequest?.number ?? null,
-    exact_head_sha: facts.pullRequest?.head ?? null,
-    generation_identity: generation.identity,
-    attempt: request.attempt,
-    request_identity: request.request_identity,
-    phase: "phase-one",
-    fence_sequence: fenceSequence,
+    pull_request_number: pullRequestNumber,
+    exact_head_sha: exactHeadSha,
+    generation_identity: identityFields.generation_identity,
+    attempt: identityFields.attempt,
+    request_identity: requestIdentity,
+    phase: identityFields.phase,
+    fence_sequence: identityFields.fence_sequence,
     fence_identity: digestAuxiliaryIdentity("fence identity", identityFields),
     owner_workflow_path: COORDINATOR,
     owner_run_id: runtime.runId,
     owner_run_attempt: runtime.runAttempt,
     source_observation_identity: facts.sourceObservationIdentity,
-    claim_outcome: "claimed",
+    claim_outcome: claimOutcome,
     recovery_scan_identity: null,
     recovery_scanned_page_count: 0,
     recovery_scanned_comment_count: 0,
@@ -345,7 +349,81 @@ function phaseFence({
     protected_dev_sha: facts.protectedDevSha,
     recorded_at: runtime.recordedAt,
   });
-  return body;
+}
+
+function phaseFence({
+  facts,
+  generation,
+  generationRequestRecord,
+  records,
+  runtime,
+}) {
+  const request = generationRequestRecord.parsed.fields;
+  const prior = predecessor(records);
+  const fenceSequence = nextFenceSequence(
+    records,
+    generation.identity,
+    request.attempt,
+  );
+  const identityFields = {
+    generation_identity: generation.identity,
+    attempt: request.attempt,
+    phase: "phase-one",
+    fence_sequence: fenceSequence,
+    owner_workflow_path: COORDINATOR,
+    owner_run_id: runtime.runId,
+    owner_run_attempt: runtime.runAttempt,
+    source_observation_identity: facts.sourceObservationIdentity,
+    predecessor_comment_id: prior.commentId,
+    predecessor_record_digest: prior.recordDigest,
+  };
+  return inertFenceEnvelope({
+    claimOutcome: "claimed",
+    exactHeadSha: facts.pullRequest?.head ?? null,
+    facts,
+    identityFields,
+    prior,
+    pullRequestNumber: facts.pullRequest?.number ?? null,
+    requestIdentity: request.request_identity,
+    runtime,
+  });
+}
+
+function supersessionFence({
+  facts,
+  generationRequestRecord,
+  records,
+  runtime,
+}) {
+  const request = generationRequestRecord.parsed.fields;
+  const prior = predecessor(records);
+  const fenceSequence = nextFenceSequence(
+    records,
+    request.generation_identity,
+    request.attempt,
+  );
+  const identityFields = {
+    generation_identity: request.generation_identity,
+    attempt: request.attempt,
+    phase: "request",
+    fence_sequence: fenceSequence,
+    owner_workflow_path: COORDINATOR,
+    owner_run_id: runtime.runId,
+    owner_run_attempt: runtime.runAttempt,
+    source_observation_identity: facts.sourceObservationIdentity,
+    predecessor_comment_id: prior.commentId,
+    predecessor_record_digest: prior.recordDigest,
+  };
+  return inertFenceEnvelope({
+    claimOutcome: "superseded",
+    exactHeadSha: request.exact_head_sha,
+    facts,
+    identityFields,
+    prior,
+    pullRequestNumber: request.pull_request_number,
+    requestIdentity: request.request_identity,
+    runtime,
+  });
 }
 
 function priorCheckpoint(records) {
@@ -456,10 +534,11 @@ export function lifecycleCoordinatorFacts({
 }) {
   positive(issue?.number, "issue number");
   positive(issue?.id, "issue ID");
-  const updatedAt = timestamp(issue?.updated_at, "issue updated_at");
+  const providerUpdatedAt = timestamp(issue?.updated_at, "issue updated_at");
   const target = exactTarget(issue);
   const pr = pullRequestFacts(pullRequest, target);
   const readiness = acceptedReadiness(issue, comments);
+  const updatedAt = readiness?.evaluatedAt ?? providerUpdatedAt;
   const observedState = soleLifecycle(issue);
   const readinessIdentity =
     readiness === undefined
@@ -503,8 +582,9 @@ function activeRecords(records) {
     (record) =>
       record.parsed.recordType === "transition-read-back" ||
       (record.parsed.recordType === "phase-fence-claim" &&
-        record.parsed.fields.phase === "recovery" &&
-        record.parsed.fields.claim_outcome === "settled"),
+        ((record.parsed.fields.phase === "recovery" &&
+          record.parsed.fields.claim_outcome === "settled") ||
+          record.parsed.fields.claim_outcome === "superseded")),
   );
   return records.slice(boundaryIndex + 1);
 }
@@ -667,12 +747,22 @@ export function planInertLifecycleCoordinatorStep({
     return recordOutput(facts, request.body, "coordinator");
   }
   const generationRequestRecord = active[0];
-  if (
-    generationRequestRecord.parsed.recordType !== "generation-request" ||
-    generationRequestRecord.parsed.fields.generation_identity !==
-      generation.identity
-  )
+  if (generationRequestRecord.parsed.recordType !== "generation-request")
     throw new TypeError("active generation does not match current facts");
+  if (
+    generationRequestRecord.parsed.fields.generation_identity !==
+    generation.identity
+  )
+    return recordOutput(
+      facts,
+      supersessionFence({
+        facts,
+        generationRequestRecord,
+        records,
+        runtime: normalized,
+      }),
+      "coordinator",
+    );
   const phaseFenceRecord = active.find(
     (record) => record.parsed.recordType === "phase-fence-claim",
   );
