@@ -261,6 +261,31 @@ export function inspectCurrentRuntimeInputs(
   });
 }
 
+function inspectEvaluationChanges(rawDiff, run, repositoryRoot) {
+  const fields = rawDiff.toString("utf8").split("\0");
+  if (fields.at(-1) !== "") return null;
+  fields.pop();
+  if (fields.length % 2 !== 0) return null;
+  const changes = [];
+  for (let index = 0; index < fields.length; index += 2) {
+    const header = fields[index].match(
+      /^:(\d{6}) (\d{6}) ([0-9a-f]{40}) ([0-9a-f]{40}) ([A-Z])$/u,
+    );
+    const path = fields[index + 1];
+    if (header === null || path.length === 0) return null;
+    const object = run(["cat-file", "-t", header[4]], repositoryRoot);
+    if (gitCommandFailed(object)) return null;
+    changes.push({
+      blobType: object.stdout.toString("utf8").trim(),
+      newMode: header[2],
+      oldMode: header[1],
+      path,
+      status: header[5],
+    });
+  }
+  return changes;
+}
+
 export function authenticateCurrentEvaluationCheckout(
   evaluationHead,
   {
@@ -319,31 +344,9 @@ export function authenticateCurrentEvaluationCheckout(
   );
   if (gitCommandFailed(diff))
     return checkoutInvalid("evaluation-checkout-unavailable");
-  const fields = diff.stdout.toString("utf8").split("\0");
-  if (fields.at(-1) !== "")
+  const changes = inspectEvaluationChanges(diff.stdout, run, repositoryRoot);
+  if (changes === null)
     return checkoutInvalid("evaluation-checkout-diff-invalid");
-  fields.pop();
-  if (fields.length % 2 !== 0)
-    return checkoutInvalid("evaluation-checkout-diff-invalid");
-  const changes = [];
-  for (let index = 0; index < fields.length; index += 2) {
-    const header = fields[index].match(
-      /^:(\d{6}) (\d{6}) ([0-9a-f]{40}) ([0-9a-f]{40}) ([A-Z])$/u,
-    );
-    const path = fields[index + 1];
-    if (header === null || path.length === 0)
-      return checkoutInvalid("evaluation-checkout-diff-invalid");
-    const object = run(["cat-file", "-t", header[4]], repositoryRoot);
-    if (gitCommandFailed(object))
-      return checkoutInvalid("evaluation-checkout-diff-invalid");
-    changes.push({
-      blobType: object.stdout.toString("utf8").trim(),
-      newMode: header[2],
-      oldMode: header[1],
-      path,
-      status: header[5],
-    });
-  }
   return authenticateEvaluationCheckout({
     ancestor: true,
     changes,
