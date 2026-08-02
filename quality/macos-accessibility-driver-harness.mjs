@@ -1230,7 +1230,7 @@ export async function runPhysicalCandidate({
     status: "failed",
   };
   let checkpointPasses = 0;
-  let cleanupOwnedDescendants = 1;
+  let cleanupOwnedDescendants;
   try {
     for (const [index, checkpoint] of checkpointIds.entries()) {
       let attemptDurationMs = 0;

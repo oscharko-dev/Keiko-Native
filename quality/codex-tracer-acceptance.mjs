@@ -355,7 +355,6 @@ export async function runCodexTracerAcceptance({ args, io }) {
   } catch {
     if (prepared !== undefined && !cleanupAttempted) {
       try {
-        cleanupAttempted = true;
         await io.cleanup(prepared);
       } catch {
         return closedRejection("acceptance-check-failed");
