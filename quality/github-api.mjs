@@ -65,6 +65,13 @@ const routes = [
   ),
   route(
     "GET",
+    String.raw`/commits/${SHA}/status\?per_page=100&page=${INTEGER}`,
+    ["sha", "integer"],
+    ([owner, repository, sha, page]) =>
+      `/repos/${owner}/${repository}/commits/${sha}/status?per_page=100&page=${page}`,
+  ),
+  route(
+    "GET",
     `/collaborators/${ENCODED_SEGMENT}/permission`,
     ["actor"],
     ([owner, repository, actor]) =>

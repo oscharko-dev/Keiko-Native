@@ -1,0 +1,41 @@
+name: Migration inventory dry run
+
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - ".github/workflows/migration-dry-run.yml"
+      - "docs/qa/migration-dry-run.md"
+      - "quality/github-api.mjs"
+      - "quality/migration-*.mjs"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      statuses: read
+    steps:
+      - name: Check out the exact candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24.18.0"
+          package-manager-cache: false
+      - name: Verify exact npm 11.16.0
+        run: node quality/check-toolchain.mjs
+      - run: npm ci --ignore-scripts
+      - name: Run the read-only stable inventory
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          KEIKO_MIGRATION_GENERATION: "1"
+        run: node quality/migration-dry-run.mjs
