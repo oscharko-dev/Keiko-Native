@@ -119,6 +119,15 @@ function typeLabels(labels) {
     : [];
 }
 
+function issueContractFailure(types, validation, version, target) {
+  if (types.length !== 1) return "issue-type-ambiguous";
+  if (validation.failures.length !== 0) return "issue-contract-invalid";
+  if (!positiveInteger(version)) return "issue-version-invalid";
+  if (typeof target !== "string" || target === "")
+    return "issue-target-invalid";
+  return null;
+}
+
 function prepareIssue(item) {
   if (
     !record(item) ||
@@ -141,21 +150,17 @@ function prepareIssue(item) {
     labels: types,
     title: item.title,
   });
-  const versionMatch = /^v([1-9][0-9]*)$/u.exec(validation.version ?? "");
+  const versionMatch = /^v([1-9]\d*)$/u.exec(validation.version ?? "");
   const version = versionMatch === null ? null : Number(versionMatch[1]);
   const type = validation.kind ?? declaredType ?? null;
   const target =
     type === null ? null : (issueDeliveryTarget(item.body, type) ?? null);
-  const contractFailure =
-    types.length !== 1
-      ? "issue-type-ambiguous"
-      : validation.failures.length !== 0
-        ? "issue-contract-invalid"
-        : !positiveInteger(version)
-          ? "issue-version-invalid"
-          : typeof target !== "string" || target === ""
-            ? "issue-target-invalid"
-            : null;
+  const contractFailure = issueContractFailure(
+    types,
+    validation,
+    version,
+    target,
+  );
   return {
     fact: {
       assignees: [...item.assignees].sort(compareCodeUnits),
@@ -229,7 +234,7 @@ function prepareSnapshot(input) {
   }
   return {
     contractBindings,
-    issueFacts: issueFacts.sort(compareNumber),
+    issueFacts: issueFacts.toSorted(compareNumber),
     labels: labels.nodes.toSorted(compareCodeUnits),
     ok: true,
     pullRequests: pullRequests.nodes,
@@ -264,6 +269,74 @@ function readinessFor(input, issue, comments) {
     : { current: false, reason: result.reason };
 }
 
+function validPullRequestCore(item, associatedIssue, base, head) {
+  return (
+    record(item) &&
+    positiveInteger(item.number) &&
+    ["open", "closed"].includes(item.state) &&
+    typeof item.merged === "boolean" &&
+    record(base) &&
+    typeof base.ref === "string" &&
+    shaPattern.test(base.sha ?? "") &&
+    record(head) &&
+    typeof head.ref === "string" &&
+    shaPattern.test(head.sha ?? "") &&
+    (associatedIssue === undefined || positiveInteger(associatedIssue))
+  );
+}
+
+function requiredChecksDisposition(item, issue, head) {
+  if (
+    !record(item.checks) ||
+    typeof item.checks.allPassing !== "boolean" ||
+    item.checks.complete !== true ||
+    item.checks.head !== head.sha ||
+    !Array.isArray(item.checks.required)
+  ) {
+    return "pr-check-head-mismatch";
+  }
+  const exactContextsRequired =
+    issue.state === "open" &&
+    issue.lifecycle.length === 1 &&
+    prTrackedStates.has(issue.lifecycle[0]);
+  const required = item.checks.required;
+  const unique = new Set(required.map((check) => check?.name)).size;
+  const exactContextsPresent = ["Issue contract current", "PR contract"].every(
+    (name) =>
+      required.some(
+        (check) => check?.name === name && check?.conclusion === "SUCCESS",
+      ),
+  );
+  const invalidEntry = required.some(
+    (check) =>
+      !record(check) ||
+      typeof check.name !== "string" ||
+      !["ERROR", "FAILURE", "PENDING", "SUCCESS"].includes(check.conclusion) ||
+      (exactContextsRequired && check.conclusion !== "SUCCESS"),
+  );
+  return (exactContextsRequired && item.checks.allPassing !== true) ||
+    unique !== required.length ||
+    (exactContextsRequired && !exactContextsPresent) ||
+    invalidEntry
+    ? "pr-required-check-failed"
+    : null;
+}
+
+function validMergeProof(item, allowlistedMergers) {
+  const merge = item.mergeCommit;
+  return (
+    item.state === "closed" &&
+    record(merge) &&
+    shaPattern.test(merge.sha ?? "") &&
+    merge.verified === true &&
+    merge.reason === "valid" &&
+    Array.isArray(merge.parents) &&
+    merge.parents.length === 1 &&
+    shaPattern.test(merge.parents[0] ?? "") &&
+    allowlistedMergers.includes(item.mergedBy)
+  );
+}
+
 function pullRequestFact(item, issueByNumber, allowlistedMergers) {
   const associatedIssue = pullRequestIssueNumber(item?.body);
   const hasAssociationLocator =
@@ -282,19 +355,7 @@ function pullRequestFact(item, issueByNumber, allowlistedMergers) {
     state: item?.state ?? null,
     target: base?.ref ?? null,
   };
-  const coreValid =
-    record(item) &&
-    positiveInteger(item.number) &&
-    ["open", "closed"].includes(item.state) &&
-    typeof item.merged === "boolean" &&
-    record(base) &&
-    typeof base.ref === "string" &&
-    shaPattern.test(base.sha ?? "") &&
-    record(head) &&
-    typeof head.ref === "string" &&
-    shaPattern.test(head.sha ?? "") &&
-    (associatedIssue === undefined || positiveInteger(associatedIssue));
-  if (!coreValid)
+  if (!validPullRequestCore(item, associatedIssue, base, head))
     return {
       disposition: "pull-request-observation-malformed",
       fact: basicFact,
@@ -334,54 +395,11 @@ function pullRequestFact(item, issueByNumber, allowlistedMergers) {
     item?.headCommit?.reason !== "valid"
   )
     return { disposition: "pr-head-signature-invalid", fact };
-  if (
-    !record(item.checks) ||
-    typeof item.checks.allPassing !== "boolean" ||
-    item.checks.complete !== true ||
-    item.checks.head !== head.sha ||
-    !Array.isArray(item.checks.required)
-  ) {
-    return { disposition: "pr-check-head-mismatch", fact };
-  }
-  const exactContextsRequired =
-    issue.state === "open" &&
-    issue.lifecycle.length === 1 &&
-    prTrackedStates.has(issue.lifecycle[0]);
-  if (
-    (exactContextsRequired && item.checks.allPassing !== true) ||
-    new Set(item.checks.required.map((check) => check?.name)).size !==
-      item.checks.required.length ||
-    (exactContextsRequired &&
-      !["Issue contract current", "PR contract"].every((name) =>
-        item.checks.required.some(
-          (check) => check?.name === name && check?.conclusion === "SUCCESS",
-        ),
-      )) ||
-    item.checks.required.some(
-      (check) =>
-        !record(check) ||
-        typeof check.name !== "string" ||
-        !["ERROR", "FAILURE", "PENDING", "SUCCESS"].includes(
-          check.conclusion,
-        ) ||
-        (exactContextsRequired && check.conclusion !== "SUCCESS"),
-    )
-  ) {
-    return { disposition: "pr-required-check-failed", fact };
-  }
+  const checksDisposition = requiredChecksDisposition(item, issue, head);
+  if (checksDisposition !== null)
+    return { disposition: checksDisposition, fact };
   if (item.merged) {
-    const merge = item.mergeCommit;
-    if (
-      item.state !== "closed" ||
-      !record(merge) ||
-      !shaPattern.test(merge.sha ?? "") ||
-      merge.verified !== true ||
-      merge.reason !== "valid" ||
-      !Array.isArray(merge.parents) ||
-      merge.parents.length !== 1 ||
-      !shaPattern.test(merge.parents[0] ?? "") ||
-      !allowlistedMergers.includes(item.mergedBy)
-    ) {
+    if (!validMergeProof(item, allowlistedMergers)) {
       return { disposition: "pr-merge-proof-invalid", fact };
     }
   } else if (item.state !== "open" || item.mergeCommit !== null) {
@@ -425,221 +443,269 @@ function safeIssue(issue, classification, readiness) {
   };
 }
 
+function collectPullRequestFacts(prepared, issueByNumber, allowlistedMergers) {
+  const dispositions = [];
+  const facts = [];
+  const verified = [];
+  for (const item of prepared.pullRequests) {
+    const result = pullRequestFact(item, issueByNumber, allowlistedMergers);
+    facts.push(result.fact);
+    if (result.disposition !== undefined)
+      dispositions.push(
+        disposition("pull-request", item?.number ?? 0, result.disposition),
+      );
+    if (result.verified === true) verified.push(result.fact);
+  }
+  facts.sort(compareNumber);
+  return { dispositions, facts, verified };
+}
+
+function recordClosedIssue(state, issue, readiness, associated, current) {
+  const completed =
+    issue.stateReason === "completed" &&
+    associated.length === 1 &&
+    associated[0].merged === true;
+  const classification = completed ? "completed" : "closed-without-completion";
+  state.issueInventory.push(safeIssue(issue, classification, readiness));
+  state.reconciliation.push({
+    current,
+    desired: completed ? ["status: done"] : [],
+    kind: "issue",
+    number: issue.number,
+  });
+  if (issue.stateReason === "completed" && !completed)
+    state.dispositions.push(
+      disposition("issue", issue.number, "completion-unverifiable"),
+    );
+}
+
+function recordNonReadyIssue(state, issue, readiness) {
+  state.issueInventory.push(safeIssue(issue, "not-current-ready", readiness));
+  if (issue.contractFailure !== null) return;
+  const reason =
+    readiness.reason === "stale"
+      ? "stale-readiness"
+      : `readiness-${readiness.reason}`;
+  state.dispositions.push(disposition("issue", issue.number, reason));
+}
+
+function recordMigrationMember(
+  state,
+  issue,
+  readiness,
+  identity,
+  linked,
+  current,
+) {
+  const readinessUrl = readiness.url;
+  const observation = {
+    candidatePath: identity.candidatePath,
+    fingerprint: issue.fingerprint,
+    lifecycleLabels: [issue.lifecycle[0]],
+    linkedPullRequest: linked,
+    number: issue.number,
+    predecessor: identity.predecessor,
+    readiness: readinessUrl,
+    readinessProducer: readiness.producer,
+    recoveries: identity.recoveries,
+    revision: identity.revision,
+    state: "open",
+    type: issue.type,
+    version: issue.version,
+  };
+  state.observations.push(observation);
+  state.candidateInputs.push({
+    candidatePath: identity.candidatePath,
+    fingerprint: issue.fingerprint,
+    number: issue.number,
+    predecessor: identity.predecessor,
+    readiness: readinessUrl,
+    recoveries: identity.recoveries,
+    revision: identity.revision,
+    type: issue.type,
+    version: issue.version,
+  });
+  state.issueInventory.push(safeIssue(issue, "migration-member", readiness));
+  state.reconciliation.push({
+    current,
+    desired: [issue.lifecycle[0]],
+    kind: "issue",
+    number: issue.number,
+  });
+}
+
+function recordReadyIssue(
+  state,
+  issue,
+  readiness,
+  associated,
+  prepared,
+  current,
+) {
+  if (issue.lifecycle.length !== 1 || !retainedStates.has(issue.lifecycle[0])) {
+    state.issueInventory.push(
+      safeIssue(issue, "lifecycle-unverifiable", readiness),
+    );
+    state.dispositions.push(
+      disposition("issue", issue.number, "retained-lifecycle-invalid"),
+    );
+    return;
+  }
+  const tracked = prTrackedStates.has(issue.lifecycle[0]);
+  const openAssociated = associated.filter(
+    (pullRequest) => pullRequest.state === "open" && !pullRequest.merged,
+  );
+  if (tracked !== (openAssociated.length === 1)) {
+    state.issueInventory.push(
+      safeIssue(issue, "linked-pr-unverifiable", readiness),
+    );
+    state.dispositions.push(
+      disposition("issue", issue.number, "linked-pr-topology-invalid"),
+    );
+    return;
+  }
+  const identity = candidateIdentity(issue, prepared.contractBindings);
+  if (identity.failure !== undefined) {
+    state.issueInventory.push(
+      safeIssue(issue, "contract-chain-unverifiable", readiness),
+    );
+    state.dispositions.push(
+      disposition("issue", issue.number, identity.failure),
+    );
+    return;
+  }
+  const linked = tracked
+    ? {
+        head: openAssociated[0].head,
+        number: openAssociated[0].number,
+        target: openAssociated[0].target,
+      }
+    : null;
+  recordMigrationMember(state, issue, readiness, identity, linked, current);
+}
+
+function recordIssue(state, input, issue, prepared, verifiedPullRequests) {
+  const comments = commentsFor(input, issue);
+  if (comments === undefined)
+    return indeterminate("comment-pagination-incomplete");
+  const readiness =
+    issue.contractFailure === null
+      ? readinessFor(input, issue, comments)
+      : { current: false, reason: issue.contractFailure };
+  const associated = verifiedPullRequests.filter(
+    (pullRequest) => pullRequest.associatedIssue === issue.number,
+  );
+  const current = [...issue.lifecycle].sort(compareCodeUnits);
+  if (issue.contractFailure !== null)
+    state.dispositions.push(
+      disposition("issue", issue.number, issue.contractFailure),
+    );
+  if (issue.state === "closed") {
+    recordClosedIssue(state, issue, readiness, associated, current);
+    return undefined;
+  }
+  if (!readiness.current) {
+    recordNonReadyIssue(state, issue, readiness);
+    return undefined;
+  }
+  recordReadyIssue(state, issue, readiness, associated, prepared, current);
+  return undefined;
+}
+
+function compareReconciliation(left, right) {
+  if (left.kind === right.kind) return left.number - right.number;
+  return left.kind === "issue" ? -1 : 1;
+}
+
+function finalInventoryResult(input, state, pullRequestFacts) {
+  state.dispositions.sort((left, right) =>
+    left.kind === right.kind
+      ? left.number - right.number || compareCodeUnits(left.code, right.code)
+      : compareCodeUnits(left.kind, right.kind),
+  );
+  state.reconciliation.sort(compareReconciliation);
+  state.observations.sort(compareNumber);
+  state.candidateInputs.sort(compareNumber);
+  const inventory = {
+    issues: state.issueInventory.toSorted(compareNumber),
+    protectedDev: input.protectedDev,
+    pullRequests: pullRequestFacts,
+    repository: input.repository,
+  };
+  if (state.dispositions.length !== 0 || state.observations.length === 0) {
+    return {
+      candidateInputs: [],
+      dispositions: state.dispositions,
+      inventory,
+      manifest: null,
+      ok: true,
+      publishable: false,
+      receiptInput: null,
+      reconciliation: state.reconciliation,
+    };
+  }
+  const manifestBytes = canonicalBytes({ entries: state.observations });
+  const digest = contractSha256(manifestBytes).digest;
+  const manifest = {
+    bytes: manifestBytes,
+    digest,
+    entries: state.observations,
+    path: manifestPath,
+  };
+  return {
+    candidateInputs: state.candidateInputs,
+    dispositions: state.dispositions,
+    inventory,
+    manifest,
+    ok: true,
+    publishable: true,
+    receiptInput: {
+      candidateInputs: state.candidateInputs,
+      observations: state.observations,
+      target: "dev",
+      terminalManifest: { digest, path: manifestPath },
+    },
+    reconciliation: state.reconciliation,
+  };
+}
+
 function build(input) {
   const prepared = prepareSnapshot(input);
   if (prepared.ok !== true) return prepared;
   const issueByNumber = new Map(
     prepared.issueFacts.map((issue) => [issue.number, issue]),
   );
-  const dispositions = [];
-  const pullRequestFacts = [];
-  const verifiedPullRequests = [];
-  for (const item of prepared.pullRequests) {
-    const result = pullRequestFact(
-      item,
-      issueByNumber,
-      input.allowlistedMergers,
-    );
-    if (result.fact !== undefined) pullRequestFacts.push(result.fact);
-    if (result.disposition !== undefined)
-      dispositions.push(
-        disposition("pull-request", item?.number ?? 0, result.disposition),
-      );
-    if (result.verified === true) verifiedPullRequests.push(result.fact);
-  }
-  pullRequestFacts.sort(compareNumber);
-  const issueInventory = [];
-  const observations = [];
-  const candidateInputs = [];
-  const reconciliation = [];
+  const pullRequests = collectPullRequestFacts(
+    prepared,
+    issueByNumber,
+    input.allowlistedMergers,
+  );
+  const state = {
+    candidateInputs: [],
+    dispositions: pullRequests.dispositions,
+    issueInventory: [],
+    observations: [],
+    reconciliation: [],
+  };
   for (const issue of prepared.issueFacts) {
-    const comments = commentsFor(input, issue);
-    if (comments === undefined)
-      return indeterminate("comment-pagination-incomplete");
-    const readiness =
-      issue.contractFailure === null
-        ? readinessFor(input, issue, comments)
-        : { current: false, reason: issue.contractFailure };
-    const associated = verifiedPullRequests.filter(
-      (pullRequest) => pullRequest.associatedIssue === issue.number,
+    const failure = recordIssue(
+      state,
+      input,
+      issue,
+      prepared,
+      pullRequests.verified,
     );
-    const current = [...issue.lifecycle].sort(compareCodeUnits);
-    if (issue.contractFailure !== null)
-      dispositions.push(
-        disposition("issue", issue.number, issue.contractFailure),
-      );
-    if (issue.state === "closed") {
-      const completed =
-        issue.stateReason === "completed" &&
-        associated.length === 1 &&
-        associated[0].merged === true;
-      const classification = completed
-        ? "completed"
-        : "closed-without-completion";
-      issueInventory.push(safeIssue(issue, classification, readiness));
-      reconciliation.push({
-        current,
-        desired: completed ? ["status: done"] : [],
-        kind: "issue",
-        number: issue.number,
-      });
-      if (issue.stateReason === "completed" && !completed)
-        dispositions.push(
-          disposition("issue", issue.number, "completion-unverifiable"),
-        );
-      continue;
-    }
-    if (!readiness.current) {
-      issueInventory.push(safeIssue(issue, "not-current-ready", readiness));
-      if (issue.contractFailure === null) {
-        const reason =
-          readiness.reason === "stale"
-            ? "stale-readiness"
-            : `readiness-${readiness.reason}`;
-        dispositions.push(disposition("issue", issue.number, reason));
-      }
-      continue;
-    }
-    if (
-      issue.lifecycle.length !== 1 ||
-      !retainedStates.has(issue.lifecycle[0])
-    ) {
-      issueInventory.push(
-        safeIssue(issue, "lifecycle-unverifiable", readiness),
-      );
-      dispositions.push(
-        disposition("issue", issue.number, "retained-lifecycle-invalid"),
-      );
-      continue;
-    }
-    const state = issue.lifecycle[0];
-    const tracked = prTrackedStates.has(state);
-    const openAssociated = associated.filter(
-      (pullRequest) => pullRequest.state === "open" && !pullRequest.merged,
-    );
-    if (tracked !== (openAssociated.length === 1)) {
-      issueInventory.push(
-        safeIssue(issue, "linked-pr-unverifiable", readiness),
-      );
-      dispositions.push(
-        disposition("issue", issue.number, "linked-pr-topology-invalid"),
-      );
-      continue;
-    }
-    const identity = candidateIdentity(issue, prepared.contractBindings);
-    if (identity.failure !== undefined) {
-      issueInventory.push(
-        safeIssue(issue, "contract-chain-unverifiable", readiness),
-      );
-      dispositions.push(disposition("issue", issue.number, identity.failure));
-      continue;
-    }
-    const linkedPullRequest = tracked
-      ? {
-          head: openAssociated[0].head,
-          number: openAssociated[0].number,
-          target: openAssociated[0].target,
-        }
-      : null;
-    const readinessUrl = readiness.url;
-    const observation = {
-      candidatePath: identity.candidatePath,
-      fingerprint: issue.fingerprint,
-      lifecycleLabels: [state],
-      linkedPullRequest,
-      number: issue.number,
-      predecessor: identity.predecessor,
-      readiness: readinessUrl,
-      readinessProducer: readiness.producer,
-      recoveries: identity.recoveries,
-      revision: identity.revision,
-      state: "open",
-      type: issue.type,
-      version: issue.version,
-    };
-    observations.push(observation);
-    candidateInputs.push({
-      candidatePath: identity.candidatePath,
-      fingerprint: issue.fingerprint,
-      number: issue.number,
-      predecessor: identity.predecessor,
-      readiness: readinessUrl,
-      recoveries: identity.recoveries,
-      revision: identity.revision,
-      type: issue.type,
-      version: issue.version,
-    });
-    issueInventory.push(safeIssue(issue, "migration-member", readiness));
-    reconciliation.push({
-      current,
-      desired: [state],
-      kind: "issue",
-      number: issue.number,
-    });
+    if (failure !== undefined) return failure;
   }
-  for (const pullRequest of pullRequestFacts) {
-    reconciliation.push({
+  for (const pullRequest of pullRequests.facts) {
+    state.reconciliation.push({
       current: [...pullRequest.lifecycle].sort(compareCodeUnits),
       desired: [],
       kind: "pull-request",
       number: pullRequest.number,
     });
   }
-  dispositions.sort((left, right) =>
-    left.kind === right.kind
-      ? left.number - right.number || compareCodeUnits(left.code, right.code)
-      : compareCodeUnits(left.kind, right.kind),
-  );
-  reconciliation.sort((left, right) =>
-    left.kind === right.kind
-      ? left.number - right.number
-      : left.kind === "issue"
-        ? -1
-        : 1,
-  );
-  observations.sort(compareNumber);
-  candidateInputs.sort(compareNumber);
-  const inventory = {
-    issues: issueInventory.sort(compareNumber),
-    protectedDev: input.protectedDev,
-    pullRequests: pullRequestFacts,
-    repository: input.repository,
-  };
-  if (dispositions.length !== 0 || observations.length === 0) {
-    return {
-      candidateInputs: [],
-      dispositions,
-      inventory,
-      manifest: null,
-      ok: true,
-      publishable: false,
-      receiptInput: null,
-      reconciliation,
-    };
-  }
-  const manifestBytes = canonicalBytes({ entries: observations });
-  const digest = contractSha256(manifestBytes).digest;
-  const manifest = {
-    bytes: manifestBytes,
-    digest,
-    entries: observations,
-    path: manifestPath,
-  };
-  return {
-    candidateInputs,
-    dispositions,
-    inventory,
-    manifest,
-    ok: true,
-    publishable: true,
-    receiptInput: {
-      candidateInputs,
-      observations,
-      target: "dev",
-      terminalManifest: { digest, path: manifestPath },
-    },
-    reconciliation,
-  };
+  return finalInventoryResult(input, state, pullRequests.facts);
 }
 
 export function buildMigrationInventory(input) {

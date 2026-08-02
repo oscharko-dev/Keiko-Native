@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 const repositoryPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 const manifestPathPattern =
-  /^docs\/qa\/repository-migration-manifest-v[1-9][0-9]*\.md$/u;
+  /^docs\/qa\/repository-migration-manifest-v[1-9]\d*\.md$/u;
 const digestPattern = /^[0-9a-f]{64}$/u;
 const hour = 60 * 60 * 1000;
 
