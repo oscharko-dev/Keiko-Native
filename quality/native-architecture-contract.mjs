@@ -46,11 +46,13 @@ export function architectureFailures(entries, project) {
   const allowedCommands = new Set([
     "application_request",
     "application_cancel",
+    "codex_turn_request",
     "foundation_request",
+    "runtime_request",
     "workspace_request",
   ]);
   for (const command of frontend.matchAll(
-    /["']((?:application|foundation|workspace)_[a-z_-]+)["']/gu,
+    /["']((?:application|codex|foundation|runtime|workspace)_[a-z_-]+)["']/gu,
   )) {
     if (!allowedCommands.has(command[1])) {
       failures.push(`forbidden-renderer-command:${command[1]}`);

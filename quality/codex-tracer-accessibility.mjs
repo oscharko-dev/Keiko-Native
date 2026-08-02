@@ -303,6 +303,8 @@ export async function compileTracerAccessibility(root) {
       "-framework",
       "ApplicationServices",
       "-framework",
+      "AppKit",
+      "-framework",
       "Foundation",
       source,
       "-o",

@@ -285,9 +285,7 @@ test("the orchestrator runs package, production, physical, validation, and persi
       },
       runProductionJourney: async () => {
         calls.push("production");
-        return {
-          safeguards: acceptanceSafeguardContract,
-        };
+        return { safeguards: {} };
       },
       runPhysicalJourney: async () => {
         calls.push("physical");
@@ -295,7 +293,7 @@ test("the orchestrator runs package, production, physical, validation, and persi
           budgets: evidence.budgets,
           journey: evidence.journey,
           physical: evidence.physical,
-          safeguards: {},
+          safeguards: acceptanceSafeguardContract,
         };
       },
       cleanup: async () => {

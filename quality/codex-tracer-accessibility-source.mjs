@@ -25,11 +25,19 @@ export const tracerAccessibilityActions = Object.freeze([
 ]);
 
 export const tracerAccessibilitySource = String.raw`#import <ApplicationServices/ApplicationServices.h>
+#import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
 #import <unistd.h>
 
 static const NSUInteger kMaximumElements = 2048;
 static const NSUInteger kMaximumDepth = 12;
+
+static BOOL ActivateApplication(pid_t pid) {
+  NSRunningApplication *application =
+      [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
+  return application != nil &&
+      [application activateWithOptions:NSApplicationActivateIgnoringOtherApps];
+}
 
 static BOOL StringAttributeEquals(
     AXUIElementRef element, CFStringRef attribute, CFStringRef expected) {
@@ -581,6 +589,12 @@ ${tracerAccessibilityActions.map((action) => `      @"${action}",`).join("\n")}
       Emit(NO, "invalid-invocation");
       return 2;
     }
+    if (![action isEqualToString:@"probe-start"] &&
+        !ActivateApplication(pid)) {
+      Emit(NO, "missing-or-ambiguous-semantic-target");
+      return 1;
+    }
+    usleep(50 * 1000);
     AXUIElementRef application = AXUIElementCreateApplication(pid);
     BOOL passed = NO;
     if ([action isEqualToString:@"probe-start"]) {

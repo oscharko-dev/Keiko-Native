@@ -6,9 +6,11 @@ import {
   acceptanceEnvironmentFailures,
   canonicalRuntimeRoot,
   canonicalRuntimeResources,
+  observedSafeguards,
   packageArtifactFailures,
   physicalObservationFailures,
   selectCommandOutput,
+  selectOwnedStagedRuntime,
 } from "./codex-tracer-acceptance-io.mjs";
 import { acceptancePhysicalContract } from "./codex-tracer-acceptance.mjs";
 import { nativeGateTestSupport } from "./native-gate.mjs";
@@ -17,6 +19,52 @@ const runtimeSha256 =
   "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590";
 const promptSha256 =
   "e1a92579b1ca673135331829beb97792c1289a6bccdfe0303302256c546960f6";
+
+test("crash recovery selects only one exact staged runtime owned by the app", () => {
+  const appPid = 42;
+  const runtimeWorkRoot = "/private/tmp/keiko-runtime-work";
+  const valid = {
+    command: `${runtimeWorkRoot}/turn-42-3/verified-codex-runtime app-server`,
+    pgid: 51,
+    pid: 51,
+    ppid: appPid,
+  };
+  assert.deepEqual(
+    selectOwnedStagedRuntime([valid], { appPid, runtimeWorkRoot }),
+    {
+      ...valid,
+      executable: `${runtimeWorkRoot}/turn-42-3/verified-codex-runtime`,
+    },
+  );
+  for (const processes of [
+    [{ ...valid, ppid: 41 }],
+    [{ ...valid, pgid: 50 }],
+    [
+      {
+        ...valid,
+        command: "/private/tmp/installed-codex app-server",
+      },
+    ],
+    [
+      {
+        ...valid,
+        command: `${runtimeWorkRoot}/turn-41-3/verified-codex-runtime app-server`,
+      },
+    ],
+    [
+      {
+        ...valid,
+        command: `${runtimeWorkRoot}/turn-42-3/nested/verified-codex-runtime app-server`,
+      },
+    ],
+    [valid, { ...valid, pid: 52, pgid: 52 }],
+  ]) {
+    assert.equal(
+      selectOwnedStagedRuntime(processes, { appPid, runtimeWorkRoot }),
+      null,
+    );
+  }
+});
 
 test("acceptance-owned processes receive only non-secret system context and explicit bindings", () => {
   const environment = acceptanceProcessEnvironment(
@@ -241,4 +289,48 @@ test("physical observations are closed and digest-bound to the exact packaged he
       physicalObservationFailures(changed, expected, observedAtMs).length > 0,
     );
   }
+});
+
+test("safeguards are derived from observed containment, journey, filesystem, and process state", () => {
+  const snapshot = { bytes: 0, entries: 1, sha256: "a".repeat(64) };
+  const input = {
+    containmentMarkers: [
+      "features.multi_agent=false",
+      "features.multi_agent_v2=false",
+      "tools.experimental_request_user_input.enabled=false",
+      "runtimeWorkspaceRoots",
+      "dynamicTools",
+      "selectedCapabilityRoots",
+    ],
+    journey: {
+      status: "passed",
+      timings: Array.from({ length: 36 }, (_, index) => ({
+        action: `checkpoint-${index}`,
+        elapsedMs: 1,
+      })),
+    },
+    packageInspection: { testHookMarkers: 0 },
+    residualProcesses: 0,
+    runtimeBefore: { bytes: 0, entries: 0, sha256: "b".repeat(64) },
+    runtimeAfter: { bytes: 0, entries: 0, sha256: "b".repeat(64) },
+    workspaceBefore: snapshot,
+    workspaceAfter: snapshot,
+  };
+  const measured = observedSafeguards(input);
+  assert.equal(measured.acceptedEffects, 0);
+  assert.equal(measured.localToolRequests, 0);
+  assert.equal(measured.providerEffectOwnerCrossings, 0);
+  assert.equal(measured.residualProcesses, 0);
+
+  const changed = observedSafeguards({
+    ...input,
+    residualProcesses: 1,
+    runtimeAfter: { bytes: 1, entries: 1, sha256: "c".repeat(64) },
+    workspaceAfter: { bytes: 1, entries: 2, sha256: "d".repeat(64) },
+  });
+  assert.equal(changed.acceptedEffects, 1);
+  assert.equal(changed.localToolRequests, 1);
+  assert.equal(changed.providerEffectOwnerCrossings, 1);
+  assert.equal(changed.repositoryContextBytesToRuntime, 1);
+  assert.equal(changed.residualProcesses, 1);
 });

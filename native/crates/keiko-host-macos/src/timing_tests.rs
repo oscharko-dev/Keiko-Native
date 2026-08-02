@@ -173,3 +173,42 @@ fn final_mutex_sample_host_unavailability_and_at_most_once_are_enforced() {
             .contains("internal-failure")
     );
 }
+
+#[test]
+fn runtime_cleanup_failure_survives_the_request_deadline() {
+    let (mut lifecycle, sender) = started();
+    lifecycle.set_test_now_ms(0);
+    let accepted = accept(&mut lifecycle, &sender, 1, "request-00000001");
+    let duplicate = AcceptedRequest {
+        generation: accepted.generation,
+        request: accepted.request.clone(),
+    };
+    lifecycle.set_test_now_ms(1_000);
+    let encoded = lifecycle.complete_runtime_request(
+        accepted,
+        RuntimeReadinessView::terminal(RuntimeReadinessState::CleanupFailed, 3),
+    );
+    assert!(encoded.contains("cleanup-failed"));
+    assert!(encoded.contains("\"quarantinedEvents\":3"));
+    assert!(!encoded.contains("timed-out"));
+    assert!(
+        lifecycle
+            .complete_runtime_request(
+                duplicate,
+                RuntimeReadinessView::terminal(RuntimeReadinessState::Ready, 0),
+            )
+            .contains("internal-failure")
+    );
+
+    lifecycle.set_test_now_ms(0);
+    let timed_out = accept(&mut lifecycle, &sender, 2, "request-00000002");
+    lifecycle.set_test_now_ms(1_000);
+    assert!(
+        lifecycle
+            .complete_runtime_request(
+                timed_out,
+                RuntimeReadinessView::terminal(RuntimeReadinessState::Ready, 0),
+            )
+            .contains("timed-out")
+    );
+}

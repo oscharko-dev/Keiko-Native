@@ -522,6 +522,7 @@ export function createRendererPort(
       let terminal = false;
       let latest: TurnView | null = null;
       let cancellationAccepted = false;
+      let cancellationDispatched = false;
       const finish = () => signal?.removeEventListener("abort", cancel);
       const fail = (message: string) => {
         if (terminal) return;
@@ -531,6 +532,7 @@ export function createRendererPort(
       };
       const projectStopping = () => {
         if (
+          terminal ||
           !cancellationAccepted ||
           latest === null ||
           !["preflighting", "streaming"].includes(latest.state)
@@ -549,8 +551,9 @@ export function createRendererPort(
         };
         onUpdate(latest);
       };
-      const cancel = () => {
-        if (terminal || (latest !== null && isTerminalTurn(latest))) return;
+      const dispatchCancellation = () => {
+        if (cancellationDispatched) return;
+        cancellationDispatched = true;
         const cancellation: CancelRequest = {
           schemaVersion: 1,
           requestId: request.requestId,
@@ -561,12 +564,17 @@ export function createRendererPort(
           request: JSON.stringify(cancellation),
         })
           .then((encoded) => {
+            if (terminal) return;
             if (isAcceptedCancellation(encoded, request.requestId)) {
               cancellationAccepted = true;
               projectStopping();
             }
           })
           .catch(() => undefined);
+      };
+      const cancel = () => {
+        if (terminal || (latest !== null && isTerminalTurn(latest))) return;
+        dispatchCancellation();
       };
       const onEvent = channelFactory();
       onEvent.onmessage = (candidate) => {
@@ -584,6 +592,7 @@ export function createRendererPort(
           candidate.workspaceGeneration !== workspaceGeneration ||
           !validTurnProgression(latest, candidate)
         ) {
+          dispatchCancellation();
           fail("codex-turn-failed");
           return;
         }

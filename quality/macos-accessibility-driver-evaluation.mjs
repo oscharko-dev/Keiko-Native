@@ -681,17 +681,33 @@ function timingEntryValid(entry, expectedRepetition, expectedCheckpoints) {
 }
 
 function captureArtifactValid(capture, expectedPhase, prepared, evidence) {
+  const predecessorPhase = {
+    allowed: null,
+    denied: "allowed",
+    revoked: "allowed",
+    recovered: "revoked",
+  }[expectedPhase];
+  const predecessorBinding = {
+    allowed: "allowedCaptureSha256",
+    revoked: "revokedCaptureSha256",
+  }[predecessorPhase];
   if (
     !hasExactKeys(capture, [
       "options",
       "phase",
+      "predecessor",
       "prepared",
       "schemaVersion",
       "timings",
     ]) ||
     capture.schemaVersion !==
-      "keiko-native-macos-accessibility-driver-capture/v1" ||
+      "keiko-native-macos-accessibility-driver-capture/v2" ||
     capture.phase !== expectedPhase ||
+    (predecessorPhase === null
+      ? capture.predecessor !== null
+      : !hasExactKeys(capture.predecessor, ["phase", "sha256"]) ||
+        capture.predecessor.phase !== predecessorPhase ||
+        capture.predecessor.sha256 !== evidence.bindings[predecessorBinding]) ||
     !jsonEqual(capture.prepared, prepared) ||
     !hasExactKeys(capture.options, candidateIds) ||
     !hasExactKeys(capture.timings, candidateIds)

@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
+use keiko_application::runtime::{RuntimeReadinessState, RuntimeReadinessView};
 use keiko_application::turn::{TurnReason, TurnState, TurnView};
 use keiko_application::{ApplicationResult, application_response, current_build_identity};
 #[cfg(test)]
@@ -343,6 +344,32 @@ impl HostLifecycle {
         encode_success(&application_response(
             &request_id,
             ApplicationResult::CodexTurn { state },
+        ))
+    }
+
+    fn complete_runtime_request(
+        &mut self,
+        accepted: AcceptedRequest,
+        state: RuntimeReadinessView,
+    ) -> String {
+        let completed_at_ms = self.clock.now_ms();
+        let (request_id, sequence, _) = request_metadata(&accepted.request);
+        let request_id = request_id.to_owned();
+        let Some(in_flight) = self.in_flight.remove(&request_id) else {
+            return encode_error(&request_id, ReasonCode::InternalFailure);
+        };
+        if state.state != RuntimeReadinessState::CleanupFailed
+            && let Some(reason) = terminal_reason(&in_flight, completed_at_ms, true)
+        {
+            return encode_error(&request_id, reason);
+        }
+        let _acknowledged = self.session.as_mut().is_some_and(|session| {
+            session.generation == accepted.generation
+                && session.acknowledgement.record_success(sequence)
+        });
+        encode_success(&application_response(
+            &request_id,
+            ApplicationResult::RuntimeReadiness { state },
         ))
     }
 

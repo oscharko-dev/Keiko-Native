@@ -116,6 +116,19 @@ test("architecture scans every source and rejects generic capabilities", () => {
     ),
     [],
   );
+  for (const command of ["codex_turn_request", "runtime_request"]) {
+    assert.deepEqual(
+      architectureFailures(
+        roots.map((entry, index) =>
+          index === roots.length - 1
+            ? { ...entry, text: `invoke("${command}")` }
+            : entry,
+        ),
+        project,
+      ),
+      [],
+    );
+  }
   assert.deepEqual(
     architectureFailures(
       roots.map((entry, index) =>
@@ -147,6 +160,18 @@ test("architecture scans every source and rejects generic capabilities", () => {
       project,
     ).includes("forbidden-renderer-command:workspace_shell"),
   );
+  for (const command of ["codex_execute", "runtime_shell"]) {
+    assert.ok(
+      architectureFailures(
+        roots.map((entry, index) =>
+          index === roots.length - 1
+            ? { ...entry, text: `invoke("${command}")` }
+            : entry,
+        ),
+        project,
+      ).includes(`forbidden-renderer-command:${command}`),
+    );
+  }
 });
 
 test("desktop main remains thin declarative wiring", () => {

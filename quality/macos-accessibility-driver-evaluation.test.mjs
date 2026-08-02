@@ -559,6 +559,11 @@ test("operator phases retain one exact identity and run 20 allowed repetitions",
       },
     });
     assert.equal(calls, 20);
+    assert.equal(
+      allowed.schemaVersion,
+      "keiko-native-macos-accessibility-driver-capture/v2",
+    );
+    assert.equal(allowed.predecessor, null);
     assert.equal(allowed.options.axuielement.repetitions, 20);
     assert.deepEqual(allowed.options.systemEvents, {
       status: "allowed",
@@ -604,7 +609,19 @@ test("operator phases retain one exact identity and run 20 allowed repetitions",
           throw new Error("must-not-run");
         },
       }),
-      /capture-identity-mismatch/u,
+      /capture-predecessor-invalid/u,
+    );
+
+    await assert.rejects(
+      capturePhysicalMatrixPhase(root, {
+        phase: "recovered",
+        prepared,
+        priorCapture: allowed,
+        runCandidate: async () => {
+          throw new Error("must-not-run");
+        },
+      }),
+      /capture-predecessor-invalid/u,
     );
   } finally {
     await rm(root, { force: true, recursive: true });

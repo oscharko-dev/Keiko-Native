@@ -122,6 +122,8 @@ macArm64Test(
           "-framework",
           "ApplicationServices",
           "-framework",
+          "AppKit",
+          "-framework",
           "Foundation",
           source,
           "-o",

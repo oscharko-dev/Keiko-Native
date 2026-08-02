@@ -5,12 +5,13 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   realpath,
   rm,
   writeFile,
 } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -24,7 +25,6 @@ import {
   acceptanceJourneyContract,
   acceptancePackageInspectionContract,
   acceptancePhysicalContract,
-  acceptanceSafeguardContract,
 } from "./codex-tracer-acceptance.mjs";
 import {
   compileTracerAccessibility,
@@ -393,7 +393,120 @@ async function inspectPackage(sourceRevision) {
     if (packageText.includes(marker))
       throw new Error("acceptance-package-test-hook");
   }
-  return inspected;
+  const containmentMarkers = [
+    "features.multi_agent=false",
+    "features.multi_agent_v2=false",
+    "tools.experimental_request_user_input.enabled=false",
+    "runtimeWorkspaceRoots",
+    "dynamicTools",
+    "selectedCapabilityRoots",
+  ];
+  if (containmentMarkers.some((marker) => !packageText.includes(marker)))
+    throw new Error("acceptance-package-containment-unbound");
+  return { ...inspected, containmentMarkers };
+}
+
+async function snapshotDirectory(root) {
+  const digest = createHash("sha256");
+  let bytes = 0;
+  let entries = 0;
+  async function visit(directory, prefix = "") {
+    const children = (
+      await readdir(directory, { withFileTypes: true })
+    ).toSorted((left, right) => compareCodeUnits(left.name, right.name));
+    for (const child of children) {
+      const relativePath =
+        prefix === "" ? child.name : `${prefix}/${child.name}`;
+      digest.update(relativePath, "utf8");
+      digest.update("\0", "utf8");
+      entries += 1;
+      if (child.isDirectory()) {
+        digest.update("directory\0", "utf8");
+        await visit(join(directory, child.name), relativePath);
+      } else if (child.isFile()) {
+        const content = await readFile(join(directory, child.name));
+        bytes += content.length;
+        digest.update("file\0", "utf8");
+        digest.update(content);
+      } else {
+        throw new Error("acceptance-snapshot-entry-invalid");
+      }
+      digest.update("\0", "utf8");
+    }
+  }
+  await visit(root);
+  return { bytes, entries, sha256: digest.digest("hex") };
+}
+
+export function observedSafeguards({
+  containmentMarkers,
+  journey,
+  packageInspection,
+  residualProcesses,
+  runtimeAfter,
+  runtimeBefore,
+  workspaceAfter,
+  workspaceBefore,
+}) {
+  const journeyRows = journey.timings.map(({ action }) => action);
+  const repositoryContextBytes = Buffer.byteLength(
+    JSON.stringify(journey),
+    "utf8",
+  );
+  const fixedJourneyRows = 36;
+  const cleanRuntime =
+    runtimeBefore.entries === 0 &&
+    runtimeAfter.entries === 0 &&
+    runtimeBefore.bytes === 0 &&
+    runtimeAfter.bytes === 0;
+  const unchangedWorkspace =
+    workspaceBefore.sha256 === workspaceAfter.sha256 &&
+    workspaceBefore.entries === workspaceAfter.entries &&
+    workspaceBefore.bytes === workspaceAfter.bytes;
+  return {
+    acceptedEffects: journey.status === "passed" && unchangedWorkspace ? 0 : 1,
+    configurableMultiAgentCapabilities:
+      containmentMarkers.includes("features.multi_agent=false") &&
+      containmentMarkers.includes("features.multi_agent_v2=false")
+        ? 0
+        : 1,
+    environmentTools:
+      containmentMarkers.includes("runtimeWorkspaceRoots") &&
+      containmentMarkers.includes("dynamicTools") &&
+      containmentMarkers.includes("selectedCapabilityRoots")
+        ? 0
+        : 1,
+    hiddenRetries: journeyRows.length === fixedJourneyRows ? 0 : 1,
+    inputRequestCapabilities: containmentMarkers.includes(
+      "tools.experimental_request_user_input.enabled=false",
+    )
+      ? 0
+      : 1,
+    localToolRequests: cleanRuntime && unchangedWorkspace ? 0 : 1,
+    manualOnlyAutomatableCheckpoints:
+      acceptanceJourneyContract.manualOnlyAutomatableCheckpoints,
+    missingJourneyRows:
+      journeyRows.length === fixedJourneyRows
+        ? 0
+        : Math.abs(fixedJourneyRows - journeyRows.length),
+    mockOnlyClaims: acceptanceJourneyContract.mockOnlyClaims,
+    packageTestHooks: packageInspection.testHookMarkers,
+    providerEffectOwnerCrossings:
+      cleanRuntime && unchangedWorkspace && residualProcesses === 0 ? 0 : 1,
+    providerEventQuarantineMaximum: 64,
+    redactionMatches: redactionMatches(JSON.stringify(journey)).length,
+    repositoryBytesInEvidence:
+      repositoryContextBytes > 0 &&
+      !JSON.stringify(journey).includes("KeikoAcceptanceIdentity104")
+        ? 0
+        : repositoryContextBytes,
+    repositoryContextBytesToRuntime: unchangedWorkspace
+      ? 0
+      : workspaceAfter.bytes,
+    residualProcesses,
+    unquarantinedProviderEvents:
+      journey.status === "passed" && cleanRuntime ? 0 : 1,
+  };
 }
 
 function processExists(pid) {
@@ -436,25 +549,51 @@ function parseProcessRow(line) {
   };
 }
 
-async function crashOwnedRuntime(
-  appPid,
-  ownedRuntimeBinary,
-  cleanupDependencies,
+export function selectOwnedStagedRuntime(
+  processes,
+  { appPid, runtimeWorkRoot },
 ) {
+  const matches = processes.flatMap((process) => {
+    const separator = process.command.indexOf(" ");
+    const executable =
+      separator === -1 ? process.command : process.command.slice(0, separator);
+    const parts = relative(runtimeWorkRoot, executable).split("/");
+    const ownedTurn = new RegExp(`^turn-${appPid}-[1-9][0-9]*$`, "u");
+    return process.ppid === appPid &&
+      process.pgid === process.pid &&
+      parts.length === 2 &&
+      ownedTurn.test(parts[0]) &&
+      parts[1] === "verified-codex-runtime"
+      ? [{ ...process, executable }]
+      : [];
+  });
+  return matches.length === 1 ? matches[0] : null;
+}
+
+async function crashOwnedRuntime({
+  appPid,
+  cleanupDependencies,
+  expectedRuntimeSha256,
+  runtimeWorkRoot,
+}) {
   const processes = run("/bin/ps", ["-axo", "pid=,ppid=,pgid=,command="])
     .split("\n")
     .map(parseProcessRow)
-    .filter(Boolean)
-    .filter(
-      (process) =>
-        process.ppid === appPid &&
-        process.pgid === process.pid &&
-        (process.command === ownedRuntimeBinary ||
-          process.command.startsWith(`${ownedRuntimeBinary} `)),
-    );
-  if (processes.length !== 1)
+    .filter(Boolean);
+  const runtime = selectOwnedStagedRuntime(processes, {
+    appPid,
+    runtimeWorkRoot,
+  });
+  if (runtime === null) throw new Error("acceptance-runtime-ownership-invalid");
+  const canonicalExecutable = await realpath(runtime.executable).catch(
+    () => null,
+  );
+  if (
+    canonicalExecutable !== runtime.executable ||
+    sha256(await readFile(runtime.executable)) !== expectedRuntimeSha256
+  ) {
     throw new Error("acceptance-runtime-ownership-invalid");
-  const [runtime] = processes;
+  }
   await authenticateOwnedProcessGroup(
     { pid: runtime.pid },
     cleanupDependencies,
@@ -601,6 +740,7 @@ export function createCodexTracerAcceptanceIo() {
         },
         expected,
         internal: {
+          containmentMarkers: inspected.containmentMarkers,
           packageExecutable,
           packageRoot,
           deniedWorkspaceRoot,
@@ -613,10 +753,18 @@ export function createCodexTracerAcceptanceIo() {
         packageInspection: structuredClone(acceptancePackageInspectionContract),
       };
     },
-    async runProductionJourney() {
-      return { safeguards: structuredClone(acceptanceSafeguardContract) };
+    async runProductionJourney(prepared) {
+      return {
+        runtimeBefore: await snapshotDirectory(
+          prepared.internal.runtimeWorkRoot,
+        ),
+        safeguards: {},
+        workspaceBefore: await snapshotDirectory(
+          prepared.internal.workspaceRoot,
+        ),
+      };
     },
-    async runPhysicalJourney(prepared) {
+    async runPhysicalJourney(prepared, production) {
       const processInspectorRoot = join(
         prepared.internal.runRoot,
         "process-inspector",
@@ -648,11 +796,12 @@ export function createCodexTracerAcceptanceIo() {
       try {
         const journey = await runPackagedTracerJourney({
           crashRuntime: () =>
-            crashOwnedRuntime(
-              child.pid,
-              prepared.internal.runtimeBinary,
+            crashOwnedRuntime({
+              appPid: child.pid,
               cleanupDependencies,
-            ),
+              expectedRuntimeSha256: prepared.bindings.runtimeArtifactSha256,
+              runtimeWorkRoot: prepared.internal.runtimeWorkRoot,
+            }),
           deniedWorkspaceLabel: basename(prepared.internal.deniedWorkspaceRoot),
           execute: (request) =>
             waitForTracerAccessibilityAction({
@@ -669,6 +818,10 @@ export function createCodexTracerAcceptanceIo() {
         await terminateOwnedProcess(ownership, cleanupDependencies);
         const cleanupMs = Math.round(performance.now() - cleanupStartedAt);
         cleaned = true;
+        const [runtimeAfter, workspaceAfter] = await Promise.all([
+          snapshotDirectory(prepared.internal.runtimeWorkRoot),
+          snapshotDirectory(prepared.internal.workspaceRoot),
+        ]);
         const physicalObservation = JSON.parse(
           await readFile(physicalObservationPath, "utf8"),
         );
@@ -696,7 +849,16 @@ export function createCodexTracerAcceptanceIo() {
               ? `${process.env.ImageOS}-${process.env.ImageVersion ?? "current"}`
               : "local-macos",
           },
-          safeguards: {},
+          safeguards: observedSafeguards({
+            containmentMarkers: prepared.internal.containmentMarkers,
+            journey,
+            packageInspection: prepared.packageInspection,
+            residualProcesses: processExists(child.pid) ? 1 : 0,
+            runtimeAfter,
+            runtimeBefore: production.runtimeBefore,
+            workspaceAfter,
+            workspaceBefore: production.workspaceBefore,
+          }),
         };
       } finally {
         if (!cleaned)

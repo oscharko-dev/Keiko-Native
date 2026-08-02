@@ -161,9 +161,21 @@ export function retainedEvaluationInput(evidence = completedEvidence()) {
             })),
       ]),
     );
+    const predecessorPhase = {
+      allowed: null,
+      denied: "allowed",
+      revoked: "allowed",
+      recovered: "revoked",
+    }[phase];
+    const predecessorBytes =
+      predecessorPhase === null ? null : retainedArtifacts[predecessorPhase];
     const capture = {
-      schemaVersion: "keiko-native-macos-accessibility-driver-capture/v1",
+      schemaVersion: "keiko-native-macos-accessibility-driver-capture/v2",
       phase,
+      predecessor:
+        predecessorPhase === null
+          ? null
+          : { phase: predecessorPhase, sha256: sha256(predecessorBytes) },
       prepared,
       options: Object.fromEntries(
         ["axuielement", "systemEvents"].map((candidate) => [

@@ -1,4 +1,4 @@
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 #[cfg(test)]
 use std::{fs::File, path::Path};
 
@@ -23,6 +23,7 @@ pub fn sha256_file(path: &Path) -> io::Result<String> {
     sha256_reader(&mut file)
 }
 
+#[cfg(test)]
 pub fn sha256_reader(reader: &mut impl Read) -> io::Result<String> {
     let mut sha256 = Sha256::default();
     let mut buffer = [0_u8; 64 * 1024];
@@ -31,6 +32,20 @@ pub fn sha256_reader(reader: &mut impl Read) -> io::Result<String> {
         if read == 0 {
             break;
         }
+        sha256.update(&buffer[..read]);
+    }
+    Ok(hex(&sha256.finish()))
+}
+
+pub fn sha256_copy(reader: &mut impl Read, writer: &mut impl Write) -> io::Result<String> {
+    let mut sha256 = Sha256::default();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        writer.write_all(&buffer[..read])?;
         sha256.update(&buffer[..read]);
     }
     Ok(hex(&sha256.finish()))
@@ -158,6 +173,27 @@ fn hex(digest: &[u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+
+    struct FailingReader;
+
+    impl Read for FailingReader {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::other("read rejected"))
+        }
+    }
+
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
+            Err(io::Error::other("write rejected"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
 
     fn digest(parts: &[&[u8]]) -> String {
         let mut sha256 = Sha256::default();
@@ -181,6 +217,25 @@ mod tests {
             digest(&[&vec![b'a'; 1_000_000]]),
             "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
         );
+    }
+
+    #[test]
+    fn copying_hashes_exactly_the_bytes_written() {
+        let input = b"verified descriptor bytes";
+        let mut reader = Cursor::new(input);
+        let mut output = Vec::new();
+
+        let copied_digest = sha256_copy(&mut reader, &mut output).expect("copy and hash");
+        let expected_digest = sha256_reader(&mut Cursor::new(input)).expect("hash input");
+
+        assert_eq!(output, input);
+        assert_eq!(copied_digest, expected_digest);
+    }
+
+    #[test]
+    fn copying_propagates_source_and_destination_failures() {
+        assert!(sha256_copy(&mut FailingReader, &mut Vec::new()).is_err());
+        assert!(sha256_copy(&mut Cursor::new(b"bytes"), &mut FailingWriter).is_err());
     }
 
     #[test]

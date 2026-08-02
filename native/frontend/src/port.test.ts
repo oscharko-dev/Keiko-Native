@@ -996,11 +996,13 @@ describe("closed streamed Codex turn port", () => {
     ]) {
       const invoke = vi.fn(
         async (
-          _command: string,
+          command: string,
           arguments_: {
+            request?: string;
             onEvent?: { onmessage: (value: TurnView) => void };
           },
         ) => {
+          if (command === "application_cancel") return "{}";
           arguments_.onEvent?.onmessage(badUpdate as TurnView);
           return "late";
         },
@@ -1012,6 +1014,17 @@ describe("closed streamed Codex turn port", () => {
           () => ({ onmessage: () => undefined }),
         ).codexTurn(3, "Bounded.", () => undefined),
       ).rejects.toThrow("codex-turn-failed");
+      expect(invoke).toHaveBeenCalledWith(
+        "application_cancel",
+        expect.objectContaining({
+          documentNonce: authority.documentNonce,
+          generation: authority.generation,
+          request: JSON.stringify({
+            schemaVersion: 1,
+            requestId: "request-0000000000000007-0000000000000001",
+          }),
+        }),
+      );
     }
   });
 

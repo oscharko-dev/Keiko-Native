@@ -1692,11 +1692,26 @@ export async function capturePhysicalMatrixPhase(
     throw new TypeError("physical-candidate-runner-required");
   if (!validPreparedIdentity(prepared))
     throw new Error("capture-identity-invalid");
-  if (
-    priorCapture !== null &&
-    !samePreparedIdentity(prepared, priorCapture.prepared)
-  )
-    throw new Error("capture-identity-mismatch");
+  const predecessorPhase = {
+    allowed: null,
+    denied: "allowed",
+    revoked: "allowed",
+    recovered: "revoked",
+  }[phase];
+  if (predecessorPhase === null) {
+    if (priorCapture !== null)
+      throw new Error("capture-predecessor-unexpected");
+  } else if (
+    priorCapture === null ||
+    priorCapture.schemaVersion !==
+      "keiko-native-macos-accessibility-driver-capture/v2" ||
+    priorCapture.phase !== predecessorPhase ||
+    !samePreparedIdentity(prepared, priorCapture.prepared) ||
+    priorCapture.options?.axuielement?.unexplainedFailures !== 0 ||
+    priorCapture.options?.axuielement?.status !== predecessorPhase
+  ) {
+    throw new Error("capture-predecessor-invalid");
+  }
 
   const repetitions = phase === "allowed" ? 20 : 1;
   const options = {};
@@ -1728,8 +1743,17 @@ export async function capturePhysicalMatrixPhase(
   options.systemEvents = rejectedSystemEventsState(phase);
   timings.systemEvents = [];
   const capture = {
-    schemaVersion: "keiko-native-macos-accessibility-driver-capture/v1",
+    schemaVersion: "keiko-native-macos-accessibility-driver-capture/v2",
     phase,
+    predecessor:
+      priorCapture === null
+        ? null
+        : {
+            phase: priorCapture.phase,
+            sha256: createHash("sha256")
+              .update(`${JSON.stringify(priorCapture, null, 2)}\n`, "utf8")
+              .digest("hex"),
+          },
     prepared,
     options,
     timings,

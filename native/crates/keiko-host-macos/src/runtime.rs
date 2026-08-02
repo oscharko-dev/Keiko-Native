@@ -1,7 +1,8 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
-use std::fs::{self, File, Metadata};
+use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -12,18 +13,17 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::sha256::sha256_copy;
 #[cfg(test)]
 use crate::sha256::sha256_file;
+#[cfg(test)]
 use crate::sha256::sha256_reader;
 use crate::{AcceptedRequest, HostLifecycle, SenderContext};
 use keiko_application::runtime::{
     CODEX_RUNTIME_SHA256, RuntimeReadinessState, RuntimeReadinessView,
 };
 use keiko_application::turn::{MAX_AGENT_TEXT_BYTES, TurnReason, TurnState};
-use keiko_application::{ApplicationResult, application_response};
-use keiko_ui_port::{
-    Operation, ReasonCode, encode_error, encode_success, request_metadata, request_operation,
-};
+use keiko_ui_port::{Operation, ReasonCode, encode_error, request_metadata, request_operation};
 use serde_json::{Value, json};
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -33,6 +33,8 @@ const MAX_QUEUE_FRAMES: usize = 256;
 const MAX_STDERR_BYTES: usize = 1024 * 1024;
 const MAX_QUARANTINED_EVENTS: u16 = 64;
 const P_PID: i32 = 1;
+const PROC_PIDTBSDINFO: i32 = 3;
+const PROCESS_STATUS_ZOMBIE: u32 = 5;
 const SIGKILL: i32 = 9;
 const SIGTERM: i32 = 15;
 const WEXITED: i32 = 0x0000_0004;
@@ -95,6 +97,16 @@ unsafe extern "C" {
     fn keiko_kill(process_or_group: i32, signal: i32) -> i32;
     #[link_name = "proc_listpgrppids"]
     fn keiko_proc_listpgrppids(process_group: i32, buffer: *mut c_void, buffer_size: i32) -> i32;
+    #[link_name = "proc_listchildpids"]
+    fn keiko_proc_listchildpids(parent: i32, buffer: *mut c_void, buffer_size: i32) -> i32;
+    #[link_name = "proc_pidinfo"]
+    fn keiko_proc_pidinfo(
+        process: i32,
+        flavor: i32,
+        argument: u64,
+        buffer: *mut c_void,
+        buffer_size: i32,
+    ) -> i32;
     #[link_name = "waitid"]
     fn keiko_waitid(id_type: i32, id: u32, information: *mut WaitInformation, options: i32) -> i32;
 }
@@ -109,6 +121,33 @@ struct WaitInformation {
     reserved: [usize; 14],
 }
 
+#[repr(C)]
+#[derive(Default)]
+struct ProcessBsdInformation {
+    flags: u32,
+    status: u32,
+    exit_status: u32,
+    process_id: u32,
+    parent_process_id: u32,
+    user_id: u32,
+    group_id: u32,
+    real_user_id: u32,
+    real_group_id: u32,
+    saved_user_id: u32,
+    saved_group_id: u32,
+    reserved: u32,
+    command: [i8; 16],
+    name: [i8; 32],
+    open_files: u32,
+    process_group: u32,
+    job_control_count: u32,
+    controlling_device: u32,
+    terminal_process_group: u32,
+    nice: i32,
+    started_seconds: u64,
+    started_microseconds: u64,
+}
+
 #[derive(Clone, Debug)]
 struct RuntimeConfiguration {
     binary: PathBuf,
@@ -117,9 +156,17 @@ struct RuntimeConfiguration {
     expected_sha256: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct ProcessIdentity {
+    process_id: i32,
+    started_microseconds: u64,
+    started_seconds: u64,
+}
+
 #[derive(Debug, Default)]
 struct ActiveRuntime {
     process_group: Mutex<Option<i32>>,
+    owned_processes: Mutex<HashSet<ProcessIdentity>>,
     control: Mutex<RuntimeControl>,
     finished: Condvar,
     #[cfg(test)]
@@ -506,16 +553,11 @@ pub fn runtime_request(
         selected_workspace,
         Duration::from_millis(u64::from(timeout_ms)),
     );
-    let encoded = encode_runtime(&accepted, view);
-    finish_encoded(lifecycle, accepted, encoded)
-}
-
-fn encode_runtime(accepted: &AcceptedRequest, state: RuntimeReadinessView) -> String {
-    let (request_id, _, _) = request_metadata(&accepted.request);
-    encode_success(&application_response(
-        request_id,
-        ApplicationResult::RuntimeReadiness { state },
-    ))
+    let encoded = lifecycle.lock().map_or_else(
+        |_| encode_error("unknown-request", ReasonCode::InternalFailure),
+        |mut lifecycle| lifecycle.complete_runtime_request(accepted, view),
+    );
+    RuntimeRequestOutput { encoded }
 }
 
 fn finish_encoded(
@@ -648,13 +690,22 @@ fn run_turn_protocol(
     deadline: Instant,
     update: &mut impl FnMut(TurnRuntimeUpdate),
 ) -> TurnRuntimeOutcome {
-    if configuration.revalidate_binary().is_err() {
-        return TurnRuntimeOutcome::terminal(
-            TurnState::ContainmentFailed,
-            TurnReason::RuntimeIncompatible,
-        );
-    }
-    let mut command = Command::new(&configuration.binary);
+    let executable = match configuration.stage_verified_binary(work_directory) {
+        Ok(executable) => executable,
+        Err(RuntimeReadinessState::Unavailable | RuntimeReadinessState::Incompatible) => {
+            return TurnRuntimeOutcome::terminal(
+                TurnState::ContainmentFailed,
+                TurnReason::RuntimeIncompatible,
+            );
+        }
+        Err(_) => {
+            return TurnRuntimeOutcome::terminal(
+                TurnState::ContainmentFailed,
+                TurnReason::ProtocolRejected,
+            );
+        }
+    };
+    let mut command = Command::new(executable);
     command
         .args(CODEX_CONTAINMENT_ARGUMENTS)
         .current_dir(work_directory)
@@ -675,18 +726,7 @@ fn run_turn_protocol(
     if let Ok(mut active_group) = active.process_group.lock() {
         *active_group = Some(process_group);
     }
-    if configuration.revalidate_binary().is_err() {
-        return cleanup_turn(
-            child,
-            process_group,
-            TurnRuntimeOutcome::terminal(
-                TurnState::ContainmentFailed,
-                TurnReason::RuntimeIncompatible,
-            ),
-            active,
-            deadline,
-        );
-    }
+    register_owned_process(active, process_group);
     let Some(((mut stdin, stdout), stderr)) = child
         .stdin
         .take()
@@ -742,6 +782,9 @@ fn run_turn_protocol(
     let cleanup_reserve = TURN_CLEANUP_RESERVE.min(remaining / 5);
     let protocol_deadline = deadline.checked_sub(cleanup_reserve).unwrap_or(deadline);
     let (state, reason) = loop {
+        if !refresh_owned_processes(active) {
+            break (TurnState::ContainmentFailed, TurnReason::InternalFailure);
+        }
         if let Some(cancellation) = active.cancellation() {
             let state = cancellation.turn_state();
             let reason = cancellation.turn_reason();
@@ -941,7 +984,7 @@ struct VerifiedConfiguration {
 }
 
 impl VerifiedConfiguration {
-    fn revalidate_binary(&mut self) -> Result<(), RuntimeReadinessState> {
+    fn revalidate_binary_identity(&self) -> Result<(), RuntimeReadinessState> {
         let descriptor_metadata = self
             .binary_file
             .metadata()
@@ -959,6 +1002,12 @@ impl VerifiedConfiguration {
         {
             return Err(RuntimeReadinessState::Incompatible);
         }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn revalidate_binary(&mut self) -> Result<(), RuntimeReadinessState> {
+        self.revalidate_binary_identity()?;
         self.binary_file
             .seek(SeekFrom::Start(0))
             .map_err(|_| RuntimeReadinessState::Incompatible)?;
@@ -969,6 +1018,44 @@ impl VerifiedConfiguration {
         }
         Ok(())
     }
+
+    fn stage_verified_binary(
+        &mut self,
+        work_directory: &Path,
+    ) -> Result<PathBuf, RuntimeReadinessState> {
+        self.revalidate_binary_identity()?;
+        self.binary_file
+            .seek(SeekFrom::Start(0))
+            .map_err(|_| RuntimeReadinessState::Incompatible)?;
+        let staged = work_directory.join("verified-codex-runtime");
+        let mut output = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o500)
+            .open(&staged)
+            .map_err(|_| RuntimeReadinessState::ContainmentFailed)?;
+        let staged_sha256 = sha256_copy(&mut self.binary_file, &mut output)
+            .map_err(|_| RuntimeReadinessState::ContainmentFailed)?;
+        output
+            .sync_all()
+            .map_err(|_| RuntimeReadinessState::ContainmentFailed)?;
+        fs::set_permissions(&staged, fs::Permissions::from_mode(0o500))
+            .map_err(|_| RuntimeReadinessState::ContainmentFailed)?;
+        let staged_metadata = output
+            .metadata()
+            .map_err(|_| RuntimeReadinessState::ContainmentFailed)?;
+        if staged_sha256 != self.expected_sha256 {
+            return Err(RuntimeReadinessState::Incompatible);
+        }
+        if !staged_file_valid(&staged_metadata, &staged_sha256, &self.expected_sha256) {
+            return Err(RuntimeReadinessState::ContainmentFailed);
+        }
+        Ok(staged)
+    }
+}
+
+fn staged_file_valid(metadata: &Metadata, digest: &str, expected_digest: &str) -> bool {
+    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0 && digest == expected_digest
 }
 
 fn bind_configuration(
@@ -1042,14 +1129,17 @@ fn run_protocol(
     active: &ActiveRuntime,
     deadline: Instant,
 ) -> ProtocolOutcome {
-    if let Err(state) = configuration.revalidate_binary() {
-        return ProtocolOutcome {
-            state,
-            quarantined_events: 0,
-            cleaned: true,
-        };
-    }
-    let mut command = Command::new(&configuration.binary);
+    let executable = match configuration.stage_verified_binary(work_directory) {
+        Ok(executable) => executable,
+        Err(state) => {
+            return ProtocolOutcome {
+                state,
+                quarantined_events: 0,
+                cleaned: true,
+            };
+        }
+    };
+    let mut command = Command::new(executable);
     command
         .args(CODEX_CONTAINMENT_ARGUMENTS)
         .current_dir(work_directory)
@@ -1074,9 +1164,7 @@ fn run_protocol(
     if let Ok(mut active_group) = active.process_group.lock() {
         *active_group = Some(process_group);
     }
-    if let Err(state) = configuration.revalidate_binary() {
-        return cleanup_after(child, process_group, state, 0, active, deadline);
-    }
+    register_owned_process(active, process_group);
     let Some(((mut stdin, stdout), stderr)) = child
         .stdin
         .take()
@@ -1130,6 +1218,9 @@ fn run_protocol(
     let cleanup_reserve = remaining / 5;
     let protocol_deadline = deadline.checked_sub(cleanup_reserve).unwrap_or(deadline);
     let state = loop {
+        if !refresh_owned_processes(active) {
+            break RuntimeReadinessState::ContainmentFailed;
+        }
         if let Some(state) = active.cancellation_state() {
             break state;
         }
@@ -1444,7 +1535,27 @@ fn account_state(object: &serde_json::Map<String, Value>) -> ProjectionAction {
     {
         ProjectionAction::Terminal(RuntimeReadinessState::Ready)
     } else {
-        ProjectionAction::Terminal(RuntimeReadinessState::AuthenticationRequired)
+        ProjectionAction::Terminal(RuntimeReadinessState::Incompatible)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InertItemKind {
+    UserMessage,
+    AgentMessage,
+    Reasoning,
+    Plan,
+}
+
+impl InertItemKind {
+    fn parse(value: Option<&Value>) -> Option<Self> {
+        match value.and_then(Value::as_str) {
+            Some("userMessage") => Some(Self::UserMessage),
+            Some("agentMessage") => Some(Self::AgentMessage),
+            Some("reasoning") => Some(Self::Reasoning),
+            Some("plan") => Some(Self::Plan),
+            _ => None,
+        }
     }
 }
 
@@ -1479,7 +1590,7 @@ struct TurnProtocolProjection<'a> {
     streaming_announced: bool,
     agent_text: String,
     quarantined_events: u16,
-    started_items: HashSet<String>,
+    started_items: HashMap<String, InertItemKind>,
     completed_items: HashSet<String>,
 }
 
@@ -1494,7 +1605,7 @@ impl<'a> TurnProtocolProjection<'a> {
             streaming_announced: false,
             agent_text: String::new(),
             quarantined_events: 0,
-            started_items: HashSet::new(),
+            started_items: HashMap::new(),
             completed_items: HashSet::new(),
         }
     }
@@ -1727,18 +1838,21 @@ impl<'a> TurnProtocolProjection<'a> {
         let Some(item_id) = item.get("id").and_then(Value::as_str) else {
             return self.containment(TurnReason::ProtocolRejected);
         };
-        let inert = matches!(
-            item.get("type").and_then(Value::as_str),
-            Some("userMessage" | "agentMessage" | "reasoning" | "plan")
-        );
-        if !inert || item_id.is_empty() || item_id.len() > 128 {
+        let Some(item_kind) = InertItemKind::parse(item.get("type")) else {
+            return self.containment(TurnReason::EffectDenied);
+        };
+        if item_id.is_empty() || item_id.len() > 128 {
             return self.containment(TurnReason::EffectDenied);
         }
         if started {
-            if !self.started_items.insert(item_id.to_owned()) {
+            if self
+                .started_items
+                .insert(item_id.to_owned(), item_kind)
+                .is_some()
+            {
                 return self.containment(TurnReason::ProtocolRejected);
             }
-        } else if !self.started_items.contains(item_id)
+        } else if self.started_items.get(item_id) != Some(&item_kind)
             || !self.completed_items.insert(item_id.to_owned())
         {
             return self.containment(TurnReason::ProtocolRejected);
@@ -1760,7 +1874,7 @@ impl<'a> TurnProtocolProjection<'a> {
             return self.containment(TurnReason::ProtocolRejected);
         };
         if delta.is_empty()
-            || !self.started_items.contains(item_id)
+            || self.started_items.get(item_id) != Some(&InertItemKind::AgentMessage)
             || self.completed_items.contains(item_id)
             || self.agent_text.len().saturating_add(delta.len()) > MAX_AGENT_TEXT_BYTES
         {
@@ -1783,7 +1897,10 @@ impl<'a> TurnProtocolProjection<'a> {
             return self.containment(TurnReason::ProtocolRejected);
         }
         match turn.get("status").and_then(Value::as_str) {
-            Some("completed") if turn.get("error").is_none_or(Value::is_null) => {
+            Some("completed")
+                if turn.get("error").is_none_or(Value::is_null)
+                    && self.started_items.len() == self.completed_items.len() =>
+            {
                 self.stage = TurnProjectionStage::Terminal;
                 TurnProjectionAction::Complete
             }
@@ -1911,7 +2028,7 @@ fn stop_process_group_with_term_grace(
     );
     signal_active_process_group(active, process_group, SIGTERM);
     while Instant::now() < term_deadline {
-        if ready_to_reap(child.id() as i32, process_group) {
+        if ready_to_reap(child.id() as i32, process_group, active) {
             retire_active_process_group(active, process_group);
             return child.wait().is_ok();
         }
@@ -1919,13 +2036,12 @@ fn stop_process_group_with_term_grace(
     }
     signal_active_process_group(active, process_group, SIGKILL);
     while Instant::now() < deadline {
-        if ready_to_reap(child.id() as i32, process_group) {
+        if ready_to_reap(child.id() as i32, process_group, active) {
             retire_active_process_group(active, process_group);
             return child.wait().is_ok();
         }
         thread::sleep(Duration::from_millis(10));
     }
-    retire_active_process_group(active, process_group);
     let _ = child.try_wait();
     false
 }
@@ -1938,6 +2054,15 @@ fn signal_active_process_group(active: &ActiveRuntime, process_group: i32, signa
         return false;
     }
     signal_process_group(process_group, signal);
+    if let Ok(owned) = active.owned_processes.lock() {
+        for identity in owned
+            .iter()
+            .copied()
+            .filter(|identity| process_identity(identity.process_id) == Some(*identity))
+        {
+            signal_process(identity.process_id, signal);
+        }
+    }
     true
 }
 
@@ -1946,13 +2071,153 @@ fn retire_active_process_group(active: &ActiveRuntime, process_group: i32) {
         && *active_group == Some(process_group)
     {
         *active_group = None;
+        if let Ok(mut owned) = active.owned_processes.lock() {
+            owned.clear();
+        }
     }
 }
 
-fn ready_to_reap(child: i32, process_group: i32) -> bool {
+fn ready_to_reap(child: i32, process_group: i32, active: &ActiveRuntime) -> bool {
     let exited = child_exited_without_reaping(child);
     let descendants = process_group_has_descendants(process_group, child);
-    exited.unwrap_or(false) && !descendants.unwrap_or(true)
+    let owned_descendants = owned_descendants_alive(active, child);
+    exited.unwrap_or(false)
+        && !descendants.unwrap_or(true)
+        && owned_descendants.is_some_and(|alive| !alive)
+}
+
+fn register_owned_process(active: &ActiveRuntime, process: i32) {
+    debug_assert_eq!(
+        active.process_group.lock().ok().and_then(|group| *group),
+        Some(process)
+    );
+    let _ = refresh_owned_processes(active);
+}
+
+fn refresh_owned_processes(active: &ActiveRuntime) -> bool {
+    let Some(leader) = active.process_group.lock().ok().and_then(|group| *group) else {
+        return false;
+    };
+    let Ok(mut owned) = active.owned_processes.lock() else {
+        return false;
+    };
+    owned.retain(|identity| process_identity(identity.process_id) == Some(*identity));
+    let mut pending = owned.iter().copied().collect::<Vec<_>>();
+    let mut parent_processes = vec![leader];
+    let mut inspected = HashSet::from([leader]);
+    while let Some(identity) = pending.pop() {
+        if inspected.insert(identity.process_id) {
+            parent_processes.push(identity.process_id);
+        }
+    }
+    while let Some(parent) = parent_processes.pop() {
+        let Ok(children) = child_processes(parent) else {
+            return false;
+        };
+        for child in children {
+            let Some(identity) = process_identity(child) else {
+                continue;
+            };
+            owned.insert(identity);
+            if inspected.insert(child) {
+                parent_processes.push(child);
+            }
+        }
+    }
+    true
+}
+
+fn process_identity(process: i32) -> Option<ProcessIdentity> {
+    let information = process_information(process)?;
+    identity_from_information(process, &information)
+}
+
+fn identity_from_information(
+    process: i32,
+    information: &ProcessBsdInformation,
+) -> Option<ProcessIdentity> {
+    if information.status == PROCESS_STATUS_ZOMBIE {
+        return None;
+    }
+    Some(ProcessIdentity {
+        process_id: process,
+        started_microseconds: information.started_microseconds,
+        started_seconds: information.started_seconds,
+    })
+}
+
+fn process_information(process: i32) -> Option<ProcessBsdInformation> {
+    if process <= 0 {
+        return None;
+    }
+    let mut information = ProcessBsdInformation::default();
+    let buffer_size = i32::try_from(std::mem::size_of::<ProcessBsdInformation>()).ok()?;
+    // SAFETY: proc_pidinfo receives a positive PID discovered below the owned
+    // runtime leader and a correctly sized writable BSD-information buffer.
+    let result = unsafe {
+        keiko_proc_pidinfo(
+            process,
+            PROC_PIDTBSDINFO,
+            0,
+            (&mut information as *mut ProcessBsdInformation).cast::<c_void>(),
+            buffer_size,
+        )
+    };
+    validated_process_information(process, result, buffer_size, information)
+}
+
+fn validated_process_information(
+    process: i32,
+    result: i32,
+    buffer_size: i32,
+    information: ProcessBsdInformation,
+) -> Option<ProcessBsdInformation> {
+    if result != buffer_size || information.process_id != process as u32 {
+        None
+    } else {
+        Some(information)
+    }
+}
+
+fn child_processes(parent: i32) -> io::Result<Vec<i32>> {
+    if parent <= 0 {
+        return Err(io::Error::other("child process parent"));
+    }
+    let mut children = [0_i32; 512];
+    let buffer_size = i32::try_from(std::mem::size_of_val(&children))
+        .map_err(|_| io::Error::other("child process buffer"))?;
+    // SAFETY: proc_listchildpids receives a positive observed process ID and
+    // a writable fixed-size PID buffer owned by this call.
+    let child_count = unsafe {
+        keiko_proc_listchildpids(parent, children.as_mut_ptr().cast::<c_void>(), buffer_size)
+    };
+    let child_count = validated_child_count(child_count, children.len())?;
+    Ok(children[..child_count]
+        .iter()
+        .copied()
+        .filter(|process| *process > 0)
+        .collect())
+}
+
+fn validated_child_count(child_count: i32, capacity: usize) -> io::Result<usize> {
+    if child_count < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let child_count = child_count as usize;
+    if child_count >= capacity {
+        return Err(io::Error::other("child process result"));
+    }
+    Ok(child_count)
+}
+
+fn owned_descendants_alive(active: &ActiveRuntime, _leader: i32) -> Option<bool> {
+    if !refresh_owned_processes(active) {
+        return None;
+    }
+    let Ok(owned) = active.owned_processes.lock() else {
+        return None;
+    };
+    Some(!owned.is_empty())
 }
 
 fn child_exited_without_reaping(child: i32) -> io::Result<bool> {
@@ -2009,6 +2274,14 @@ fn signal_process_group(process_group: i32, signal: i32) {
     // shell command or caller-selected process.
     unsafe {
         keiko_kill(-process_group, signal);
+    }
+}
+
+fn signal_process(process: i32, signal: i32) {
+    // SAFETY: the positive PID was discovered in the owned runtime ancestry;
+    // no caller- or model-supplied process identity reaches this function.
+    unsafe {
+        keiko_kill(process, signal);
     }
 }
 
@@ -2312,19 +2585,19 @@ mod tests {
             );
         }
 
-        let unauthenticated = [
+        let malformed_or_unsupported = [
             json!({"id": 2, "result": {"account": {}, "requiresOpenaiAuth": true}}),
             json!({"id": 2, "result": {"account": {"type": "chatgpt", "email": "redacted", "planType": "plus", "extra": true}, "requiresOpenaiAuth": true}}),
             json!({"id": 2, "result": {"account": {"type": "apiKey", "email": "redacted", "planType": "plus"}, "requiresOpenaiAuth": true}}),
             json!({"id": 2, "result": {"account": {"type": "chatgpt", "email": 7, "planType": "plus"}, "requiresOpenaiAuth": true}}),
             json!({"id": 2, "result": {"account": {"type": "chatgpt", "email": "redacted", "planType": 7}, "requiresOpenaiAuth": true}}),
         ];
-        for response in unauthenticated {
+        for response in malformed_or_unsupported {
             let mut projection = ProtocolProjection::new(home);
             projection.stage = ProjectionStage::Account;
             assert_eq!(
                 projection.accept(&serde_json::to_vec(&response).expect("response")),
-                ProjectionAction::Terminal(RuntimeReadinessState::AuthenticationRequired)
+                ProjectionAction::Terminal(RuntimeReadinessState::Incompatible)
             );
         }
     }
@@ -2555,6 +2828,50 @@ mod tests {
     }
 
     #[test]
+    fn staged_runtime_is_bound_to_verified_descriptor_not_mutable_install_path() {
+        let fixture = Fixture::new();
+        let _host = fixture.scripted_host("#!/bin/sh\nprintf 'verified\\n'\n");
+        let expected = sha256_file(&fixture.binary).expect("approved digest");
+        let configuration = RuntimeConfiguration {
+            binary: fixture.binary.clone(),
+            codex_home: fixture.home.clone(),
+            work_root: fixture.work.clone(),
+            expected_sha256: expected.clone(),
+        };
+        let mut verified = bind_configuration(&configuration, None).expect("bound");
+        let stage_root = fixture.work.join("stage-test");
+        fs::create_dir(&stage_root).expect("stage root");
+        let staged = verified
+            .stage_verified_binary(&stage_root)
+            .expect("verified staging");
+
+        fs::write(&fixture.binary, "#!/bin/sh\nprintf 'replacement\\n'\n")
+            .expect("replace installation path");
+        fs::set_permissions(&fixture.binary, fs::Permissions::from_mode(0o700))
+            .expect("replacement mode");
+        assert_eq!(sha256_file(&staged).expect("staged digest"), expected);
+        let output = Command::new(staged)
+            .output()
+            .expect("execute staged runtime");
+        assert_eq!(output.stdout, b"verified\n");
+    }
+
+    #[test]
+    fn staged_runtime_validation_rejects_each_artifact_drift_class() {
+        let fixture = Fixture::new();
+        let executable = fs::metadata(&fixture.binary).expect("executable metadata");
+        let non_executable_path = fixture.root.join("non-executable-stage");
+        fs::write(&non_executable_path, b"stage").expect("non-executable stage");
+        let non_executable = fs::metadata(non_executable_path).expect("non-executable metadata");
+        let directory = fs::metadata(&fixture.home).expect("directory metadata");
+
+        assert!(!staged_file_valid(&directory, "digest", "digest"));
+        assert!(!staged_file_valid(&non_executable, "digest", "digest"));
+        assert!(!staged_file_valid(&executable, "wrong", "digest"));
+        assert!(staged_file_valid(&executable, "digest", "digest"));
+    }
+
+    #[test]
     fn host_rejects_concurrency_honours_pre_cancel_and_preserves_collisions() {
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
@@ -2667,7 +2984,65 @@ mod tests {
         })
         .join();
         assert!(!signal_active_process_group(&poisoned, i32::MAX, SIGTERM));
+        assert!(!refresh_owned_processes(&poisoned));
+        assert_eq!(owned_descendants_alive(&poisoned, i32::MAX), None);
         retire_active_process_group(&poisoned, i32::MAX);
+
+        let poisoned_owned = Arc::new(ActiveRuntime::default());
+        *poisoned_owned
+            .process_group
+            .lock()
+            .expect("process group before owned poisoning") = Some(i32::MAX);
+        let poison_target = Arc::clone(&poisoned_owned);
+        let _ = thread::spawn(move || {
+            let _guard = poison_target
+                .owned_processes
+                .lock()
+                .expect("owned process state before poisoning");
+            panic!("poison owned process state");
+        })
+        .join();
+        assert!(!refresh_owned_processes(&poisoned_owned));
+    }
+
+    #[test]
+    fn process_identity_and_child_count_validation_fail_closed() {
+        let process = 41;
+        let buffer_size = std::mem::size_of::<ProcessBsdInformation>() as i32;
+        let valid = ProcessBsdInformation {
+            process_id: process as u32,
+            started_microseconds: 7,
+            started_seconds: 11,
+            ..ProcessBsdInformation::default()
+        };
+        assert!(identity_from_information(process, &valid).is_some());
+        let zombie = ProcessBsdInformation {
+            status: PROCESS_STATUS_ZOMBIE,
+            ..valid
+        };
+        assert_eq!(identity_from_information(process, &zombie), None);
+
+        let mismatched = ProcessBsdInformation {
+            process_id: (process + 1) as u32,
+            ..ProcessBsdInformation::default()
+        };
+        assert!(
+            validated_process_information(process, buffer_size, buffer_size, mismatched).is_none()
+        );
+        assert!(
+            validated_process_information(
+                process,
+                buffer_size - 1,
+                buffer_size,
+                ProcessBsdInformation::default(),
+            )
+            .is_none()
+        );
+        assert!(process_information(0).is_none());
+        assert!(child_processes(0).is_err());
+        assert!(validated_child_count(-1, 512).is_err());
+        assert!(validated_child_count(512, 512).is_err());
+        assert_eq!(validated_child_count(0, 512).expect("empty child list"), 0);
     }
 
     #[test]
@@ -2725,6 +3100,9 @@ mod tests {
             "poisoned runtime control must not masquerade as renderer loss"
         );
         host.cancel_request("poisoned-bookkeeping");
+        host.active.running.store(true, Ordering::Release);
+        host.active.finish_request();
+        assert!(!host.active.running.load(Ordering::Acquire));
     }
 
     #[test]
@@ -3098,7 +3476,7 @@ printf '%s\n' '{"method":"item/tool/call","id":7,"params":{"path":"/private/secr
         let mut duplicate_completion = active_turn_projection(home, work);
         duplicate_completion
             .started_items
-            .insert("item-1".to_owned());
+            .insert("item-1".to_owned(), InertItemKind::AgentMessage);
         assert_eq!(
             duplicate_completion.accept(&serde_json::to_vec(&completed).unwrap()),
             TurnProjectionAction::Quarantine
@@ -3124,7 +3502,9 @@ printf '%s\n' '{"method":"item/tool/call","id":7,"params":{"path":"/private/secr
         {
             let mut projection = active_turn_projection(home, work);
             if started {
-                projection.started_items.insert("item-1".to_owned());
+                projection
+                    .started_items
+                    .insert("item-1".to_owned(), InertItemKind::AgentMessage);
             }
             if completed {
                 projection.completed_items.insert("item-1".to_owned());
@@ -3164,6 +3544,27 @@ printf '%s\n' '{"method":"item/tool/call","id":7,"params":{"path":"/private/secr
                 TurnReason::ProtocolRejected,
             );
         }
+        let mut unfinished = active_turn_projection(home, work);
+        unfinished
+            .started_items
+            .insert("item-1".to_owned(), InertItemKind::AgentMessage);
+        assert_turn_containment(
+            unfinished.accept(
+                br#"{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","error":null}}}"#,
+            ),
+            TurnReason::ProtocolRejected,
+        );
+
+        let mut reasoning_delta = active_turn_projection(home, work);
+        reasoning_delta
+            .started_items
+            .insert("item-1".to_owned(), InertItemKind::Reasoning);
+        assert_turn_containment(
+            reasoning_delta.accept(
+                br#"{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","delta":"hidden reasoning"}}"#,
+            ),
+            TurnReason::BufferLimit,
+        );
         for status in ["failed", "interrupted"] {
             assert_eq!(
                 active_turn_projection(home, work).accept(
@@ -3351,7 +3752,9 @@ printf '%s\n' '{"method":"item/tool/call","id":7,"params":{"path":"/private/secr
         ));
 
         let mut flooded = active();
-        flooded.started_items.insert("item-1".to_owned());
+        flooded
+            .started_items
+            .insert("item-1".to_owned(), InertItemKind::AgentMessage);
         flooded.agent_text = "x".repeat(MAX_AGENT_TEXT_BYTES);
         assert!(matches!(
             flooded.accept(
@@ -3736,6 +4139,73 @@ while :; do /bin/sleep 1; done
             None
         );
         assert!(!process_group_exists(process_group));
+    }
+
+    #[test]
+    fn cleanup_failure_retains_ownership_until_reconciliation_proves_exit() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("trap '' TERM; while :; do /bin/sleep 1; done")
+            .process_group(0)
+            .spawn()
+            .expect("owned process group");
+        let process_group = child.id() as i32;
+        let active = ActiveRuntime::default();
+        *active.process_group.lock().expect("process-group state") = Some(process_group);
+
+        assert!(!stop_process_group(
+            &mut child,
+            process_group,
+            &active,
+            Instant::now(),
+        ));
+        assert_eq!(
+            *active.process_group.lock().expect("retained ownership"),
+            Some(process_group)
+        );
+        assert!(stop_process_group(
+            &mut child,
+            process_group,
+            &active,
+            Instant::now() + Duration::from_secs(5),
+        ));
+        assert_eq!(
+            *active.process_group.lock().expect("retired ownership"),
+            None
+        );
+    }
+
+    #[test]
+    fn owned_descendant_tracking_is_independent_of_process_group_membership() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut escaped = Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .expect("independent descendant fixture");
+        let active = ActiveRuntime::default();
+        let leader = std::process::id() as i32;
+        *active.process_group.lock().expect("process-group state") = Some(leader);
+        assert_eq!(owned_descendants_alive(&active, leader), Some(true));
+        let escaped_identity = process_identity(escaped.id() as i32).expect("escaped identity");
+        let reused = ProcessIdentity {
+            started_microseconds: escaped_identity.started_microseconds.wrapping_add(1),
+            ..escaped_identity
+        };
+        active
+            .owned_processes
+            .lock()
+            .expect("owned process state")
+            .insert(reused);
+        assert_ne!(process_identity(reused.process_id), Some(reused));
+        signal_process(escaped.id() as i32, SIGKILL);
+        let _ = escaped.wait();
+        assert_eq!(owned_descendants_alive(&active, leader), Some(false));
     }
 
     struct Fixture {

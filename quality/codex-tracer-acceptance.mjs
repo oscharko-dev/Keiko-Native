@@ -343,7 +343,7 @@ export async function runCodexTracerAcceptance({ args, io }) {
   try {
     prepared = await io.preparePackage();
     const production = await io.runProductionJourney(prepared);
-    const physical = await io.runPhysicalJourney(prepared);
+    const physical = await io.runPhysicalJourney(prepared, production);
     const evidence = {
       bindings: prepared.bindings,
       budgets: physical.budgets,
