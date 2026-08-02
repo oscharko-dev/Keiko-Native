@@ -159,32 +159,37 @@ export async function runLifecycleProducerRecordAction({
   loadFacts,
   loadHistory = reconstructLifecycleHistory,
   now = new Date(),
-  provider = createLifecycleGithubProvider(),
+  provider,
+  providerFactory = createLifecycleGithubProvider,
 } = {}) {
   const rawWire = lifecycleProducerWireFromEnvironment(environment);
   const wire = validateLifecycleProducerWire(rawWire);
   const runtime = producerRuntimeFromEnvironment(environment);
   const issueNumber = Number(wire.issue_number);
-  const budget = createLifecycleProviderBudget("normal");
+  const budget = createLifecycleProviderBudget("normal", {
+    providerOwnsCounting: provider === undefined,
+  });
+  budget.selectMode("normal");
+  const activeProvider = provider ?? providerFactory({ budget });
   const history = await loadHistory({
     budget,
     issueNumber,
     mode: "normal",
-    provider,
+    provider: activeProvider,
     repository: wire.repository,
   });
   if (history.state !== "authenticated")
     throw new Error("producer lifecycle history is unavailable");
   const current = await (loadFacts === undefined
-    ? provider.loadCoordinatorFacts({ issueNumber })
+    ? activeProvider.loadCoordinatorFacts({ issueNumber })
     : loadFacts({ issueNumber }));
   const facts = lifecycleCoordinatorFacts({
-    comments: provider.comments(),
+    comments: activeProvider.comments(),
     issue: current.issue,
     protectedDevSha: runtime.protectedDevSha,
     pullRequest: current.pullRequest,
   });
-  const workflow = await provider.currentProducerRuntime({
+  const workflow = await activeProvider.currentProducerRuntime({
     expectedProducer: wire.expected_producer,
     runId: runtime.runId,
   });
@@ -192,7 +197,7 @@ export async function runLifecycleProducerRecordAction({
     evaluation: producerEvaluation(
       wire.expected_producer,
       current.issue,
-      provider.comments(),
+      activeProvider.comments(),
       current.pullRequest,
     ),
     facts,
@@ -217,7 +222,7 @@ export async function runLifecycleProducerRecordAction({
       "utf8",
     );
   return Object.freeze({
-    budgetUsed: Math.max(budget.used, provider.requestCount?.() ?? 0),
+    budgetUsed: Math.max(budget.used, activeProvider.requestCount?.() ?? 0),
     facts,
     history,
     result,
