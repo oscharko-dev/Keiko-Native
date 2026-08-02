@@ -193,6 +193,11 @@ export function directLifecycleWakeLocator({
   const validatedCommentId = isComment
     ? validatedLifecycleWakeCommentId(commentId)
     : commentId;
+  let recoveryCommentInvalid = recoveryCommentId !== "";
+  if (isComment && !isPullRequestComment)
+    recoveryCommentInvalid =
+      !canonicalCommentId(recoveryCommentId) ||
+      recoveryCommentId !== String(validatedCommentId);
   if (
     repository !== LIFECYCLE_WAKE_REPOSITORY ||
     !commit(protectedDevSha) ||
@@ -201,12 +206,7 @@ export function directLifecycleWakeLocator({
     !positive(issueNumber) ||
     (pullRequestNumber !== null && !positive(pullRequestNumber)) ||
     (!isComment && commentId !== null) ||
-    (isPullRequestComment
-      ? recoveryCommentId !== ""
-      : isComment
-        ? !canonicalCommentId(recoveryCommentId) ||
-          recoveryCommentId !== String(validatedCommentId)
-        : recoveryCommentId !== "")
+    recoveryCommentInvalid
   )
     fail("direct-locator-invalid");
   return Object.freeze({
