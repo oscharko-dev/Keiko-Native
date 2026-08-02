@@ -104,7 +104,74 @@ defense in depth, not an atomic base compare-and-swap.
 
 ## 6. Run the activation probes
 
+Use the exact protected policy, request, durable-claim, provider, read-back, and
+human-reconciliation procedure in
+[`guarded-epic-merge.md`](guarded-epic-merge.md). Before Issue #55 freezes its manifest, confirm
+that the checked-in policy status is `disabled` and bound to the exact protected `dev` revision.
+
+ADR-0011's lifecycle handoff records must also remain inert until Issue #55. Protected workflows
+use only the built-in `github-actions[bot]` and short-lived `GITHUB_TOKEN`; no account, installed
+App, PAT, broker, database, hosted service, application/runtime dependency, or second credential is
+provisioned. Any GitHub-maintained attestation transport is full-SHA pinned under the refreshed #51
+contract. Before activation, a generation may emit only sanitized non-applied observations and must
+not change a lifecycle label, commit status, branch, pull request, queue, or merge.
+
+The activation probe authenticates the exact bot user, GitHub Actions App ID `15368`, protected
+workflow path/ref/commit, run, attempt, job, result, and a post-publication GitHub-native
+attestation over an immutable anchor binding provider comment ID, exact body digest, record digest,
+and run. It proves exact per-issue anchors, checkpoint rollover, normal two-page loading,
+effect-disabled cursor recovery with exact accumulator root, resume, page-order, count, and cursor
+discontinuity fixtures, empty-history bootstrap, every pre-checkpoint crash outcome, missing-suffix
+detection, strict full-body parsing, exact predecessor chains, one shared per-issue `queue: max`
+domain and fence, the repository-wide provider-budget group, hard request ceilings, stable
+double-reads, same-generation producer results, explicit crash recovery, and no retry after
+ambiguity. Deleted, edited, duplicated, conflicting, truncated, stale, wrong-generation,
+wrong-producer, rate-limited, or unavailable record evidence must fail closed.
+
+Bootstrap fixtures prove the exact sequence-one null-root compacted-prefix preimage and ordered
+genesis members. Crash fixtures prove the request-bound forward orphan settlement accepts only an
+unchanged canonical comment from an independently verified failed protected writer run with stable
+zero anchor and attestation counts, authenticates its own settlement record, and quarantines the
+orphan without trusting it. Wrong authorization, changed or missing facts, a successful run, an
+existing anchor or attestation, multiple orphans, and settlement-publication failure must remain
+effect-disabled.
+
+Publication proof loads the exact candidate commit, requires a complete recursive Git tree with
+`truncated === false`, and verifies exact regular-file path, mode, blob object, byte count, and
+SHA-256 equality through a stable reread. The pull-request files API is not complete tree authority,
+so pull-request file metadata alone cannot satisfy this proof.
+
+ADR-0010 assigns Issue #50 only the inert guard, protected policy/status producer, hermetic proof,
+and corrected v2 live-probe harness. The canonical `status: ready for human review` state cannot
+truthfully exist as merge authority before the signed Contract-as-Code activation. The guarded
+operation is therefore unavailable before activation and makes no provider merge request. Issue #55
+owns this human-gated activation and, after the lifecycle and protected policy are active, the
+first exact-target success plus the complete live denial, race, ambiguity, redaction, and
+reconciliation matrix.
+
+Protected `dev` is the sole policy source and derives exactly three availability states. `disabled`
+before activation makes no provider merge request. `probe-only` immediately after activation
+permits effects solely for Issue #55's frozen disposable-probe manifest and exact issue, pull
+request, target, head, base, request, and operation identities. `enabled` requires protected
+Contract-as-Code to consume an expected-producer exact-head live-proof receipt and status bound to
+the signed activation commit, frozen manifest, and complete successfully settled matrix. That
+evidence is consumed input, not independent authority. Missing, stale, failed, wrong-producer,
+mismatched, incomplete, or ambiguous evidence remains `probe-only` or `disabled`; no caller input
+or repository variable promotes it.
+
 Record the issue, pull request, exact head, actor, result, and timestamp for each probe:
+
+Before activation, create an accepted event on a disposable issue and let the protected
+`lifecycle-wakeup.yml` caller advance the closed coordinator and producer chain over successive
+wakes or scheduled reconciliations. Require GitHub-Actions-authored, anchored, and attested
+generation, fence, producer, and `planned` transition/read-back records bound to the exact source,
+target, request digest, protected run, and timestamp, and prove the issue's lifecycle label is
+unchanged. Replay a wake, change authenticated provider facts, use a stale or excluded source, post
+a malformed or unauthorized recovery command, and attempt to inject producer policy through the
+caller; each case must fail closed without a lifecycle or branch effect. A copied, human-authored,
+malformed, unanchored, unattested, or raw-content observation has no replay or transition
+authority. The retained record contains no request reason, issue body, provider body, endpoint, or
+credential-shaped value.
 
 1. An incomplete template cannot retain `status: ready`; a complete template can, and receives a
    GitHub-Actions-authored readiness record.
@@ -117,21 +184,24 @@ Record the issue, pull request, exact head, actor, result, and timestamp for eac
    again.
 6. A wrong source issue number, delivery target, readiness URL, contract version, or stale head
    fails closed.
-7. A guarded-operation probe using the existing authenticated maintainer credential merges one
-   fully green child-issue pull request to its exact accepted `epic/**` target, rejects `dev`,
-   wrong, stale, replayed, and concurrent requests before mutation, durably persists its
-   compare-and-set claim before making at most one merge call that passes the exact revalidated head
-   SHA as `sha` with `merge_method: squash`; verifies the exact target tip is the reported squash
-   commit, its sole parent is the observed base, and its tree equals the observed head tree; and
-   proves an ambiguous claim remains blocked with no retry or provider auto-merge until explicit
-   human reconciliation. In the disposable live probe, race two distinct child-issue pull requests
-   against the same exact accepted target and observed current base and prove only one reaches
-   provider submission. Also prove that concurrent callers with distinct request identities cannot
-   partition the serialization key. GitHub attribution cannot distinguish this agent operation from
-   a human action; the evidence must state that limitation rather than claiming identity isolation.
-   Advance the base after green evidence and prove that the base advance invalidates eligibility and
-   rejects the merge before the guarded effect; eligibility requires fresh evidence against the new
-   base.
+7. After activation, a guarded-operation probe using the existing authenticated maintainer
+   credential merges one fully green child-issue pull request to its exact accepted `epic/**`
+   target, rejects `dev`, wrong, stale, replayed, and concurrent requests before mutation, and
+   durably persists its compare-and-set claim before making at most one merge call that passes the
+   exact revalidated head SHA as `sha` with `merge_method: squash`; verifies the exact target tip is
+   the reported squash commit, its sole parent is the observed base, and its tree equals the
+   observed head tree; and proves an ambiguous claim remains blocked with no retry or provider
+   auto-merge until explicit human reconciliation. In the disposable live probe, race two distinct
+   child-issue pull requests against the same exact accepted target and observed current base and
+   prove only one reaches provider submission. Also prove that concurrent callers with distinct
+   request identities cannot partition the serialization key. GitHub attribution cannot
+   distinguish this agent operation from a human action; the evidence must state that limitation
+   rather than claiming identity isolation. Advance the base after green evidence and prove that
+   the base advance invalidates eligibility and rejects the merge before the guarded effect;
+   eligibility requires fresh evidence against the new base. Create every disposable
+   provider-assigned parent issue before deriving its `epic/**` target, use a separate parent and
+   target for the stale-base case, and read every prohibited target's actual tip before and after
+   denial. Treat an absent `main` ref as denial evidence and never create `main` for the probe.
 8. Niko or Oscharko can manually merge a fully green `dev` pull request after reviewing the exact
    head; no separate non-author approval is required.
 
@@ -157,9 +227,13 @@ merge-group workflow checks out only protected `dev` with non-persistent credent
 read-only contents access, is gated by an unset activation variable, and permits only syntax-check
 commands. It never executes constituent content.
 
-Automated epic-branch merge remains disabled until complete pagination, stable reads, exact-target
-denials, expected-head rejection, at-most-once submission, redaction, and exact parent and outcome
-evidence are proven live. An unavailable, ambiguous, weak, or failed capability selects human-only
-child integration; an ambiguous result causes no retry and must not enable provider auto-merge.
-Enrolling merge-group contexts, configuring the queue, or enabling either inert job requires a
-separate accepted human activation change.
+Automated epic-branch merge remains disabled before the signed Contract-as-Code activation. After
+activation, it remains `probe-only` and unavailable for general child delivery until protected
+Contract-as-Code consumes Issue #55's expected-producer exact-head receipt and status proving
+complete pagination, stable reads, exact-target denials, expected-head rejection, at-most-once
+submission, redaction, and exact parent and outcome evidence live, all bound to the signed
+activation commit and frozen disposable manifest. An unavailable, ambiguous, weak, stale,
+wrong-producer, or failed capability remains `probe-only` or `disabled` and selects human-only child
+integration; an ambiguous result causes no retry and must not enable provider auto-merge. Enrolling
+merge-group contexts, configuring the queue, or enabling either inert job requires a separate
+accepted human activation change.

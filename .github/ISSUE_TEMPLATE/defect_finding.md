@@ -96,6 +96,19 @@ fresh revalidation. GitHub cannot distinguish shared-identity agent and human ac
 must never merge, enable auto-merge, enqueue, push, or update `dev`, `main`, or `release/**`; guard
 unavailability selects human-only child integration.
 
+The canonical `status: ready for human review` state cannot truthfully exist as merge authority
+before the signed Contract-as-Code activation. The guarded operation is therefore unavailable
+before activation and makes no provider merge request. Protected `dev` is the sole policy source
+and derives exactly three availability states. `disabled` applies before activation. `probe-only`
+immediately after activation permits effects solely for Issue #55's frozen disposable-probe
+manifest and exact issue, pull request, target, head, base, request, and operation identities.
+`enabled` requires protected Contract-as-Code to consume an expected-producer exact-head live-proof
+receipt and status bound to the signed activation commit, frozen manifest, and complete
+successfully settled matrix. That evidence is consumed input, not independent authority. Missing,
+stale, failed, wrong-producer, mismatched, incomplete, or ambiguous evidence remains `probe-only`
+or `disabled`; no caller input or repository variable promotes it. An absent `main` ref is denial
+evidence and is never created for a probe.
+
 The executing agent chooses a dedicated source branch using its own runner prefix. It must include
 the issue number, remain unique to this issue, and be recorded in the pull request.
 

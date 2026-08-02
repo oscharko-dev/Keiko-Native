@@ -1,7 +1,9 @@
-# The PR contract is a privileged metadata-only workflow. It loads code only from protected dev,
-# never interpolates PR-controlled data into shell or environment, and publishes fixed commit
-# statuses. quality/contract.mjs enforces those invariants. No other dangerous trigger is exempt.
+# The PR contract and lifecycle wake caller are privileged metadata-only workflows. Both load code
+# only from protected dev and never execute pull-request code. The lifecycle exception is scoped
+# to its exact trigger mapping; quality/contract.mjs enforces both workflows' closed event sets,
+# permissions, checkout, command, and data-flow invariants. No other dangerous trigger is exempt.
 rules:
   dangerous-triggers:
     ignore:
+      - lifecycle-wakeup.yml:3
       - pr-contract.yml

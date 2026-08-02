@@ -1,29 +1,54 @@
 name: Issue lifecycle
 
 on:
-  issues:
-    types: [assigned, closed, edited, labeled, reopened, unassigned, unlabeled]
   workflow_call:
     inputs:
       issue_number:
         required: true
-        type: string
-      pr_contract_result:
+        type: number
+      recovery_comment_id:
         required: true
         type: string
+    outputs:
+      observation:
+        description: Sanitized authenticated lifecycle observation identity
+        value: ${{ jobs.write-record.outputs.observation || jobs.issue-contract-current.outputs.observation || jobs.pr-contract.outputs.observation || jobs.contract-publication.outputs.observation || jobs.evaluate.outputs.observation }}
 
 permissions: {}
 
-concurrency:
-  group: issue-lifecycle-${{ inputs.issue_number || github.event.issue.number }}
-  cancel-in-progress: false
-
 jobs:
-  classify:
-    name: Classify inert lifecycle transition
+  evaluate:
+    name: Evaluate protected lifecycle request
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    concurrency:
+      group: issue-lifecycle-provider-budget
+      queue: max
+    outputs:
+      attempt: ${{ steps.evaluate.outputs.attempt }}
+      exact-head-sha: ${{ steps.evaluate.outputs.exact-head-sha }}
+      exact-target: ${{ steps.evaluate.outputs.exact-target }}
+      expected-producers: ${{ steps.evaluate.outputs.expected-producers }}
+      generation-bytes-base64: ${{ steps.evaluate.outputs.generation-bytes-base64 }}
+      generation-bytes-sha256: ${{ steps.evaluate.outputs.generation-bytes-sha256 }}
+      generation-identity: ${{ steps.evaluate.outputs.generation-identity }}
+      generation-request-comment-id: ${{ steps.evaluate.outputs.generation-request-comment-id }}
+      generation-request-digest: ${{ steps.evaluate.outputs.generation-request-digest }}
+      issue-number: ${{ steps.evaluate.outputs.issue-number }}
+      phase-fence-comment-id: ${{ steps.evaluate.outputs.phase-fence-comment-id }}
+      phase-fence-digest: ${{ steps.evaluate.outputs.phase-fence-digest }}
+      pull-request-number: ${{ steps.evaluate.outputs.pull-request-number }}
+      record-plan: ${{ steps.evaluate.outputs.record-plan }}
+      request-identity: ${{ steps.evaluate.outputs.request-identity }}
+      request-payload-digest: ${{ steps.evaluate.outputs.request-payload-digest }}
+      next-writer: ${{ steps.evaluate.outputs.next-writer }}
+      observation: ${{ steps.evaluate.outputs.observation }}
+      producer: ${{ steps.evaluate.outputs.producer }}
+      should-record: ${{ steps.evaluate.outputs.should-record }}
     permissions:
+      actions: read
+      attestations: read
+      checks: read
       contents: read
       issues: read
       pull-requests: read
@@ -39,9 +64,172 @@ jobs:
         with:
           node-version: "24.18.0"
           package-manager-cache: false
-      - name: Compute the inert lifecycle decision
+      - name: Evaluate current provider state without effects
+        id: evaluate
         env:
           GITHUB_TOKEN: ${{ github.token }}
           KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled
-          KEIKO_PR_CONTRACT_RESULT: ${{ inputs.pr_contract_result }}
-        run: node quality/issue-lifecycle-action.mjs
+          KEIKO_ROUTED_ISSUE_NUMBER: ${{ inputs.issue_number }}
+          KEIKO_ROUTED_RECOVERY_COMMENT_ID: ${{ inputs.recovery_comment_id }}
+        run: node quality/lifecycle-coordinator-action.mjs
+
+  issue-contract-current:
+    name: Produce current issue-contract result
+    needs: evaluate
+    if: ${{ needs.evaluate.outputs.next-writer == 'producer' && needs.evaluate.outputs.producer == 'issue-contract-current' }}
+    concurrency:
+      group: issue-lifecycle-provider-budget
+      queue: max
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+      issues: write
+      pull-requests: read
+      statuses: write
+    uses: ./.github/workflows/pr-contract.yml
+    with:
+      schema_version: "1"
+      producer_contract_version: "1"
+      repository: oscharko-dev/Keiko-Native
+      issue_number: ${{ needs.evaluate.outputs.issue-number }}
+      pull_request_number: ${{ needs.evaluate.outputs.pull-request-number }}
+      exact_head_sha: ${{ needs.evaluate.outputs.exact-head-sha }}
+      exact_target: ${{ needs.evaluate.outputs.exact-target }}
+      generation_bytes_base64: ${{ needs.evaluate.outputs.generation-bytes-base64 }}
+      generation_bytes_sha256: ${{ needs.evaluate.outputs.generation-bytes-sha256 }}
+      generation_identity: ${{ needs.evaluate.outputs.generation-identity }}
+      attempt: ${{ needs.evaluate.outputs.attempt }}
+      phase_fence_comment_id: ${{ needs.evaluate.outputs.phase-fence-comment-id }}
+      phase_fence_digest: ${{ needs.evaluate.outputs.phase-fence-digest }}
+      generation_request_comment_id: ${{ needs.evaluate.outputs.generation-request-comment-id }}
+      generation_request_digest: ${{ needs.evaluate.outputs.generation-request-digest }}
+      request_identity: ${{ needs.evaluate.outputs.request-identity }}
+      request_payload_digest: ${{ needs.evaluate.outputs.request-payload-digest }}
+      expected_producer: issue-contract-current
+
+  pr-contract:
+    name: Produce pull-request contract result
+    needs: evaluate
+    if: ${{ needs.evaluate.outputs.next-writer == 'producer' && needs.evaluate.outputs.producer == 'pr-contract' }}
+    concurrency:
+      group: issue-lifecycle-provider-budget
+      queue: max
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+      issues: write
+      pull-requests: read
+      statuses: write
+    uses: ./.github/workflows/pr-contract.yml
+    with:
+      schema_version: "1"
+      producer_contract_version: "1"
+      repository: oscharko-dev/Keiko-Native
+      issue_number: ${{ needs.evaluate.outputs.issue-number }}
+      pull_request_number: ${{ needs.evaluate.outputs.pull-request-number }}
+      exact_head_sha: ${{ needs.evaluate.outputs.exact-head-sha }}
+      exact_target: ${{ needs.evaluate.outputs.exact-target }}
+      generation_bytes_base64: ${{ needs.evaluate.outputs.generation-bytes-base64 }}
+      generation_bytes_sha256: ${{ needs.evaluate.outputs.generation-bytes-sha256 }}
+      generation_identity: ${{ needs.evaluate.outputs.generation-identity }}
+      attempt: ${{ needs.evaluate.outputs.attempt }}
+      phase_fence_comment_id: ${{ needs.evaluate.outputs.phase-fence-comment-id }}
+      phase_fence_digest: ${{ needs.evaluate.outputs.phase-fence-digest }}
+      generation_request_comment_id: ${{ needs.evaluate.outputs.generation-request-comment-id }}
+      generation_request_digest: ${{ needs.evaluate.outputs.generation-request-digest }}
+      request_identity: ${{ needs.evaluate.outputs.request-identity }}
+      request_payload_digest: ${{ needs.evaluate.outputs.request-payload-digest }}
+      expected_producer: pr-contract
+
+  contract-publication:
+    name: Produce contract-publication result
+    needs: evaluate
+    if: ${{ needs.evaluate.outputs.next-writer == 'producer' && needs.evaluate.outputs.producer == 'contract-publication' }}
+    concurrency:
+      group: issue-lifecycle-provider-budget
+      queue: max
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+      issues: write
+    uses: ./.github/workflows/contract-publication.yml
+    with:
+      schema_version: "1"
+      producer_contract_version: "1"
+      repository: oscharko-dev/Keiko-Native
+      issue_number: ${{ needs.evaluate.outputs.issue-number }}
+      pull_request_number: ${{ needs.evaluate.outputs.pull-request-number }}
+      exact_head_sha: ${{ needs.evaluate.outputs.exact-head-sha }}
+      exact_target: ${{ needs.evaluate.outputs.exact-target }}
+      generation_bytes_base64: ${{ needs.evaluate.outputs.generation-bytes-base64 }}
+      generation_bytes_sha256: ${{ needs.evaluate.outputs.generation-bytes-sha256 }}
+      generation_identity: ${{ needs.evaluate.outputs.generation-identity }}
+      attempt: ${{ needs.evaluate.outputs.attempt }}
+      phase_fence_comment_id: ${{ needs.evaluate.outputs.phase-fence-comment-id }}
+      phase_fence_digest: ${{ needs.evaluate.outputs.phase-fence-digest }}
+      generation_request_comment_id: ${{ needs.evaluate.outputs.generation-request-comment-id }}
+      generation_request_digest: ${{ needs.evaluate.outputs.generation-request-digest }}
+      request_identity: ${{ needs.evaluate.outputs.request-identity }}
+      request_payload_digest: ${{ needs.evaluate.outputs.request-payload-digest }}
+      expected_producer: contract-publication
+
+  write-record:
+    name: Publish authenticated lifecycle record
+    needs: evaluate
+    if: ${{ needs.evaluate.outputs.next-writer == 'record' && needs.evaluate.outputs.should-record == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: issue-lifecycle-provider-budget
+      queue: max
+    outputs:
+      observation: ${{ steps.verify.outputs.observation }}
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+      issues: write
+    steps:
+      - name: Check out the protected governance contract
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: dev
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24.18.0"
+          package-manager-cache: false
+      - name: Publish and read back the canonical comment
+        id: prepare
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          KEIKO_LIFECYCLE_RECORD_PLAN: ${{ needs.evaluate.outputs.record-plan }}
+        run: node quality/lifecycle-record-writer.mjs prepare
+      - name: Upload immutable per-issue anchor
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: keiko-lifecycle-anchor-v1-issue-${{ needs.evaluate.outputs.issue-number }}
+          path: ${{ steps.prepare.outputs.anchor-path }}
+          if-no-files-found: error
+          retention-days: 90
+      - name: Attest exact lifecycle anchor identity
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-checksums: ${{ steps.prepare.outputs.subject-checksums }}
+          create-storage-record: true
+      - name: Verify stable comment, anchor, attestation, run, and job
+        id: verify
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          KEIKO_LIFECYCLE_ANCHOR_IDENTITY: ${{ steps.prepare.outputs.anchor-identity }}
+          KEIKO_LIFECYCLE_COMMENT_ID: ${{ steps.prepare.outputs.comment-id }}
+          KEIKO_LIFECYCLE_RECORD_PLAN: ${{ needs.evaluate.outputs.record-plan }}
+        run: node quality/lifecycle-record-writer.mjs verify

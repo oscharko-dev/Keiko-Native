@@ -1222,3 +1222,19 @@ test("ignores pull requests, bot cleanup, and unrelated issue events", async (t)
   );
   assert.equal(calls.length, 0);
 });
+
+test("cedes all readiness effects to the lifecycle owner after activation", async (t) => {
+  const calls = installGitHubFetchMock(t);
+  const previous = process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
+  process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = "enabled";
+  t.after(() => {
+    if (previous === undefined)
+      delete process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION;
+    else process.env.KEIKO_ISSUE_LIFECYCLE_ACTIVATION = previous;
+  });
+  assert.deepEqual(await runIssueReadinessAction({ event: issueEvent() }), {
+    outcome: "ignore",
+    reason: "lifecycle_owner_enabled",
+  });
+  assert.equal(calls.length, 0);
+});

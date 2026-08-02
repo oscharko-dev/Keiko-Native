@@ -1,4 +1,4 @@
-# ADR-0010: Bounded macOS Accessibility journey driver
+# ADR-0013: Bounded macOS Accessibility journey driver
 
 ## Status
 

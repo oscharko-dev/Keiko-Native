@@ -50,6 +50,15 @@ switch, that expanded lifecycle is inert: readiness is requested directly from `
 rejected or invalidated work returns to new, and `status: ready` with its exact matching accepted
 record remains the only executable state.
 
+The protected `lifecycle-wakeup.yml` caller is the only stable lifecycle ingress. Closed direct
+events, protected source-workflow completions, and the hourly schedule resolve only an issue number
+and optional recovery-comment locator, then hold the per-issue lock while invoking the reusable
+coordinator. The caller cannot supply a source, target, actor role, lane, activation, producer, or
+outcome. Until #55 activation, the coordinator advances only bounded authenticated non-applied
+ADR-0011 record obligations and performs no lifecycle, status, closure, branch, pull-request,
+queue, or merge effect. Agent skills and external orchestration remain event initiators and
+observers and must not duplicate transition policy.
+
 The planning actor requests readiness by applying `status: ready`. The repository workflow keeps
 that label only after validating the contract and recording its version and fingerprint; otherwise
 it restores `status: new`. Only `status: ready` with a matching readiness record makes an epic or
@@ -216,6 +225,46 @@ human reconciliation and fresh revalidation. Shared GitHub attribution cannot di
 and human actions; this accepted limitation does not widen agent authority. An agent must never
 merge, enable auto-merge, enqueue, push, or update `dev`, `main`, or `release/**`, including through
 a maintainer credential.
+
+ADR-0010 stages that authority behind the lifecycle switch. Issue #50 installs only the inert
+guard, protected policy/status producer, hermetic proof, and v2 live-probe harness; it performs no
+live merge. The canonical `status: ready for human review` state cannot truthfully exist as merge
+authority before the signed Contract-as-Code activation. The guarded operation is therefore
+unavailable before activation and makes no provider merge request. Issue #55 owns the human-gated
+activation and then the first exact-target success plus the complete live denial, race, ambiguity,
+redaction, and reconciliation matrix.
+
+Protected `dev` is the sole policy source and derives exactly three availability states. `disabled`
+before activation makes no provider merge request. `probe-only` immediately after activation allows
+effects solely for Issue #55's frozen disposable-probe manifest and its exact issue, pull request,
+target, head, base, request, and operation identities. `enabled` is derived only when protected
+Contract-as-Code consumes an expected-producer exact-head live-proof receipt and status bound to the
+signed activation commit, frozen manifest, and complete successfully settled matrix. That evidence
+is consumed input, not independent authority. Missing, stale, failed, wrong-producer, mismatched,
+incomplete, or ambiguous evidence remains `probe-only` or `disabled`; no caller input or repository
+variable promotes it. The harness derives disposable `epic/**` targets from their provider-assigned
+parent issues, uses a separate parent for stale-base concurrency, reads each prohibited target's
+actual tip, and proves an absent `main` ref without creating it.
+
+ADR-0011 defines the protected lifecycle handoff's durable record and producer protocol. Protected
+`dev` workflows use only the built-in `github-actions[bot]` with short-lived `GITHUB_TOKEN`
+permissions. Strict append-only issue-comment records bind canonical generations, producer results,
+phase/fence claims, and transition read-backs. Post-publication GitHub-native attestations bind each
+provider comment ID, exact body digest, record digest, and protected writer run in an immutable
+per-issue artifact anchor that detects an unreferenced suffix deletion. Attested
+transition/read-back checkpoints bound the live suffix to 15 records; cursor recovery advances
+without effects through authenticated, domain-separated root and resumed accumulator steps when
+comment history exceeds the normal two-page load. Per-issue `queue: max` serialization and the
+repository-wide lifecycle provider-budget group prevent lifecycle quota races. Empty history uses
+an exact sequence-one null-root compacted-prefix preimage. A protected
+forward recovery settlement can quarantine only one request-bound, independently verified
+comment-before-anchor orphan without treating it as a record or predecessor. Complete pagination,
+expected App/workflow/run authentication, stable rereads, and exact predecessor chains fail closed
+on deleted, stale, conflicting, malformed, truncated, wrong-generation, rate-limited, or unavailable
+evidence. No added account, installed App, PAT, broker, database, service, application/runtime
+dependency, or second credential is permitted. The protocol remains inert until Issue #55's signed
+activation; it grants no pre-activation lifecycle, status, branch, pull-request, queue, or merge
+effect.
 
 Before pushing, review the full diff against the task requirements, trust boundaries, failure modes,
 and every affected gate. Use GitHub only for remote-only evidence, not as the primary test loop.

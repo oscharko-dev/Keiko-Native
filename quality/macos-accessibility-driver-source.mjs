@@ -21,7 +21,7 @@ export const evaluationRepositoryRoot = fileURLToPath(
 export const postEvaluationPathPolicy = Object.freeze({
   schemaVersion: 1,
   paths: Object.freeze([
-    "docs/adr/ADR-0010-bounded-macos-accessibility-journey-driver.md",
+    "docs/adr/ADR-0013-bounded-macos-accessibility-journey-driver.md",
     "docs/adr/README.md",
     "docs/evaluation/macos-accessibility-driver-capture-allowed.json",
     "docs/evaluation/macos-accessibility-driver-capture-denied.json",

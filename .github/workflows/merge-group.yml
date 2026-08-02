@@ -32,3 +32,6 @@ jobs:
         run: |
           node --check quality/merge-group.mjs
           node --check quality/epic-merge-broker.mjs
+          node --check quality/epic-merge-operation.mjs
+          node --check quality/epic-merge-policy.mjs
+          node quality/epic-merge-policy.mjs status

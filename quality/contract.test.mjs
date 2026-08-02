@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +24,10 @@ import {
   validateRepository,
   workflowEventTargetsBranch,
 } from "./contract.mjs";
+import {
+  hardenedGitArguments,
+  noReplaceGitEnvironment,
+} from "./git-integrity.mjs";
 import { governedWorkflowJobs } from "./workflow-job-contracts.mjs";
 
 const validManifest = {
@@ -178,7 +184,28 @@ const repositoryControlPlaneModules = Object.freeze([
   "quality/lifecycle-handoff-publication.mjs",
   "quality/lifecycle-handoff.mjs",
   "quality/merge-group.mjs",
+  "quality/epic-merge-adapter.mjs",
+  "quality/epic-merge-authorization.mjs",
   "quality/epic-merge-broker.mjs",
+  "quality/epic-merge-composition.mjs",
+  "quality/epic-merge-evidence.mjs",
+  "quality/epic-merge-github.mjs",
+  "quality/epic-merge-graphql.mjs",
+  "quality/epic-merge-operation.mjs",
+  "quality/epic-merge-policy.mjs",
+  "quality/epic-merge-policy-schema.mjs",
+  "quality/epic-merge-store.mjs",
+  "quality/issue-lifecycle-request.mjs",
+  "quality/lifecycle-coordinator-action.mjs",
+  "quality/lifecycle-coordinator.mjs",
+  "quality/lifecycle-github-provider.mjs",
+  "quality/lifecycle-producer-action.mjs",
+  "quality/lifecycle-producer.mjs",
+  "quality/lifecycle-producer-wire.mjs",
+  "quality/lifecycle-wake-locator-writer.mjs",
+  "quality/lifecycle-wake.mjs",
+  "quality/lifecycle-wakeup-router.mjs",
+  "quality/single-file-zip.mjs",
 ]);
 
 const coverageScript = canonicalCoverageCommand;
@@ -189,6 +216,9 @@ const issueTemplateFiles = [
   ".github/ISSUE_TEMPLATE/epic.md",
   ".github/ISSUE_TEMPLATE/feature_task.md",
 ];
+
+const acceptedAdr0009Sha256 =
+  "13bf5b3b259b722cbaf29d8d3324ce057d663f33ee0cdb5db2bf848d379c0a2f";
 
 function lifecycleList(states = lifecycleStates) {
   return states.map((state) => `- \`${state}\``).join("\n");
@@ -678,6 +708,82 @@ function assertAgentCredentialActivation(document) {
   );
 }
 
+function assertGuardRemainsInertBeforeActivation(document) {
+  assert.match(
+    document,
+    /`status:\s+ready\s+for\s+human\s+review`[\s\S]{0,240}cannot\s+(?:truthfully\s+)?exist[\s\S]{0,240}(?:signed\s+)?Contract-as-Code\s+activation/iu,
+    "projection must explain why pre-activation merge authority cannot exist",
+  );
+  assert.match(
+    document,
+    /guarded\s+operation[\s\S]{0,240}(?:unavailable|unusable)[\s\S]{0,240}no\s+provider\s+merge\s+request/iu,
+    "projection must keep the guarded operation effect-free before activation",
+  );
+}
+
+function assertThreeStateGuardAvailability(document) {
+  assert.match(
+    document,
+    /protected\s+`dev`[\s\S]{0,160}sole\s+policy\s+source/iu,
+    "projection must keep guard availability owned by protected dev policy",
+  );
+  assert.match(
+    document,
+    /`disabled`[\s\S]{0,160}before\s+(?:the\s+signed\s+Contract-as-Code\s+)?activation/iu,
+    "projection must select disabled before activation",
+  );
+  assert.match(
+    document,
+    /no\s+provider\s+merge\s+request/iu,
+    "projection must make pre-activation policy effect-free",
+  );
+  assert.match(
+    document,
+    /`probe-only`[\s\S]{0,240}immediately\s+after\s+activation[\s\S]{0,320}Issue\s+#55(?:'s)?[\s\S]{0,240}frozen\s+disposable-probe\s+manifest[\s\S]{0,360}exact\s+issue[\s\S]{0,240}operation\s+identit/iu,
+    "projection must limit probe-only effects to frozen exact operation identities",
+  );
+  assert.match(
+    document,
+    /`enabled`[\s\S]{0,240}protected\s+Contract-as-Code[\s\S]{0,120}consum(?:e|es)[\s\S]{0,160}expected-producer[,\s-]{1,12}exact-head\s+live(?:-|\s+)proof\s+receipt\s+and\s+status[\s\S]{0,240}signed\s+activation\s+commit[\s\S]{0,360}complete\s+successfully\s+settled\s+matrix/iu,
+    "projection must bind enabled to complete expected-producer activation proof",
+  );
+  assert.match(
+    document,
+    /(?:evidence|proof\s+receipt\s+and\s+status)[\s\S]{0,160}(?:consumed|validated)\s+inputs?[\s\S]{0,120}not\s+independent\s+authority/iu,
+    "projection must keep proof evidence as input rather than authority",
+  );
+  assert.match(
+    document,
+    /missing[\s\S]{0,160}stale[\s\S]{0,160}wrong-producer[\s\S]{0,240}ambiguous\s+(?:evidence|proof|capability)[\s\S]{0,180}(?:remains|leaves\s+the\s+state)\s+`probe-only`[\s\S]{0,80}(?:or|\/)\s+`disabled`/iu,
+    "projection must fail closed on invalid promotion evidence",
+  );
+  assert.match(
+    document,
+    /absent\s+`main`\s+ref[\s\S]{0,240}(?:denial\s+evidence|never\s+created|without\s+creating|must\s+not\s+be\s+created)/iu,
+    "projection must preserve an absent main without creating it",
+  );
+  assert.doesNotMatch(
+    document,
+    /(?:before\s+|pre-)activation[\s\S]{0,160}(?:(?:may|can|does|makes?)\s+(?:make\s+)?(?:one\s+)?|authorized\s+to\s+submit\s+(?:a\s+)?)provider\s+merge\s+request/iu,
+    "projection must reject contradictory pre-activation provider effects",
+  );
+  assert.doesNotMatch(
+    document,
+    /general\s+child\s+delivery[\s\S]{0,120}(?:enabled|available)[\s\S]{0,200}(?:before\s+Issue\s+#55(?:'s)?\s+live\s+matrix|even\s+if\s+Issue\s+#55(?:'s)?\s+live\s+matrix\s+has\s+not\s+settled)/iu,
+    "projection must reject bypass of the post-Issue-#55 proof gate",
+  );
+  assert.doesNotMatch(
+    document,
+    /create(?:s|d)?\s+(?:a\s+)?(?:synthetic|temporary)\s+`main`\s+branch/iu,
+    "projection must reject synthetic main creation",
+  );
+  assert.doesNotMatch(
+    document,
+    /(?:(?:missing|stale|wrong-producer|ambiguous)\s+evidence|evidence\s+from\s+the\s+wrong\s+producer)[\s\S]{0,120}(?:may\s+)?(?:enable|enables|promote|promotes)\s+(?:general\s+delivery|the\s+guard|availability)/iu,
+    "projection must reject promotion from invalid evidence",
+  );
+}
+
 test("public governance restricts agent credential merges to exact epic targets and keeps dev sacred", async () => {
   const root = join(import.meta.dirname, "..");
   const [
@@ -688,8 +794,10 @@ test("public governance restricts agent credential merges to exact epic targets 
     taskTemplate,
     decisionTemplate,
     defectTemplate,
+    epicTemplate,
     pullRequestTemplate,
     supersedingAdr,
+    stagingAdr,
     historicalAdr,
     brokerAdr,
   ] = await Promise.all([
@@ -703,11 +811,19 @@ test("public governance restricts agent credential merges to exact epic targets 
       "utf8",
     ),
     readFile(join(root, ".github/ISSUE_TEMPLATE/defect_finding.md"), "utf8"),
+    readFile(join(root, ".github/ISSUE_TEMPLATE/epic.md"), "utf8"),
     readFile(join(root, ".github/pull_request_template.md"), "utf8"),
     readFile(
       join(
         root,
         "docs/adr/ADR-0009-agent-scoped-maintainer-credential-epic-merge.md",
+      ),
+      "utf8",
+    ),
+    readFile(
+      join(
+        root,
+        "docs/adr/ADR-0010-stage-guarded-epic-merge-proof-at-activation.md",
       ),
       "utf8",
     ),
@@ -732,6 +848,18 @@ test("public governance restricts agent credential merges to exact epic targets 
   ];
   const issueTemplates = [taskTemplate, decisionTemplate, defectTemplate];
   const activeProjections = [...policyProjections, supersedingAdr];
+  const stagedActivationProjections = [
+    agents,
+    baseline,
+    gates,
+    activation,
+    taskTemplate,
+    decisionTemplate,
+    defectTemplate,
+    epicTemplate,
+    pullRequestTemplate,
+    stagingAdr,
+  ];
   assertAgentCredentialActivation(activation);
   const impossibleIdentitySeparation = `${activation}
 Provider protection excludes every agent identity from the \`dev\` update allowlist.
@@ -1009,6 +1137,152 @@ Provider protection excludes every agent identity from the \`dev\` update allowl
       "active projection must not restore the deprecated App",
     );
   }
+  for (const [index, document] of stagedActivationProjections.entries()) {
+    assertGuardRemainsInertBeforeActivation(document);
+    assertThreeStateGuardAvailability(document);
+    const prematureEffect = document.replace(
+      /no\s+provider\s+merge\s+request/iu,
+      "one provider merge request",
+    );
+    assert.notEqual(prematureEffect, document);
+    assert.throws(
+      () => assertGuardRemainsInertBeforeActivation(prematureEffect),
+      {
+        name: "AssertionError",
+        message:
+          "projection must keep the guarded operation effect-free before activation",
+      },
+      `staged projection ${index} permitted a pre-activation provider effect`,
+    );
+    const contradictoryPrematureEffect = `${document}
+Before activation the guard may make one provider merge request.
+`;
+    assert.throws(
+      () => assertThreeStateGuardAvailability(contradictoryPrematureEffect),
+      {
+        name: "AssertionError",
+        message:
+          "projection must reject contradictory pre-activation provider effects",
+      },
+      `staged projection ${index} accepted contradictory pre-activation authorization`,
+    );
+    const bypassedPostProofGate = `${document}
+General child delivery is enabled before Issue #55's live matrix settles.
+`;
+    assert.throws(
+      () => assertThreeStateGuardAvailability(bypassedPostProofGate),
+      {
+        name: "AssertionError",
+        message:
+          "projection must reject bypass of the post-Issue-#55 proof gate",
+      },
+      `staged projection ${index} bypassed the post-Issue-#55 proof gate`,
+    );
+    const syntheticMain = `${document}
+The probe creates a synthetic \`main\` branch.
+`;
+    assert.throws(() => assertThreeStateGuardAvailability(syntheticMain), {
+      name: "AssertionError",
+      message: "projection must reject synthetic main creation",
+    });
+    const invalidEvidencePromotion = `${document}
+Wrong-producer evidence promotes availability.
+`;
+    assert.throws(
+      () => assertThreeStateGuardAvailability(invalidEvidencePromotion),
+      {
+        name: "AssertionError",
+        message: "projection must reject promotion from invalid evidence",
+      },
+      `staged projection ${index} accepted invalid-evidence promotion`,
+    );
+    const semanticContradictions = [
+      [
+        "Before activation, the guard is authorized to submit a provider merge request.",
+        "projection must reject contradictory pre-activation provider effects",
+      ],
+      [
+        "General child delivery is enabled even if Issue #55's live matrix has not settled.",
+        "projection must reject bypass of the post-Issue-#55 proof gate",
+      ],
+      [
+        "The probe creates a temporary `main` branch.",
+        "projection must reject synthetic main creation",
+      ],
+      [
+        "Evidence from the wrong producer may promote availability.",
+        "projection must reject promotion from invalid evidence",
+      ],
+    ];
+    for (const [contradiction, message] of semanticContradictions) {
+      assert.throws(
+        () =>
+          assertThreeStateGuardAvailability(`${document}
+${contradiction}
+`),
+        { name: "AssertionError", message },
+        `staged projection ${index} accepted: ${contradiction}`,
+      );
+    }
+  }
+  assert.equal(
+    createHash("sha256")
+      .update(
+        execFileSync(
+          "git",
+          hardenedGitArguments([
+            "show",
+            "HEAD:docs/adr/ADR-0009-agent-scoped-maintainer-credential-epic-merge.md",
+          ]),
+          {
+            cwd: root,
+            env: noReplaceGitEnvironment(process.env),
+          },
+        ),
+      )
+      .digest("hex"),
+    acceptedAdr0009Sha256,
+    "accepted ADR-0009 must remain byte-for-byte immutable",
+  );
+  assert.match(
+    stagingAdr,
+    /amends\s+only[\s\S]{0,160}ADR-0009[\s\S]{0,160}rollout/iu,
+  );
+  assert.match(
+    stagingAdr,
+    /exactly\s+one\s+current\s+guard-availability\s+state[\s\S]{0,120}three\s+mutually\s+exclusive\s+states/iu,
+    "ADR-0010 must define three possible availability states with exactly one current state",
+  );
+  assert.match(
+    stagingAdr,
+    /Issue\s+#50[\s\S]{0,240}inert[\s\S]{0,240}(?:v2\s+)?live-probe\s+harness/iu,
+    "ADR-0010 must assign inert guard and probe-harness implementation to issue #50",
+  );
+  assert.match(
+    stagingAdr,
+    /Issue\s+#55[\s\S]{0,320}post-activation[\s\S]{0,320}(?:positive|exact-target)[\s\S]{0,320}denial[\s\S]{0,320}race[\s\S]{0,320}ambiguity[\s\S]{0,320}redaction[\s\S]{0,320}reconciliation/iu,
+    "ADR-0010 must assign the complete post-activation live matrix to issue #55",
+  );
+  assert.match(
+    stagingAdr,
+    /provider-assigned\s+parent\s+issue[\s\S]{0,240}derive[\s\S]{0,240}`epic\/\*\*`\s+target/iu,
+    "ADR-0010 must derive disposable epic targets from their provider-assigned parents",
+  );
+  assert.match(
+    stagingAdr,
+    /stale-base[\s\S]{0,240}separate\s+(?:disposable\s+)?parent/iu,
+    "ADR-0010 must isolate the stale-base probe under a separate parent",
+  );
+  assert.match(
+    stagingAdr,
+    /prohibited\s+target[\s\S]{0,240}actual\s+tip/iu,
+    "ADR-0010 must bind denial evidence to each prohibited target's actual tip",
+  );
+  assert.match(
+    stagingAdr,
+    /absent\s+`main`[\s\S]{0,240}denial[\s\S]{0,240}(?:must\s+not|never)\s+(?:be\s+)?create/iu,
+    "ADR-0010 must prove absent main without creating it",
+  );
   assert.match(supersedingAdr, /Supersedes\s+ADR-0008/u);
   assert.match(supersedingAdr, /amends[\s\S]*ADR-0004/iu);
   assert.match(supersedingAdr, /restores[\s\S]*ADR-0005/iu);
@@ -1099,6 +1373,1119 @@ Provider protection excludes every agent identity from the \`dev\` update allowl
   );
 });
 
+test("pins the authenticated lifecycle handoff record decision", async () => {
+  const root = join(import.meta.dirname, "..");
+  const normalizeLf = (source) => source.replaceAll("\r\n", "\n");
+  const sources = await Promise.all([
+    readFile(
+      join(
+        root,
+        "docs/adr/ADR-0011-authenticated-lifecycle-handoff-record-protocol.md",
+      ),
+      "utf8",
+    ),
+    readFile(join(root, "docs/adr/README.md"), "utf8"),
+    readFile(join(root, "AGENTS.md"), "utf8"),
+    readFile(join(root, "docs/qa/issue-lifecycle.md"), "utf8"),
+    readFile(join(root, "docs/qa/quality-gates.md"), "utf8"),
+    readFile(join(root, "docs/qa/repository-activation.md"), "utf8"),
+  ]);
+  const [adr, index, agents, lifecycle, gates, activation] =
+    sources.map(normalizeLf);
+  const projections = [agents, lifecycle, gates, activation];
+  const recordSection = (heading, nextHeading, source = adr) => {
+    const normalizedSource = normalizeLf(source);
+    const start = normalizedSource.indexOf(`### ${heading}`);
+    const end = normalizedSource.indexOf(`### ${nextHeading}`, start + 1);
+    assert.notEqual(start, -1, heading);
+    assert.notEqual(end, -1, nextHeading);
+    return normalizedSource.slice(start, end);
+  };
+  const recordFields = (heading, nextHeading) => {
+    return [
+      ...recordSection(heading, nextHeading).matchAll(
+        /^\d+\. `([a-z0-9_]+)`: /gmu,
+      ),
+    ].map((match) => match[1]);
+  };
+  const recordSchema = (heading, nextHeading, source = adr) => {
+    return [
+      ...recordSection(heading, nextHeading, source).matchAll(
+        /^\d+\. `([a-z0-9_]+)`: ([\s\S]*?)(?=^\d+\. `|^\n)/gmu,
+      ),
+    ].map(
+      (match) =>
+        `${match[1]}:${match[2]
+          .replace(/\n\s+/gu, " ")
+          .replaceAll("`", "")
+          .replace(/\s+/gu, " ")
+          .trim()}`,
+    );
+  };
+  const asCrLf = (source) => normalizeLf(source).replaceAll("\n", "\r\n");
+  for (const [name, source] of [
+    ["ADR-0011", adr],
+    ["ADR index", index],
+    ["AGENTS projection", agents],
+    ["lifecycle projection", lifecycle],
+    ["quality-gates projection", gates],
+    ["activation projection", activation],
+  ]) {
+    assert.equal(
+      normalizeLf(asCrLf(source)),
+      source,
+      `${name} CRLF normalization`,
+    );
+  }
+  const expectedRecordFields = {
+    "Generation request v1": [
+      "record_type",
+      "schema_version",
+      "digest_algorithm",
+      "digest_domain",
+      "repository",
+      "issue_number",
+      "pull_request_number",
+      "exact_head_sha",
+      "exact_target",
+      "lane",
+      "publication_submode",
+      "generation_schema",
+      "generation_bytes_sha256",
+      "generation_identity",
+      "attempt",
+      "request_identity",
+      "request_payload_digest",
+      "expected_producers",
+      "source_observation_identity",
+      "predecessor_comment_id",
+      "predecessor_record_digest",
+      "workflow_path",
+      "workflow_run_id",
+      "workflow_run_attempt",
+      "protected_dev_sha",
+      "recorded_at",
+    ],
+    "Producer result v1": [
+      "record_type",
+      "schema_version",
+      "digest_algorithm",
+      "digest_domain",
+      "repository",
+      "issue_number",
+      "pull_request_number",
+      "exact_head_sha",
+      "exact_target",
+      "generation_identity",
+      "attempt",
+      "request_identity",
+      "generation_request_comment_id",
+      "generation_request_digest",
+      "phase_fence_comment_id",
+      "phase_fence_digest",
+      "expected_producer",
+      "producer_contract_version",
+      "workflow_path",
+      "workflow_id",
+      "workflow_run_id",
+      "workflow_run_attempt",
+      "workflow_job_id",
+      "result_identity",
+      "protected_dev_sha",
+      "provider_observation_identity",
+      "conclusion",
+      "reason_code",
+      "predecessor_comment_id",
+      "predecessor_record_digest",
+      "recorded_at",
+    ],
+    "Phase/fence claim v1": [
+      "record_type",
+      "schema_version",
+      "digest_algorithm",
+      "digest_domain",
+      "repository",
+      "issue_number",
+      "pull_request_number",
+      "exact_head_sha",
+      "generation_identity",
+      "attempt",
+      "request_identity",
+      "phase",
+      "fence_sequence",
+      "fence_identity",
+      "owner_workflow_path",
+      "owner_run_id",
+      "owner_run_attempt",
+      "source_observation_identity",
+      "claim_outcome",
+      "recovery_scan_identity",
+      "recovery_scanned_page_count",
+      "recovery_scanned_comment_count",
+      "recovery_accumulated_suffix_identity",
+      "recovery_provider_cursor",
+      "recovery_scan_complete",
+      "recovery_settlement_identity",
+      "predecessor_comment_id",
+      "predecessor_record_digest",
+      "protected_dev_sha",
+      "recorded_at",
+    ],
+    "Transition/read-back v1": [
+      "record_type",
+      "schema_version",
+      "digest_algorithm",
+      "digest_domain",
+      "repository",
+      "issue_number",
+      "pull_request_number",
+      "exact_head_sha",
+      "exact_target",
+      "generation_identity",
+      "attempt",
+      "request_identity",
+      "phase_fence_comment_id",
+      "phase_fence_digest",
+      "source_state",
+      "desired_state",
+      "observed_state",
+      "transition_owner",
+      "effect_identity",
+      "read_back_identity",
+      "producer_results",
+      "checkpoint_sequence",
+      "prior_checkpoint_comment_id",
+      "prior_checkpoint_record_digest",
+      "compacted_prefix_identity",
+      "outcome",
+      "reason_code",
+      "predecessor_comment_id",
+      "predecessor_record_digest",
+      "protected_dev_sha",
+      "recorded_at",
+    ],
+  };
+  const expectedRecordSchemas = {
+    "Generation request v1":
+      "record_type:enum generation-request|schema_version:uint 1|digest_algorithm:enum sha-256|digest_domain:enum keiko-native.lifecycle-record.generation-request|repository:string|issue_number:uint|pull_request_number:uint or explicit null|exact_head_sha:commit or explicit null|exact_target:string or explicit null|lane:enum normal, publication, or not-applicable|publication_submode:enum ordinary, migration, or not-applicable|generation_schema:uint 1|generation_bytes_sha256:SHA-256|generation_identity:SHA-256|attempt:uint|request_identity:SHA-256|request_payload_digest:SHA-256|expected_producers:sorted set of closed producer identities|source_observation_identity:SHA-256|predecessor_comment_id:uint or explicit null|predecessor_record_digest:SHA-256 or explicit null|workflow_path:closed protected workflow path|workflow_run_id:uint|workflow_run_attempt:uint|protected_dev_sha:commit|recorded_at:timestamp".split(
+        "|",
+      ),
+    "Producer result v1":
+      "record_type:enum producer-result|schema_version:uint 1|digest_algorithm:enum sha-256|digest_domain:enum keiko-native.lifecycle-record.producer-result|repository:string|issue_number:uint|pull_request_number:uint or explicit null|exact_head_sha:commit or explicit null|exact_target:string or explicit null|generation_identity:SHA-256|attempt:uint|request_identity:SHA-256|generation_request_comment_id:uint|generation_request_digest:SHA-256|phase_fence_comment_id:uint|phase_fence_digest:SHA-256|expected_producer:closed producer identity|producer_contract_version:uint|workflow_path:closed protected workflow path|workflow_id:uint|workflow_run_id:uint|workflow_run_attempt:uint|workflow_job_id:uint|result_identity:SHA-256|protected_dev_sha:commit|provider_observation_identity:SHA-256|conclusion:enum success, failure, cancelled, timed-out, or unavailable|reason_code:closed redacted enum|predecessor_comment_id:uint|predecessor_record_digest:SHA-256|recorded_at:timestamp".split(
+        "|",
+      ),
+    "Phase/fence claim v1":
+      "record_type:enum phase-fence-claim|schema_version:uint 1|digest_algorithm:enum sha-256|digest_domain:enum keiko-native.lifecycle-record.phase-fence-claim|repository:string|issue_number:uint|pull_request_number:uint or explicit null|exact_head_sha:commit or explicit null|generation_identity:SHA-256|attempt:uint|request_identity:SHA-256|phase:enum request, phase-one, mutation, phase-two, terminal, or recovery|fence_sequence:uint|fence_identity:SHA-256|owner_workflow_path:closed protected coordinator path|owner_run_id:uint|owner_run_attempt:uint|source_observation_identity:SHA-256|claim_outcome:enum claimed, settled, abandoned, ambiguous, or superseded|recovery_scan_identity:SHA-256 or explicit null|recovery_scanned_page_count:uint|recovery_scanned_comment_count:uint|recovery_accumulated_suffix_identity:SHA-256 or explicit null|recovery_provider_cursor:string or explicit null|recovery_scan_complete:bool|recovery_settlement_identity:SHA-256 or explicit null|predecessor_comment_id:uint or explicit null|predecessor_record_digest:SHA-256 or explicit null|protected_dev_sha:commit|recorded_at:timestamp".split(
+        "|",
+      ),
+    "Transition/read-back v1":
+      "record_type:enum transition-read-back|schema_version:uint 1|digest_algorithm:enum sha-256|digest_domain:enum keiko-native.lifecycle-record.transition-read-back|repository:string|issue_number:uint|pull_request_number:uint or explicit null|exact_head_sha:commit or explicit null|exact_target:string or explicit null|generation_identity:SHA-256|attempt:uint|request_identity:SHA-256|phase_fence_comment_id:uint|phase_fence_digest:SHA-256|source_state:lifecycle-observation enum|desired_state:lifecycle-observation enum|observed_state:lifecycle-observation enum|transition_owner:enum request, assignment, pull-request, handoff, closure, reopen, invalidation, or recovery|effect_identity:SHA-256 or explicit null|read_back_identity:SHA-256|producer_results:sorted set of exact producer-result-reference members|checkpoint_sequence:uint|prior_checkpoint_comment_id:uint or explicit null|prior_checkpoint_record_digest:SHA-256 or explicit null|compacted_prefix_identity:SHA-256|outcome:enum planned, no-op, applied, denied, failed, abandoned, ambiguous, or superseded|reason_code:closed redacted enum|predecessor_comment_id:uint|predecessor_record_digest:SHA-256|protected_dev_sha:commit|recorded_at:timestamp".split(
+        "|",
+      ),
+  };
+  const recordHeadings = Object.keys(expectedRecordFields);
+  for (const [heading, fields] of Object.entries(expectedRecordFields)) {
+    const headingIndex = recordHeadings.indexOf(heading);
+    const nextHeading =
+      recordHeadings[headingIndex + 1] ??
+      "Record authentication and chain reconstruction";
+    assert.deepEqual(recordFields(heading, nextHeading), fields, heading);
+    assert.deepEqual(
+      recordSchema(heading, nextHeading),
+      expectedRecordSchemas[heading],
+      `${heading} types`,
+    );
+    const crlfAdr = asCrLf(adr);
+    assert.equal(asCrLf(crlfAdr), crlfAdr, `${heading} CRLF fixture`);
+    assert.deepEqual(
+      recordSchema(heading, nextHeading, crlfAdr),
+      expectedRecordSchemas[heading],
+      `${heading} CRLF types`,
+    );
+  }
+
+  assert.match(
+    index,
+    /ADR-0011: Authenticated lifecycle handoff record protocol/iu,
+  );
+  assert.match(
+    adr,
+    /Adopt Option A[\s\S]{0,600}github-actions\[bot\][\s\S]{0,600}short-lived[\s\S]{0,200}`GITHUB_TOKEN`/iu,
+  );
+  assert.match(
+    adr,
+    /no added[\s\S]{0,80}account[\s\S]{0,180}installed App[\s\S]{0,180}(?:PAT|personal access token)[\s\S]{0,180}broker[\s\S]{0,180}(?:database|hosted service)/iu,
+  );
+
+  for (const marker of [
+    "keiko-native-lifecycle-generation-request:v1",
+    "keiko-native-lifecycle-producer-result:v1",
+    "keiko-native-lifecycle-phase-fence-claim:v1",
+    "keiko-native-lifecycle-transition-read-back:v1",
+  ])
+    assert.match(adr, new RegExp(marker, "u"));
+
+  for (const domain of [
+    "keiko-native.lifecycle-record.generation-request",
+    "keiko-native.lifecycle-record.producer-result",
+    "keiko-native.lifecycle-record.phase-fence-claim",
+    "keiko-native.lifecycle-record.transition-read-back",
+    "keiko-native.lifecycle-input-generation",
+  ])
+    assert.match(adr, new RegExp(domain.replaceAll(".", String.raw`\.`), "u"));
+  const expectedAuxiliaryDomains = {
+    "request identity": "keiko-native.lifecycle-request-identity",
+    "request payload": "keiko-native.lifecycle-request-payload",
+    "source observation": "keiko-native.lifecycle-source-observation",
+    "fence identity": "keiko-native.lifecycle-fence-identity",
+    "result identity": "keiko-native.lifecycle-result-identity",
+    "provider observation": "keiko-native.lifecycle-provider-observation",
+    "effect identity": "keiko-native.lifecycle-effect-identity",
+    "read-back identity": "keiko-native.lifecycle-read-back-identity",
+    "publication candidate set": "keiko-native.lifecycle-candidate-set",
+    "compacted prefix": "keiko-native.lifecycle-compacted-prefix-identity",
+    "checkpoint identity": "keiko-native.lifecycle-checkpoint-identity",
+    "recovery suffix accumulator":
+      "keiko-native.lifecycle-recovery-suffix-identity",
+    "recovery scan identity": "keiko-native.lifecycle-recovery-scan-identity",
+    "recovery target": "keiko-native.lifecycle-recovery-target-identity",
+    "recovery settlement":
+      "keiko-native.lifecycle-recovery-settlement-identity",
+    "artifact anchor": "keiko-native.lifecycle-artifact-anchor",
+  };
+  const auxiliaryDomainSection = adr.match(
+    /Every auxiliary identity[\s\S]+?fixed domain:\n\n([\s\S]+?)\n\nThat list is/u,
+  );
+  assert.ok(auxiliaryDomainSection, "auxiliary identity domain list");
+  const actualAuxiliaryDomains = [
+    ...auxiliaryDomainSection[1].matchAll(/^- ([^:]+): `([^`]+)`$/gmu),
+  ].map((match) => [match[1], match[2]]);
+  assert.equal(
+    actualAuxiliaryDomains.length,
+    Object.keys(expectedAuxiliaryDomains).length,
+  );
+  assert.equal(
+    new Set(actualAuxiliaryDomains.map(([identity]) => identity)).size,
+    actualAuxiliaryDomains.length,
+  );
+  assert.deepEqual(
+    actualAuxiliaryDomains,
+    Object.entries(expectedAuxiliaryDomains),
+  );
+  assert.match(
+    adr,
+    /fields are\s+exactly, in order: `digest_domain` as an `enum`[\s\S]{0,240}`schema_version` as `uint` `1`[\s\S]{0,160}`digest_algorithm` as `enum` `sha-256`/iu,
+  );
+
+  const expectedReasonCodes = [
+    "ok",
+    "activation-disabled",
+    "not-applicable",
+    "unauthorized",
+    "invalid-schema",
+    "malformed-record",
+    "stale-generation",
+    "fence-lost",
+    "producer-mismatch",
+    "evidence-incomplete",
+    "provider-rejected",
+    "provider-conflict",
+    "provider-rate-limited",
+    "provider-timeout",
+    "provider-unavailable",
+    "read-back-mismatch",
+    "ambiguous-effect",
+    "recovery-required",
+    "superseded",
+  ];
+  const reasonParagraph = adr.match(
+    /The closed reason-code enum is exactly ([\s\S]+?)\. Provider status/u,
+  );
+  assert.ok(reasonParagraph, "closed reason-code enum");
+  assert.deepEqual(
+    [...reasonParagraph[1].matchAll(/`([^`]+)`/gu)].map((match) => match[1]),
+    expectedReasonCodes,
+  );
+
+  const expectedAuxiliarySchemas = {
+    "request identity": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "pull_request_number:uint-or-null",
+      "exact_head_sha:commit-or-null",
+      "exact_target:string-or-null",
+      "generation_identity:sha256",
+      "attempt:uint",
+      "request_payload_digest:sha256",
+      "expected_producers:set<producer>",
+      "predecessor_comment_id:uint-or-null",
+      "predecessor_record_digest:sha256-or-null",
+    ],
+    "request payload": [
+      "schema_version:uint=1",
+      "request_kind:enum(event-reconciliation,planner-request,pause-request,recovery-request,scheduled-reconciliation)",
+      "requested_state:requested-lifecycle-state-or-null",
+      "request_owner:enum(planner,assignment,pull-request,handoff,closure,reopen,invalidation,recovery,schedule)",
+      "recovery_target_identity:sha256-or-null",
+      "reason_code:closed-reason-code",
+    ],
+    "source observation": [
+      "schema_version:uint=1",
+      "generation_bytes_sha256:sha256",
+      "observed_state:lifecycle-observation",
+      "issue_updated_at:timestamp",
+      "readiness_identity:sha256-or-null",
+      "assignment_identity:sha256",
+      "pr_topology_identity:sha256",
+      "reviews_identity:sha256",
+      "conversations_identity:sha256",
+      "checks_identity:sha256",
+      "evidence_identity:sha256",
+      "activation_identity:sha256",
+    ],
+    "fence identity": [
+      "schema_version:uint=1",
+      "generation_identity:sha256",
+      "attempt:uint",
+      "phase:phase-enum",
+      "fence_sequence:uint",
+      "owner_workflow_path:coordinator-path",
+      "owner_run_id:uint",
+      "owner_run_attempt:uint",
+      "source_observation_identity:sha256",
+      "predecessor_comment_id:uint-or-null",
+      "predecessor_record_digest:sha256-or-null",
+    ],
+    "result identity": [
+      "schema_version:uint=1",
+      "expected_producer:producer",
+      "producer_contract_version:uint",
+      "generation_identity:sha256",
+      "attempt:uint",
+      "phase_fence_digest:sha256",
+      "workflow_path:producer-path",
+      "workflow_id:uint",
+      "workflow_run_id:uint",
+      "workflow_run_attempt:uint",
+      "workflow_job_id:uint",
+      "provider_observation_identity:sha256",
+      "conclusion:producer-conclusion",
+      "reason_code:closed-reason-code",
+    ],
+    "provider observation": [
+      "schema_version:uint=1",
+      "expected_producer:producer",
+      "generation_identity:sha256",
+      "exact_head_sha:commit-or-null",
+      "phase_fence_digest:sha256",
+      "provider_result_id:uint",
+      "provider_result_name:closed-producer-result-name",
+      "provider_result_conclusion:producer-conclusion",
+      "provider_result_sha:commit-or-null",
+      "producer_payload_digest:sha256",
+    ],
+    "effect identity": [
+      "schema_version:uint=1",
+      "generation_identity:sha256",
+      "attempt:uint",
+      "phase_fence_digest:sha256",
+      "source_state:lifecycle-observation",
+      "desired_state:lifecycle-observation",
+      "transition_owner:transition-owner",
+      "mutation:enum(no-effect,set-lifecycle,remove-lifecycle)",
+      "source_observation_identity:sha256",
+    ],
+    "read-back identity": [
+      "schema_version:uint=1",
+      "generation_identity:sha256",
+      "attempt:uint",
+      "phase_fence_digest:sha256",
+      "effect_identity:sha256-or-null",
+      "observed_state:lifecycle-observation",
+      "issue_updated_at:timestamp",
+      "source_observation_identity:sha256",
+    ],
+    "publication candidate set": [
+      "schema_version:uint=1",
+      "exact_commit_sha:commit",
+      "root_tree_sha:tree",
+      "entries:set<candidate-entry>",
+    ],
+    "compacted prefix": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "checkpoint_sequence:uint",
+      "prior_checkpoint_identity:sha256-or-null",
+      "members:list<checkpoint-member>",
+    ],
+    "checkpoint identity": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "checkpoint_sequence:uint",
+      "prior_checkpoint_comment_id:uint-or-null",
+      "prior_checkpoint_record_digest:sha256-or-null",
+      "compacted_prefix_identity:sha256",
+      "chain_tip_comment_id:uint",
+      "chain_tip_record_digest:sha256",
+    ],
+    "recovery suffix accumulator": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "checkpoint_sequence:uint",
+      "scan_direction:enum(backward)",
+      "accumulator_step:uint",
+      "prior_accumulated_suffix_identity:sha256-or-null",
+      "page_members:list<recovery-suffix-member>",
+      "cumulative_member_count:uint",
+      "next_provider_cursor:string-or-null",
+      "complete:bool",
+    ],
+    "recovery scan identity": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "checkpoint_sequence:uint",
+      "scan_direction:enum(backward)",
+      "provider_cursor:string-or-null",
+      "scanned_page_count:uint",
+      "scanned_comment_count:uint",
+      "accumulated_suffix_identity:sha256",
+      "complete:bool",
+    ],
+    "recovery target": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "orphan_comment_id:uint",
+      "orphan_comment_body_sha256:sha256",
+      "orphan_record_digest:sha256",
+      "last_authenticated_comment_id:uint-or-null",
+      "last_authenticated_record_digest:sha256-or-null",
+    ],
+    "recovery settlement": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "authorized_request_identity:sha256",
+      "recovery_target_identity:sha256",
+      "orphan_comment_id:uint",
+      "orphan_comment_body_sha256:sha256",
+      "orphan_record_digest:sha256",
+      "orphan_author_login:enum(github-actions[bot])",
+      "orphan_author_id:uint=41898282",
+      "orphan_actor_type:enum(Bot)",
+      "orphan_app_id:uint=15368",
+      "orphan_workflow_path:protected-writer-path",
+      "orphan_workflow_run_id:uint",
+      "orphan_workflow_run_attempt:uint",
+      "orphan_protected_dev_sha:commit",
+      "orphan_run_conclusion:enum(failure,cancelled,timed-out)",
+      "orphan_anchor_count:uint=0",
+      "orphan_attestation_count:uint=0",
+      "last_authenticated_comment_id:uint-or-null",
+      "last_authenticated_record_digest:sha256-or-null",
+      "quarantine_reason:enum(anchor-publication-interrupted)",
+    ],
+    "artifact anchor": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "record_type:record-type",
+      "record_digest:sha256",
+      "comment_id:uint",
+      "comment_body_sha256:sha256",
+      "generation_identity:sha256",
+      "attempt:uint",
+      "workflow_path:protected-writer-path",
+      "workflow_run_id:uint",
+      "workflow_run_attempt:uint",
+      "protected_dev_sha:commit",
+    ],
+  };
+  const auxiliarySection = adr.match(
+    /The exact auxiliary v1 schemas are:\n\n([\s\S]+?)\n\n`requested-lifecycle-state`/u,
+  );
+  assert.ok(auxiliarySection, "auxiliary v1 schema table");
+  const actualAuxiliarySchemas = Object.fromEntries(
+    [
+      ...auxiliarySection[1].matchAll(
+        /^\|\s*([^|-][^|]*?)\s*\|\s*(.*?)\s*\|$/gmu,
+      ),
+    ]
+      .slice(1)
+      .filter((match) => !/^[-:]+$/u.test(match[1].trim()))
+      .map((match) => [
+        match[1].trim(),
+        [...match[2].matchAll(/`([^`]+)`/gu)].map((field) => field[1]),
+      ]),
+  );
+  assert.deepEqual(actualAuxiliarySchemas, expectedAuxiliarySchemas);
+
+  const requestedStateDefinition = adr.match(
+    /`requested-lifecycle-state` is exactly ([\s\S]+?); it excludes `no-lifecycle`\./u,
+  );
+  assert.ok(requestedStateDefinition, "request-specific lifecycle-state enum");
+  assert.deepEqual(
+    [...requestedStateDefinition[1].matchAll(/`([^`]+)`/gu)].map(
+      (match) => match[1],
+    ),
+    lifecycleStates,
+  );
+  assert.match(
+    adr,
+    /request-payload digest preimage contains exactly these five fields in order:[\s\S]{0,100}`request_kind`[\s\S]{0,120}`requested_state`[\s\S]{0,120}`request_owner`[\s\S]{0,140}`recovery_target_identity`[\s\S]{0,140}`reason_code`/iu,
+  );
+
+  const nestedSchemas = adr.match(
+    /The nested `candidate-entry` schema is exactly ([\s\S]+?), in that order\. The nested\s+`producer-result-reference` schema is exactly ([\s\S]+?), in that order\./u,
+  );
+  assert.ok(nestedSchemas, "nested candidate and producer-reference schemas");
+  assert.deepEqual(
+    [...nestedSchemas[1].matchAll(/`([^`]+)`/gu)].map((match) => match[1]),
+    [
+      "path:string",
+      "mode:enum(100644,100755)",
+      "blob_object_id:blob",
+      "byte_count:uint",
+      "content_sha256:sha256",
+    ],
+  );
+  assert.deepEqual(
+    [...nestedSchemas[2].matchAll(/`([^`]+)`/gu)].map((match) => match[1]),
+    [
+      "producer:producer",
+      "comment_id:uint",
+      "record_digest:sha256",
+      "workflow_run_id:uint",
+      "workflow_job_id:uint",
+      "result_identity:sha256",
+    ],
+  );
+  const checkpointMemberSchema = adr.match(
+    /The nested `checkpoint-member` schema is exactly ([\s\S]+?),\s+in\s+that order\./u,
+  );
+  assert.ok(checkpointMemberSchema, "nested checkpoint-member schema");
+  assert.deepEqual(
+    [...checkpointMemberSchema[1].matchAll(/`([^`]+)`/gu)].map(
+      (match) => match[1],
+    ),
+    ["comment_id:uint", "record_digest:sha256"],
+  );
+  const recoverySuffixMemberSchema = adr.match(
+    /The nested `recovery-suffix-member` schema is exactly ([\s\S]+?),\s+in\s+that\s+order\./u,
+  );
+  assert.ok(recoverySuffixMemberSchema, "nested recovery-suffix-member schema");
+  assert.deepEqual(
+    [...recoverySuffixMemberSchema[1].matchAll(/`([^`]+)`/gu)].map(
+      (match) => match[1],
+    ),
+    [
+      "comment_id:uint",
+      "comment_body_sha256:sha256",
+      "classification:enum(irrelevant,authenticated-record)",
+      "record_digest:sha256-or-null",
+      "artifact_anchor_identity:sha256-or-null",
+      "predecessor_comment_id:uint-or-null",
+      "predecessor_record_digest:sha256-or-null",
+    ],
+  );
+
+  assert.match(
+    adr,
+    /There is no prefix, suffix[\s\S]{0,180}trailing byte[\s\S]{0,180}full-body\s+parser/iu,
+  );
+  assert.match(
+    adr,
+    /constant\s+time[\s\S]{0,280}caller-supplied\s+digest[\s\S]{0,120}never\s+trusted/iu,
+  );
+  assert.match(
+    adr,
+    /author\s+login\s+`github-actions\[bot\]`[\s\S]{0,300}41898282[\s\S]{0,300}performed_via_github_app\.id[\s\S]{0,180}15368/iu,
+  );
+  const attestationSubject = adr.match(
+    /name is exactly\n`([^`]+)`\nand whose digest is exactly `([^`]+)`/u,
+  );
+  assert.ok(attestationSubject, "post-publication attestation subject");
+  assert.deepEqual(attestationSubject.slice(1), [
+    "keiko-native/lifecycle-comment/v1/{repository}/{decimal-issue}/{decimal-comment-id}/{generation-identity}/{decimal-attempt}/{record-type}/{decimal-run-id}/{decimal-run-attempt}",
+    "sha256:{artifact-anchor-identity}",
+  ]);
+  assert.match(
+    adr,
+    /first publishes the canonical comment[\s\S]{0,300}provider-assigned comment ID[\s\S]{0,300}`comment_body_sha256`[\s\S]{0,500}artifact-anchor schema/iu,
+  );
+  assert.match(
+    adr,
+    /final\s+comment, artifact, attestation, run, and job reread[\s\S]{0,250}complete binding is stable/iu,
+  );
+  const permissionSet = adr.match(
+    /The exact writer permission set is ([\s\S]+?); every other permission/u,
+  );
+  assert.ok(permissionSet, "protected writer permission set");
+  assert.deepEqual(
+    [...permissionSet[1].matchAll(/`([^`]+)`/gu)].map((match) => match[1]),
+    [
+      "actions: read",
+      "attestations: write",
+      "contents: read",
+      "id-token: write",
+      "issues: write",
+    ],
+  );
+  const claimSet = adr.match(
+    /The exact verified attestation claim set is ([\s\S]+?)\. Claims map/u,
+  );
+  assert.ok(claimSet, "verified attestation claim set");
+  assert.deepEqual(
+    [...claimSet[1].matchAll(/`([^`]+)`/gu)].map((match) => match[1]),
+    [
+      "repository",
+      "job_workflow_ref",
+      "ref",
+      "sha",
+      "run_id",
+      "run_attempt",
+      "iss",
+    ],
+  );
+  assert.match(
+    adr,
+    /relevant anchor without its exact comment\s+proves an\s+unreferenced suffix deletion/iu,
+  );
+  assert.match(adr, /100 comments\s+per page and at most two pages/iu);
+  assert.match(
+    adr,
+    /next serialized recovery run[\s\S]{0,200}scans at most 100 more pages/iu,
+  );
+  assert.match(
+    adr,
+    /empty-history bootstrap[\s\S]{0,300}any issue comment of any author[\s\S]{0,180}reserved[\s\S]{0,80}keiko-native-lifecycle-[\s\S]{0,500}whether or not[\s\S]{0,300}valid/iu,
+  );
+  assert.match(
+    adr,
+    /zero lifecycle-marked comments[\s\S]{0,120}zero exact-name anchor artifacts[\s\S]{0,400}malformed[\s\S]{0,80}edited[\s\S]{0,80}duplicated[\s\S]{0,120}unanchored[\s\S]{0,300}both evidence sets are completely absent[\s\S]{0,300}predecessor fields explicit null[\s\S]{0,200}checkpoint sequence starts at one/iu,
+  );
+  const genesisNullRootSection = adr.match(
+    /The sequence-one null-root compacted-prefix values are:\n\n([\s\S]+?)\n\nA crash before/u,
+  );
+  assert.ok(genesisNullRootSection, "sequence-one null-root values");
+  assert.deepEqual(
+    [
+      ...genesisNullRootSection[1].matchAll(
+        /^\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|$/gmu,
+      ),
+    ].map((match) => [match[1], match[2]]),
+    [
+      ["digest_domain", "keiko-native.lifecycle-compacted-prefix-identity"],
+      ["schema_version", "1"],
+      ["digest_algorithm", "sha-256"],
+      ["repository", "current repository"],
+      ["issue_number", "current issue"],
+      ["checkpoint_sequence", "1"],
+      ["prior_checkpoint_identity", "null"],
+      ["members", "ordered authenticated genesis suffix"],
+    ],
+  );
+  assert.match(
+    adr,
+    /crash before the first checkpoint[\s\S]{0,700}authenticated genesis suffix[\s\S]{0,500}publication[\s\S]{0,40}interrupted[\s\S]{0,300}explicit authorized recovery/iu,
+  );
+  const forwardSettlementSection = adr.match(
+    /The forward orphan-settlement record is exactly:\n\n([\s\S]+?)\n\nThe orphan body/u,
+  );
+  assert.ok(forwardSettlementSection, "forward orphan-settlement matrix");
+  assert.deepEqual(
+    [
+      ...forwardSettlementSection[1].matchAll(
+        /^\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|$/gmu,
+      ),
+    ].map((match) => [match[1], match[2]]),
+    [
+      ["request_kind", "recovery-request"],
+      ["phase", "recovery"],
+      ["claim_outcome", "settled"],
+      ["recovery_scan_identity", "null"],
+      ["recovery_scanned_page_count", "0"],
+      ["recovery_scanned_comment_count", "0"],
+      ["recovery_accumulated_suffix_identity", "null"],
+      ["recovery_provider_cursor", "null"],
+      ["recovery_scan_complete", "false"],
+      [
+        "recovery_settlement_identity",
+        "sha-256 of exact recovery-settlement preimage",
+      ],
+      ["predecessor", "last authenticated record or null root"],
+      ["orphan_authority", "quarantined-only"],
+    ],
+  );
+  const recoveryAccumulatorSection = adr.match(
+    /The recovery suffix accumulator update is exactly:\n\n([\s\S]+?)\n\nA resumed recovery run/u,
+  );
+  assert.ok(
+    recoveryAccumulatorSection,
+    "recovery suffix accumulator update matrix",
+  );
+  assert.deepEqual(
+    [
+      ...recoveryAccumulatorSection[1].matchAll(
+        /^\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|$/gmu,
+      ),
+    ].map((match) => [match[1], match[2], match[3]]),
+    [
+      [
+        "checkpoint_sequence",
+        "0",
+        "0 until root; then exact checkpoint sequence or 0",
+      ],
+      ["accumulator_step", "1", "prior step + 1"],
+      ["prior_accumulated_suffix_identity", "null", "exact prior digest"],
+      [
+        "page_members",
+        "stable provider edge order",
+        "stable provider edge order",
+      ],
+      [
+        "cumulative_member_count",
+        "page member count",
+        "prior count + page member count",
+      ],
+      [
+        "next_provider_cursor",
+        "exact non-null cursor",
+        "exact cursor; null iff root found",
+      ],
+      ["complete", "false", "false until root found; then true"],
+    ],
+  );
+  assert.match(
+    adr,
+    /starts its accumulator at the first[\s\S]{0,100}two normal-load pages[\s\S]{0,140}exactly one accumulator step per[\s\S]{0,80}page/iu,
+  );
+  assert.match(
+    adr,
+    /`checkpoint_sequence` is `0` on every incomplete step[\s\S]{0,240}exact sequence from the authenticated checkpoint/iu,
+  );
+  assert.match(
+    adr,
+    /fresh transition\/read-back\s+checkpoint is sequence `1` after genesis[\s\S]{0,120}sequence plus one/iu,
+  );
+  assert.match(
+    adr,
+    /`recovery_scanned_page_count` equals the accumulator's `accumulator_step`[\s\S]{0,120}`recovery_scanned_comment_count` equals the accumulator's `cumulative_member_count`[\s\S]{0,260}first new step is exactly the prior page count plus one/iu,
+  );
+  assert.match(adr, /missing predecessor[\s\S]{0,160}fork[\s\S]{0,80}cycle/iu);
+  assert.match(
+    adr,
+    /pagination overflow[\s\S]{0,180}provider-rate-limited[\s\S]{0,120}no effect/iu,
+  );
+  assert.match(
+    adr,
+    /issue-lifecycle-\$\{decimal issue number\}[\s\S]{0,180}queue:\s*max[\s\S]{0,180}no `cancel-in-progress`/iu,
+  );
+  assert.match(
+    adr,
+    /GitHub Actions workflow syntax[\s\S]{0,300}retrieved 2026-07-28/iu,
+  );
+  assert.match(
+    adr,
+    /Waiting start and dispatch order are provider scheduling\s+facts, not authority/iu,
+  );
+  assert.match(
+    adr,
+    /repository-wide job concurrency group `issue-lifecycle-provider-budget`[\s\S]{0,180}`queue: max`[\s\S]{0,180}no\s+`cancel-in-progress`/iu,
+  );
+  assert.match(
+    adr,
+    /normal stable pass[\s\S]{0,500}93\s+requests[\s\S]{0,180}186\s+requests[\s\S]{0,180}ceiling to 200/iu,
+  );
+  assert.match(
+    adr,
+    /Recovery mode has a separate 150-request ceiling[\s\S]{0,180}cannot perform a\s+lifecycle\/status\/branch\/merge effect/iu,
+  );
+  assert.match(
+    adr,
+    /Neither mode relies on a racy\s+`x-ratelimit-remaining` read for safety/iu,
+  );
+  assert.match(
+    adr,
+    /at most 15 non-checkpoint record anchors[\s\S]{0,180}transition\/read-back checkpoint/iu,
+  );
+  assert.match(
+    adr,
+    /stable\s+complete\s+double-read[\s\S]{0,700}same-generation[\s\S]{0,300}expected producer/iu,
+  );
+  assert.match(
+    adr,
+    /ambiguous[\s\S]{0,100}never\s+retried[\s\S]{0,300}explicit recovery[\s\S]{0,200}increments the attempt/iu,
+  );
+  assert.match(
+    adr,
+    /cannot select lifecycle[\s\S]{0,180}lane[\s\S]{0,180}requested target[\s\S]{0,180}activation[\s\S]{0,180}transition/iu,
+  );
+  assert.match(
+    adr,
+    /recursive Git-tree enumeration[\s\S]{0,180}`truncated === false`/iu,
+  );
+  assert.match(
+    adr,
+    /pull-request files API[\s\S]{0,180}(?:complete tree authority|tree authority)/iu,
+  );
+
+  for (const state of lifecycleStates)
+    assert.match(adr, new RegExp(state, "u"));
+  const expectedEdges = [
+    "new -> triaged, blocked, waiting for user;",
+    "triaged -> ready, blocked, waiting for user, new;",
+    "ready -> in progress, blocked, waiting for user, new;",
+    "in progress -> ready, PR open, blocked, waiting for user, new;",
+    "PR open -> ready, in progress, ready for human review, blocked, waiting for user, new;",
+    "ready for human review -> PR open, in progress, blocked, waiting for user, new, done;",
+    "blocked -> waiting for user, new, triaged, ready, in progress, PR open;",
+    "waiting for user -> blocked, new, triaged, ready, in progress, PR open; and",
+    "done -> new only through reopen.",
+  ];
+  const edgeSection = adr.match(
+    /The allowed directed edges are exactly[\s\S]+?\n\nA source equal to target/u,
+  );
+  assert.ok(edgeSection, "complete nine-state edge policy");
+  assert.deepEqual(
+    [...edgeSection[0].matchAll(/^- (.+)$/gmu)].map((match) => match[1]),
+    expectedEdges,
+  );
+  assert.match(
+    adr,
+    /Every other ordered pair[\s\S]{0,180}nine-by-nine[\s\S]{0,180}rejected/iu,
+  );
+  for (const outsideEdge of [
+    "issue creation: `no-lifecycle -> status: new`;",
+    "reopen after non-completed closure: `no-lifecycle -> status: new`;",
+    "non-completed closure: any of the eight open states -> `no-lifecycle`;",
+    "completed closure: `status: ready for human review -> status: done`",
+  ])
+    assert.ok(adr.includes(outsideEdge), outsideEdge);
+  assert.match(
+    adr,
+    /Completed reopen is exactly `status: done -> status: new`/iu,
+  );
+  assert.match(
+    adr,
+    /Every other source or target involving\s+`no-lifecycle` is rejected/iu,
+  );
+  assert.match(
+    adr,
+    /Before issue #55[\s\S]{0,300}inert[\s\S]{0,420}no lifecycle[\s\S]{0,180}merge mutation/iu,
+  );
+  assert.match(
+    adr,
+    /Epic #49 increments to v8[\s\S]{0,240}Issue #51 increments to v5[\s\S]{0,240}Issue #55 increments[\s\S]{0,240}Issue #52 remains unchanged/iu,
+  );
+  assert.match(adr, /human[\s-]only `dev` boundary/iu);
+  assert.match(adr, /does not amend ADR-0009/iu);
+
+  for (const projection of projections) {
+    assert.match(projection, /ADR-0011/u);
+    assert.match(
+      projection,
+      /(?:github-actions\[bot\]|built-in bot user)[\s\S]{0,500}(?:short-lived\s+`GITHUB_TOKEN`|App ID `15368`)/iu,
+    );
+    assert.match(projection, /(?:inert|no pre-activation|Before Issue #55)/iu);
+    assert.match(projection, /lifecycle/iu);
+  }
+});
+
+test("pins the protected lifecycle recovery wake decision", async () => {
+  const adr = (
+    await readFile(
+      join(
+        import.meta.dirname,
+        "..",
+        "docs/adr/ADR-0012-protected-lifecycle-wake-dispatch.md",
+      ),
+      "utf8",
+    )
+  ).replaceAll("\r\n", "\n");
+
+  assert.match(adr, /Decision issue #131 v13 selected this outcome/u);
+  assert.match(
+    adr,
+    /adds one ADR-0012-owned auxiliary identity[\s\S]{0,260}does not change ADR-0011's\s+version-1 record schemas/iu,
+  );
+  assert.match(
+    adr,
+    /canonical decimal recovery-comment-ID string for `issue_comment`, otherwise the empty string/iu,
+  );
+  assert.match(
+    adr,
+    /recovery_comment_id:\s*\$\{\{\s*matrix\.locator\.recovery_comment_id\s*\}\}/u,
+  );
+  assert.match(
+    adr,
+    /required `recovery_comment_id` of type `string`[\s\S]{0,220}empty string[\s\S]{0,220}positive safe decimal integer/iu,
+  );
+
+  for (const predicate of [
+    "`createdAt` must equal `updatedAt`",
+    "`lastEditedAt` and `editor` must be null",
+    "`includesCreatedEdit` must be false",
+    "keiko-native.lifecycle-recovery-authorized-request",
+    "`command_body_sha256:sha256`",
+    "`recovery_target_identity:sha256`",
+  ])
+    assert.ok(adr.includes(predicate), predicate);
+
+  assert.match(
+    adr,
+    /REST `GET \/repos\/\{owner\}\/\{repo\}\/issues\/comments\/\{comment_id\}`[\s\S]{0,500}GraphQL `node\(id: \$node_id\)`[\s\S]{0,500}collaborator-permission/iu,
+  );
+  assert.match(
+    adr,
+    /authentication consumes six requests[\s\S]{0,700}at most fourteen\s+requests[\s\S]{0,500}remaining 136 requests[\s\S]{0,500}151st total request/iu,
+  );
+  assert.match(
+    adr,
+    /At most one authenticated recovery record may consume a recovery-target identity[\s\S]{0,400}replay no-op/iu,
+  );
+  assert.match(
+    adr,
+    /at most two\s+100-comment pages[\s\S]{0,700}two live collaborator-permission reads[\s\S]{0,400}at most\s+two actors[\s\S]{0,240}at most four permission requests[\s\S]{0,700}lowest\s+numeric comment ID[\s\S]{0,700}cannot starve a later valid command[\s\S]{0,400}never starts?\s+history-wide or cursor-resumed recovery-command enumeration/iu,
+  );
+  assert.match(
+    adr,
+    /one protected repository allowlist constant[\s\S]{0,260}two immutable\s+numeric `User` identities[\s\S]{0,260}copied numeric identities[\s\S]{0,120}denied/iu,
+  );
+  assert.match(
+    adr,
+    /This needs no workflow dispatch and no Actions-write\s+permission/iu,
+  );
+
+  assert.match(
+    adr,
+    /pull-request, governance-completion, evidence-completion, and schedule resolvers each acquire\s+`issue-lifecycle-provider-budget`[\s\S]{0,300}sole\s+concurrency group[\s\S]{0,260}issue resolver makes zero provider\s+requests and does not acquire the budget/iu,
+  );
+
+  assert.match(
+    adr,
+    /caller-held per-issue group remains held across the coordinator and every nested producer call[\s\S]{0,260}provider-intensive producer job then acquires `issue-lifecycle-provider-budget` second/iu,
+  );
+
+  assert.match(
+    adr,
+    /Adopt one top-level protected caller at `\.github\/workflows\/lifecycle-wakeup\.yml`[\s\S]{0,180}one reusable\s+coordinator at `\.\/\.github\/workflows\/issue-lifecycle\.yml`[\s\S]{0,260}only protected producer paths[\s\S]{0,160}`\.\/\.github\/workflows\/pr-contract\.yml`[\s\S]{0,160}`\.\/\.github\/workflows\/contract-publication\.yml`/iu,
+  );
+  const protectedProducerMap = adr.match(
+    /The closed mapping is:\n\n([\s\S]+?)\n\nThose workflows/u,
+  );
+  assert.ok(protectedProducerMap, "closed nested protected-producer mapping");
+  for (const row of [
+    "| `issue-contract-current` | `./.github/workflows/pr-contract.yml`          | `1`",
+    "| `pr-contract`            | `./.github/workflows/pr-contract.yml`          | `1`",
+    "| `contract-publication`   | `./.github/workflows/contract-publication.yml` | `1`",
+  ])
+    assert.ok(protectedProducerMap[1].includes(row), row);
+
+  assert.match(
+    adr,
+    /uses only their `workflow_call` interface[\s\S]{0,500}every input[\s\S]{0,100}`required: true`[\s\S]{0,100}`type: string`[\s\S]{0,1800}No producer call may\s+omit, add, rename, reorder, or weaken the primitive or required status of an input[\s\S]{0,100}passes no\s+secret/iu,
+  );
+  const producerInputSchema = adr.match(
+    /complete ordered\s+protected-producer wire schema is exactly ([\s\S]+?), in that order\./u,
+  );
+  assert.ok(
+    producerInputSchema,
+    "complete ordered protected-producer wire schema",
+  );
+  assert.deepEqual(
+    [...producerInputSchema[1].matchAll(/`([^`]+)`/gu)].map(
+      (entry) => entry[1],
+    ),
+    [
+      "schema_version:string",
+      "producer_contract_version:string",
+      "repository:string",
+      "issue_number:string",
+      "pull_request_number:string",
+      "exact_head_sha:string",
+      "exact_target:string",
+      "generation_bytes_base64:string",
+      "generation_bytes_sha256:string",
+      "generation_identity:string",
+      "attempt:string",
+      "phase_fence_comment_id:string",
+      "phase_fence_digest:string",
+      "generation_request_comment_id:string",
+      "generation_request_digest:string",
+      "request_identity:string",
+      "request_payload_digest:string",
+      "expected_producer:string",
+    ],
+  );
+  assert.match(
+    adr,
+    /`schema_version` is the literal `1`[\s\S]{0,120}`producer_contract_version` is the literal `1`[\s\S]{0,180}every other producer\/version pair is unsupported[\s\S]{0,300}`issue_number`[\s\S]{0,160}canonical\s+positive safe decimal integers[\s\S]{0,160}`1`[\s\S]{0,80}`9007199254740991`[\s\S]{0,220}`attempt` is a canonical non-negative safe decimal integer[\s\S]{0,180}`\(\?:0\|\[1-9\]\[0-9\]\*\)`[\s\S]{0,160}`0` through `9007199254740991`[\s\S]{0,180}bootstrap `0`[\s\S]{0,80}subsequent `1`[\s\S]{0,200}`-1`[\s\S]{0,80}`\+1`[\s\S]{0,80}`00`[\s\S]{0,80}`01`[\s\S]{0,80}`1\.0`[\s\S]{0,100}`9007199254740992`[\s\S]{0,120}rejected before provider access[\s\S]{0,300}`repository` is exactly `oscharko-dev\/Keiko-Native`[\s\S]{0,300}`pull_request_number` is the empty string for explicit null[\s\S]{0,300}`exact_head_sha` is the empty string for explicit null or exactly 40 lowercase hexadecimal[\s\S]{0,300}`exact_target` is the empty string for explicit null[\s\S]{0,140}literal `dev`[\s\S]{0,220}`epic\/\[A-Za-z0-9\]\(\?:\[A-Za-z0-9\._-\]\*\[A-Za-z0-9\]\)\?\(\?:\/\[A-Za-z0-9\]\(\?:\[A-Za-z0-9\._-\]\*\[A-Za-z0-9\]\)\?\)\*`[\s\S]{0,240}contains no `\.\.`[\s\S]{0,120}no slash-delimited component ending `\.lock`[\s\S]{0,120}no\s+`refs\/heads\/` prefix or normalization step[\s\S]{0,260}accepted issue delivery[\s\S]{0,180}provider base-ref bytes exactly[\s\S]{0,500}`generation_bytes_base64` is strict padded RFC 4648 base64 with no whitespace[\s\S]{0,500}must re-encode byte-identically[\s\S]{0,600}exactly 64\s+lowercase hexadecimal characters[\s\S]{0,300}generation-byte digest must match the decoded bytes[\s\S]{0,300}`expected_producer` is exactly one closed producer identity/iu,
+  );
+  assert.ok(
+    adr.includes("provider-invalid `epic/a..b` and `epic/a.lock` refs"),
+    "first rejected target complements",
+  );
+  assert.match(
+    adr,
+    /`generation_bytes_base64` is at most 65,536 UTF-8 bytes[\s\S]{0,160}Every other input is at most 512 UTF-8\s+bytes[\s\S]{0,240}producer\/version mismatch[\s\S]{0,120}authority-mismatched target fails before\s+provider access[\s\S]{0,220}first-over-bound[\s\S]{0,160}decode-invalid[\s\S]{0,160}re-encoding-mismatched[\s\S]{0,160}digest-mismatched input/iu,
+  );
+
+  const recoveryRequestSchema = adr.match(
+    /Its version-1 schema fields, in order, are\s+([\s\S]+?)\. Its SHA-256 preimage/u,
+  );
+  assert.ok(
+    recoveryRequestSchema,
+    "complete ordered authorized-recovery-request schema",
+  );
+  assert.deepEqual(
+    [...recoveryRequestSchema[1].matchAll(/`([^`]+)`/gu)].map(
+      (entry) => entry[1],
+    ),
+    [
+      "schema_version:uint=1",
+      "repository_id:uint",
+      "issue_number:uint",
+      "comment_id:uint",
+      "command_body_sha256:sha256",
+      "comment_created_at:timestamp",
+      "author_id:uint",
+      "author_type:enum(User)",
+      "recovery_target_identity:sha256",
+    ],
+  );
+  const recoveryRequestPreimage = adr.match(
+    /Its SHA-256 preimage fields, in\s+order, are ([\s\S]+?)\. ADR-0011's existing auxiliary rule/u,
+  );
+  assert.ok(
+    recoveryRequestPreimage,
+    "complete ordered authorized-recovery-request preimage",
+  );
+  assert.deepEqual(
+    [...recoveryRequestPreimage[1].matchAll(/`([^`]+)`/gu)].map(
+      (entry) => entry[1],
+    ),
+    [
+      "digest_domain:enum(keiko-native.lifecycle-recovery-authorized-request)",
+      "schema_version:uint=1",
+      "digest_algorithm:enum(sha-256)",
+      "repository_id:uint",
+      "issue_number:uint",
+      "comment_id:uint",
+      "command_body_sha256:sha256",
+      "comment_created_at:timestamp",
+      "author_id:uint",
+      "author_type:enum(User)",
+      "recovery_target_identity:sha256",
+    ],
+  );
+});
+
 async function fixtureRepository() {
   const root = await mkdtemp(join(tmpdir(), "keiko-native-quality-"));
   const files = [
@@ -1116,8 +2503,10 @@ async function fixtureRepository() {
     ".github/workflows/codeql.yml",
     ".github/workflows/contract-publication.yml",
     ".github/workflows/dependency-review.yml",
+    ".github/workflows/epic-merge-guard-status.yml",
     ".github/workflows/issue-lifecycle.yml",
     ".github/workflows/issue-readiness.yml",
+    ".github/workflows/lifecycle-wakeup.yml",
     ".github/workflows/merge-group.yml",
     ".github/workflows/internal-release.yml",
     ".github/workflows/mutation-security.yml",
@@ -1130,6 +2519,7 @@ async function fixtureRepository() {
     "CONTRIBUTING.md",
     "SECURITY.md",
     "docs/planning/agent-planning-baseline.md",
+    "docs/qa/guarded-epic-merge.md",
     "docs/product/source-baseline.md",
     "docs/qa/issue-lifecycle.md",
     "docs/qa/repository-activation.md",
@@ -1138,12 +2528,19 @@ async function fixtureRepository() {
     "quality/generate-native-vulnerability-inventory.mjs",
     "quality/github-api.mjs",
     "quality/github-reference.mjs",
+    "quality/governance-maintainers.mjs",
     "quality/issue-contract.mjs",
     "quality/issue-lifecycle-action.mjs",
     "quality/issue-lifecycle-readiness.mjs",
     "quality/issue-lifecycle.mjs",
     "quality/issue-lifecycle.test.mjs",
     "quality/issue-readiness-action.mjs",
+    "quality/lifecycle-producer-action.mjs",
+    "quality/lifecycle-producer-wire.mjs",
+    "quality/lifecycle-wake-locator-writer.mjs",
+    "quality/lifecycle-wake.mjs",
+    "quality/lifecycle-wakeup-router.mjs",
+    "quality/epic-merge-policy.json",
     "quality/internal-release.mjs",
     "quality/internal-release-workflow.mjs",
     "quality/attestation-policy.mjs",
@@ -1174,6 +2571,10 @@ async function fixtureRepository() {
   await writeFile(
     join(root, "quality/project.json"),
     JSON.stringify(validManifest),
+  );
+  await writeFile(
+    join(root, "quality/epic-merge-policy.json"),
+    await readFile(join(import.meta.dirname, "epic-merge-policy.json"), "utf8"),
   );
   await writeFile(
     join(root, "docs/product/source-baseline.md"),
@@ -1238,6 +2639,7 @@ async function fixtureRepository() {
     [
       "# Repository activation checklist",
       lifecycleList(),
+      "Before activation, create an accepted event on a disposable issue and require `planned` transition/read-back records without a lifecycle or branch effect.",
       "## Pending contract-publication controls",
       "Contract publication remains disabled until the human activation probes pass.",
       "The `Contract publication` context is not enrolled as required.",
@@ -1331,43 +2733,66 @@ async function fixtureRepository() {
   }
   await writeFile(
     join(root, ".github/workflows/issue-readiness.yml"),
-    [
-      "name: Issue readiness",
-      "types: [closed, edited, labeled, reopened, unlabeled]",
-      "name: Validate implementation readiness",
-      "issues: write",
-      "pull-requests: read",
-      "statuses: write",
-      "node quality/issue-readiness-action.mjs",
-    ].join("\n"),
+    await readFile(
+      join(import.meta.dirname, "../.github/workflows/issue-readiness.yml"),
+      "utf8",
+    ),
+  );
+  await writeFile(
+    join(root, ".github/workflows/lifecycle-wakeup.yml"),
+    await readFile(
+      join(import.meta.dirname, "../.github/workflows/lifecycle-wakeup.yml"),
+      "utf8",
+    ),
   );
   await writeFile(
     join(root, ".github/workflows/contract-publication.yml"),
+    await readFile(
+      join(
+        import.meta.dirname,
+        "../.github/workflows/contract-publication.yml",
+      ),
+      "utf8",
+    ),
+  );
+  await writeFile(
+    join(root, ".github/workflows/epic-merge-guard-status.yml"),
     [
-      "name: Contract publication (inert)",
+      "name: Epic merge guard status",
       "on:",
+      "  push:",
+      "    branches: [dev]",
       "  workflow_dispatch:",
       "permissions: {}",
       "jobs:",
-      "  validate:",
-      "    if: ${{ vars.KEIKO_CONTRACT_PUBLICATION_ACTIVATION == 'enabled' }}",
+      "  status:",
+      "    runs-on: ubuntu-latest",
       "    permissions:",
       "      contents: read",
       "    steps:",
       "      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
       "        with:",
       "          persist-credentials: false",
-      "          ref: dev",
+      "          ref: ${{ github.sha }}",
       "      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
       "        with:",
       '          node-version: "24.18.0"',
       "          package-manager-cache: false",
-      "      - name: Validate protected publication policy",
-      "        env:",
-      "          KEIKO_CONTRACT_PUBLICATION_ACTIVATION: disabled",
+      "      - name: Produce the protected guard status",
       "        run: |",
-      "          node --check quality/publication-contract.mjs",
-      "          node --check quality/lifecycle-handoff-publication.mjs",
+      '          test "$GITHUB_REF" = "refs/heads/dev"',
+      '          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',
+      "          node --check quality/epic-merge-adapter.mjs",
+      "          node --check quality/epic-merge-broker.mjs",
+      "          node --check quality/epic-merge-composition.mjs",
+      "          node --check quality/epic-merge-evidence.mjs",
+      "          node --check quality/epic-merge-github.mjs",
+      "          node --check quality/epic-merge-graphql.mjs",
+      "          node --check quality/epic-merge-operation.mjs",
+      "          node --check quality/epic-merge-policy.mjs",
+      "          node --check quality/epic-merge-policy-schema.mjs",
+      "          node --check quality/epic-merge-store.mjs",
+      "          node quality/epic-merge-policy.mjs status",
     ].join("\n"),
   );
   await writeFile(
@@ -1400,65 +2825,24 @@ async function fixtureRepository() {
       "        run: |",
       "          node --check quality/merge-group.mjs",
       "          node --check quality/epic-merge-broker.mjs",
+      "          node --check quality/epic-merge-operation.mjs",
+      "          node --check quality/epic-merge-policy.mjs",
+      "          node quality/epic-merge-policy.mjs status",
     ].join("\n"),
   );
   await writeFile(
     join(root, ".github/workflows/issue-lifecycle.yml"),
-    [
-      "name: Issue lifecycle",
-      "on:",
-      "  issues:",
-      "    types: [assigned, closed, edited, labeled, reopened, unassigned, unlabeled]",
-      "  workflow_call:",
-      "    inputs:",
-      "      issue_number:",
-      "      pr_contract_result:",
-      "permissions: {}",
-      "concurrency:",
-      "  group: issue-lifecycle-${{ inputs.issue_number || github.event.issue.number }}",
-      "  cancel-in-progress: false",
-      "jobs:",
-      "  classify:",
-      "    permissions:",
-      "      contents: read",
-      "      issues: read",
-      "      pull-requests: read",
-      "      statuses: read",
-      "    steps:",
-      "      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "        with:",
-      "          persist-credentials: false",
-      "          ref: dev",
-      "      - name: Compute the inert lifecycle decision",
-      "        env:",
-      "          KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
-      "          KEIKO_PR_CONTRACT_RESULT: ${{ inputs.pr_contract_result }}",
-      "        run: node quality/issue-lifecycle-action.mjs",
-    ].join("\n"),
+    await readFile(
+      join(import.meta.dirname, "../.github/workflows/issue-lifecycle.yml"),
+      "utf8",
+    ),
   );
   await writeFile(
     join(root, ".github/workflows/pr-contract.yml"),
-    [
-      "name: Pull request contract",
-      "on:",
-      "  pull_request_target:",
-      "    branches:",
-      "      - dev",
-      '      - "epic/**"',
-      "types: [opened, edited, reopened, synchronize, ready_for_review, converted_to_draft, closed]",
-      "cancel-in-progress: false",
-      "name: Evaluate trusted PR metadata",
-      "issue-number: ${{ steps.contract.outputs.issue-number }}",
-      "ref: dev",
-      "statuses: read",
-      "statuses: write",
-      "  KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
-      "node quality/pr-contract-action.mjs",
-      "uses: ./.github/workflows/issue-lifecycle.yml",
-      "always() && needs.contract.outputs.issue-number != ''",
-      "  issue_number: ${{ needs.contract.outputs.issue-number }}",
-      "  pr_contract_result: ${{ needs.contract.result }}",
-    ].join("\n"),
+    await readFile(
+      join(import.meta.dirname, "../.github/workflows/pr-contract.yml"),
+      "utf8",
+    ),
   );
   await writeFile(
     join(root, "sonar-project.properties"),
@@ -1474,6 +2858,7 @@ async function fixtureRepository() {
       "rules:",
       "  dangerous-triggers:",
       "    ignore:",
+      "      - lifecycle-wakeup.yml:3",
       "      - pr-contract.yml",
     ].join("\n"),
   );
@@ -1940,6 +3325,142 @@ test("reports provider and workflow drift without leaking file contents", async 
   }
 });
 
+test("binds Zizmor dangerous-trigger dispositions to the exact rule path", async () => {
+  const root = await fixtureRepository();
+  try {
+    const path = join(root, ".github/zizmor.yml");
+    const invalidPolicies = [
+      [
+        "rules:",
+        "  dangerous-triggers:",
+        "    ignore: [different.yml]",
+        "unrelated:",
+        "  notes:",
+        "    - lifecycle-wakeup.yml:3",
+        "    - pr-contract.yml",
+      ].join("\n"),
+      [
+        "rules:",
+        "  dangerous-triggers:",
+        "    ignore:",
+        "      - pr-contract.yml",
+        "      - lifecycle-wakeup.yml:3",
+      ].join("\n"),
+      [
+        "rules:",
+        "  dangerous-triggers:",
+        "    disable: true",
+        "    ignore:",
+        "      - lifecycle-wakeup.yml:3",
+        "      - pr-contract.yml",
+      ].join("\n"),
+      [
+        "rules:",
+        "  dangerous-triggers:",
+        "    disable : TRUE",
+        "    ignore:",
+        "      - lifecycle-wakeup.yml:3",
+        "      - pr-contract.yml",
+      ].join("\n"),
+      [
+        "rules:",
+        "  dangerous-triggers:",
+        "    disable: !!bool true",
+        "    ignore:",
+        "      - lifecycle-wakeup.yml:3",
+        "      - pr-contract.yml",
+      ].join("\n"),
+      [
+        "rules:",
+        "  dangerous-triggers:",
+        '    "disable": true',
+        "    ignore:",
+        "      - lifecycle-wakeup.yml:3",
+        "      - pr-contract.yml",
+      ].join("\n"),
+      [
+        "rules:",
+        "  dangerous-triggers:",
+        "    'disable': TRUE",
+        "    ignore:",
+        "      - lifecycle-wakeup.yml:3",
+        "      - pr-contract.yml",
+      ].join("\n"),
+      [
+        "rules:",
+        "  dangerous-triggers:",
+        '    "dis\\u0061ble": true',
+        "    ignore:",
+        "      - lifecycle-wakeup.yml:3",
+        "      - pr-contract.yml",
+      ].join("\n"),
+      [
+        "rules:",
+        "  dangerous-triggers:",
+        "    enabled: &enabled true",
+        "    disable: *enabled",
+        "    ignore:",
+        "      - lifecycle-wakeup.yml:3",
+        "      - pr-contract.yml",
+      ].join("\n"),
+    ];
+    for (const policy of invalidPolicies) {
+      await writeFile(path, policy);
+      assert.match(
+        (await validateRepository(root)).failures.join("\n"),
+        /Zizmor must bind the exact ordered dangerous-trigger ignore sequence/u,
+      );
+    }
+    const validPolicies = [
+      "    disable: false",
+      '    "disable": false',
+      "    'disable': !!bool false",
+    ];
+    for (const disable of validPolicies) {
+      await writeFile(
+        path,
+        [
+          "rules:",
+          "  dangerous-triggers:",
+          disable,
+          "    ignore:",
+          "      - lifecycle-wakeup.yml:3",
+          "      - pr-contract.yml",
+        ].join("\n"),
+      );
+      assert.doesNotMatch(
+        (await validateRepository(root)).failures.join("\n"),
+        /Zizmor must bind the exact ordered dangerous-trigger ignore sequence/u,
+      );
+    }
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("Sonar classifies epic merge support modules as test code", async () => {
+  const lines = new Set(
+    (
+      await readFile(
+        join(import.meta.dirname, "..", "sonar-project.properties"),
+        "utf8",
+      )
+    ).split(/\r?\n/u),
+  );
+  assert.equal(
+    lines.has(
+      "sonar.test.inclusions=quality/*.test.mjs,quality/epic-merge-*.cases.mjs,quality/epic-merge-*-fixtures.mjs",
+    ),
+    true,
+  );
+  assert.equal(
+    lines.has(
+      "sonar.exclusions=quality/*.test.mjs,quality/epic-merge-*.cases.mjs,quality/epic-merge-*-fixtures.mjs,coverage/**,node_modules/**",
+    ),
+    true,
+  );
+});
+
 test("rejects undeclared Gitar rules and configuration surfaces", async () => {
   const root = await fixtureRepository();
   try {
@@ -2183,7 +3704,7 @@ test("fails closed when lifecycle workflow or coverage wiring drifts", async () 
     );
     const result = await validateRepository(root);
     const failures = result.failures.join("\n");
-    assert.match(failures, /Issue lifecycle workflow trigger types drifted/u);
+    assert.match(failures, /Issue lifecycle workflow event set drifted/u);
     assert.match(failures, /Coverage command must include/u);
   } finally {
     await rm(root, { force: true, recursive: true });
@@ -2197,33 +3718,36 @@ test("fails closed when lifecycle workflow permissions drift", async () => {
     const workflow = await readFile(workflowPath, "utf8");
     await writeFile(
       workflowPath,
-      workflow.replace("      issues: read", "      issues: write"),
+      workflow.replaceAll("      issues: write", "      issues: read"),
     );
     const result = await validateRepository(root);
     const failures = result.failures.join("\n");
     assert.match(
       failures,
-      /Issue lifecycle workflow permission drift, missing marker:       issues: read/u,
+      /Issue lifecycle workflow permission drift, missing marker:       issues: write/u,
     );
-    assert.match(
-      failures,
-      /Issue lifecycle must not request write permissions: issues/u,
-    );
+    assert.match(failures, /Issue lifecycle write permissions drifted:/u);
   } finally {
     await rm(root, { force: true, recursive: true });
   }
 });
 
-test("fails closed when the PR lifecycle caller loses status read access", async () => {
+test("fails closed when the PR producer loses status write access", async () => {
   const root = await fixtureRepository();
   try {
     const workflowPath = join(root, ".github/workflows/pr-contract.yml");
-    const workflow = await readFile(workflowPath, "utf8");
-    await writeFile(workflowPath, workflow.replace("statuses: read\n", ""));
+    const workflow = (await readFile(workflowPath, "utf8")).replaceAll(
+      "\r\n",
+      "\n",
+    );
+    await writeFile(
+      workflowPath,
+      workflow.replaceAll("      statuses: write\n", ""),
+    );
     const result = await validateRepository(root);
     assert.match(
       result.failures.join("\n"),
-      /Pull-request contract workflow is missing marker: statuses: read/u,
+      /Pull-request contract workflow is missing marker: statuses: write/u,
     );
   } finally {
     await rm(root, { force: true, recursive: true });
@@ -2234,6 +3758,7 @@ test("requires every repository control-plane module and inert workflow", async 
   for (const path of [
     ...repositoryControlPlaneModules,
     ".github/workflows/contract-publication.yml",
+    ".github/workflows/epic-merge-guard-status.yml",
     ".github/workflows/merge-group.yml",
   ]) {
     const root = await fixtureRepository();
@@ -2250,6 +3775,53 @@ test("requires every repository control-plane module and inert workflow", async 
     } finally {
       await rm(root, { force: true, recursive: true });
     }
+  }
+});
+
+test("keeps checked-in epic merge policy inactive and producer-bound", async () => {
+  const root = await fixtureRepository();
+  try {
+    const path = join(root, "quality/epic-merge-policy.json");
+    const policy = JSON.parse(await readFile(path, "utf8"));
+    policy.activation = {
+      commit: "a".repeat(40),
+      producer: policy.expectedProducers.activation,
+      signed: true,
+      state: "active",
+    };
+    await writeFile(path, JSON.stringify(policy));
+    const result = await validateRepository(root);
+    assert.match(
+      result.failures.join("\n"),
+      /must remain protected-dev sourced and inactive before activation/u,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("guard status producer stays protected-dev, read-only, and caller-free", async () => {
+  const root = await fixtureRepository();
+  try {
+    const path = join(root, ".github/workflows/epic-merge-guard-status.yml");
+    const workflow = await readFile(path, "utf8");
+    await writeFile(
+      path,
+      workflow
+        .replace("      contents: read", "      contents: write")
+        .replace("    runs-on: ubuntu-latest", "    runs-on: windows-latest")
+        .replace(
+          "          ref: ${{ github.sha }}",
+          "          ref: caller-selected",
+        ),
+    );
+    const result = await validateRepository(root);
+    const failures = result.failures.join("\n");
+    assert.match(failures, /must not request write permissions/u);
+    assert.match(failures, /missing marker: runs-on: ubuntu-latest/u);
+    assert.match(failures, /missing marker: ref: \$\{\{ github\.sha \}\}/u);
+  } finally {
+    await rm(root, { force: true, recursive: true });
   }
 });
 
@@ -2364,7 +3936,7 @@ test("accepts inert workflow permission blocks with Windows line endings", async
     ]) {
       const workflowPath = join(root, path);
       const workflow = await readFile(workflowPath, "utf8");
-      await writeFile(workflowPath, workflow.replaceAll("\n", "\r\n"));
+      await writeFile(workflowPath, workflow.replaceAll(/\r?\n/gu, "\r\n"));
     }
     const result = await validateRepository(root);
     assert.deepEqual(result.failures, []);
@@ -2402,7 +3974,10 @@ test("rejects scalar and misplaced inert workflow permissions", async () => {
       root,
       ".github/workflows/contract-publication.yml",
     );
-    const workflow = await readFile(workflowPath, "utf8");
+    const workflow = (await readFile(workflowPath, "utf8")).replaceAll(
+      "\r\n",
+      "\n",
+    );
     await writeFile(
       workflowPath,
       workflow.replace(

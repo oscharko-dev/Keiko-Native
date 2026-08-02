@@ -1,0 +1,236 @@
+name: Lifecycle wake-up
+
+on:
+  issues:
+    types: [assigned, closed, edited, labeled, reopened, unassigned, unlabeled]
+  pull_request_target:
+    branches:
+      - dev
+      - "epic/**"
+    types:
+      [
+        opened,
+        edited,
+        reopened,
+        synchronize,
+        ready_for_review,
+        converted_to_draft,
+        closed,
+      ]
+  issue_comment:
+    types: [created, edited, deleted]
+  check_run:
+    types: [completed, rerequested]
+  workflow_run:
+    workflows:
+      - Issue readiness
+      - Pull request contract
+      - Contract publication (inert)
+      - CI
+      - CodeQL
+      - Dependency Review
+      - OSV dependency scan
+    types: [completed]
+  schedule:
+    - cron: "17 * * * *"
+
+permissions: {}
+
+jobs:
+  resolve-issue:
+    name: Resolve issue locator
+    if: ${{ github.event_name == 'issues' || (github.event_name == 'issue_comment' && github.event.issue.pull_request == null) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      locators: ${{ steps.resolve.outputs.locators }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the exact protected caller
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24.18.0"
+          package-manager-cache: false
+      - name: Resolve the untrusted issue locator
+        id: resolve
+        env:
+          ACTIONS_RESULTS_URL: ""
+          ACTIONS_RUNTIME_TOKEN: ""
+          ACTIONS_RUNTIME_URL: ""
+          KEIKO_LIFECYCLE_RESOLVER: issue
+        run: node quality/lifecycle-wakeup-router.mjs
+
+  resolve-pull-request:
+    name: Resolve pull-request locator
+    if: ${{ github.event_name == 'pull_request_target' || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null) || github.event_name == 'check_run' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: issue-lifecycle-provider-budget
+      queue: max
+    outputs:
+      locators: ${{ steps.resolve.outputs.locators }}
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check out the exact protected caller
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24.18.0"
+          package-manager-cache: false
+      - name: Resolve the untrusted pull-request locator
+        id: resolve
+        env:
+          ACTIONS_RESULTS_URL: ""
+          ACTIONS_RUNTIME_TOKEN: ""
+          ACTIONS_RUNTIME_URL: ""
+          GITHUB_TOKEN: ${{ github.token }}
+          KEIKO_LIFECYCLE_RESOLVER: pull-request
+        run: node quality/lifecycle-wakeup-router.mjs
+
+  resolve-governance:
+    name: Resolve governance-workflow locator
+    if: ${{ github.event_name == 'workflow_run' && (github.event.workflow_run.name == 'Issue readiness' || github.event.workflow_run.name == 'Pull request contract' || github.event.workflow_run.name == 'Contract publication (inert)') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: issue-lifecycle-provider-budget
+      queue: max
+    outputs:
+      locators: ${{ steps.resolve.outputs.locators }}
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check out the exact protected caller
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24.18.0"
+          package-manager-cache: false
+      - name: Resolve the authenticated governance locator artifact
+        id: resolve
+        env:
+          ACTIONS_RESULTS_URL: ""
+          ACTIONS_RUNTIME_TOKEN: ""
+          ACTIONS_RUNTIME_URL: ""
+          GITHUB_TOKEN: ${{ github.token }}
+          KEIKO_LIFECYCLE_RESOLVER: governance
+        run: node quality/lifecycle-wakeup-router.mjs
+
+  resolve-evidence:
+    name: Resolve evidence-workflow locator
+    if: ${{ github.event_name == 'workflow_run' && (github.event.workflow_run.name == 'CI' || github.event.workflow_run.name == 'CodeQL' || github.event.workflow_run.name == 'Dependency Review' || github.event.workflow_run.name == 'OSV dependency scan') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: issue-lifecycle-provider-budget
+      queue: max
+    outputs:
+      locators: ${{ steps.resolve.outputs.locators }}
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check out the exact protected caller
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24.18.0"
+          package-manager-cache: false
+      - name: Resolve the untrusted evidence locator
+        id: resolve
+        env:
+          ACTIONS_RESULTS_URL: ""
+          ACTIONS_RUNTIME_TOKEN: ""
+          ACTIONS_RUNTIME_URL: ""
+          GITHUB_TOKEN: ${{ github.token }}
+          KEIKO_LIFECYCLE_RESOLVER: evidence
+        run: node quality/lifecycle-wakeup-router.mjs
+
+  resolve-schedule:
+    name: Resolve bounded scheduled locators
+    if: ${{ github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: issue-lifecycle-provider-budget
+      queue: max
+    outputs:
+      locators: ${{ steps.resolve.outputs.locators }}
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - name: Check out the exact protected caller
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24.18.0"
+          package-manager-cache: false
+      - name: Resolve the complete bounded scheduled locator set
+        id: resolve
+        env:
+          ACTIONS_RESULTS_URL: ""
+          ACTIONS_RUNTIME_TOKEN: ""
+          ACTIONS_RUNTIME_URL: ""
+          GITHUB_TOKEN: ${{ github.token }}
+          KEIKO_LIFECYCLE_RESOLVER: schedule
+        run: node quality/lifecycle-wakeup-router.mjs
+
+  coordinate:
+    name: Coordinate one protected issue
+    needs:
+      - resolve-issue
+      - resolve-pull-request
+      - resolve-governance
+      - resolve-evidence
+      - resolve-schedule
+    if: ${{ always() && (needs.resolve-issue.outputs.locators != '' || needs.resolve-pull-request.outputs.locators != '' || needs.resolve-governance.outputs.locators != '' || needs.resolve-evidence.outputs.locators != '' || (needs.resolve-schedule.outputs.locators != '' && needs.resolve-schedule.outputs.locators != '[]')) }}
+    strategy:
+      fail-fast: false
+      max-parallel: 200
+      matrix:
+        locator: ${{ fromJSON(needs.resolve-issue.outputs.locators || needs.resolve-pull-request.outputs.locators || needs.resolve-governance.outputs.locators || needs.resolve-evidence.outputs.locators || needs.resolve-schedule.outputs.locators) }}
+    concurrency:
+      group: issue-lifecycle-${{ matrix.locator.issue_number }}
+      queue: max
+    permissions:
+      actions: read
+      attestations: write
+      checks: read
+      contents: read
+      id-token: write
+      issues: write
+      pull-requests: read
+      statuses: write
+    uses: ./.github/workflows/issue-lifecycle.yml
+    with:
+      issue_number: ${{ matrix.locator.issue_number }}
+      recovery_comment_id: ${{ matrix.locator.recovery_comment_id }}

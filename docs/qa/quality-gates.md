@@ -8,6 +8,8 @@ deterministic and independent compliance evidence. Passing a gate does not excus
 Quality Plan, an untested changed behavior, or a violated architecture or trust boundary.
 Manual label, ruleset, identity, provider, and live-probe sequencing follows
 [`repository-activation.md`](repository-activation.md).
+The guarded child-to-epic implementation, durable settlement rules, and reconciliation procedure
+are specified in [`guarded-epic-merge.md`](guarded-epic-merge.md).
 
 ## Required exact-head checks
 
@@ -60,10 +62,50 @@ head. Restoring issue readiness does not restore those pull requests; their upda
 evidence must pass again. Readiness records are accepted only from the canonical GitHub Actions bot
 identity; copied or user-authored marker comments have no authority.
 
-Zizmor's `dangerous-triggers` finding is dispositioned only for this one metadata workflow. The
-repository contract enforces its protected-`dev` checkout, fixed script, pinned actions,
-least-privilege permissions, absence of PR checkout or build commands, and exact branch filters. No
-other workflow or dangerous trigger inherits that exception.
+ADR-0011 applies the same protected producer model to lifecycle handoff records. Authentication
+requires the exact built-in bot user, GitHub Actions App ID `15368`, expected protected workflow
+path, `refs/heads/dev`, workflow commit, run, attempt, job, result, canonical generation, current
+fence, predecessor chain, and a cryptographically verified post-publication GitHub-native
+attestation over an immutable anchor binding the provider comment ID, exact body digest, record
+digest, and protected writer run. An exact-name per-issue anchor detects an unreferenced suffix
+deletion. Attested transition/read-back checkpoints bound the effect-capable live suffix to 15
+records, and effect-disabled cursor recovery handles deeper comment history through exact
+domain-separated accumulator root and resumed-step identities. A login, marker, author
+association, context name, details URL, or event timing alone is never sufficient.
+
+Sequence-one bootstrap proves the exact compacted-prefix domain, schema, null prior-checkpoint
+identity, and complete ordered genesis member list. Forward orphan settlement requires a
+request-bound recovery-target digest, exact recovery-settlement schema, independently verified
+failed protected writer run, two stable zero-anchor/zero-attestation reads, and a normally
+authenticated settlement claim chained from the last authenticated predecessor. The orphan never
+becomes a record or authority source.
+
+Generation-request, producer-result, phase/fence-claim, and transition/read-back records use strict
+version-1 canonical bytes and domain-separated SHA-256 digests. The loader performs full-body
+parsing, bounded complete pagination, and stable double-reads. Deletion, edits, forks, cycles, gaps,
+conflicts, truncation, wrong producer/generation/fence, or unavailable evidence fail closed.
+Protected producers independently recompute the generation and evaluate only their owned predicate;
+they cannot choose lifecycle lane, target, activation, transition, or merge authority.
+
+Publication evidence uses the exact candidate commit's complete, non-truncated recursive Git tree
+and exact regular-file blob bytes, modes, object IDs, sizes, and SHA-256 digests. The pull-request
+files API is not complete tree authority. Candidate-set drift, non-regular entries, malformed blobs,
+changed rereads, or unavailable provider evidence fail closed.
+
+Lifecycle requests enter only through ADR-0012's protected top-level wake workflow. Its closed
+direct-event, protected-source completion, and hourly schedule resolvers emit only a canonical
+issue number and optional exact recovery-comment locator. The caller holds the per-issue lock while
+the reusable coordinator reloads current authority and advances one ADR-0011 record obligation.
+Only `pr-contract.yml` and `contract-publication.yml` may be called as nested producers, using the
+fixed ordered 18-string wire and the same protected `dev` SHA. Neither caller nor callee has
+`actions: write`. Before signed Issue #55 activation, only non-applied records are permitted;
+lifecycle/status writes, closure, branch, pull-request, queue, and merge effects remain prohibited.
+
+Zizmor's `dangerous-triggers` finding is dispositioned only for the protected PR metadata workflow
+and line 3's exact trigger mapping in the protected lifecycle wake caller. The repository contract
+enforces their protected-`dev` checkout, fixed scripts, pinned actions, least-privilege permissions,
+absence of PR checkout or build commands, exact branch filters, closed event sets, and guarded data
+flow. No other workflow or dangerous trigger inherits either exception.
 
 ## Merge authority and automation boundary
 
@@ -100,6 +142,39 @@ required check, unresolved item, closed issue, changed ref, ambiguous response, 
 fails closed. An ambiguous claim remains blocked with no retry until explicit human reconciliation
 using exact refs, the squash commit, its parent, and the observed trees. A new request identity is
 permitted only after explicit terminal settlement or human reconciliation and fresh revalidation.
+
+ADR-0010 stages this boundary behind lifecycle activation. Issue #50 installs only the inert guard,
+protected policy/status producer, hermetic proof, and v2 live-probe harness; it performs no live
+merge. The canonical `status: ready for human review` state cannot truthfully exist as merge
+authority before the signed Contract-as-Code activation. The guarded operation is therefore
+unavailable before activation and makes no provider merge request. Issue #55 owns the human-gated
+activation and then the first exact-target success plus the complete live denial, race, ambiguity,
+redaction, and reconciliation matrix.
+
+Protected `dev` is the sole policy source and derives exactly three availability states. `disabled`
+before activation makes no provider merge request. `probe-only` immediately after activation
+permits effects solely for Issue #55's frozen disposable-probe manifest and exact issue, pull
+request, target, head, base, request, and operation identities. `enabled` requires protected
+Contract-as-Code to consume an expected-producer exact-head live-proof receipt and status bound to
+the signed activation commit, frozen manifest, and complete successfully settled matrix. That
+evidence is consumed input, not independent authority. Missing, stale, failed, wrong-producer,
+mismatched, incomplete, or ambiguous evidence remains `probe-only` or `disabled`; no caller input
+or repository variable promotes it. The live harness derives each disposable `epic/**` target from
+its provider-assigned parent issue, uses a separate parent for stale-base concurrency, reads every
+prohibited target's actual tip, and records an absent `main` ref as denial without creating it.
+
+ADR-0011's record protocol is also inert before activation. It adds no account, installed App, PAT,
+broker, service, database, application/runtime dependency, or second credential. Its
+GitHub-maintained attestation transport is provider composition and must be full-SHA pinned under
+the refreshed #51 contract. Before Issue #55, it cannot produce an applied lifecycle, status,
+branch, pull-request, queue, or merge result. Issue #55 alone owns activation and disposable live
+proof; missing, stale, ambiguous, or wrong-producer record evidence cannot promote availability.
+The per-issue and repository-wide provider-budget groups use `queue: max`; a hard local request
+counter and fail-closed provider responses, not a racy remaining-quota read, protect the shared
+repository token boundary. Until the pinned actionlint release understands GitHub's newer
+`concurrency.queue` key, the actionlint job ignores only that exact unknown-key diagnostic; the
+repository contract independently requires `queue: max`, rejects `cancel-in-progress`, and keeps
+all other actionlint diagnostics active.
 
 This shared identity means GitHub attribution cannot distinguish an agent operation from a
 deliberate human action, and repository identity rules cannot technically constrain the credential

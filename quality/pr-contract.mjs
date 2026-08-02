@@ -148,7 +148,7 @@ function applicabilityFailures(section, name) {
   ];
 }
 
-function issueDeliveryTarget(issueBody, kind) {
+export function issueDeliveryTarget(issueBody, kind) {
   const sections = markdownSections(issueBody);
   const value =
     kind === "epic"

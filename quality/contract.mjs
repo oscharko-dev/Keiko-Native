@@ -4,6 +4,7 @@ import { extname, join, relative, sep } from "node:path";
 import { canonicalCoverageCommand } from "./coverage-reporter.mjs";
 import { compareCodeUnits } from "./deterministic-order.mjs";
 import { internalReleaseWorkflowFailures } from "./internal-release-workflow.mjs";
+import { validateEpicMergePolicy } from "./epic-merge-policy-schema.mjs";
 import {
   canonicalLineEndings,
   workflowToolchainFailures,
@@ -30,7 +31,29 @@ const repositoryControlPlaneModules = Object.freeze([
   "quality/lifecycle-handoff-publication.mjs",
   "quality/lifecycle-handoff.mjs",
   "quality/merge-group.mjs",
+  "quality/epic-merge-adapter.mjs",
+  "quality/epic-merge-authorization.mjs",
   "quality/epic-merge-broker.mjs",
+  "quality/epic-merge-composition.mjs",
+  "quality/epic-merge-evidence.mjs",
+  "quality/epic-merge-github.mjs",
+  "quality/epic-merge-graphql.mjs",
+  "quality/epic-merge-operation.mjs",
+  "quality/epic-merge-policy.mjs",
+  "quality/epic-merge-policy-schema.mjs",
+  "quality/epic-merge-store.mjs",
+  "quality/governance-maintainers.mjs",
+  "quality/issue-lifecycle-request.mjs",
+  "quality/lifecycle-coordinator-action.mjs",
+  "quality/lifecycle-coordinator.mjs",
+  "quality/lifecycle-github-provider.mjs",
+  "quality/lifecycle-producer-action.mjs",
+  "quality/lifecycle-producer.mjs",
+  "quality/lifecycle-producer-wire.mjs",
+  "quality/lifecycle-wake-locator-writer.mjs",
+  "quality/lifecycle-wake.mjs",
+  "quality/lifecycle-wakeup-router.mjs",
+  "quality/single-file-zip.mjs",
 ]);
 
 const requiredFiles = [
@@ -49,8 +72,10 @@ const requiredFiles = [
   ".github/workflows/codeql.yml",
   ".github/workflows/contract-publication.yml",
   ".github/workflows/dependency-review.yml",
+  ".github/workflows/epic-merge-guard-status.yml",
   ".github/workflows/issue-lifecycle.yml",
   ".github/workflows/issue-readiness.yml",
+  ".github/workflows/lifecycle-wakeup.yml",
   ".github/workflows/merge-group.yml",
   ".github/workflows/internal-release.yml",
   ".github/workflows/mutation-security.yml",
@@ -63,6 +88,7 @@ const requiredFiles = [
   "CONTRIBUTING.md",
   "SECURITY.md",
   "docs/engineering/code-quality-standard.md",
+  "docs/qa/guarded-epic-merge.md",
   "docs/planning/agent-planning-baseline.md",
   "docs/product/source-baseline.md",
   "docs/qa/issue-lifecycle.md",
@@ -78,6 +104,7 @@ const requiredFiles = [
   "quality/issue-lifecycle.mjs",
   "quality/issue-lifecycle.test.mjs",
   "quality/issue-readiness-action.mjs",
+  "quality/epic-merge-policy.json",
   "quality/markdown-contract.mjs",
   "quality/pr-contract-action.mjs",
   "quality/pr-contract.mjs",
@@ -158,38 +185,49 @@ const issueReadinessMarkers = [
   "issues: write",
   "pull-requests: read",
   "statuses: write",
+  "group: issue-lifecycle-${{ github.event.issue.number }}",
+  "ref: dev",
+  "KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
   "node quality/issue-readiness-action.mjs",
-];
-
-const issueLifecycleTriggerTypes = [
-  "assigned",
-  "closed",
-  "edited",
-  "labeled",
-  "reopened",
-  "unassigned",
-  "unlabeled",
 ];
 
 const issueLifecycleMarkers = [
   "name: Issue lifecycle",
   "workflow_call:",
-  "group: issue-lifecycle-${{ inputs.issue_number || github.event.issue.number }}",
-  "cancel-in-progress: false",
+  "issue_number:",
+  "type: number",
+  "recovery_comment_id:",
+  "type: string",
+  "description: Sanitized authenticated lifecycle observation identity",
+  "group: issue-lifecycle-provider-budget",
+  "queue: max",
   "ref: dev",
   "persist-credentials: false",
   "KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
-  "KEIKO_PR_CONTRACT_RESULT: ${{ inputs.pr_contract_result }}",
-  "node quality/issue-lifecycle-action.mjs",
+  "node quality/lifecycle-coordinator-action.mjs",
+  "node quality/lifecycle-record-writer.mjs prepare",
+  "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+  "actions/attest@a1948c3f048ba23858d222213b7c278aabede763",
+  "node quality/lifecycle-record-writer.mjs verify",
+  "uses: ./.github/workflows/pr-contract.yml",
+  "uses: ./.github/workflows/contract-publication.yml",
+  'schema_version: "1"',
+  'producer_contract_version: "1"',
+  "generation_bytes_base64:",
+  "expected_producer: issue-contract-current",
+  "expected_producer: pr-contract",
+  "expected_producer: contract-publication",
 ];
 
 const issueLifecyclePermissionMarkers = [
   "permissions: {}",
   "    permissions:",
+  "      actions: read",
+  "      attestations: write",
   "      contents: read",
-  "      issues: read",
-  "      pull-requests: read",
-  "      statuses: read",
+  "      id-token: write",
+  "      issues: write",
+  "      statuses: write",
 ];
 
 const pullRequestContractMarkers = [
@@ -205,14 +243,42 @@ const pullRequestContractMarkers = [
   "name: Evaluate trusted PR metadata",
   "issue-number: ${{ steps.contract.outputs.issue-number }}",
   "ref: dev",
-  "statuses: read",
   "statuses: write",
+  "issues: write",
   "KEIKO_ISSUE_LIFECYCLE_ACTIVATION: disabled",
   "node quality/pr-contract-action.mjs",
+  "workflow_call:",
+  "schema_version:",
+  "producer_contract_version:",
+  "generation_bytes_base64:",
+  "expected_producer:",
+  "node quality/lifecycle-producer-action.mjs",
+  "name: keiko-lifecycle-wake-locator-v1",
+];
+
+const lifecycleWakeupMarkers = [
+  "name: Lifecycle wake-up",
+  "issues:",
+  "pull_request_target:",
+  "issue_comment:",
+  "check_run:",
+  "workflow_run:",
+  "schedule:",
+  'cron: "17 * * * *"',
+  "resolve-issue:",
+  "resolve-pull-request:",
+  "resolve-governance:",
+  "resolve-evidence:",
+  "resolve-schedule:",
+  "group: issue-lifecycle-provider-budget",
+  "group: issue-lifecycle-${{ matrix.locator.issue_number }}",
   "uses: ./.github/workflows/issue-lifecycle.yml",
-  "always() && needs.contract.outputs.issue-number != ''",
-  "issue_number: ${{ needs.contract.outputs.issue-number }}",
-  "pr_contract_result: ${{ needs.contract.result }}",
+  "issue_number: ${{ matrix.locator.issue_number }}",
+  "recovery_comment_id: ${{ matrix.locator.recovery_comment_id }}",
+  'ACTIONS_RUNTIME_TOKEN: ""',
+  'ACTIONS_RUNTIME_URL: ""',
+  'ACTIONS_RESULTS_URL: ""',
+  "node quality/lifecycle-wakeup-router.mjs",
 ];
 
 const canonicalLifecycleStates = Object.freeze([
@@ -238,6 +304,11 @@ const lifecycleCoverageIncludes = [
   "quality/issue-lifecycle.mjs",
   "quality/issue-lifecycle-readiness.mjs",
   "quality/issue-lifecycle-action.mjs",
+  "quality/lifecycle-producer-action.mjs",
+  "quality/lifecycle-producer-wire.mjs",
+  "quality/lifecycle-wake-locator-writer.mjs",
+  "quality/lifecycle-wake.mjs",
+  "quality/lifecycle-wakeup-router.mjs",
 ];
 
 const repositoryControlPlaneCoverageIncludes = repositoryControlPlaneModules;
@@ -258,7 +329,6 @@ const coverageArgumentPatterns = Object.freeze([
 const inertWorkflowMarkers = [
   "permissions: {}",
   "contents: read",
-  "ref: dev",
   "persist-credentials: false",
   'node-version: "24.18.0"',
   "package-manager-cache: false",
@@ -267,10 +337,11 @@ const inertWorkflowMarkers = [
 const contractPublicationWorkflowMarkers = [
   "name: Contract publication (inert)",
   "workflow_dispatch:",
-  "if: ${{ vars.KEIKO_CONTRACT_PUBLICATION_ACTIVATION == 'enabled' }}",
+  "if: ${{ github.event_name == 'workflow_dispatch' && vars.KEIKO_CONTRACT_PUBLICATION_ACTIVATION == 'enabled' }}",
   "KEIKO_CONTRACT_PUBLICATION_ACTIVATION: disabled",
   "node --check quality/publication-contract.mjs",
   "node --check quality/lifecycle-handoff-publication.mjs",
+  "ref: dev",
 ];
 
 const mergeGroupWorkflowMarkers = [
@@ -283,9 +354,38 @@ const mergeGroupWorkflowMarkers = [
   "KEIKO_MERGE_GROUP_ACTIVATION: disabled",
   "node --check quality/merge-group.mjs",
   "node --check quality/epic-merge-broker.mjs",
+  "node --check quality/epic-merge-operation.mjs",
+  "node --check quality/epic-merge-policy.mjs",
+  "node quality/epic-merge-policy.mjs status",
+  "ref: dev",
+];
+
+const epicMergeGuardStatusMarkers = [
+  "name: Epic merge guard status",
+  "push:",
+  "branches: [dev]",
+  "workflow_dispatch:",
+  "runs-on: ubuntu-latest",
+  "ref: ${{ github.sha }}",
+  'test "$GITHUB_REF" = "refs/heads/dev"',
+  'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',
+  "node --check quality/epic-merge-adapter.mjs",
+  "node --check quality/epic-merge-broker.mjs",
+  "node --check quality/epic-merge-composition.mjs",
+  "node --check quality/epic-merge-evidence.mjs",
+  "node --check quality/epic-merge-github.mjs",
+  "node --check quality/epic-merge-graphql.mjs",
+  "node --check quality/epic-merge-operation.mjs",
+  "node --check quality/epic-merge-policy.mjs",
+  "node --check quality/epic-merge-policy-schema.mjs",
+  "node --check quality/epic-merge-store.mjs",
+  "node quality/epic-merge-policy.mjs status",
 ];
 
 const activationRunbookMarkers = [
+  "create an accepted event on a disposable issue",
+  "`planned` transition/read-back records",
+  "without a lifecycle or branch effect",
   "## Pending contract-publication controls",
   "Contract publication remains disabled",
   "The `Contract publication` context is not enrolled as",
@@ -1653,19 +1753,70 @@ function issueLifecycleWorkflowFailures(workflow) {
           `Issue lifecycle workflow permission drift, missing marker: ${marker}.`,
       ),
   );
-  const triggerTypes = bracketList("types", workflow);
+  const writePermissions = [...new Set(workflowWritePermissions(workflow))];
   if (
-    JSON.stringify(triggerTypes) !== JSON.stringify(issueLifecycleTriggerTypes)
+    JSON.stringify(
+      writePermissions.toSorted((left, right) => left.localeCompare(right)),
+    ) !== JSON.stringify(["attestations", "id-token", "issues", "statuses"])
   )
     failures.push(
-      `Issue lifecycle workflow trigger types drifted: ${triggerTypes.join(", ")}.`,
+      `Issue lifecycle write permissions drifted: ${writePermissions.join(", ")}.`,
     );
-  if (workflow.includes("pull_request_target"))
-    failures.push("Issue lifecycle must not use pull_request_target.");
-  const writePermissions = [...new Set(workflowWritePermissions(workflow))];
-  if (writePermissions.length > 0)
+  for (const forbidden of [
+    "\n  issues:",
+    "\n  pull_request_target:",
+    "\n  workflow_dispatch:",
+    "\n  repository_dispatch:",
+    "cancel-in-progress:",
+    "actions: write",
+  ])
+    if (workflow.includes(forbidden))
+      failures.push(`Issue lifecycle contains forbidden marker: ${forbidden}.`);
+  const events = workflowEvents(workflow);
+  if (JSON.stringify(events) !== JSON.stringify(["workflow_call"]))
     failures.push(
-      `Issue lifecycle must not request write permissions: ${writePermissions.join(", ")}.`,
+      `Issue lifecycle workflow event set drifted: ${events.join(", ")}.`,
+    );
+  return failures;
+}
+
+function lifecycleWakeupWorkflowFailures(workflow) {
+  const failures = lifecycleWakeupMarkers
+    .filter((marker) => !workflow.includes(marker))
+    .map(
+      (marker) => `Lifecycle wake-up workflow is missing marker: ${marker}.`,
+    );
+  const events = workflowEvents(workflow);
+  const expected = [
+    "issues",
+    "pull_request_target",
+    "issue_comment",
+    "check_run",
+    "workflow_run",
+    "schedule",
+  ];
+  if (JSON.stringify(events) !== JSON.stringify(expected))
+    failures.push(`Lifecycle wake-up event set drifted: ${events.join(", ")}.`);
+  for (const forbidden of [
+    "actions: write",
+    "workflow_dispatch:",
+    "repository_dispatch:",
+    "pull_request_review:",
+    "pull_request_review_comment:",
+    "actions/upload-artifact",
+  ])
+    if (workflow.includes(forbidden))
+      failures.push(
+        `Lifecycle wake-up contains forbidden marker: ${forbidden}.`,
+      );
+  const writePermissions = [...new Set(workflowWritePermissions(workflow))];
+  if (
+    JSON.stringify(
+      writePermissions.toSorted((left, right) => left.localeCompare(right)),
+    ) !== JSON.stringify(["attestations", "id-token", "issues", "statuses"])
+  )
+    failures.push(
+      `Lifecycle wake-up write permissions drifted: ${writePermissions.join(", ")}.`,
     );
   return failures;
 }
@@ -1703,11 +1854,7 @@ function pullRequestContractWorkflowFailures(workflow) {
 function inertControlWorkflowFailures(
   name,
   workflow,
-  markers,
-  expectedEvents,
-  expectedJob,
-  expectedGuard,
-  expectedCommands,
+  { markers, events, job, guard, commands, checkoutRef = "ref: dev" },
 ) {
   const markerFailures = [...inertWorkflowMarkers, ...markers]
     .filter((marker) => !workflow.includes(marker))
@@ -1718,8 +1865,8 @@ function inertControlWorkflowFailures(
       `${name} workflow must not request write permissions: ${writePermissions.join(", ")}.`,
     );
   const exactShape = [
-    [workflowEvents(workflow), expectedEvents, "event set"],
-    [workflowJobs(workflow), [expectedJob], "job set"],
+    [workflowEvents(workflow), events, "event set"],
+    [workflowJobs(workflow), [job], "job set"],
     [
       workflowPermissionDeclarations(workflow),
       ["permissions: {}", "    permissions:"],
@@ -1731,7 +1878,7 @@ function inertControlWorkflowFailures(
         .split(/\r?\n/u)
         .map((line) => line.trim())
         .filter((line) => line.startsWith("if:")),
-      [expectedGuard],
+      guard === undefined ? [] : [guard],
       "job guard",
     ],
     [
@@ -1739,7 +1886,7 @@ function inertControlWorkflowFailures(
         .split(/\r?\n/u)
         .map((line) => line.trim())
         .filter((line) => line.startsWith("ref:")),
-      ["ref: dev"],
+      [checkoutRef],
       "checkout ref",
     ],
     [
@@ -1761,7 +1908,7 @@ function inertControlWorkflowFailures(
       ],
       "action set",
     ],
-    [workflowRunCommands(workflow), expectedCommands, "command set"],
+    [workflowRunCommands(workflow), commands, "command set"],
   ];
   markerFailures.push(
     ...exactShape
@@ -1809,33 +1956,157 @@ function inertControlWorkflowFailures(
 }
 
 function contractPublicationWorkflowFailures(workflow) {
-  return inertControlWorkflowFailures(
-    "Contract publication",
-    workflow,
-    contractPublicationWorkflowMarkers,
-    ["workflow_dispatch"],
-    "validate",
-    "if: ${{ vars.KEIKO_CONTRACT_PUBLICATION_ACTIVATION == 'enabled' }}",
-    [
+  const markers = [
+    ...contractPublicationWorkflowMarkers,
+    "workflow_call:",
+    "schema_version:",
+    "producer_contract_version:",
+    "generation_bytes_base64:",
+    "expected_producer:",
+    "node quality/lifecycle-producer-action.mjs",
+    "name: keiko-lifecycle-wake-locator-v1",
+  ];
+  const failures = markers
+    .filter((marker) => !workflow.includes(marker))
+    .map(
+      (marker) => `Contract publication workflow is missing marker: ${marker}.`,
+    );
+  if (
+    JSON.stringify(workflowEvents(workflow)) !==
+    JSON.stringify(["workflow_dispatch", "workflow_call"])
+  )
+    failures.push("Contract publication workflow event set drifted.");
+  if (workflow.includes("actions: write"))
+    failures.push("Contract publication must not request actions: write.");
+  const writePermissions = [...new Set(workflowWritePermissions(workflow))];
+  const unexpectedWritePermissions = writePermissions.filter(
+    (permission) =>
+      !["attestations", "id-token", "issues"].includes(permission),
+  );
+  if (unexpectedWritePermissions.length > 0)
+    failures.push(
+      `Contract publication workflow must not request write permissions: ${unexpectedWritePermissions.join(", ")}.`,
+    );
+  if (
+    JSON.stringify(
+      writePermissions.toSorted((left, right) => left.localeCompare(right)),
+    ) !== JSON.stringify(["attestations", "id-token", "issues"])
+  )
+    failures.push(
+      `Contract publication workflow write permissions drifted: ${writePermissions.join(", ")}.`,
+    );
+  const permissionDeclarations = workflowPermissionDeclarations(workflow);
+  if (
+    permissionDeclarations.length !== 4 ||
+    permissionDeclarations[0] !== "permissions: {}" ||
+    permissionDeclarations
+      .slice(1)
+      .some((declaration) => declaration !== "    permissions:")
+  )
+    failures.push(
+      "Contract publication workflow has unexpected permission declarations.",
+    );
+  if (
+    (workflow.match(/ {4}permissions:\r?\n/gu) ?? []).length !== 3 ||
+    !/ {4}permissions:\r?\n {6}contents: read\r?\n {4}steps:/u.test(workflow)
+  )
+    failures.push(
+      "Contract publication workflow is missing the exact job permission block.",
+    );
+  if (
+    JSON.stringify(workflowJobs(workflow)) !==
+    JSON.stringify(["validate", "publish-locator", "producer"])
+  )
+    failures.push("Contract publication workflow has an unexpected job set.");
+  const actions = workflow
+    .split(/\r?\n/u)
+    .map(actionReference)
+    .filter((reference) => reference !== undefined);
+  if (
+    JSON.stringify(actions) !==
+    JSON.stringify([
+      "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+      "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
+      "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+      "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
+      "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+      "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+      "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
+      "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+      "actions/attest@a1948c3f048ba23858d222213b7c278aabede763",
+    ])
+  )
+    failures.push(
+      "Contract publication workflow has an unexpected action set.",
+    );
+  if (
+    JSON.stringify(workflowRunCommands(workflow)) !==
+    JSON.stringify([
       "node --check quality/publication-contract.mjs",
       "node --check quality/lifecycle-handoff-publication.mjs",
-    ],
-  );
+      "node quality/lifecycle-wake-locator-writer.mjs",
+      "node quality/lifecycle-producer-action.mjs",
+      "node quality/lifecycle-record-writer.mjs prepare",
+      "node quality/lifecycle-record-writer.mjs verify",
+    ])
+  )
+    failures.push(
+      "Contract publication workflow has an unexpected command set.",
+    );
+  for (const marker of [
+    "github.event.pull_request",
+    "github.head_ref",
+    "persist-credentials: true",
+    "permissions: read-all",
+    "permissions: write-all",
+    "secrets.",
+    "uses: ./local-action",
+  ])
+    if (workflow.includes(marker))
+      failures.push(
+        `Contract publication workflow contains unsafe marker: ${marker}.`,
+      );
+  return failures;
 }
 
 function mergeGroupWorkflowFailures(workflow) {
-  return inertControlWorkflowFailures(
-    "Merge group",
-    workflow,
-    mergeGroupWorkflowMarkers,
-    ["merge_group", "workflow_dispatch"],
-    "evaluate",
-    "if: ${{ vars.KEIKO_MERGE_GROUP_ACTIVATION == 'enabled' }}",
-    [
+  return inertControlWorkflowFailures("Merge group", workflow, {
+    commands: [
       "node --check quality/merge-group.mjs",
       "node --check quality/epic-merge-broker.mjs",
+      "node --check quality/epic-merge-operation.mjs",
+      "node --check quality/epic-merge-policy.mjs",
+      "node quality/epic-merge-policy.mjs status",
     ],
-  );
+    events: ["merge_group", "workflow_dispatch"],
+    guard: "if: ${{ vars.KEIKO_MERGE_GROUP_ACTIVATION == 'enabled' }}",
+    job: "evaluate",
+    markers: mergeGroupWorkflowMarkers,
+  });
+}
+
+function epicMergeGuardStatusWorkflowFailures(workflow) {
+  return inertControlWorkflowFailures("Epic merge guard status", workflow, {
+    checkoutRef: "ref: ${{ github.sha }}",
+    commands: [
+      'test "$GITHUB_REF" = "refs/heads/dev"',
+      'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',
+      "node --check quality/epic-merge-adapter.mjs",
+      "node --check quality/epic-merge-broker.mjs",
+      "node --check quality/epic-merge-composition.mjs",
+      "node --check quality/epic-merge-evidence.mjs",
+      "node --check quality/epic-merge-github.mjs",
+      "node --check quality/epic-merge-graphql.mjs",
+      "node --check quality/epic-merge-operation.mjs",
+      "node --check quality/epic-merge-policy.mjs",
+      "node --check quality/epic-merge-policy-schema.mjs",
+      "node --check quality/epic-merge-store.mjs",
+      "node quality/epic-merge-policy.mjs status",
+    ],
+    events: ["push", "workflow_dispatch"],
+    job: "status",
+    markers: epicMergeGuardStatusMarkers,
+  });
 }
 
 async function workflowFailures(root, manifest) {
@@ -1879,6 +2150,9 @@ async function workflowFailures(root, manifest) {
     ...issueReadinessWorkflowFailures(
       workflows.get("issue-readiness.yml") ?? "",
     ),
+    ...lifecycleWakeupWorkflowFailures(
+      workflows.get("lifecycle-wakeup.yml") ?? "",
+    ),
     ...issueLifecycleWorkflowFailures(
       workflows.get("issue-lifecycle.yml") ?? "",
     ),
@@ -1889,11 +2163,120 @@ async function workflowFailures(root, manifest) {
       workflows.get("contract-publication.yml") ?? "",
     ),
     ...mergeGroupWorkflowFailures(workflows.get("merge-group.yml") ?? ""),
+    ...epicMergeGuardStatusWorkflowFailures(
+      workflows.get("epic-merge-guard-status.yml") ?? "",
+    ),
     ...internalReleaseWorkflowFailures(
       workflows.get("internal-release.yml") ?? "",
     ),
     ...(await productiveCommandFailures(root, ci, manifest)),
   ];
+}
+
+function zizmorDangerousTriggerPolicyValid(source) {
+  const lines = [];
+  for (const rawLine of source.split(/\r?\n/u)) {
+    if (/^\s*\t/u.test(rawLine)) return false;
+    const withoutComment = rawLine.replace(/\s+#.*$/u, "").trimEnd();
+    if (withoutComment.trim() === "") continue;
+    const indent = withoutComment.match(/^ */u)?.[0].length ?? 0;
+    if (indent % 2 !== 0) return false;
+    lines.push({ content: withoutComment.slice(indent), indent });
+  }
+
+  const directChildren = (parentIndex, childIndent) => {
+    const parentIndent = lines[parentIndex].indent;
+    const children = [];
+    for (let index = parentIndex + 1; index < lines.length; index += 1) {
+      if (lines[index].indent <= parentIndent) break;
+      if (lines[index].indent === childIndent) children.push(index);
+    }
+    return children;
+  };
+  const uniqueChild = (parentIndex, childIndent, content) => {
+    const matches = directChildren(parentIndex, childIndent).filter(
+      (index) => lines[index].content === content,
+    );
+    return matches.length === 1 ? matches[0] : -1;
+  };
+  const parseMappingEntry = (content) => {
+    const plain = content.match(/^([a-z][a-z0-9-]*)\s*:(.*)$/u);
+    if (plain) return { key: plain[1], value: plain[2].trim() };
+
+    const singleQuoted = content.match(/^('(?:[^']|'')*')\s*:(.*)$/u);
+    if (singleQuoted) {
+      return {
+        key: singleQuoted[1].slice(1, -1).replaceAll("''", "'"),
+        value: singleQuoted[2].trim(),
+      };
+    }
+
+    const doubleQuoted = content.match(/^("(?:[^"\\]|\\.)*")\s*:(.*)$/u);
+    if (!doubleQuoted) return undefined;
+    try {
+      const key = JSON.parse(doubleQuoted[1]);
+      return typeof key === "string"
+        ? { key, value: doubleQuoted[2].trim() }
+        : undefined;
+    } catch {
+      // Unsupported or malformed YAML key escapes are ambiguous here.
+      return undefined;
+    }
+  };
+
+  const rules = lines
+    .map((line, index) => ({ ...line, index }))
+    .filter((line) => line.indent === 0 && line.content === "rules:");
+  if (rules.length !== 1) return false;
+  const dangerousTriggers = uniqueChild(
+    rules[0].index,
+    2,
+    "dangerous-triggers:",
+  );
+  if (dangerousTriggers === -1) return false;
+  const ignore = uniqueChild(dangerousTriggers, 4, "ignore:");
+  if (ignore === -1) return false;
+
+  const ignoreLines = [];
+  for (let index = ignore + 1; index < lines.length; index += 1) {
+    if (lines[index].indent <= 4) break;
+    ignoreLines.push(lines[index]);
+  }
+  if (
+    ignoreLines.some(
+      (line) => line.indent !== 6 || !line.content.startsWith("- "),
+    )
+  )
+    return false;
+  const ignoredWorkflows = ignoreLines.map((line) =>
+    line.content.slice(2).trim(),
+  );
+  if (
+    JSON.stringify(ignoredWorkflows) !==
+    JSON.stringify(["lifecycle-wakeup.yml:3", "pr-contract.yml"])
+  )
+    return false;
+
+  const ruleEntries = directChildren(dangerousTriggers, 4).map((index) =>
+    parseMappingEntry(lines[index].content),
+  );
+  if (
+    ruleEntries.some(
+      (entry) =>
+        entry === undefined ||
+        (entry.key !== "ignore" && entry.key !== "disable"),
+    )
+  )
+    return false;
+  const disableValues = ruleEntries
+    .filter((entry) => entry.key === "disable")
+    .map((entry) => entry.value);
+  if (disableValues.length === 0) return true;
+  if (disableValues.length !== 1) return false;
+
+  // Fail closed on aliases, anchors, tags other than !!bool, and unknown
+  // scalars. They can change meaning across YAML schemas or parser versions.
+  return /^(?:!!bool\s+)?false$/iu.test(disableValues[0]);
 }
 
 async function providerFailures(root) {
@@ -1906,26 +2289,84 @@ async function providerFailures(root) {
     failures.push("Sonar organization is not bound to oscharko-dev.");
   if (!sonar.includes("coverage/lcov.info"))
     failures.push("Sonar LCOV evidence is not configured.");
-  if (
-    !zizmor.includes("dangerous-triggers:") ||
-    !zizmor.includes("- pr-contract.yml") ||
-    zizmor.includes("disable: true")
-  )
+  if (!zizmorDangerousTriggerPolicyValid(zizmor))
     failures.push(
-      "Zizmor must contain only a scoped dangerous-trigger disposition for the trusted PR metadata workflow.",
+      "Zizmor must bind the exact ordered dangerous-trigger ignore sequence to lifecycle-wakeup.yml:3 and pr-contract.yml without disabling the rule.",
     );
-  const ignoredWorkflowFiles = zizmor
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith("- "))
-    .map((line) => line.slice(2).split("#")[0].trim())
-    .filter((value) => value.endsWith(".yml") || value.endsWith(".yaml"));
+  return failures;
+}
+
+async function epicMergePolicyFailures(root) {
+  const policy = await readJson(
+    join(root, "quality", "epic-merge-policy.json"),
+  );
+  const failures = [];
+  if (!validateEpicMergePolicy(policy, { allowUnresolvedRevision: true }))
+    failures.push("Epic merge policy schema is invalid.");
+  const keys = (value) =>
+    value && typeof value === "object"
+      ? Object.keys(value).toSorted(compareCodeUnits)
+      : [];
+  const expectedTopLevel = [
+    "activation",
+    "expectedProducers",
+    "liveProof",
+    "probeManifest",
+    "repository",
+    "requiredChecks",
+    "requiredEvidence",
+    "schema",
+    "source",
+  ].toSorted(compareCodeUnits);
+  if (JSON.stringify(keys(policy)) !== JSON.stringify(expectedTopLevel))
+    failures.push("Epic merge policy top-level contract is invalid.");
   if (
-    ignoredWorkflowFiles.length !== 1 ||
-    ignoredWorkflowFiles[0] !== "pr-contract.yml"
+    policy?.schema !== 2 ||
+    policy?.repository !== "oscharko-dev/Keiko-Native" ||
+    JSON.stringify(policy?.source) !==
+      JSON.stringify({ protected: true, ref: "refs/heads/dev" }) ||
+    JSON.stringify(policy?.activation) !==
+      JSON.stringify({ state: "inactive" }) ||
+    policy?.probeManifest !== null ||
+    policy?.liveProof !== null
   )
     failures.push(
-      "Zizmor workflow ignores must remain limited to pr-contract.yml.",
+      "Epic merge policy must remain protected-dev sourced and inactive before activation.",
+    );
+  if (
+    policy?.expectedProducers?.activation !==
+      "contract-activation@protected-dev" ||
+    policy?.expectedProducers?.proof !==
+      "epic-merge-live-proof@protected-dev" ||
+    policy?.expectedProducers?.status !==
+      "epic-merge-guard-status@protected-dev"
+  )
+    failures.push("Epic merge policy expected producers drifted.");
+  const checks = policy?.requiredChecks;
+  const evidence = policy?.requiredEvidence;
+  const requiredEvidenceProducers = Object.fromEntries(
+    Array.isArray(evidence)
+      ? evidence.map((item) => [item?.name, item?.producer])
+      : [],
+  );
+  if (
+    !Array.isArray(checks) ||
+    checks.length === 0 ||
+    new Set(checks.map((item) => item?.context)).size !== checks.length ||
+    !checks.every(
+      (item) =>
+        typeof item?.context === "string" &&
+        typeof item?.producer === "string" &&
+        item.producer.length > 0,
+    ) ||
+    !Array.isArray(evidence) ||
+    evidence.length === 0 ||
+    new Set(evidence.map((item) => item?.name)).size !== evidence.length ||
+    requiredEvidenceProducers.acceptance !== "github-actions[bot]@41898282" ||
+    requiredEvidenceProducers.audit !== "maintainer-audit@adr-0009"
+  )
+    failures.push(
+      "Epic merge policy gate and evidence requirements are invalid.",
     );
   return failures;
 }
@@ -1937,6 +2378,7 @@ export async function validateRepository(root) {
   const failures = [
     ...contract.failures,
     ...(await workflowFailures(root, manifest)),
+    ...(await epicMergePolicyFailures(root)),
     ...(await providerFailures(root)),
   ];
   return {
