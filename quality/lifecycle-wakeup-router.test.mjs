@@ -269,6 +269,190 @@ test("authenticates PR-target governance sources from an exact base or closed-ru
     );
 });
 
+test("skips pull_request_target-only evidence completed from an ineligible push before resolution", async () => {
+  const runId = 30740176636;
+  const path = `/repos/${repository}/actions/runs/${runId}`;
+  const api = provider({
+    [path]: {
+      event: "push",
+      head_branch: "dev",
+      head_sha: workflowSha,
+      id: runId,
+      name: "CodeQL",
+      path: ".github/workflows/codeql.yml",
+      pull_requests: [],
+      repository: { full_name: repository },
+      run_attempt: 1,
+      status: "completed",
+    },
+  });
+  const result = await resolveLifecycleWakeup({
+    environment: environment("evidence", "workflow_run"),
+    event: baseEvent({
+      workflow_run: { event: "push", id: runId, name: "CodeQL" },
+    }),
+    provider: api,
+  });
+  assert.deepEqual(result.locators, []);
+  assert.equal(result.requestCount, 0);
+  assert.deepEqual(api.calls, []);
+});
+
+test("routes eligible pull_request evidence through exact stable run and issue reads", async () => {
+  const runId = 30740176637;
+  const runPath = `/repos/${repository}/actions/runs/${runId}`;
+  const pullPath = `/repos/${repository}/pulls/17`;
+  const api = provider({
+    [runPath]: {
+      event: "pull_request",
+      head_branch: "codex/160-protected-provenance",
+      head_sha: "b".repeat(40),
+      id: runId,
+      name: "CodeQL",
+      path: ".github/workflows/codeql.yml",
+      pull_requests: [{ number: 17 }],
+      repository: { full_name: repository },
+      run_attempt: 1,
+      status: "completed",
+    },
+    [pullPath]: {
+      base: { ref: "dev" },
+      body: "## Scope\n\n- Accepted issue: #160\n",
+      head: { sha: "b".repeat(40) },
+      number: 17,
+      state: "open",
+      updated_at: "2026-08-02T09:00:00Z",
+    },
+  });
+  const result = await resolveLifecycleWakeup({
+    environment: environment("evidence", "workflow_run"),
+    event: baseEvent({
+      workflow_run: {
+        event: "pull_request",
+        id: runId,
+        name: "CodeQL",
+        run_attempt: 1,
+      },
+    }),
+    provider: api,
+  });
+  assert.deepEqual(result.locators, [
+    { issue_number: 160, recovery_comment_id: "" },
+  ]);
+  assert.equal(result.requestCount, 4);
+  assert.deepEqual(api.calls, [runPath, runPath, pullPath, pullPath]);
+});
+
+test("rejects evidence when the stable run ID differs from the payload run ID", async () => {
+  const runId = 30740176638;
+  const runPath = `/repos/${repository}/actions/runs/${runId}`;
+  const api = provider({
+    [runPath]: {
+      event: "pull_request",
+      head_sha: "b".repeat(40),
+      id: runId + 1,
+      name: "CodeQL",
+      path: ".github/workflows/codeql.yml",
+      pull_requests: [{ number: 17 }],
+      repository: { full_name: repository },
+      run_attempt: 1,
+      status: "completed",
+    },
+  });
+  await assert.rejects(
+    resolveLifecycleWakeup({
+      environment: environment("evidence", "workflow_run"),
+      event: baseEvent({
+        workflow_run: {
+          event: "pull_request",
+          id: runId,
+          name: "CodeQL",
+          pull_requests: [{ number: 17 }],
+          run_attempt: 1,
+        },
+      }),
+      provider: api,
+    }),
+    { code: "source-run-invalid" },
+  );
+  assert.deepEqual(api.calls, [runPath, runPath]);
+});
+
+test("rejects evidence when the stable run attempt differs from the payload attempt", async () => {
+  const runId = 30740176639;
+  const runPath = `/repos/${repository}/actions/runs/${runId}`;
+  const api = provider({
+    [runPath]: {
+      event: "pull_request",
+      head_sha: "b".repeat(40),
+      id: runId,
+      name: "CodeQL",
+      path: ".github/workflows/codeql.yml",
+      pull_requests: [{ number: 17 }],
+      repository: { full_name: repository },
+      run_attempt: 2,
+      status: "completed",
+    },
+  });
+  await assert.rejects(
+    resolveLifecycleWakeup({
+      environment: environment("evidence", "workflow_run"),
+      event: baseEvent({
+        workflow_run: {
+          event: "pull_request",
+          id: runId,
+          name: "CodeQL",
+          pull_requests: [{ number: 17 }],
+          run_attempt: 1,
+        },
+      }),
+      provider: api,
+    }),
+    { code: "source-run-invalid" },
+  );
+  assert.deepEqual(api.calls, [runPath, runPath]);
+});
+
+for (const [associationDescription, stablePullRequests] of [
+  ["no PR association", []],
+  ["a different PR association", [{ number: 18 }]],
+  ["multiple PR associations", [{ number: 17 }, { number: 18 }]],
+])
+  test(`rejects evidence when the stable run has ${associationDescription} despite a payload PR`, async () => {
+    const runId = 30740176640;
+    const runPath = `/repos/${repository}/actions/runs/${runId}`;
+    const api = provider({
+      [runPath]: {
+        event: "pull_request",
+        head_sha: "b".repeat(40),
+        id: runId,
+        name: "CodeQL",
+        path: ".github/workflows/codeql.yml",
+        pull_requests: stablePullRequests,
+        repository: { full_name: repository },
+        run_attempt: 1,
+        status: "completed",
+      },
+    });
+    await assert.rejects(
+      resolveLifecycleWakeup({
+        environment: environment("evidence", "workflow_run"),
+        event: baseEvent({
+          workflow_run: {
+            event: "pull_request",
+            id: runId,
+            name: "CodeQL",
+            pull_requests: [{ number: 17 }],
+            run_attempt: 1,
+          },
+        }),
+        provider: api,
+      }),
+      { code: "exact-pull-request-required" },
+    );
+    assert.deepEqual(api.calls, [runPath, runPath]);
+  });
+
 test("scheduled enumeration is stable, sorted, deduplicated, and bounded to eight reads", async () => {
   const responses = {};
   for (const page of [1, 2]) {
@@ -384,4 +568,8 @@ test("caller workflow freezes ADR-0012 source closure and has no Actions write o
     "upload-artifact",
   ])
     assert.equal(workflow.includes(forbidden), false, forbidden);
+  assert.match(
+    workflow,
+    /resolve-evidence:[\s\S]*?if: \$\{\{[^\n]*github\.event\.workflow_run\.event == 'pull_request'/u,
+  );
 });

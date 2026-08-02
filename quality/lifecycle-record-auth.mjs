@@ -27,6 +27,15 @@ const STATIC_WORKFLOW_PATHS = Object.freeze([
   ".github/workflows/contract-publication.yml",
   ".github/workflows/pr-contract.yml",
 ]);
+const PROTECTED_CALLER_EVENTS = new Set([
+  "check_run",
+  "issue_comment",
+  "issues",
+  "pull_request_target",
+  "schedule",
+  "workflow_run",
+]);
+const COMMIT = /^[0-9a-f]{40}$/u;
 
 export class LifecycleAuthenticationError extends Error {
   constructor(code) {
@@ -40,6 +49,25 @@ const fail = (code) => {
   throw new LifecycleAuthenticationError(code);
 };
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+export function lifecycleProtectedRunRef(run, protectedDevSha) {
+  const event = run?.event;
+  const headBranch = run?.headBranch ?? run?.head_branch;
+  const eventSha = run?.eventSha ?? run?.head_sha;
+  if (
+    !PROTECTED_CALLER_EVENTS.has(event) ||
+    typeof headBranch !== "string" ||
+    headBranch === "" ||
+    !COMMIT.test(eventSha ?? "") ||
+    !COMMIT.test(protectedDevSha ?? "")
+  )
+    return undefined;
+  if (event === "pull_request_target") return DEV_REF;
+  return eventSha === protectedDevSha &&
+    (headBranch === "dev" || headBranch === DEV_REF)
+    ? DEV_REF
+    : undefined;
+}
 
 export function lifecycleAnchorArtifactName(issueNumber) {
   if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0)
@@ -110,7 +138,11 @@ function verifyArtifact(artifact, download, expectedFields) {
     fail("record-artifact-digest-mismatch");
 }
 
-function hasExactStaticWorkflowGraph(referenced, repository, protectedDevSha) {
+export function hasExactLifecycleStaticWorkflowGraph(
+  referenced,
+  repository,
+  protectedDevSha,
+) {
   if (!Array.isArray(referenced) || referenced.length !== 3) return false;
   const expected = STATIC_WORKFLOW_PATHS.map((workflowPath) => ({
     path: `${repository}/${workflowPath}@${protectedDevSha}`,
@@ -127,9 +159,9 @@ function verifyRun(run, job, repository, fields, workflowJobId) {
     run.id !== fields.workflow_run_id ||
     run.attempt !== fields.workflow_run_attempt ||
     run.workflowPath !== CALLER ||
-    run.ref !== DEV_REF ||
+    lifecycleProtectedRunRef(run, fields.protected_dev_sha) !== DEV_REF ||
     run.workflowSha !== fields.protected_dev_sha ||
-    !hasExactStaticWorkflowGraph(
+    !hasExactLifecycleStaticWorkflowGraph(
       run.referencedWorkflows,
       repository,
       fields.protected_dev_sha,

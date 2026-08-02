@@ -7,6 +7,7 @@ import {
   createLifecycleGithubProvider,
   verifyLifecycleAttestationBundle,
 } from "./lifecycle-github-provider.mjs";
+import { lifecycleProtectedRunRef } from "./lifecycle-record-auth.mjs";
 import {
   createRecordEnvelope,
   digestAuxiliaryIdentity,
@@ -123,7 +124,10 @@ const identityFields = {
   protected_dev_sha: "a".repeat(40),
 };
 
-function workflowRunFixture(referencedWorkflows) {
+function workflowRunFixture(
+  referencedWorkflows,
+  { event = "issues", headBranch = "dev" } = {},
+) {
   const anchorBytes = encodeAuxiliaryPreimage(
     "artifact anchor",
     identityFields,
@@ -165,7 +169,8 @@ function workflowRunFixture(referencedWorkflows) {
         };
       if (path.endsWith(`/actions/runs/${identityFields.workflow_run_id}`))
         return {
-          head_branch: "dev",
+          event,
+          head_branch: headBranch,
           head_sha: identityFields.protected_dev_sha,
           id: identityFields.workflow_run_id,
           path: "/.github/workflows/lifecycle-wakeup.yml",
@@ -267,6 +272,49 @@ test("retains referenced-workflow tuples without repair or projection", async ()
   assert.deepEqual(run.referencedWorkflows, referencedWorkflows);
   assert.equal(job.id, 801);
   assert.equal(provider.requestCount(), 5);
+});
+
+test("retains pull_request_target event identity without trusting its source branch", async () => {
+  const referencedWorkflows = [
+    ".github/workflows/issue-lifecycle.yml",
+    ".github/workflows/contract-publication.yml",
+    ".github/workflows/pr-contract.yml",
+  ].map((workflowPath) => ({
+    path: `${identityFields.repository}/${workflowPath}@${identityFields.protected_dev_sha}`,
+    ref: "refs/heads/dev",
+    sha: identityFields.protected_dev_sha,
+  }));
+  const provider = workflowRunFixture(referencedWorkflows, {
+    event: "pull_request_target",
+    headBranch: "codex/160-protected-provenance",
+  });
+  await provider.listAnchorArtifacts({
+    issueNumber: identityFields.issue_number,
+    name: `keiko-lifecycle-anchor-v1-issue-${identityFields.issue_number}`,
+  });
+  await provider.getArtifactForComment({
+    issueNumber: identityFields.issue_number,
+    commentId: identityFields.comment_id,
+  });
+  const run = await provider.getWorkflowRun({
+    runId: identityFields.workflow_run_id,
+  });
+  assert.equal(run.event, "pull_request_target");
+  assert.equal(run.ref, "codex/160-protected-provenance");
+});
+
+test("rejects a non-PR orphan run whose event SHA differs from protected dev", () => {
+  assert.equal(
+    lifecycleProtectedRunRef(
+      {
+        event: "issues",
+        head_branch: "dev",
+        head_sha: "b".repeat(40),
+      },
+      identityFields.protected_dev_sha,
+    ),
+    undefined,
+  );
 });
 
 test("authenticates a recovery command through exactly two REST/GraphQL/permission reads", async () => {
@@ -460,7 +508,7 @@ test("rejects invalid internal attestation identities without consuming provider
   }
 });
 
-test("qualifies both stable orphan-recovery attestation absence reads", async () => {
+test("qualifies pull_request_target orphan recovery with stable attestation absence reads", async () => {
   const repository = "oscharko-dev/Keiko-Native";
   const protectedDevSha = "a".repeat(40);
   const body = createRecordEnvelope("generation-request", {
@@ -548,15 +596,21 @@ test("qualifies both stable orphan-recovery attestation absence reads", async ()
       if (path.endsWith("/actions/runs/77"))
         return {
           conclusion: "failure",
-          head_branch: "dev",
+          event: "pull_request_target",
+          head_branch: "codex/160-protected-provenance",
+          head_sha: "b".repeat(40),
           id: 77,
           path: "/.github/workflows/lifecycle-wakeup.yml",
           referenced_workflows: [
-            {
-              path: ".github/workflows/issue-lifecycle.yml",
+            ...[
+              ".github/workflows/issue-lifecycle.yml",
+              ".github/workflows/contract-publication.yml",
+              ".github/workflows/pr-contract.yml",
+            ].map((workflowPath) => ({
+              path: `${repository}/${workflowPath}@${protectedDevSha}`,
               ref: "refs/heads/dev",
               sha: protectedDevSha,
-            },
+            })),
           ],
           run_attempt: 1,
         };

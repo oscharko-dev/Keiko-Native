@@ -129,9 +129,20 @@ test("verifies exact final provider records and rejects malformed plans", async 
         };
       if (path.includes("/attestations/")) return { attestations: [{}] };
       return {
+        event: "issues",
         head_branch: "dev",
         head_sha: commit,
+        id: 10,
         path: ".github/workflows/lifecycle-wakeup.yml",
+        referenced_workflows: [
+          ".github/workflows/issue-lifecycle.yml",
+          ".github/workflows/contract-publication.yml",
+          ".github/workflows/pr-contract.yml",
+        ].map((workflowPath) => ({
+          path: `${repository}/${workflowPath}@${commit}`,
+          ref: "refs/heads/dev",
+          sha: commit,
+        })),
         run_attempt: 1,
       };
     },
@@ -173,6 +184,239 @@ test("verifies exact final provider records and rejects malformed plans", async 
     /prepared lifecycle publication identity mismatch/u,
   );
   assert.equal(providerCalls, 0);
+});
+
+test("rejects unknown and non-protected writer run event/ref combinations", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "keiko-record-invalid-run-"));
+  const prepared = await prepareLifecycleRecordPublication({
+    encodedPlan: encodedPlan(),
+    outputDirectory: directory,
+    providerRequest: async () => comment(),
+  });
+  for (const run of [
+    { event: "push", head_branch: "dev", head_sha: commit },
+    {
+      event: "issues",
+      head_branch: "codex/unprotected",
+      head_sha: commit,
+    },
+    {
+      event: "pull_request_target",
+      head_branch: "codex/unprotected",
+      head_sha: "not-a-commit",
+    },
+  ])
+    await assert.rejects(
+      verifyLifecycleRecordPublication({
+        encodedPlan: encodedPlan(),
+        prepared,
+        providerRequest: async (path) => {
+          if (path.includes("/issues/comments/")) return comment();
+          if (path.includes("/artifacts?"))
+            return {
+              artifacts: [
+                {
+                  expired: false,
+                  name: prepared.artifactName,
+                  workflow_run: { id: 10 },
+                },
+              ],
+            };
+          if (path.includes("/attestations/")) return { attestations: [{}] };
+          return {
+            ...run,
+            id: 10,
+            path: ".github/workflows/lifecycle-wakeup.yml",
+            run_attempt: 1,
+          };
+        },
+      }),
+      /record writer run mismatch/u,
+    );
+});
+
+test("accepts pull_request_target REST source-branch metadata only with protected record evidence", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "keiko-record-pr-target-"));
+  const prepared = await prepareLifecycleRecordPublication({
+    encodedPlan: encodedPlan(),
+    outputDirectory: directory,
+    providerRequest: async () => comment(),
+  });
+  const result = await verifyLifecycleRecordPublication({
+    encodedPlan: encodedPlan(),
+    prepared,
+    providerRequest: async (path) => {
+      if (path.includes("/issues/comments/")) return comment();
+      if (path.includes("/artifacts?"))
+        return {
+          artifacts: [
+            {
+              expired: false,
+              name: prepared.artifactName,
+              workflow_run: { id: 10 },
+            },
+          ],
+        };
+      if (path.includes("/attestations/")) return { attestations: [{}] };
+      return {
+        event: "pull_request_target",
+        head_branch: "codex/160-protected-provenance",
+        head_sha: "b".repeat(40),
+        id: 10,
+        path: ".github/workflows/lifecycle-wakeup.yml",
+        referenced_workflows: [
+          ".github/workflows/issue-lifecycle.yml",
+          ".github/workflows/contract-publication.yml",
+          ".github/workflows/pr-contract.yml",
+        ].map((workflowPath) => ({
+          path: `${repository}/${workflowPath}@${commit}`,
+          ref: "refs/heads/dev",
+          sha: commit,
+        })),
+        run_attempt: 1,
+      };
+    },
+  });
+  assert.equal(result.commentId, 99);
+});
+
+test("rejects pull_request_target publication with a non-exact static workflow graph", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "keiko-record-pr-graph-"));
+  const prepared = await prepareLifecycleRecordPublication({
+    encodedPlan: encodedPlan(),
+    outputDirectory: directory,
+    providerRequest: async () => comment(),
+  });
+  await assert.rejects(
+    verifyLifecycleRecordPublication({
+      encodedPlan: encodedPlan(),
+      prepared,
+      providerRequest: async (path) => {
+        if (path.includes("/issues/comments/")) return comment();
+        if (path.includes("/artifacts?"))
+          return {
+            artifacts: [
+              {
+                expired: false,
+                name: prepared.artifactName,
+                workflow_run: { id: 10 },
+              },
+            ],
+          };
+        if (path.includes("/attestations/")) return { attestations: [{}] };
+        return {
+          event: "pull_request_target",
+          head_branch: "codex/160-protected-provenance",
+          head_sha: "b".repeat(40),
+          id: 10,
+          path: ".github/workflows/lifecycle-wakeup.yml",
+          referenced_workflows: [
+            {
+              path: `${repository}/.github/workflows/issue-lifecycle.yml@${commit}`,
+              ref: "refs/heads/dev",
+              sha: commit,
+            },
+          ],
+          run_attempt: 1,
+        };
+      },
+    }),
+    /record writer run mismatch/u,
+  );
+});
+
+test("rejects a pull_request_target writer run response with the wrong run identity", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "keiko-record-pr-run-id-"));
+  const prepared = await prepareLifecycleRecordPublication({
+    encodedPlan: encodedPlan(),
+    outputDirectory: directory,
+    providerRequest: async () => comment(),
+  });
+  await assert.rejects(
+    verifyLifecycleRecordPublication({
+      encodedPlan: encodedPlan(),
+      prepared,
+      providerRequest: async (path) => {
+        if (path.includes("/issues/comments/")) return comment();
+        if (path.includes("/artifacts?"))
+          return {
+            artifacts: [
+              {
+                expired: false,
+                name: prepared.artifactName,
+                workflow_run: { id: 10 },
+              },
+            ],
+          };
+        if (path.includes("/attestations/")) return { attestations: [{}] };
+        return {
+          event: "pull_request_target",
+          head_branch: "codex/160-protected-provenance",
+          head_sha: "b".repeat(40),
+          id: 999,
+          path: ".github/workflows/lifecycle-wakeup.yml",
+          referenced_workflows: [
+            ".github/workflows/issue-lifecycle.yml",
+            ".github/workflows/contract-publication.yml",
+            ".github/workflows/pr-contract.yml",
+          ].map((workflowPath) => ({
+            path: `${repository}/${workflowPath}@${commit}`,
+            ref: "refs/heads/dev",
+            sha: commit,
+          })),
+          run_attempt: 1,
+        };
+      },
+    }),
+    /record writer run mismatch/u,
+  );
+});
+
+test("rejects a non-PR writer run whose event SHA differs from protected dev", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "keiko-record-event-sha-"));
+  const prepared = await prepareLifecycleRecordPublication({
+    encodedPlan: encodedPlan(),
+    outputDirectory: directory,
+    providerRequest: async () => comment(),
+  });
+  await assert.rejects(
+    verifyLifecycleRecordPublication({
+      encodedPlan: encodedPlan(),
+      prepared,
+      providerRequest: async (path) => {
+        if (path.includes("/issues/comments/")) return comment();
+        if (path.includes("/artifacts?"))
+          return {
+            artifacts: [
+              {
+                expired: false,
+                name: prepared.artifactName,
+                workflow_run: { id: 10 },
+              },
+            ],
+          };
+        if (path.includes("/attestations/")) return { attestations: [{}] };
+        return {
+          event: "issues",
+          head_branch: "dev",
+          head_sha: "b".repeat(40),
+          id: 10,
+          path: ".github/workflows/lifecycle-wakeup.yml",
+          referenced_workflows: [
+            ".github/workflows/issue-lifecycle.yml",
+            ".github/workflows/contract-publication.yml",
+            ".github/workflows/pr-contract.yml",
+          ].map((workflowPath) => ({
+            path: `${repository}/${workflowPath}@${commit}`,
+            ref: "refs/heads/dev",
+            sha: commit,
+          })),
+          run_attempt: 1,
+        };
+      },
+    }),
+    /record writer run mismatch/u,
+  );
 });
 
 test("workflow writer transport is pinned and activation remains disabled", async () => {
