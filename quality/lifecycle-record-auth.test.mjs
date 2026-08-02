@@ -200,9 +200,11 @@ function createProvider(body = recordBody()) {
       return {
         id: 10,
         attempt: 1,
+        event: "issues",
         workflowPath: callerPath,
         workflowSha: commit,
         eventSha: commit,
+        headBranch: "dev",
         referencedWorkflows: staticWorkflowGraph(),
         ref: "refs/heads/dev",
         headSha: commit,
@@ -249,6 +251,71 @@ test("authenticates an exact stable comment/anchor/attestation/run tuple", async
     result.artifact.anchorIdentity,
     result.artifact.anchorIdentity,
   ]);
+});
+
+test("authenticates pull_request_target source metadata through protected workflow evidence", async () => {
+  const provider = createProvider();
+  const original = provider.getWorkflowRun;
+  provider.getWorkflowRun = async () => ({
+    ...(await original()),
+    event: "pull_request_target",
+    eventSha: "b".repeat(40),
+    headBranch: "codex/160-protected-provenance",
+    ref: "codex/160-protected-provenance",
+  });
+  const result = await verifyLifecycleRecordTuple({
+    provider,
+    repository,
+    issueNumber: 51,
+    commentId: 100,
+  });
+  assert.equal(result.run.event, "pull_request_target");
+  assert.equal(result.run.ref, "codex/160-protected-provenance");
+});
+
+test("rejects malformed, unknown, and unprotected caller event/ref combinations", async () => {
+  for (const runOverride of [
+    {
+      event: "push",
+      eventSha: commit,
+      headBranch: "dev",
+      ref: "refs/heads/dev",
+    },
+    {
+      event: "issues",
+      eventSha: "b".repeat(40),
+      headBranch: "dev",
+      ref: "refs/heads/dev",
+    },
+    {
+      event: "issues",
+      eventSha: commit,
+      headBranch: "codex/unprotected",
+      ref: "codex/unprotected",
+    },
+    {
+      event: "pull_request_target",
+      eventSha: "not-a-commit",
+      headBranch: "codex/unprotected",
+      ref: "codex/unprotected",
+    },
+  ]) {
+    const provider = createProvider();
+    const original = provider.getWorkflowRun;
+    provider.getWorkflowRun = async () => ({
+      ...(await original()),
+      ...runOverride,
+    });
+    await assert.rejects(
+      verifyLifecycleRecordTuple({
+        provider,
+        repository,
+        issueNumber: 51,
+        commentId: 100,
+      }),
+      { code: "record-workflow-run-mismatch" },
+    );
+  }
 });
 
 test("authenticates the complete static referenced-workflow graph", async () => {

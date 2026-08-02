@@ -223,12 +223,23 @@ async function resolveGovernance(event, provider) {
 }
 
 async function resolveEvidence(event, provider) {
+  const payloadSource = Object.values(LIFECYCLE_WAKE_SOURCE_WORKFLOWS).find(
+    (source) =>
+      source.sourceClass === "evidence" &&
+      source.name === event?.workflow_run?.name,
+  );
+  if (payloadSource === undefined) fail("evidence-source-invalid");
+  if (event?.workflow_run?.event !== payloadSource.event) return [];
   const runId = positive(event?.workflow_run?.id);
-  if (runId === undefined) fail("source-run-invalid");
+  const runAttempt = positive(event?.workflow_run?.run_attempt);
+  if (runId === undefined || runAttempt === undefined)
+    fail("source-run-invalid");
   const path = `/repos/${LIFECYCLE_WAKE_REPOSITORY}/actions/runs/${runId}`;
   const run = await stableRead(async () =>
     sourceRunShape(await provider.json(path)),
   );
+  if (positive(run.id) !== runId || positive(run.attempt) !== runAttempt)
+    fail("source-run-invalid");
   const expected = LIFECYCLE_WAKE_SOURCE_WORKFLOWS[run.path];
   if (
     expected?.sourceClass !== "evidence" ||
@@ -238,15 +249,20 @@ async function resolveEvidence(event, provider) {
     run.repository !== LIFECYCLE_WAKE_REPOSITORY
   )
     fail("evidence-source-invalid");
-  const numbers = [
-    ...new Set(
-      (event?.workflow_run?.pull_requests ?? [])
-        .map((item) => positive(item?.number))
-        .filter(Boolean),
-    ),
-  ];
-  if (numbers.length !== 1) fail("exact-pull-request-required");
-  const pullRequest = await stablePullRequest(provider, numbers[0]);
+  if (!Array.isArray(run.pullRequests) || run.pullRequests.length !== 1)
+    fail("exact-pull-request-required");
+  const pullRequestNumber = positive(run.pullRequests[0]?.number);
+  if (pullRequestNumber === undefined) fail("exact-pull-request-required");
+  const payloadPullRequests = event?.workflow_run?.pull_requests;
+  if (
+    payloadPullRequests !== undefined &&
+    (!Array.isArray(payloadPullRequests) ||
+      (payloadPullRequests.length > 0 &&
+        (payloadPullRequests.length !== 1 ||
+          positive(payloadPullRequests[0]?.number) !== pullRequestNumber)))
+  )
+    fail("exact-pull-request-required");
+  const pullRequest = await stablePullRequest(provider, pullRequestNumber);
   const issueNumber = pullRequestIssueNumber(pullRequest.body);
   if (issueNumber === undefined) fail("accepted-issue-locator-required");
   return [{ issue_number: issueNumber, recovery_comment_id: "" }];

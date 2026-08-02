@@ -136,7 +136,7 @@ jobs:
 
   resolve-evidence:
     name: Resolve evidence-workflow locator
-    if: ${{ github.event_name == 'workflow_run' && (github.event.workflow_run.name == 'CI' || github.event.workflow_run.name == 'CodeQL' || github.event.workflow_run.name == 'Dependency Review' || github.event.workflow_run.name == 'OSV dependency scan') }}
+    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' && (github.event.workflow_run.name == 'CI' || github.event.workflow_run.name == 'CodeQL' || github.event.workflow_run.name == 'Dependency Review' || github.event.workflow_run.name == 'OSV dependency scan') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     concurrency:
