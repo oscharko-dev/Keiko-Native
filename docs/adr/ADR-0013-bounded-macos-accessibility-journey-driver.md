@@ -126,23 +126,23 @@ Its principal bindings are:
 
 - issue #111 contract v3 readiness fingerprint
   `6d95dc95700c17a2d29850d1f517ad45c53df4a95318e3ae482f7d32d5dc75d7`;
-- evaluation head `6df13bfed5dd0d5a71031e4c7304fad998b0af27`;
+- evaluation head `9b86993275a4bd1b1eeccf6d8d955fa50d7a3d0f`;
 - evaluation source SHA-256
   `7bb83da1c35b1590343fb14171b5da1a5ad556ed6153c7a30c79a7ce512d85d3`;
 - prepared evidence SHA-256
-  `dac9512a9b453081ca1ac45ed50791b7d7651a2b8975692abbcc7929813ec1e0`;
+  `63bbaa72dc68728ff9f4d218509ae5b74e6442424146b9a683da7f2e5859f337`;
 - allowed capture SHA-256
-  `001a55ae22934741cc61735d15c6b399da8d5fe592e50288dbbd75d2c77f478e`;
+  `6fcd009ae8110b126d65a4f8cba2d94afb4b143218f17338ebdbed618f4e0cff`;
 - denied capture SHA-256
-  `c5f825c61b5633b2f5e41065a8fccae5efbb69872f3369fd38f2a760dfa4dabe`;
+  `100197623b5d515028b363d29d2f13058248cff75940d835169ff393bf382734`;
 - revoked capture SHA-256
-  `82a373a1834f4520c38ad9012ac9792cc82bb5f5af91f49fd96dfd8c25ebeb5d`;
+  `e2546c8cc2cc7b091ccca8fac1b5c6881681348a5f4678ea845416cbe23520fc`;
 - recovered capture SHA-256
-  `bf15dca8265c5ad5f429393b59eb18e2f467d5061705f11419a1a1d4eb6f60bd`;
+  `c8fb4da0e9ad4faf095c6c4f125bf15dbe4c796f32cb6d38bc5e1013171511c0`;
 - Foundation acceptance evidence SHA-256
-  `2446fc46e06d08301b83207c31a3df8b8bdd8a37d9ccb89cd9ab346b788e1db9`;
+  `c8425d8117c9aa31ed904afaf683e441c755f486a75308d0071d5fce7a7fa0f9`;
 - Foundation package-manifest SHA-256
-  `8241d395cad92973dcf620117bcae7577440fd894dcb4682b0657a5b60ab3cb3`;
+  `6f9899f2f05a64fe87ea2a19bbd91501de2224446fbd01c7d67879e74d19ef43`;
   and
 - representative package SHA-256
   `9221319c3d37bdd7c2e36c0558f039d60d1aa3b3223f49668c3b4fa7aedf3e0c`.
