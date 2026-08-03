@@ -123,8 +123,12 @@ suffix. The probe must preserve the ordinary 15-record bound; reject a 17th reco
 16, and request 201; prove the exact 84 + 84 + 6 + 26 request budget; preserve every existing
 comment, anchor, and attestation; prove replay is a no-op; recover zero through four interrupted v2
 publications while denying a fifth; and prove superseded generations authenticate their frozen
-generation plus stable superseding observation before terminalizing ahead of a successor. Any
-mismatch produces no record or effect. The overflow path adds no account, App, PAT, broker,
+generation, closed partial producer set, first superseding witness, and any later terminal
+non-equality witness by refreshing the checkpoint projection under the same fence before
+terminalizing ahead of a successor. Every
+interrupted candidate must prove its exact pre-comment locator attestation and terminal writer job;
+an optional post-comment anchor must remain unattested. Any mismatch produces no record or effect.
+The overflow path adds no account, App, PAT, broker,
 database, hosted service, dependency, second credential, lifecycle authority, or merge authority.
 Issue #55 remains
 the sole signed activation owner and must keep policy status `disabled` until the complete positive

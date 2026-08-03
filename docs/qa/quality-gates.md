@@ -95,7 +95,11 @@ the exact 84 + 84 + 6 + 26 request-200 success arithmetic, request-201 denial, s
 replay no-op, append-only evidence, null effect, and exact checkpoint read-back. It must prove zero
 through four interrupted v2 publications are quarantined only inside a later successful checkpoint,
 a fifth is denied, and the target remains unconsumed until full authentication. It must also prove
-every superseded fence authenticates its frozen generation and stable superseding observation, then
+every interrupted candidate has one valid pre-comment locator attestation for the protected writer
+run and terminal job while its optional post-comment anchor has no attestation. Every superseded
+fence authenticates its frozen generation, the exact partial producer subset already present, its
+first superseding witness, and the final stable terminal non-equality witness encoded under the same
+fence, then
 terminalizes as a checkpoint before a successor generation. Hostile wrong-actor, edited-command,
 wrong-target, missing/changed record, anchor, attestation, run, job, ref, SHA, predecessor,
 checkpoint, and provider-unavailable fixtures produce no record or effect. Overflow recovery remains

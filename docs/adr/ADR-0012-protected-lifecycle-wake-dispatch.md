@@ -697,8 +697,10 @@ authorized request identity and overflow target identity, has a null effect, and
 lifecycle label, status, branch, pull request, queue, merge, or repository setting.
 
 An interrupted v2 publication does not consume its overflow target. After two stable passes prove
-that the prior writer is terminal and its exact candidate has no valid attestation, a fresh explicit
-maintainer command may authorize another attempt for the same target. The coordinator
+that the prior writer job is terminal, its exact pre-comment locator artifact has a valid
+GitHub-native attestation binding the protected coordinator path, ref, commit, run, attempt, and
+job, and its optional post-comment anchor has no attestation, a fresh explicit maintainer command
+may authorize another attempt for the same target. The coordinator
 accepts at most four strictly ordered candidates, binds their closed quarantine evidence in the
 successful v2 compacted-prefix, and appends no ordinary orphan-settlement record after the 16-record
 base chain. The retry must arrive as a fresh direct `issue_comment` event; the terminal
@@ -710,14 +712,18 @@ unknown-provenance, or attested candidate fails closed. Reordered simultaneous c
 no-ops, and there is no scheduled or automatic publication retry.
 
 Every provider request is counted against a separate hard ceiling of 200. Two complete recovery
-passes consume at most 84 requests each, the exact direct-comment authentication consumes at most
-six requests, and 26 requests are reserved for bounded checkpoint comment, anchor, attestation,
-upload/finalization, and final stable read-back work. These maxima total 200. Request 201 produces
-no record or effect. The implementation gate rejects a provider composition that cannot prove the
-26-request publication maximum; a runtime 27th publication request is denied and any already-created
-comment remains subject to the bounded interrupted-publication path. No unused allowance from normal
-operation or orphan recovery is transferred, and no provider response or rate-limit estimate can
-raise the ceiling.
+passes consume at most 84 requests each. Their one artifact inventory and one bulk attestation
+inventory cover the 16 base anchors plus at most four candidate locators and four candidate anchors;
+the incremental allowance is exactly four locator-attestation bundle downloads, four optional
+candidate-anchor downloads, four terminal writer-job reads, and four current-state reads. The exact
+direct-comment authentication consumes at most six requests. The remaining 26 requests are reserved
+for bounded pre-comment locator upload and attestation, checkpoint comment creation and immediate
+read-back, post-comment anchor upload and attestation, and final stable read-back work. These maxima
+total 200. Request 201 produces no record or effect. The implementation gate rejects a provider
+composition that cannot prove the 26-request publication maximum; a runtime 27th publication request
+is denied and any already-created comment remains subject to the bounded interrupted-publication
+path. No unused allowance from normal operation or orphan recovery is transferred, and no provider
+response or rate-limit estimate can raise the ceiling.
 
 Overflow recovery remains effect-disabled before Issue #55 and cannot enter ordinary orphan
 settlement, cursor recovery, normal lifecycle mutation, or automatic retry. Its bounded

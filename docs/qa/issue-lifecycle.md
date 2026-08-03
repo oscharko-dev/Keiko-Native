@@ -225,11 +225,16 @@ A 17th record, request 201, replay, edit, unavailable fact, or any chain, anchor
 run/job/ref/SHA mismatch produces no record or lifecycle effect. Authenticated evidence is never
 edited, deleted, skipped, or reclassified. If v2 publication is interrupted before authentication,
 a fresh explicit maintainer command may retry the unconsumed target; the successful v2 checkpoint
-binds and quarantines at most four fully proven incomplete publications. A fifth or ambiguous
-candidate fails closed, and no retry is automatic.
+binds and quarantines at most four fully proven incomplete publications. Each candidate must carry
+its exact pre-comment locator artifact and valid locator attestation binding the protected writer
+run and terminal job; its optional post-comment anchor must have no attestation. A fifth or
+ambiguous candidate fails closed, and no retry is automatic.
 
 Every superseded phase/fence claim must be followed by its terminal transition/read-back checkpoint
-before a successor generation request. This prevents event churn from starving checkpoints.
+before a successor generation request. That checkpoint carries only the authenticated producer
+subset already present before the superseded fence. A later fact change refreshes the terminal
+non-equality observation under the same frozen generation and fence rather than appending another
+claim. This prevents event churn or missing stale producers from starving checkpoints.
 Overflow recovery remains disabled for lifecycle effects before Issue #55, adds no principal or
 credential, and changes no merge authority. Any implementing pull request to `dev` is a human-only
 manual delivery.

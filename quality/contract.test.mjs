@@ -1650,6 +1650,8 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
     "recovery target": "keiko-native.lifecycle-recovery-target-identity",
     "overflow recovery target":
       "keiko-native.lifecycle-overflow-recovery-target-identity",
+    "overflow publication locator":
+      "keiko-native.lifecycle-overflow-publication-locator",
     "recovery settlement":
       "keiko-native.lifecycle-recovery-settlement-identity",
     "artifact anchor": "keiko-native.lifecycle-artifact-anchor",
@@ -1880,6 +1882,18 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       "non_checkpoint_record_count:uint=16",
       "next_checkpoint_sequence:uint=1",
     ],
+    "overflow publication locator": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "overflow_recovery_authorization_identity:sha256",
+      "overflow_recovery_target_identity:sha256",
+      "workflow_path:coordinator-path",
+      "workflow_run_id:uint",
+      "workflow_run_attempt:uint",
+      "workflow_job_id:uint",
+      "protected_dev_sha:commit",
+    ],
     "recovery settlement": [
       "schema_version:uint=1",
       "repository:string",
@@ -2030,7 +2044,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   ]);
   assert.match(
     adr,
-    /first publishes the canonical comment[\s\S]{0,300}provider-assigned comment ID[\s\S]{0,300}`comment_body_sha256`[\s\S]{0,500}artifact-anchor schema/iu,
+    /(?:first|then) publishes the canonical comment[\s\S]{0,300}provider-assigned comment ID[\s\S]{0,300}`comment_body_sha256`[\s\S]{0,500}artifact-anchor schema/iu,
   );
   assert.match(
     adr,
@@ -2543,6 +2557,10 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
+    /these four fields inserted[\s\S]{0,300}overflow_publication_locator_identity[\s\S]{0,200}overflow_publication_locator_artifact_id/iu,
+  );
+  assert.match(
+    protocol,
     /overflow recovery target[\s\S]{0,160}keiko-native\.lifecycle-overflow-recovery-target-identity/iu,
   );
   assert.match(
@@ -2555,7 +2573,11 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /superseded checkpoint[\s\S]{0,500}frozen generation[\s\S]{0,500}superseding observation[\s\S]{0,500}current canonical inputs/iu,
+    /superseded checkpoint[\s\S]{0,500}frozen generation[\s\S]{0,900}first superseding witness[\s\S]{0,900}terminal current observation[\s\S]{0,900}same fence/iu,
+  );
+  assert.match(
+    protocol,
+    /terminal superseded transition\/read-back checkpoint[\s\S]{0,600}exact sorted subset[\s\S]{0,300}including the empty set[\s\S]{0,600}No other transition\/read-back may omit an expected producer/iu,
   );
   assert.match(
     protocol,
@@ -2571,7 +2593,32 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /member_kind:enum\(authenticated-record,quarantined-overflow-publication\)[\s\S]{0,1400}anchor_artifact_id:uint-or-null[\s\S]{0,300}attestation_count:uint=0[\s\S]{0,500}both null or\s+both non-null/iu,
+    /For overflow v2 only[\s\S]{0,500}overflow-publication-locator identity[\s\S]{0,500}one immutable artifact[\s\S]{0,1600}before placing both in the v2 body/iu,
+  );
+  assert.match(
+    protocol,
+    /Before creating[\s\S]{0,80}comment[\s\S]{0,300}locator artifact[\s\S]{0,120}valid locator\s+attestation/iu,
+  );
+  assert.match(
+    protocol,
+    /locator claim binds the protected coordinator path[\s\S]{0,300}one exact job read[\s\S]{0,300}terminal[\s\S]{0,100}conclusion/iu,
+  );
+  assert.match(
+    protocol,
+    /ordinary 68[\s\S]{0,300}one artifact inventory[\s\S]{0,120}one\s+bulk attestation inventory[\s\S]{0,300}24 exact subjects[\s\S]{0,500}four valid\s+locator-attestation bundle downloads[\s\S]{0,900}add exactly 16 requests/iu,
+  );
+  assert.match(
+    protocol,
+    /member_kind:enum\(authenticated-record,quarantined-overflow-publication\)[\s\S]{0,1800}overflow_publication_locator_artifact_id:uint[\s\S]{0,500}anchor_artifact_id:uint-or-null[\s\S]{0,300}anchor_attestation_count:uint=0[\s\S]{0,500}both null or\s+both non-null/iu,
+  );
+  assert.match(
+    protocol,
+    /keiko-lifecycle-overflow-locator-v1-issue-\{decimal-issue\}-run-\{decimal-run-id\}-attempt-\{decimal-run-attempt\}[\s\S]{0,500}keiko-native\/lifecycle-overflow-locator\/v1\/[\s\S]{0,500}sha256:\{overflow-publication-locator-identity\}/iu,
+  );
+  assert.match(protocol, /24 exact subjects[\s\S]{0,300}at most 20 bundles/iu);
+  assert.match(
+    protocol,
+    /final read-back after[\s\S]{0,80}comment creation[\s\S]{0,240}exactly match the terminal observation[\s\S]{0,300}ordinary retry path/iu,
   );
   assert.match(
     protocol,
