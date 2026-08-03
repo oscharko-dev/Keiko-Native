@@ -203,13 +203,20 @@ duplicated, conflicting, stale, truncated, wrong-generation, wrong-producer, rat
 unavailable evidence. An ambiguous effect is never retried; explicit authorized recovery creates
 the next attempt and binds the settled predecessor.
 
+Normal mode counts both provider calls in each of its 16 artifact-download redirect chains: one
+stable pass is 109 requests, two passes are 218, and the existing 14 write/read-back calls close the
+hard ceiling at 232. Overflow recovery retains its distinct hard-200 counter and closed historical
+authentication profile below.
+
 Stable proof of zero relevant record comments and zero exact-name anchors selects empty-history
 bootstrap, not truncated-history recovery. The first request uses null predecessors and checkpoint
 numbering begins at one through the exact domain-separated null-root compacted-prefix schema. A
 pre-checkpoint crash either remains empty, resumes a completely authenticated genesis suffix, or
-uses a protected forward recovery settlement. That settlement requires an explicit request binding
-the exact orphan and last authenticated predecessor, independently verifies the failed protected run
-and fixed writer job, requires the anchor-attestation publication step to be stably `skipped`, binds
+uses a protected forward recovery settlement. New settlements use the version-2 identity while the
+original version-1 zero-anchor identity remains read-only compatibility. A settlement requires an
+explicit request binding the exact orphan and last authenticated predecessor, independently
+verifies the failed protected run and fixed writer job, requires the anchor-attestation publication
+step to be stably `skipped`, binds
 zero or one exact un-attested anchor, and quarantines only that orphan without treating it as a
 record. An attempted or unknown attestation step is ambiguous regardless of current inventory
 absence. Every mismatch remains blocked and effect-disabled.
@@ -228,6 +235,10 @@ artifact identities/metadata, attestation subjects, complete jobs/steps, and cur
 exact attestation-subject response carries its bundles and no fictitious bulk or separate bundle
 call is assumed. Publication downloads and verifies the locator before comment creation and the
 anchor before success; its arithmetic is exactly `3 + 3 + 6 + 2 + 3 + 3 + 6 = 26`.
+For this effect-disabled exact-target path only, verified GitHub-native attestation claims replace
+independent workflow-run and referenced-workflow-inventory requests for historical records; an
+exact job read still binds each job and full step projection to the attested run. Ordinary record
+authentication retains both provider run and inventory reads.
 The same four record types remain authoritative. Overflow recovery is a human-only manual delivery
 to `dev`.
 A 17th record, request 201, replay, edit, unavailable fact, or any chain, anchor, attestation,
@@ -250,15 +261,18 @@ subset already present before the superseded fence and fixes `transition_owner` 
 null effect, `outcome` to `superseded`, and `reason_code` to `superseded`. A later fact change
 refreshes the terminal non-equality observation under the same frozen generation and fence rather
 than appending another claim. At the reserved boundary the existing terminal fence itself becomes
-that closed supersession predecessor; no second fence is appended. Once its exact anchor attests
+that closed supersession predecessor; no second fence is appended, and the final encoded read-back
+source observation is its sole durable superseding witness. Once its exact anchor attests
 that null-effect checkpoint, a later fact change cannot stale the historical terminalization. The
 ordinary writer uses a three-record terminalization reserve: it rejects a nonterminal append at 12,
-places the terminal or superseded fence at record 13, permits either its immediate checkpoint or an
-exact interrupted-publication orphan settlement at record 14, and after that settlement permits
-only the recovery-owned null-effect checkpoint at record 15. The settlement is allowed only when
-the checkpoint writer's anchor-attestation step was stably `skipped`; attempted or unknown
-submission remains ambiguous. This makes a prior-checkpoint-plus-16 suffix unreachable and prevents
-event churn or one interrupted reserved checkpoint from starving terminalization.
+places the terminal or superseded fence at record 13, and permits either its immediate checkpoint
+or an exact version-2 interrupted-checkpoint settlement at record 14 followed only by the
+recovery-owned null-effect checkpoint at record 15. If the reserved fence publication itself is
+interrupted, its version-2 settlement occupies record 13 after the 12 authenticated records and
+only the recovery-owned checkpoint may follow at record 14. Either settlement is allowed only when
+the writer's anchor-attestation step was stably `skipped`; attempted or unknown submission remains
+ambiguous. This makes a prior-checkpoint-plus-16 suffix unreachable and prevents event churn or one
+interrupted reserved fence or checkpoint from starving terminalization.
 Overflow recovery remains disabled for lifecycle effects before Issue #55, adds no principal or
 credential, and changes no merge authority. Any implementing pull request to `dev` is a human-only
 manual delivery. The separate accepted defect issue required by decision #170 may nevertheless

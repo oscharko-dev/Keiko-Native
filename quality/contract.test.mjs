@@ -1929,14 +1929,10 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       "orphan_workflow_path:protected-writer-path",
       "orphan_workflow_run_id:uint",
       "orphan_workflow_run_attempt:uint",
-      "orphan_workflow_job_id:uint",
       "orphan_protected_dev_sha:commit",
       "orphan_run_conclusion:enum(failure,cancelled,timed-out)",
-      "orphan_anchor_count:uint=0-or-1",
-      "orphan_anchor_artifact_id:uint-or-null",
-      "orphan_anchor_artifact_digest:sha256-or-null",
+      "orphan_anchor_count:uint=0",
       "orphan_attestation_count:uint=0",
-      "orphan_anchor_attestation_step:enum(skipped)",
       "last_authenticated_comment_id:uint-or-null",
       "last_authenticated_record_digest:sha256-or-null",
       "quarantine_reason:enum(anchor-publication-interrupted)",
@@ -1958,7 +1954,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
     ],
   };
   const auxiliarySection = adr.match(
-    /The exact auxiliary v1 schemas are:\n\n([\s\S]+?)\n\n`requested-lifecycle-state`/u,
+    /The exact auxiliary v1 schemas are:\n\n([\s\S]+?)\n\nThe exact recovery-settlement version-2 schema is:/u,
   );
   assert.ok(auxiliarySection, "auxiliary v1 schema table");
   const actualAuxiliarySchemas = Object.fromEntries(
@@ -1975,6 +1971,12 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       ]),
   );
   assert.deepEqual(actualAuxiliarySchemas, expectedAuxiliarySchemas);
+  assert.match(adr, /The exact recovery-settlement version-2 schema is:/u);
+  assert.match(adr, /\| recovery settlement v2\s+\| `schema_version:uint=2`/iu);
+  assert.match(
+    adr,
+    /`orphan_workflow_job_id:uint`[\s\S]{0,500}`orphan_anchor_count:uint=0-or-1`[\s\S]{0,500}`orphan_anchor_attestation_step:enum\(skipped\)`/iu,
+  );
 
   const requestedStateDefinition = adr.match(
     /`requested-lifecycle-state` is exactly ([\s\S]+?); it excludes `no-lifecycle`\./u,
@@ -2146,7 +2148,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
     /crash before the first checkpoint[\s\S]{0,700}authenticated genesis suffix[\s\S]{0,500}publication[\s\S]{0,40}interrupted[\s\S]{0,300}explicit authorized recovery/iu,
   );
   const forwardSettlementSection = adr.match(
-    /The forward orphan-settlement record is exactly:\n\n([\s\S]+?)\n\nThe orphan body/u,
+    /The forward orphan-settlement record is exactly:\n\n([\s\S]+?)\n\nNew settlements/u,
   );
   assert.ok(forwardSettlementSection, "forward orphan-settlement matrix");
   assert.deepEqual(
@@ -2167,7 +2169,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       ["recovery_scan_complete", "false"],
       [
         "recovery_settlement_identity",
-        "sha-256 of exact recovery-settlement preimage",
+        "sha-256 of exact version-2 recovery-settlement preimage",
       ],
       ["predecessor", "last authenticated record or null root"],
       ["orphan_authority", "quarantined-only"],
@@ -2251,7 +2253,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   );
   assert.match(
     adr,
-    /normal stable pass[\s\S]{0,500}93\s+requests[\s\S]{0,180}186\s+requests[\s\S]{0,180}ceiling to 200/iu,
+    /normal stable pass[\s\S]{0,800}109\s+requests[\s\S]{0,300}218\s+requests[\s\S]{0,300}ceiling to 232/iu,
   );
   assert.match(
     adr,
@@ -2596,6 +2598,10 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
+    /reserved fence comment[\s\S]{0,300}anchor publication[\s\S]{0,500}settlement as record 13[\s\S]{0,500}record 14[\s\S]{0,300}`transition_owner` `recovery`/iu,
+  );
+  assert.match(
+    protocol,
     /facts drift after the reserved terminal fence[\s\S]{0,300}does not append a second[\s\S]{0,500}same\s+fence[\s\S]{0,500}`outcome` `superseded`/iu,
   );
   assert.match(
@@ -2608,7 +2614,11 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /superseded checkpoint[\s\S]{0,500}frozen generation[\s\S]{0,900}first superseding witness[\s\S]{0,900}terminal current observation[\s\S]{0,900}same fence/iu,
+    /reserved terminal fence[\s\S]{0,1000}final encoded read-back source\s+observation[\s\S]{0,300}sole durable superseding witness/iu,
+  );
+  assert.match(
+    protocol,
+    /Further pre-comment changes[\s\S]{0,200}same fence/iu,
   );
   assert.match(
     protocol,
@@ -2659,6 +2669,10 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     /16 exact writer-job reads[\s\S]{0,500}attestation response contains the bundles/iu,
   );
   assert.match(
+    wake,
+    /overflow recovery authentication profile[\s\S]{0,700}does not call[\s\S]{0,200}workflow-run[\s\S]{0,500}referenced-workflow inventory[\s\S]{0,800}attestation[\s\S]{0,500}exact job/iu,
+  );
+  assert.match(
     protocol,
     /first-pass candidate addition[\s\S]{0,200}40[\s\S]{0,1200}68 \+ 40 = 108/iu,
   );
@@ -2669,6 +2683,10 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   assert.match(
     protocol,
     /Every GitHub artifact archive download[\s\S]{0,300}exactly two provider requests/iu,
+  );
+  assert.match(
+    protocol,
+    /normal stable pass[\s\S]{0,800}109 requests[\s\S]{0,300}218[\s\S]{0,300}232/iu,
   );
   assert.match(
     protocol,
@@ -2696,7 +2714,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /post-anchor fact change[\s\S]{0,300}reversion to the frozen[\s\S]{0,500}availability evidence only[\s\S]{0,500}authenticates the existing checkpoint/iu,
+    /post-anchor fact change[\s\S]{0,300}reversion to the frozen[\s\S]{0,500}availability evidence only[\s\S]{0,500}authenticates the existing\s+checkpoint/iu,
   );
   assert.match(
     protocol,

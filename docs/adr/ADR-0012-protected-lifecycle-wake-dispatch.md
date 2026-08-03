@@ -14,10 +14,11 @@ scope.
 
 Decision issue #170 adds a second exact command grammar for authenticated suffix-overflow recovery.
 It reuses the same protected direct-comment route, authorization identity, allowlist, coordinator,
-and four record types. Its only existing-identity amendment is ADR-0011's closed version-2
-compacted-prefix projection for bounded failed-publication quarantine. It adds no workflow,
-permission, principal, credential, or automatic `dev` authority, and becomes accepted only through
-a human-only manual merge to `dev`.
+and four record types. Its existing-identity amendments are ADR-0011's closed version-2
+compacted-prefix projection for bounded failed-publication quarantine and the version-2
+recovery-settlement auxiliary identity; the accepted version-1 settlement remains read-only. It
+adds no workflow, permission, principal, credential, or automatic `dev` authority, and becomes
+accepted only through a human-only manual merge to `dev`.
 
 ## Context
 
@@ -690,12 +691,35 @@ exact command-body digest distinguishes the two grammars. One target may be cons
 and a reordered duplicate is a no-op.
 
 After authentication, the coordinator performs two complete stable reads of all 16 records and
-their anchors, attestations, protected runs, jobs, refs, SHAs, predecessor chain, null genesis root,
-and current equal lifecycle observation. It recomputes the target and then appends
-only ADR-0011's overflow recovery transition/read-back v2 checkpoint. The record binds both the
-authorized request identity and overflow target identity, carries the exact authenticated pre-fence
-producer subset, has a null effect, and cannot alter a lifecycle label, status, branch, pull
-request, queue, merge, or repository setting.
+their anchors, attestations, attested protected-run identities, exact jobs, refs, SHAs, predecessor
+chain, null genesis root, and current equal lifecycle observation. It recomputes the target and then
+appends only ADR-0011's overflow recovery transition/read-back v2 checkpoint. That record binds the
+authorized request and overflow target identities, carries the exact authenticated pre-fence
+producer subset, has a null effect, and cannot alter lifecycle state, labels, branches, pull
+requests, queues, merges, or repository settings.
+
+The exact overflow recovery authentication profile is the sole exception to the ordinary
+coordinator-record provider-run reads above. For the 16 historical base records and at most four
+interrupted candidates, it does not call the workflow-run endpoint and does not load the
+referenced-workflow inventory. Instead, each GitHub-native attestation must cryptographically bind
+the fixed issuer, repository, protected top-level caller and reusable writer paths, immutable
+`refs/heads/dev`, protected commit, run ID, run attempt, subject name, and digest through its
+verified SLSA/OIDC claims. One separate exact job read binds the encoded job ID to that same run and
+loads its complete fixed step projection. The closed protected workflow graph is still checked
+locally. A missing claim, absent job, mutable ref, different run, path, commit, or subject, or any
+attestation/job/record disagreement fails closed. This substitution exists only inside the
+effect-disabled, exact-target, hard-200 overflow recovery; ordinary record authentication,
+writing, and lifecycle effects retain the complete provider run and referenced-workflow inventory.
+
+ADR-0011's ordinary three-record reserve is also closed here. After 12 authenticated records, an
+unanchored reserved-fence comment may be settled only by an exact version-2 recovery phase/fence
+claim at record 13 and an immediate recovery-owned null-effect checkpoint at record 14. After an
+authenticated reserved fence at record 13, an unanchored checkpoint comment may be settled only by
+the corresponding version-2 claim at record 14 and immediate checkpoint at record 15. Both paths
+require a terminal failed/cancelled/timed-out writer job whose fixed attestation-publication step is
+stably `skipped`; an attempted or unknown submission remains blocked. Post-fence fact drift uses
+the final encoded read-back source observation as the sole durable superseding witness under the
+same fence.
 
 An interrupted v2 publication does not consume its overflow target. After two stable passes prove
 that the prior writer job is terminal, its exact pre-comment locator artifact has a valid

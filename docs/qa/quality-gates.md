@@ -75,10 +75,11 @@ association, context name, details URL, or event timing alone is never sufficien
 
 Sequence-one bootstrap proves the exact compacted-prefix domain, schema, null prior-checkpoint
 identity, and complete ordered genesis member list. Forward orphan settlement requires a
-request-bound recovery-target digest, exact recovery-settlement schema, independently verified
-failed protected writer run, two stable zero-anchor/zero-attestation reads, and a normally
-authenticated settlement claim chained from the last authenticated predecessor. The orphan never
-becomes a record or authority source.
+request-bound recovery-target digest, version-first recovery-settlement parsing, an independently
+verified failed protected writer run, stable zero-or-one-anchor/zero-attestation reads with a
+`skipped` attestation step, and a normally authenticated version-2 settlement claim chained from
+the last authenticated predecessor. Version 1 remains read-only zero-anchor compatibility. The
+orphan never becomes a record or authority source.
 
 Generation-request, producer-result, phase/fence-claim, and transition/read-back records use strict
 version-1 canonical bytes and domain-separated SHA-256 digests. The loader performs full-body
@@ -87,8 +88,11 @@ conflicts, truncation, wrong producer/generation/fence, or unavailable evidence 
 Protected producers independently recompute the generation and evaluate only their owned predicate;
 they cannot choose lifecycle lane, target, activation, transition, or merge authority.
 
-Overflow recovery is the sole schema-version exception: it uses version 2 of the existing
-transition/read-back type, never a fifth record type. The deterministic gate must prove the exact
+At the record-type level, overflow recovery is the sole schema-version exception: it uses version 2
+of the existing transition/read-back type, never a fifth record type. The auxiliary
+recovery-settlement identity separately retains its accepted version-1 zero-anchor schema and uses
+an exact version-2 schema for every new settlement; parser dispatch is version-first and never
+reinterprets legacy bytes. The deterministic gate must prove the exact
 direct plain-issue command and authorization identity, exact target over 16 authenticated records,
 normal rejection at record 16, overflow rejection at record 17, rejection of checkpoint plus 16,
 the exact 108 + 60 + 6 + 26 request-200 success arithmetic, request-201 denial, stable double-read,
@@ -99,6 +103,10 @@ authenticated artifact request and redirect response. The 108-request first pass
 24 archives into bounded canonical-byte buffers; the 60-request second pass reuses only those
 immutable bytes while independently rereading every comment, artifact identity/metadata,
 attestation, full job/step projection, and current fact. It must
+prove that this effect-disabled exact-target profile replaces independent workflow-run and
+referenced-workflow-inventory requests only with verified protected caller/writer attestation
+claims plus an exact bound job and complete step projection; ordinary authentication retains the
+provider run and inventory reads. It must
 prove zero through four interrupted v2 publications are quarantined only inside a later successful
 checkpoint, a fifth is denied, and the target remains unconsumed until full authentication. It must
 also prove
@@ -112,17 +120,19 @@ download and reproduce the final anchor before success. The locator-attestation 
 canonical auxiliary identity over normalized verified claims, never a hash of provider bundle
 serialization. A non-null optional-anchor digest
 must hash the downloaded sole canonical artifact-anchor file, equal its auxiliary identity, and
-never hash the provider archive. Every superseded
-fence authenticates its frozen generation, the exact partial producer subset already present, its
-first superseding witness, and the final stable terminal non-equality witness encoded before
-publication under the same fence. Its ordinary v1 checkpoint fixes owner `invalidation`, outcome
+never hash the provider archive. Every ordinary superseded fence authenticates its frozen
+generation, the exact partial producer subset already present, and its first superseding witness.
+For the reserved-fence exception, the final stable encoded read-back source observation is the sole
+durable superseding witness under that same fence. Its ordinary v1 checkpoint fixes owner `invalidation`, outcome
 `superseded`, reason `superseded`, and null effect. The normal writer's three-record terminalization
 reserve rejects a nonterminal append at 12, places the terminal fence at record 13, permits its
-immediate checkpoint or the exact skipped-attestation orphan settlement at record 14, and after a
-settlement permits only the recovery-owned null-effect checkpoint at record 15. The gate must prove
-that post-fence fact drift uses the same reserved fence and superseded checkpoint projection, one
-interrupted checkpoint publication has this forward path, ambiguous attestation submission never
-retries, and checkpoint plus 16 is unreachable. A later fact change cannot stale an exactly attested
+immediate checkpoint or the exact version-2 skipped-attestation checkpoint-orphan settlement at
+record 14, and after that settlement permits only the recovery-owned null-effect checkpoint at
+record 15. If fence publication is interrupted, the exact version-2 fence-orphan settlement is
+record 13 and only its recovery-owned checkpoint may follow at record 14. The gate must prove that
+post-fence fact drift uses the same reserved fence and superseded checkpoint projection, both
+interrupted publication shapes have a forward path, ambiguous attestation submission never retries,
+and checkpoint plus 16 is unreachable. A later fact change cannot stale an exactly attested
 null-effect checkpoint, which then terminalizes as a checkpoint before a successor generation.
 Hostile wrong-actor, edited-command,
 wrong-target, missing/changed record, anchor, attestation, run, job, ref, SHA, predecessor,
@@ -214,7 +224,9 @@ branch, pull-request, queue, or merge result. Issue #55 alone owns activation an
 proof; missing, stale, ambiguous, or wrong-producer record evidence cannot promote availability.
 The per-issue and repository-wide provider-budget groups use `queue: max`; a hard local request
 counter and fail-closed provider responses, not a racy remaining-quota read, protect the shared
-repository token boundary. Until the pinned actionlint release understands GitHub's newer
+repository token boundary. Normal loading counts two calls for each archive redirect, so its two
+109-request stable passes plus 14 write/read-back calls close at 232; overflow recovery retains its
+separate hard-200 ceiling. Until the pinned actionlint release understands GitHub's newer
 `concurrency.queue` key, the actionlint job ignores only that exact unknown-key diagnostic; the
 repository contract independently requires `queue: max`, rejects `cancel-in-progress`, and keeps
 all other actionlint diagnostics active.

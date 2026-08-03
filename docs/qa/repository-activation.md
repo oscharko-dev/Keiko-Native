@@ -128,18 +128,24 @@ bounded canonical archive bytes only between the two passes while independently 
 provider identities, metadata, attestations, complete job/step projections, and current facts;
 consume bundles from each subject-qualified response; and download/reproduce the new locator before
 comment creation and the final anchor before success. It must prove replay is a no-op;
+prove that verified protected caller/writer attestation claims plus exact bound job/step reads
+replace workflow-run and referenced-workflow-inventory requests only inside this effect-disabled
+exact-target path while ordinary authentication retains them;
 recover zero through four interrupted v2 publications while denying a fifth; and prove superseded
 generations authenticate
-their frozen generation, closed partial producer set, first superseding witness, and any later
-terminal non-equality witness by refreshing the checkpoint projection under the same fence before
+their frozen generation and closed partial producer set. An ordinary superseded fence binds its
+first witness; the reserved-fence exception uses the final encoded read-back source observation as
+its sole durable witness and refreshes that projection under the same fence before
 terminalizing ahead of a successor with owner `invalidation`, null effect, outcome `superseded`, and
 reason `superseded`; a post-anchor fact change cannot stale that exactly attested null-effect
 checkpoint. The writer must use a three-record terminalization reserve: reject a nonterminal append
-at 12, place the terminal fence at record 13, permit its immediate checkpoint or exact
-skipped-attestation orphan settlement at record 14, and then permit only the recovery-owned
-null-effect checkpoint at record 15. Post-fence fact drift must use the same fence and a superseded
-checkpoint projection; one interrupted checkpoint publication must retain that forward path, and
-an ambiguous attestation submission must never retry. Every interrupted candidate must
+at 12, place the terminal fence at record 13, permit its immediate checkpoint or exact version-2
+skipped-attestation checkpoint-orphan settlement at record 14, and then permit only the
+recovery-owned null-effect checkpoint at record 15. An interrupted fence instead uses its exact
+version-2 settlement at record 13 and checkpoint at record 14. Version 1 remains read-only
+zero-anchor compatibility. Post-fence fact drift must use the same fence and a superseded checkpoint
+projection; both interrupted publication shapes must retain a forward path, and an ambiguous
+attestation submission must never retry. Every interrupted candidate must
 prove its exact pre-comment locator attestation, terminal writer job, locator-free record
 projection, deterministic ordering, and
 duplicate rejection; its fixed anchor-attestation publication step must be `skipped`. An optional
@@ -164,7 +170,8 @@ and run. It proves exact per-issue anchors, checkpoint rollover, normal two-page
 effect-disabled cursor recovery with exact accumulator root, resume, page-order, count, and cursor
 discontinuity fixtures, empty-history bootstrap, every pre-checkpoint crash outcome, missing-suffix
 detection, strict full-body parsing, exact predecessor chains, one shared per-issue `queue: max`
-domain and fence, the repository-wide provider-budget group, hard request ceilings, stable
+domain and fence, the repository-wide provider-budget group, the normal two-pass
+`109 + 109 + 14 = 232` ceiling and separate overflow request-200 ceiling, stable
 double-reads, same-generation producer results, explicit crash recovery, and no retry after
 ambiguity. Deleted, edited, duplicated, conflicting, truncated, stale, wrong-generation,
 wrong-producer, rate-limited, or unavailable record evidence must fail closed.
@@ -172,10 +179,11 @@ wrong-producer, rate-limited, or unavailable record evidence must fail closed.
 Bootstrap fixtures prove the exact sequence-one null-root compacted-prefix preimage and ordered
 genesis members. Crash fixtures prove the request-bound forward orphan settlement accepts only an
 unchanged canonical comment from an independently verified failed protected writer run with stable
-zero anchor and attestation counts, authenticates its own settlement record, and quarantines the
-orphan without trusting it. Wrong authorization, changed or missing facts, a successful run, an
-existing anchor or attestation, multiple orphans, and settlement-publication failure must remain
-effect-disabled.
+zero-or-one anchor and zero attestation counts plus a `skipped` publication step, authenticates its
+own version-2 settlement record, and quarantines the orphan without trusting it. Version 1 remains
+read-only zero-anchor compatibility. Wrong authorization, changed or missing facts, a successful
+run, multiple anchors, any attestation, multiple orphans, and settlement-publication failure must
+remain effect-disabled.
 
 Publication proof loads the exact candidate commit, requires a complete recursive Git tree with
 `truncated === false`, and verifies exact regular-file path, mode, blob object, byte count, and
