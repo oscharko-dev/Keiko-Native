@@ -101,8 +101,10 @@ function pullRequest(number, issueNumber, overrides = {}) {
     },
     head: { ref: `codex/${issueNumber}-work`, sha: head },
     headCommit: { reason: "valid", verified: true },
+    isDraft: false,
     labels: ["status: pr open"],
     mergeCommit: null,
+    mergeable: "MERGEABLE",
     merged: false,
     mergedBy: null,
     number,
@@ -114,7 +116,7 @@ function pullRequest(number, issueNumber, overrides = {}) {
 
 function snapshot() {
   const open = issue(30, "status: pr open", { target: "epic/9-migration" });
-  const closed = issue(31, "status: ready for human review", {
+  const closed = issue(31, "status: ready", {
     state: "closed",
     stateReason: "completed",
   });
@@ -167,6 +169,7 @@ function snapshot() {
     allowlistedMergers: ["Niko4417", "oscharko"],
     comments: new Map(),
     contracts: page([]),
+    contractsProtectedDev: dev,
     issues: page([open, closed, abandoned]),
     labels: page([
       "status: new",
@@ -182,7 +185,8 @@ function snapshot() {
     ]),
     observedAt: "2026-08-01T12:00:00.000Z",
     protectedDev: dev,
-    contractsProtectedDev: dev,
+    manifests: page([]),
+    manifestsProtectedDev: dev,
     pullRequests: page([pr, merged]),
     repository,
     _fingerprints: fingerprints,
@@ -227,7 +231,7 @@ test("builds the exact current-readiness-first inventory and reconciliation plan
       number: 30,
     },
     {
-      current: ["status: ready for human review"],
+      current: ["status: ready"],
       desired: ["status: done"],
       kind: "issue",
       number: 31,
@@ -401,6 +405,44 @@ test("excludes planning states without readiness instead of dispositioning them"
   );
 });
 
+test("rejects accepted readiness hidden behind a planning lifecycle label", async () => {
+  for (const lifecycle of ["status: new", "status: triaged"]) {
+    const input = await acceptedSnapshot();
+    const item = issue(33, lifecycle, { assignees: [] });
+    input.issues.pages[0].nodes.push(item);
+    input.issues.pages[0].totalCount += 1;
+    const prepared = buildMigrationInventory.prepare(input);
+    const fingerprint = prepared.issueFacts.find(
+      ({ number }) => number === 33,
+    ).fingerprint;
+    input.comments.set(33, page([readiness(33, fingerprint)]));
+    const result = buildMigrationInventory(input);
+    assert.equal(result.publishable, false);
+    assert.ok(
+      result.dispositions.some(
+        ({ code, number }) =>
+          code === "retained-lifecycle-invalid" && number === 33,
+      ),
+    );
+  }
+});
+
+test("excludes paused work when no current readiness exists", async () => {
+  for (const lifecycle of ["status: blocked", "status: waiting for user"]) {
+    const input = await acceptedSnapshot();
+    input.issues.pages[0].nodes.push(issue(33, lifecycle));
+    input.issues.pages[0].totalCount += 1;
+    input.comments.set(33, page([]));
+    const result = buildMigrationInventory(input);
+    assert.equal(result.publishable, true);
+    assert.equal(
+      result.inventory.issues.find(({ number }) => number === 33)
+        ?.classification,
+      "planning-excluded",
+    );
+  }
+});
+
 test("accepts paused retained work with at most one ineligible open pull request", async () => {
   const input = await acceptedSnapshot();
   const paused = issue(33, "status: blocked");
@@ -411,15 +453,63 @@ test("accepts paused retained work with at most one ineligible open pull request
     ({ number }) => number === 33,
   ).fingerprint;
   input.comments.set(33, page([readiness(33, fingerprint)]));
-  input.pullRequests.pages[0].nodes.push(pullRequest(72, 33));
+  input.pullRequests.pages[0].nodes.push(
+    pullRequest(72, 33, {
+      checks: {
+        allPassing: false,
+        complete: true,
+        head,
+        required: [],
+      },
+      headCommit: { reason: "invalid", verified: false },
+      mergeable: "CONFLICTING",
+    }),
+  );
   input.pullRequests.pages[0].totalCount += 1;
   const result = buildMigrationInventory(input);
   assert.equal(result.publishable, true);
   assert.equal(
     result.manifest.entries.find(({ number }) => number === 33)
-      .linkedPullRequest.number,
-    72,
+      .linkedPullRequest,
+    null,
   );
+});
+
+test("accepts a failed handoff while the issue remains PR open", async () => {
+  const input = await acceptedSnapshot();
+  const pr = input.pullRequests.pages[0].nodes[0];
+  pr.checks.allPassing = false;
+  pr.checks.required.push({
+    conclusion: "FAILURE",
+    name: "Lifecycle handoff",
+    producer: { id: 41898282, login: "github-actions[bot]", type: "Bot" },
+  });
+  assert.equal(buildMigrationInventory(input).publishable, true);
+});
+
+test("rejects draft or unmergeable review-ready pull requests", async () => {
+  for (const mutate of [
+    (pr) => (pr.isDraft = true),
+    (pr) => (pr.mergeable = "CONFLICTING"),
+  ]) {
+    const input = await acceptedSnapshot();
+    input.issues.pages[0].nodes[0].labels = [
+      "status: ready for human review",
+      "type: task",
+    ];
+    const pr = input.pullRequests.pages[0].nodes[0];
+    pr.checks.required.push({
+      conclusion: "SUCCESS",
+      name: "Lifecycle handoff",
+      producer: { id: 41898282, login: "github-actions[bot]", type: "Bot" },
+    });
+    mutate(pr);
+    assert.ok(
+      buildMigrationInventory(input).dispositions.some(
+        ({ code }) => code === "pr-review-state-ineligible",
+      ),
+    );
+  }
 });
 
 test("requires a validated assignment claim for in-progress work", async () => {
@@ -491,6 +581,120 @@ test("requires canonical terminal delivery proof before classifying completion",
       ({ number }) => number === 31,
     )?.classification,
     "closed-without-completion",
+  );
+});
+
+test("selects one validated final delivery among sequential merged history", async () => {
+  const input = await acceptedSnapshot();
+  input.pullRequests.pages[0].nodes.push(
+    pullRequest(69, 31, {
+      body: "## Scope\n\n- Accepted issue: #31",
+      checks: {
+        allPassing: false,
+        complete: false,
+        head,
+        required: [],
+      },
+      labels: [],
+      mergeCommit: {
+        parents: [dev],
+        reason: "valid",
+        sha: "c".repeat(40),
+        verified: true,
+      },
+      merged: true,
+      mergedBy: "Niko4417",
+      state: "closed",
+    }),
+  );
+  input.pullRequests.pages[0].totalCount += 1;
+  const result = buildMigrationInventory(input);
+  assert.equal(result.publishable, true);
+  assert.equal(
+    result.inventory.issues.find(({ number }) => number === 31)?.classification,
+    "completed",
+  );
+});
+
+test("keeps closed-unmerged attempts as non-blocking history", async () => {
+  const input = await acceptedSnapshot();
+  input.pullRequests.pages[0].nodes.push(
+    pullRequest(72, 30, {
+      checks: {
+        allPassing: false,
+        complete: false,
+        head,
+        required: [],
+      },
+      headCommit: { reason: "invalid", verified: false },
+      mergeable: "UNKNOWN",
+      state: "closed",
+    }),
+  );
+  input.pullRequests.pages[0].totalCount += 1;
+  const result = buildMigrationInventory(input);
+  assert.equal(result.publishable, true);
+  assert.equal(
+    result.dispositions.some(
+      ({ kind, number }) => kind === "pull-request" && number === 72,
+    ),
+    false,
+  );
+});
+
+test("ignores obsolete contracts on non-completed closures", async () => {
+  const input = await acceptedSnapshot();
+  const closed = input.issues.pages[0].nodes.find(
+    ({ number }) => number === 32,
+  );
+  closed.labels = ["status: blocked"];
+  const result = buildMigrationInventory(input);
+  assert.equal(result.publishable, true);
+  assert.equal(
+    result.dispositions.some(
+      ({ kind, number }) => kind === "issue" && number === 32,
+    ),
+    false,
+  );
+});
+
+test("advances one linear immutable migration-manifest chain", async () => {
+  const input = await acceptedSnapshot();
+  const predecessor = {
+    digest: "c".repeat(64),
+    mode: "100644",
+    path: "docs/qa/repository-migration-manifest-v1.md",
+    predecessor: null,
+  };
+  input.manifests = page([predecessor]);
+  const result = buildMigrationInventory(input);
+  assert.equal(result.publishable, true);
+  assert.equal(
+    result.manifest.path,
+    "docs/qa/repository-migration-manifest-v2.md",
+  );
+  assert.deepEqual(result.manifest.predecessor, {
+    digest: predecessor.digest,
+    path: predecessor.path,
+  });
+  assert.deepEqual(JSON.parse(result.manifest.bytes), {
+    entries: result.manifest.entries,
+    predecessor: result.manifest.predecessor,
+  });
+
+  const invalid = await acceptedSnapshot();
+  invalid.manifests = page([
+    predecessor,
+    {
+      digest: "e".repeat(64),
+      mode: "100644",
+      path: "docs/qa/repository-migration-manifest-v2.md",
+      predecessor: { digest: "f".repeat(64), path: predecessor.path },
+    },
+  ]);
+  assert.equal(
+    buildMigrationInventory(invalid).code,
+    "migration-manifest-chain-invalid",
   );
 });
 

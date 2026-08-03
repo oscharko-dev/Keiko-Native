@@ -41,7 +41,8 @@ const prTrackedStates = new Set([
 const shaPattern = /^[0-9a-f]{40}$/u;
 const repositoryPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 const actorPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u;
-const manifestPath = "docs/qa/repository-migration-manifest-v1.md";
+const manifestPathPattern =
+  /^docs\/qa\/repository-migration-manifest-v([1-9]\d*)\.md$/u;
 const readinessProducer = "issue-readiness.yml@protected-dev";
 const trustedActionsProducer = Object.freeze({
   id: 41898282,
@@ -199,6 +200,59 @@ function prepareIssue(item) {
   };
 }
 
+function manifestBinding(value) {
+  return (
+    record(value) &&
+    typeof value.path === "string" &&
+    manifestPathPattern.test(value.path) &&
+    /^[0-9a-f]{64}$/u.test(value.digest ?? "")
+  );
+}
+
+function manifestSuccessor(nodes) {
+  const chain = [];
+  for (const item of nodes) {
+    const match = manifestPathPattern.exec(item?.path ?? "");
+    if (
+      match === null ||
+      item.mode !== "100644" ||
+      !/^[0-9a-f]{64}$/u.test(item?.digest ?? "") ||
+      !(item.predecessor === null || manifestBinding(item.predecessor))
+    )
+      return { failure: "migration-manifest-observation-invalid" };
+    chain.push({
+      digest: item.digest,
+      path: item.path,
+      predecessor: item.predecessor,
+      version: Number(match[1]),
+    });
+  }
+  chain.sort((left, right) => left.version - right.version);
+  for (let index = 0; index < chain.length; index += 1) {
+    const item = chain[index];
+    const prior = chain[index - 1] ?? null;
+    if (
+      item.version !== index + 1 ||
+      (prior === null
+        ? item.predecessor !== null
+        : !isDeepStrictEqual(item.predecessor, {
+            digest: prior.digest,
+            path: prior.path,
+          }))
+    )
+      return { failure: "migration-manifest-chain-invalid" };
+  }
+  const terminal = chain.at(-1) ?? null;
+  const version = chain.length + 1;
+  return {
+    path: `docs/qa/repository-migration-manifest-v${version}.md`,
+    predecessor:
+      terminal === null
+        ? null
+        : { digest: terminal.digest, path: terminal.path },
+  };
+}
+
 function prepareSnapshot(input) {
   if (
     !record(input) ||
@@ -218,7 +272,8 @@ function prepareSnapshot(input) {
   const issues = pageSet(input.issues, (item) => item?.number);
   const pullRequests = pageSet(input.pullRequests, (item) => item?.number);
   const contracts = pageSet(input.contracts, (item) => item?.path);
-  const failed = [labels, issues, pullRequests, contracts].find(
+  const manifests = pageSet(input.manifests, (item) => item?.path);
+  const failed = [labels, issues, pullRequests, contracts, manifests].find(
     (value) => value.failure !== undefined,
   );
   if (failed !== undefined) return indeterminate(failed.failure);
@@ -235,8 +290,14 @@ function prepareSnapshot(input) {
     )
   )
     return indeterminate("canonical-lifecycle-labels-missing");
-  if (input.contractsProtectedDev !== input.protectedDev)
+  if (
+    input.contractsProtectedDev !== input.protectedDev ||
+    input.manifestsProtectedDev !== input.protectedDev
+  )
     return indeterminate("contract-tree-not-protected-dev");
+  const manifestIdentity = manifestSuccessor(manifests.nodes);
+  if (manifestIdentity.failure !== undefined)
+    return indeterminate(manifestIdentity.failure);
   const contractBindings = [];
   for (const item of contracts.nodes) {
     const parsed = parseContractPath(item?.path);
@@ -263,6 +324,7 @@ function prepareSnapshot(input) {
     contractBindings,
     issueFacts: issueFacts.toSorted(compareNumber),
     labels: labels.nodes.toSorted(compareCodeUnits),
+    manifestIdentity,
     ok: true,
     pullRequests: pullRequests.nodes,
   };
@@ -315,6 +377,8 @@ function validPullRequestCore(item, associatedIssue, base, head) {
     positiveInteger(item.number) &&
     ["open", "closed"].includes(item.state) &&
     typeof item.merged === "boolean" &&
+    typeof item.isDraft === "boolean" &&
+    ["CONFLICTING", "MERGEABLE", "UNKNOWN"].includes(item.mergeable) &&
     record(base) &&
     typeof base.ref === "string" &&
     shaPattern.test(base.sha ?? "") &&
@@ -363,7 +427,7 @@ function requiredChecksDisposition(item, issue, head) {
       !record(check) ||
       typeof check.name !== "string" ||
       !["ERROR", "FAILURE", "PENDING", "SUCCESS"].includes(check.conclusion) ||
-      (exactContextsRequired && check.conclusion !== "SUCCESS"),
+      (expectedContexts.includes(check.name) && check.conclusion !== "SUCCESS"),
   );
   if (producerInvalid) return "pr-required-check-producer-invalid";
   return ((reviewReady || item.merged === true) &&
@@ -421,7 +485,7 @@ function terminalDeliveryValid(input, item, issue, comments) {
       state_reason: issue.stateReason,
       title: issue.title,
     },
-    lifecycleActivation: "enabled",
+    lifecycleActivation: "disabled",
     pullRequest: item,
     repository: input.repository,
     terminalDelivery: true,
@@ -441,8 +505,10 @@ function pullRequestFact(input, item, issueByNumber, allowlistedMergers) {
     base: base?.sha ?? null,
     checksPassing: item?.checks?.allPassing ?? null,
     head: head?.sha ?? null,
+    isDraft: item?.isDraft ?? null,
     lifecycle,
     merged: item?.merged ?? null,
+    mergeable: item?.mergeable ?? null,
     number: item?.number ?? null,
     state: item?.state ?? null,
     target: base?.ref ?? null,
@@ -474,12 +540,26 @@ function pullRequestFact(input, item, issueByNumber, allowlistedMergers) {
     base: base.sha,
     checksPassing: item?.checks?.allPassing ?? null,
     head: head.sha,
+    isDraft: item.isDraft,
     lifecycle,
     merged: item.merged,
+    mergeable: item.mergeable,
     number: item.number,
     state: item.state,
     target: base.ref,
   };
+  if (item.state === "closed" && item.merged === false) {
+    return item.mergeCommit === null
+      ? { fact, verified: false }
+      : { disposition: "pr-state-inconsistent", fact };
+  }
+  const paused =
+    issue.lifecycle.length === 1 &&
+    ["status: blocked", "status: waiting for user"].includes(
+      issue.lifecycle[0],
+    );
+  if (item.state === "open" && item.merged === false && paused)
+    return { fact, verified: true };
   if (base.ref !== issue.target)
     return { disposition: "pull-request-target-mismatch", fact };
   if (
@@ -487,9 +567,6 @@ function pullRequestFact(input, item, issueByNumber, allowlistedMergers) {
     item?.headCommit?.reason !== "valid"
   )
     return { disposition: "pr-head-signature-invalid", fact };
-  const checksDisposition = requiredChecksDisposition(item, issue, head);
-  if (checksDisposition !== null)
-    return { disposition: checksDisposition, fact };
   if (item.merged) {
     if (!validMergeProof(item, allowlistedMergers)) {
       return { disposition: "pr-merge-proof-invalid", fact };
@@ -503,8 +580,23 @@ function pullRequestFact(input, item, issueByNumber, allowlistedMergers) {
       issue,
       comments,
     );
+    if (fact.finalDeliveryValidated) {
+      const checksDisposition = requiredChecksDisposition(item, issue, head);
+      if (checksDisposition !== null)
+        return { disposition: checksDisposition, fact };
+    }
   } else if (item.state !== "open" || item.mergeCommit !== null) {
     return { disposition: "pr-state-inconsistent", fact };
+  } else {
+    if (
+      issue.lifecycle.length === 1 &&
+      issue.lifecycle[0] === "status: ready for human review" &&
+      (item.isDraft || item.mergeable !== "MERGEABLE")
+    )
+      return { disposition: "pr-review-state-ineligible", fact };
+    const checksDisposition = requiredChecksDisposition(item, issue, head);
+    if (checksDisposition !== null)
+      return { disposition: checksDisposition, fact };
   }
   return { fact, verified: true };
 }
@@ -572,11 +664,13 @@ function collectPullRequestFacts(
 }
 
 function recordClosedIssue(state, issue, readiness, associated, current) {
+  const finalDeliveries = associated.filter(
+    (pullRequest) =>
+      pullRequest.merged === true &&
+      pullRequest.finalDeliveryValidated === true,
+  );
   const completed =
-    issue.stateReason === "completed" &&
-    associated.length === 1 &&
-    associated[0].merged === true &&
-    associated[0].finalDeliveryValidated === true;
+    issue.stateReason === "completed" && finalDeliveries.length === 1;
   const classification = completed ? "completed" : "closed-without-completion";
   state.issueInventory.push(safeIssue(issue, classification, readiness));
   state.reconciliation.push({
@@ -717,7 +811,7 @@ function recordReadyIssue(
     return;
   }
   const linked =
-    openAssociated.length === 1
+    tracked && openAssociated.length === 1
       ? {
           head: openAssociated[0].head,
           number: openAssociated[0].number,
@@ -742,19 +836,29 @@ function recordIssue(state, input, issue, prepared, verifiedPullRequests) {
   const planningExcluded =
     issue.state === "open" &&
     issue.lifecycle.length === 1 &&
-    ["status: new", "status: triaged"].includes(issue.lifecycle[0]);
+    !readiness.current &&
+    [
+      "status: new",
+      "status: triaged",
+      "status: blocked",
+      "status: waiting for user",
+    ].includes(issue.lifecycle[0]);
   if (planningExcluded) {
     recordPlanningExcludedIssue(state, issue, readiness, current);
+    return undefined;
+  }
+  if (issue.state === "closed") {
+    if (issue.stateReason === "completed" && issue.contractFailure !== null)
+      state.dispositions.push(
+        disposition("issue", issue.number, issue.contractFailure),
+      );
+    recordClosedIssue(state, issue, readiness, associated, current);
     return undefined;
   }
   if (issue.contractFailure !== null)
     state.dispositions.push(
       disposition("issue", issue.number, issue.contractFailure),
     );
-  if (issue.state === "closed") {
-    recordClosedIssue(state, issue, readiness, associated, current);
-    return undefined;
-  }
   if (!readiness.current) {
     recordNonReadyIssue(state, issue, readiness);
     return undefined;
@@ -795,13 +899,17 @@ function finalInventoryResult(input, state, pullRequestFacts) {
       reconciliation: state.reconciliation,
     };
   }
-  const manifestBytes = canonicalBytes({ entries: state.observations });
+  const manifestBytes = canonicalBytes({
+    entries: state.observations,
+    predecessor: state.manifestIdentity.predecessor,
+  });
   const digest = contractSha256(manifestBytes).digest;
   const manifest = {
     bytes: manifestBytes,
     digest,
     entries: state.observations,
-    path: manifestPath,
+    path: state.manifestIdentity.path,
+    predecessor: state.manifestIdentity.predecessor,
   };
   return {
     candidateInputs: state.candidateInputs,
@@ -814,7 +922,7 @@ function finalInventoryResult(input, state, pullRequestFacts) {
       candidateInputs: state.candidateInputs,
       observations: state.observations,
       target: "dev",
-      terminalManifest: { digest, path: manifestPath },
+      terminalManifest: { digest, path: state.manifestIdentity.path },
     },
     reconciliation: state.reconciliation,
   };
@@ -838,6 +946,7 @@ function build(input) {
     issueInventory: [],
     observations: [],
     reconciliation: [],
+    manifestIdentity: prepared.manifestIdentity,
   };
   for (const issue of prepared.issueFacts) {
     const failure = recordIssue(

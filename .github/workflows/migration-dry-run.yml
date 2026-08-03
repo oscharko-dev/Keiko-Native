@@ -60,4 +60,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           KEIKO_MIGRATION_GENERATION: "1"
+          KEIKO_MIGRATION_PROTECTED_DEV: ${{ github.sha }}
         run: node quality/migration-dry-run.mjs

@@ -11,15 +11,28 @@ const head = "a".repeat(40);
 const pageInfo = { endCursor: "end", hasNextPage: false };
 const emptyContracts = async () => ({
   protectedDev: dev,
-  pages: [
-    {
-      cursor: null,
-      endCursor: null,
-      hasNextPage: false,
-      nodes: [],
-      totalCount: 0,
-    },
-  ],
+  contracts: {
+    pages: [
+      {
+        cursor: null,
+        endCursor: null,
+        hasNextPage: false,
+        nodes: [],
+        totalCount: 0,
+      },
+    ],
+  },
+  manifests: {
+    pages: [
+      {
+        cursor: null,
+        endCursor: null,
+        hasNextPage: false,
+        nodes: [],
+        totalCount: 0,
+      },
+    ],
+  },
 });
 
 function fixtures() {
@@ -139,11 +152,13 @@ function fixtures() {
                 },
                 headRefName: "codex/30-work",
                 headRefOid: head,
+                isDraft: false,
                 labels: {
                   nodes: [{ name: "status: pr open" }],
                   totalCount: 1,
                 },
                 mergeCommit: null,
+                mergeable: "MERGEABLE",
                 merged: false,
                 mergedBy: null,
                 number: 70,
@@ -223,6 +238,7 @@ test("collects a complete stable double-read without mutation capability", async
     },
   ]);
   assert.equal(result.contractsProtectedDev, dev);
+  assert.equal(result.manifestsProtectedDev, dev);
 });
 
 test("rejects provider drift between complete reads", async () => {
@@ -289,12 +305,14 @@ test("derives a validated in-progress claim and reopen invalidation from history
           __typename: "ReopenedEvent",
           actor: { login: "Niko4417" },
           createdAt: "2026-08-01T10:00:00Z",
+          id: "reopened-1",
         },
         {
           __typename: "AssignedEvent",
           actor: { login: "Niko4417" },
           assignee: { login: "Niko4417" },
           createdAt: "2026-08-01T11:00:00Z",
+          id: "assigned-1",
         },
       ],
       pageInfo,
@@ -313,6 +331,95 @@ test("derives a validated in-progress claim and reopen invalidation from history
   const observed = result.issues.pages[0].nodes[0];
   assert.equal(observed.claim.validated, true);
   assert.equal(observed.reopenedAt, "2026-08-01T10:00:00Z");
+});
+
+test("rejects incomplete or duplicate issue-event pagination", async () => {
+  for (const mutate of [
+    (timeline) => {
+      timeline.totalCount = 1;
+    },
+    (timeline) => {
+      timeline.nodes = [
+        {
+          __typename: "ReopenedEvent",
+          actor: { login: "Niko4417" },
+          createdAt: "2026-08-01T10:00:00Z",
+          id: "same-event",
+        },
+        {
+          __typename: "ReopenedEvent",
+          actor: { login: "Niko4417" },
+          createdAt: "2026-08-01T11:00:00Z",
+          id: "same-event",
+        },
+      ];
+      timeline.totalCount = 2;
+    },
+  ]) {
+    const harness = graphqlHarness((values) => {
+      mutate(values.issues.data.repository.issues.nodes[0].timelineItems);
+    });
+    const provider = createMigrationGithubProvider({
+      contracts: emptyContracts,
+      graphql: harness.graphql,
+      json: harness.json,
+    });
+    await assert.rejects(
+      provider.snapshot(repository),
+      /migration-provider-issue-events-incomplete/u,
+    );
+  }
+});
+
+test("binds a dispatched scan to the checked-out protected-dev commit", async () => {
+  const harness = graphqlHarness();
+  const provider = createMigrationGithubProvider({
+    contracts: emptyContracts,
+    expectedProtectedDev: "f".repeat(40),
+    graphql: harness.graphql,
+    json: harness.json,
+  });
+  await assert.rejects(
+    provider.snapshot(repository),
+    /migration-provider-checked-out-dev-mismatch/u,
+  );
+});
+
+test("loads the immutable manifest chain from protected dev", async () => {
+  const harness = graphqlHarness();
+  const bytes = Buffer.from('{"entries":[],"predecessor":null}\n');
+  const blob = "b".repeat(40);
+  const provider = createMigrationGithubProvider({
+    graphql: harness.graphql,
+    json: async (path) => {
+      if (path.includes(`/git/trees/${devTree}`))
+        return {
+          sha: devTree,
+          tree: [
+            {
+              mode: "100644",
+              path: "docs/qa/repository-migration-manifest-v1.md",
+              sha: blob,
+              type: "blob",
+            },
+          ],
+          truncated: false,
+        };
+      if (path.endsWith(`/git/blobs/${blob}`))
+        return {
+          content: bytes.toString("base64"),
+          encoding: "base64",
+          sha: blob,
+        };
+      return harness.json(path);
+    },
+  });
+  const result = await provider.snapshot(repository);
+  assert.deepEqual(result.manifests.pages[0].nodes[0].predecessor, null);
+  assert.equal(
+    result.manifests.pages[0].nodes[0].path,
+    "docs/qa/repository-migration-manifest-v1.md",
+  );
 });
 
 test("preserves the complete exact-head rollup independently of commit statuses", async () => {
@@ -371,5 +478,9 @@ test("constructor supplies a protected-dev contract reader and rejects invalid c
         maximumRequests: 0,
       }),
     /request ceiling is invalid/u,
+  );
+  assert.throws(
+    () => createMigrationGithubProvider({ expectedProtectedDev: "bad" }),
+    /expected protected dev is invalid/u,
   );
 });

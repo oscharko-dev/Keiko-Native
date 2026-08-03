@@ -109,7 +109,9 @@ export async function runMigrationDryRun({
 }
 
 async function main() {
-  const provider = createMigrationGithubProvider();
+  const provider = createMigrationGithubProvider({
+    expectedProtectedDev: process.env.KEIKO_MIGRATION_PROTECTED_DEV,
+  });
   const result = await runMigrationDryRun({
     generation: Number(process.env.KEIKO_MIGRATION_GENERATION ?? "1"),
     now: new Date().toISOString(),

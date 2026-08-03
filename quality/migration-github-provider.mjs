@@ -16,6 +16,9 @@ const exactStatusContexts = [
 ];
 const claimPermissions = new Set(["admin", "maintain", "write"]);
 const repositoryPattern = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/u;
+const shaPattern = /^[0-9a-f]{40}$/u;
+const manifestPathPattern =
+  /^docs\/qa\/repository-migration-manifest-v([1-9]\d*)\.md$/u;
 
 const LABELS_QUERY = `query MigrationLabels($owner: String!, $name: String!, $after: String) {
   repository(owner: $owner, name: $name) {
@@ -56,13 +59,13 @@ const ISSUES_QUERY = `query MigrationIssues($owner: String!, $name: String!, $af
           pageInfo { endCursor hasNextPage }
           nodes {
             __typename
-            ... on ReopenedEvent { createdAt actor { login } }
+            ... on ReopenedEvent { id createdAt actor { login } }
             ... on AssignedEvent {
-              createdAt actor { login }
+              id createdAt actor { login }
               assignee { ... on User { login } }
             }
             ... on UnassignedEvent {
-              createdAt actor { login }
+              id createdAt actor { login }
               assignee { ... on User { login } }
             }
           }
@@ -101,13 +104,13 @@ const EVENTS_QUERY = `query MigrationIssueEvents($owner: String!, $name: String!
         pageInfo { endCursor hasNextPage }
         nodes {
           __typename
-          ... on ReopenedEvent { createdAt actor { login } }
+          ... on ReopenedEvent { id createdAt actor { login } }
           ... on AssignedEvent {
-            createdAt actor { login }
+            id createdAt actor { login }
             assignee { ... on User { login } }
           }
           ... on UnassignedEvent {
-            createdAt actor { login }
+            id createdAt actor { login }
             assignee { ... on User { login } }
           }
         }
@@ -123,7 +126,7 @@ const PULL_REQUESTS_QUERY = `query MigrationPullRequests($owner: String!, $name:
       totalCount
       pageInfo { endCursor hasNextPage }
       nodes {
-        number title state merged body baseRefName baseRefOid headRefName headRefOid
+        number title state merged isDraft mergeable body baseRefName baseRefOid headRefName headRefOid
         mergedBy { login }
         labels(first: 100) { totalCount nodes { name } }
         mergeCommit {
@@ -221,6 +224,8 @@ function issueEvent(event) {
     !["ReopenedEvent", "AssignedEvent", "UnassignedEvent"].includes(
       event?.__typename,
     ) ||
+    typeof event.id !== "string" ||
+    event.id === "" ||
     typeof event.createdAt !== "string" ||
     !Number.isFinite(Date.parse(event.createdAt))
   )
@@ -242,6 +247,7 @@ function issueEvent(event) {
     actor: actor ?? null,
     assignee: assignee ?? null,
     createdAt: event.createdAt,
+    id: event.id,
   };
 }
 
@@ -336,6 +342,8 @@ function pullRequestNode(pullRequest) {
     !Number.isSafeInteger(pullRequest?.number) ||
     !["OPEN", "CLOSED", "MERGED"].includes(pullRequest.state) ||
     typeof pullRequest.merged !== "boolean" ||
+    typeof pullRequest.isDraft !== "boolean" ||
+    !["CONFLICTING", "MERGEABLE", "UNKNOWN"].includes(pullRequest.mergeable) ||
     typeof pullRequest.title !== "string" ||
     typeof pullRequest.body !== "string" ||
     !Array.isArray(pullRequest.commits?.nodes)
@@ -385,13 +393,46 @@ function pullRequestNode(pullRequest) {
     head: { ref: pullRequest.headRefName ?? null, sha: headOid },
     headCommit: commitVerification(commit?.signature),
     labels,
+    isDraft: pullRequest.isDraft,
     mergeCommit,
+    mergeable: pullRequest.mergeable,
     merged: pullRequest.merged,
     mergedBy: pullRequest.mergedBy?.login ?? null,
     number: pullRequest.number,
     state: pullRequest.state === "OPEN" ? "open" : "closed",
     title: pullRequest.title,
   };
+}
+
+function completePagedNodes(value, identity, code) {
+  if (!record(value) || !Array.isArray(value.pages) || value.pages.length === 0)
+    providerFailure(code);
+  let priorEnd = null;
+  let total;
+  const nodes = [];
+  const identities = new Set();
+  for (let index = 0; index < value.pages.length; index += 1) {
+    const page = value.pages[index];
+    if (
+      !record(page) ||
+      page.cursor !== priorEnd ||
+      page.totalCount !== (total ?? page.totalCount) ||
+      page.hasNextPage !== index < value.pages.length - 1 ||
+      (page.hasNextPage && page.endCursor === null)
+    )
+      providerFailure(code);
+    total = page.totalCount;
+    priorEnd = page.endCursor;
+    for (const node of page.nodes) {
+      const id = identity(node);
+      if (id === undefined || id === null || identities.has(id))
+        providerFailure(code);
+      identities.add(id);
+      nodes.push(node);
+    }
+  }
+  if (nodes.length !== total) providerFailure(code);
+  return nodes;
 }
 
 async function allPages(load, query, variables, select, map) {
@@ -470,13 +511,16 @@ async function collaboratorCanClaim(json, repository, login) {
 }
 
 async function addIssueHistoryEvidence(json, repository, issue, events) {
-  const ordered = events.pages
-    .flatMap((page) => page.nodes)
-    .toSorted((left, right) =>
-      left.createdAt === right.createdAt
-        ? left.action.localeCompare(right.action)
-        : left.createdAt.localeCompare(right.createdAt),
-    );
+  const ordered = completePagedNodes(
+    events,
+    (event) => event.id,
+    "migration-provider-issue-events-incomplete",
+  ).toSorted((left, right) =>
+    left.createdAt === right.createdAt
+      ? left.action.localeCompare(right.action) ||
+        left.id.localeCompare(right.id)
+      : left.createdAt.localeCompare(right.createdAt),
+  );
   const reopened = ordered.filter(({ action }) => action === "reopened").at(-1);
   issue.reopenedAt = reopened?.createdAt ?? null;
   if (
@@ -589,21 +633,89 @@ async function loadProtectedRepositoryContractBindings({
       path: entry.path,
     });
   }
+  const manifests = [];
+  const manifestEntries = tree.tree
+    .filter(
+      (entry) =>
+        typeof entry?.path === "string" && manifestPathPattern.test(entry.path),
+    )
+    .toSorted((left, right) => left.path.localeCompare(right.path));
+  for (const entry of manifestEntries) {
+    if (
+      entry.type !== "blob" ||
+      entry.mode !== "100644" ||
+      !shaPattern.test(entry.sha ?? "")
+    )
+      providerFailure("migration-manifest-tree-invalid");
+    const blob = await json(`/repos/${repository}/git/blobs/${entry.sha}`);
+    if (
+      blob?.sha !== entry.sha ||
+      blob.encoding !== "base64" ||
+      typeof blob.content !== "string"
+    )
+      providerFailure("migration-manifest-blob-invalid");
+    const encoded = blob.content.replaceAll("\n", "");
+    const bytes = Buffer.from(encoded, "base64");
+    if (bytes.toString("base64") !== encoded)
+      providerFailure("migration-manifest-blob-invalid");
+    let value;
+    try {
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      value = JSON.parse(text);
+      if (text !== `${JSON.stringify(value)}\n`)
+        providerFailure("migration-manifest-bytes-noncanonical");
+    } catch (error) {
+      if (error?.message?.startsWith("migration-manifest-")) throw error;
+      providerFailure("migration-manifest-bytes-invalid");
+    }
+    if (
+      !record(value) ||
+      !Array.isArray(value.entries) ||
+      !(value.predecessor === null || record(value.predecessor))
+    )
+      providerFailure("migration-manifest-schema-invalid");
+    manifests.push({
+      digest: contractSha256(bytes).digest,
+      mode: entry.mode,
+      path: entry.path,
+      predecessor: value.predecessor,
+    });
+  }
   return {
-    pages: [
-      {
-        cursor: null,
-        endCursor: nodes.length === 0 ? null : "protected-contracts",
-        hasNextPage: false,
-        nodes,
-        totalCount: nodes.length,
-      },
-    ],
+    contracts: {
+      pages: [
+        {
+          cursor: null,
+          endCursor: nodes.length === 0 ? null : "protected-contracts",
+          hasNextPage: false,
+          nodes,
+          totalCount: nodes.length,
+        },
+      ],
+    },
+    manifests: {
+      pages: [
+        {
+          cursor: null,
+          endCursor: manifests.length === 0 ? null : "protected-manifests",
+          hasNextPage: false,
+          nodes: manifests,
+          totalCount: manifests.length,
+        },
+      ],
+    },
     protectedDev,
   };
 }
 
-async function scan({ contracts, graphql, json, now, repository }) {
+async function scan({
+  contracts,
+  expectedProtectedDev,
+  graphql,
+  json,
+  now,
+  repository,
+}) {
   const match = repositoryPattern.exec(repository);
   if (match === null) providerFailure("migration-provider-repository-invalid");
   const variables = { name: match[2], owner: match[1], repository };
@@ -639,6 +751,11 @@ async function scan({ contracts, graphql, json, now, repository }) {
         providerFailure("migration-provider-protected-tree-drift");
       protectedDev = branch.target.oid;
       protectedTree = branch.target.tree.oid;
+      if (
+        expectedProtectedDev !== null &&
+        protectedDev !== expectedProtectedDev
+      )
+        providerFailure("migration-provider-checked-out-dev-mismatch");
       return value.issues;
     },
     (value) => {
@@ -685,10 +802,12 @@ async function scan({ contracts, graphql, json, now, repository }) {
   return {
     allowlistedMergers: ["Niko4417", "oscharko"],
     comments,
-    contracts: { pages: contractSnapshot.pages },
+    contracts: contractSnapshot.contracts,
     contractsProtectedDev: contractSnapshot.protectedDev,
     issues,
     labels,
+    manifests: contractSnapshot.manifests,
+    manifestsProtectedDev: contractSnapshot.protectedDev,
     observedAt: now(),
     protectedDev,
     pullRequests,
@@ -708,6 +827,7 @@ function comparable(snapshot) {
 
 export function createMigrationGithubProvider({
   contracts = loadProtectedRepositoryContractBindings,
+  expectedProtectedDev = null,
   graphql = graphqlRequest,
   json = jsonRequest,
   maximumRequests = 200,
@@ -715,6 +835,8 @@ export function createMigrationGithubProvider({
 } = {}) {
   if (typeof contracts !== "function")
     throw new TypeError("migration contract reader is invalid");
+  if (expectedProtectedDev !== null && !shaPattern.test(expectedProtectedDev))
+    throw new TypeError("expected protected dev is invalid");
   if (!Number.isSafeInteger(maximumRequests) || maximumRequests <= 0)
     throw new TypeError("migration provider request ceiling is invalid");
   let requests = 0;
@@ -734,6 +856,7 @@ export function createMigrationGithubProvider({
     async snapshot(repository) {
       const first = await scan({
         contracts,
+        expectedProtectedDev,
         graphql: countedGraphql,
         json: countedJson,
         now,
@@ -741,6 +864,7 @@ export function createMigrationGithubProvider({
       });
       const second = await scan({
         contracts,
+        expectedProtectedDev,
         graphql: countedGraphql,
         json: countedJson,
         now,

@@ -146,11 +146,18 @@ test("keeps repository credentials out of candidate-controlled pull-request code
       /  candidate-contracts:\r?\n(?<body>[\s\S]*?)\r?\n  protected-inventory:/u.exec(
         observed,
       )?.groups?.body;
+    const protectedJob = /  protected-inventory:\r?\n(?<body>[\s\S]*)/u.exec(
+      observed,
+    )?.groups?.body;
     assert.match(candidateJob, /if: github\.event_name == 'pull_request'/u);
     assert.doesNotMatch(candidateJob, /GITHUB_TOKEN|github\.token/u);
     assert.match(
       observed,
       /protected-inventory:\r?\n    if: github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/heads\/dev'/u,
+    );
+    assert.match(
+      protectedJob,
+      /KEIKO_MIGRATION_PROTECTED_DEV: \$\{\{ github\.sha \}\}/u,
     );
   }
 });
