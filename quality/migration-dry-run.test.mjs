@@ -140,14 +140,16 @@ test("keeps repository credentials out of candidate-controlled pull-request code
     new URL("../.github/workflows/migration-dry-run.yml", import.meta.url),
     "utf8",
   );
-  const candidateJob =
-    /  candidate-contracts:\n(?<body>[\s\S]*?)\n  protected-inventory:/u.exec(
-      workflow,
-    )?.groups?.body;
-  assert.match(candidateJob, /if: github\.event_name == 'pull_request'/u);
-  assert.doesNotMatch(candidateJob, /GITHUB_TOKEN|github\.token/u);
-  assert.match(
-    workflow,
-    /protected-inventory:\n    if: github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/heads\/dev'/u,
-  );
+  for (const observed of [workflow, workflow.replaceAll("\n", "\r\n")]) {
+    const candidateJob =
+      /  candidate-contracts:\r?\n(?<body>[\s\S]*?)\r?\n  protected-inventory:/u.exec(
+        observed,
+      )?.groups?.body;
+    assert.match(candidateJob, /if: github\.event_name == 'pull_request'/u);
+    assert.doesNotMatch(candidateJob, /GITHUB_TOKEN|github\.token/u);
+    assert.match(
+      observed,
+      /protected-inventory:\r?\n    if: github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/heads\/dev'/u,
+    );
+  }
 });
