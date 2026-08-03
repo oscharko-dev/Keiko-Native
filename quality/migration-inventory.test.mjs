@@ -712,6 +712,23 @@ test("selects one validated final delivery among sequential merged history", asy
   );
 });
 
+test("rejects completion while an associated delivery remains open", async () => {
+  const input = await acceptedSnapshot();
+  input.pullRequests.pages[0].nodes.push(pullRequest(72, 31));
+  input.pullRequests.pages[0].totalCount += 1;
+  const result = buildMigrationInventory(input);
+  assert.equal(result.publishable, false);
+  assert.equal(
+    result.inventory.issues.find(({ number }) => number === 31)?.classification,
+    "closed-without-completion",
+  );
+  assert.ok(
+    result.dispositions.some(
+      ({ code, number }) => code === "completion-unverifiable" && number === 31,
+    ),
+  );
+});
+
 test("keeps closed-unmerged attempts as non-blocking history", async () => {
   const input = await acceptedSnapshot();
   input.pullRequests.pages[0].nodes.push(

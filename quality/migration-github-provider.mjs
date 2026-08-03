@@ -267,16 +267,26 @@ function author(comment) {
   const actor = comment?.author;
   if (
     !Number.isSafeInteger(comment?.databaseId) ||
-    !record(actor) ||
-    !Number.isSafeInteger(actor.databaseId) ||
-    !["Bot", "User"].includes(actor.__typename) ||
-    typeof actor.login !== "string" ||
     typeof comment.body !== "string" ||
     typeof comment.createdAt !== "string" ||
     !Number.isFinite(Date.parse(comment.createdAt))
   ) {
     providerFailure("migration-provider-comment-invalid");
   }
+  if (actor === null)
+    return {
+      body: comment.body,
+      createdAt: comment.createdAt,
+      id: comment.databaseId,
+      user: { id: null, login: null, type: "Deleted" },
+    };
+  if (
+    !record(actor) ||
+    !Number.isSafeInteger(actor.databaseId) ||
+    !["Bot", "User"].includes(actor.__typename) ||
+    typeof actor.login !== "string"
+  )
+    providerFailure("migration-provider-comment-invalid");
   return {
     body: comment.body,
     createdAt: comment.createdAt,
@@ -633,7 +643,8 @@ async function collaboratorCanClaim(json, repository, login) {
       `/repos/${repository}/collaborators/${encodeURIComponent(login)}/permission`,
     );
     return claimPermissions.has(result?.permission);
-  } catch {
+  } catch (error) {
+    if (sanitizedProviderFailureCodes.has(error?.message)) throw error;
     providerFailure("migration-provider-collaborator-unavailable");
   }
 }

@@ -716,8 +716,14 @@ function recordClosedIssue(state, issue, readiness, associated, current) {
       pullRequest.merged === true &&
       pullRequest.finalDeliveryValidated === true,
   );
+  const openDeliveries = associated.filter(
+    (pullRequest) =>
+      pullRequest.state === "open" && pullRequest.merged === false,
+  );
   const completed =
-    issue.stateReason === "completed" && finalDeliveries.length === 1;
+    issue.stateReason === "completed" &&
+    finalDeliveries.length === 1 &&
+    openDeliveries.length === 0;
   const classification = completed ? "completed" : "closed-without-completion";
   state.issueInventory.push(safeIssue(issue, classification, readiness));
   state.reconciliation.push({

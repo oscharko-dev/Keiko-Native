@@ -288,6 +288,24 @@ test("collects a complete stable double-read without mutation capability", async
   assert.equal(result.manifestsProtectedDev, dev);
 });
 
+test("preserves deleted comment authors as explicitly untrusted", async () => {
+  const harness = graphqlHarness((values) => {
+    values.issues.data.repository.issues.nodes[0].comments.nodes[0].author =
+      null;
+  });
+  const provider = createMigrationGithubProvider({
+    contracts: emptyContracts,
+    graphql: harness.graphql,
+    json: harness.json,
+  });
+  const result = await provider.snapshot(repository);
+  assert.deepEqual(result.comments.get(30).pages[0].nodes[0].user, {
+    id: null,
+    login: null,
+    type: "Deleted",
+  });
+});
+
 test("paginates every pull-request commit and retains an invalid earlier signature", async () => {
   const unsigned = "b".repeat(40);
   const harness = graphqlHarness((values) => {
@@ -482,6 +500,40 @@ test("propagates collaborator-permission lookup unavailability", async () => {
   await assert.rejects(
     provider.snapshot(repository),
     /migration-provider-collaborator-unavailable/u,
+  );
+});
+
+test("preserves request-ceiling failures during collaborator lookup", async () => {
+  const harness = graphqlHarness((values) => {
+    const observed = values.issues.data.repository.issues.nodes[0];
+    observed.labels.nodes[0].name = "status: in progress";
+    observed.comments.nodes[0].body = acceptedReadinessBody;
+    observed.timelineItems = {
+      nodes: [
+        {
+          __typename: "AssignedEvent",
+          actor: { login: "Niko4417" },
+          assignee: { login: "Niko4417" },
+          createdAt: "2026-08-01T11:30:00Z",
+          id: "assigned-1",
+        },
+      ],
+      pageInfo,
+      totalCount: 1,
+    };
+  });
+  const provider = createMigrationGithubProvider({
+    contracts: emptyContracts,
+    graphql: harness.graphql,
+    json: async (path) => {
+      if (path.includes("/collaborators/"))
+        throw new Error("migration-provider-request-ceiling");
+      return harness.json(path);
+    },
+  });
+  await assert.rejects(
+    provider.snapshot(repository),
+    /migration-provider-request-ceiling/u,
   );
 });
 
