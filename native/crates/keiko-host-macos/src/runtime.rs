@@ -45,6 +45,9 @@ const BINARY_ENV: &str = "KEIKO_CODEX_0_145_0_BINARY";
 const HOME_ENV: &str = "KEIKO_CODEX_0_145_0_HOME";
 const WORK_ROOT_ENV: &str = "KEIKO_CODEX_0_145_0_WORK_ROOT";
 const CANCEL_TERM_GRACE: Duration = Duration::from_millis(500);
+// Preserve a bounded TERM/KILL window without starving macOS first-execution
+// validation after the verified runtime has been staged.
+const READINESS_CLEANUP_RESERVE: Duration = Duration::from_millis(300);
 const TURN_CLEANUP_RESERVE: Duration = Duration::from_secs(5);
 const CODEX_CONTAINMENT_ARGUMENTS: &[&str] = &[
     "-c",
@@ -1214,9 +1217,7 @@ fn run_protocol(
         );
     }
     let mut projection = ProtocolProjection::new(&configuration.codex_home);
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    let cleanup_reserve = remaining / 5;
-    let protocol_deadline = deadline.checked_sub(cleanup_reserve).unwrap_or(deadline);
+    let protocol_deadline = readiness_protocol_deadline(deadline, Instant::now());
     let state = loop {
         if !refresh_owned_processes(active) {
             break RuntimeReadinessState::ContainmentFailed;
@@ -1277,6 +1278,12 @@ fn run_protocol(
         active,
         deadline,
     )
+}
+
+fn readiness_protocol_deadline(deadline: Instant, protocol_started: Instant) -> Instant {
+    let remaining = deadline.saturating_duration_since(protocol_started);
+    let cleanup_reserve = READINESS_CLEANUP_RESERVE.min(remaining / 5);
+    deadline.checked_sub(cleanup_reserve).unwrap_or(deadline)
 }
 
 fn write_json_line(writer: &mut impl Write, value: &Value) -> io::Result<()> {
@@ -4091,6 +4098,36 @@ while :; do /bin/sleep 1; done
             started.elapsed()
         );
         assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
+    }
+
+    #[test]
+    fn readiness_cleanup_reserve_is_capped_after_staging_and_proportional_for_short_budgets() {
+        let request_started = Instant::now();
+        let deadline = request_started + DEFAULT_REQUEST_TIMEOUT;
+        let protocol_started = request_started + Duration::from_millis(500);
+        let protocol_deadline = readiness_protocol_deadline(deadline, protocol_started);
+
+        assert_eq!(
+            protocol_deadline.duration_since(protocol_started),
+            Duration::from_millis(4_200)
+        );
+        assert_eq!(
+            deadline.duration_since(protocol_deadline),
+            READINESS_CLEANUP_RESERVE
+        );
+
+        let short_deadline = request_started + Duration::from_secs(1);
+        let short_protocol_started = request_started + Duration::from_millis(500);
+        let short_protocol_deadline =
+            readiness_protocol_deadline(short_deadline, short_protocol_started);
+        assert_eq!(
+            short_protocol_deadline.duration_since(short_protocol_started),
+            Duration::from_millis(400)
+        );
+        assert_eq!(
+            short_deadline.duration_since(short_protocol_deadline),
+            Duration::from_millis(100)
+        );
     }
 
     #[test]
