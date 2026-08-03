@@ -722,8 +722,8 @@ candidate-anchor downloads, four terminal writer-job reads, and four current-sta
 direct-comment authentication consumes at most six requests. The remaining 26 requests are reserved
 for at most three locator-upload, three locator-attestation, four independent locator-verification,
 two comment create/read-back, three anchor-upload, three anchor-attestation, and eight final stable
-read-back calls. These maxima are exactly 26 and total 200. Request 201 produces no record or effect.
-The implementation gate rejects a provider
+read-back calls. These maxima are exactly 26 and total 200. Request 201 produces no record or
+effect. The implementation gate rejects a provider
 composition that cannot prove the 26-request publication maximum; a runtime 27th publication request
 is denied and any already-created comment remains subject to the bounded interrupted-publication
 path. No unused allowance from normal operation or orphan recovery is transferred, and no provider
