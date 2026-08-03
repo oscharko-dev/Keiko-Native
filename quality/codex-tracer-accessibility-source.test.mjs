@@ -137,6 +137,25 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
   );
 });
 
+test("the canvas probe verifies its semantic set in one bounded tree traversal", () => {
+  const probeCanvas = tracerAccessibilitySource.match(
+    /else if \(\[action isEqualToString:@"probe-canvas"\]\) \{[\s\S]*?\n    \} else if/u,
+  )?.[0];
+
+  assert.match(tracerAccessibilitySource, /static BOOL HasUniqueSet\(/u);
+  assert.match(probeCanvas ?? "", /HasUniqueSet\(/u);
+  assert.doesNotMatch(probeCanvas ?? "", /HasUnique\(/u);
+});
+
+test("the cancellation probe checks alternative terminal states in one traversal", () => {
+  const cancellationProbe = tracerAccessibilitySource.match(
+    /static BOOL HasCancellationProjection\([\s\S]*?\n\}/u,
+  )?.[0];
+
+  assert.match(cancellationProbe ?? "", /HasAnyUniqueValue\(/u);
+  assert.doesNotMatch(cancellationProbe ?? "", /HasUnique\(/u);
+});
+
 const macArm64Test =
   process.platform === "darwin" && process.arch === "arm64"
     ? test

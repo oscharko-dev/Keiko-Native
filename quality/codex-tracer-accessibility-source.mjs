@@ -148,6 +148,163 @@ static AXUIElementRef FindUnique(
   return result;
 }
 
+static BOOL MatchCountsExceedOne(
+    const NSUInteger *counts, NSUInteger expectedCount) {
+  for (NSUInteger index = 0; index < expectedCount; index += 1) {
+    if (counts[index] > 1) return YES;
+  }
+  return NO;
+}
+
+static void RecordExpectedMatches(
+    AXUIElementRef element,
+    const CFStringRef *expected,
+    NSUInteger expectedCount,
+    const CFStringRef *attributes,
+    NSUInteger attributeCount,
+    NSUInteger *counts) {
+  BOOL matched[8] = {NO};
+  for (NSUInteger attributeIndex = 0;
+       attributeIndex < attributeCount;
+       attributeIndex += 1) {
+    CFTypeRef value = NULL;
+    AXError error = AXUIElementCopyAttributeValue(
+        element, attributes[attributeIndex], &value);
+    if (error == kAXErrorSuccess && value != NULL &&
+        CFGetTypeID(value) == CFStringGetTypeID()) {
+      for (NSUInteger expectedIndex = 0;
+           expectedIndex < expectedCount;
+           expectedIndex += 1) {
+        if (!matched[expectedIndex] &&
+            CFStringCompare(
+                (CFStringRef)value, expected[expectedIndex], 0) ==
+                kCFCompareEqualTo)
+          matched[expectedIndex] = YES;
+      }
+    }
+    if (value != NULL) CFRelease(value);
+  }
+  for (NSUInteger index = 0; index < expectedCount; index += 1) {
+    if (matched[index]) counts[index] += 1;
+  }
+}
+
+static void CollectExpectedMatches(
+    AXUIElementRef root,
+    const CFStringRef *expected,
+    NSUInteger expectedCount,
+    const CFStringRef *attributes,
+    NSUInteger attributeCount,
+    BOOL childrenOnly,
+    NSUInteger depth,
+    NSUInteger *counts,
+    NSUInteger *visited) {
+  if (depth > kMaximumDepth || *visited >= kMaximumElements ||
+      MatchCountsExceedOne(counts, expectedCount))
+    return;
+  *visited += 1;
+  RecordExpectedMatches(
+      root, expected, expectedCount, attributes, attributeCount, counts);
+  const CFStringRef rootContainers[] = {kAXWindowsAttribute};
+  const CFStringRef childContainers[] = {
+    kAXChildrenAttribute,
+    kAXRowsAttribute,
+    kAXColumnsAttribute,
+    kAXVisibleChildrenAttribute,
+    kAXContentsAttribute,
+  };
+  const CFStringRef *containers =
+      depth == 0 ? rootContainers : childContainers;
+  NSUInteger containerCount = depth == 0 || childrenOnly ? 1 : 5;
+  for (NSUInteger containerIndex = 0;
+       containerIndex < containerCount;
+       containerIndex += 1) {
+    BOOL traversedChildren = NO;
+    CFTypeRef value = NULL;
+    if (AXUIElementCopyAttributeValue(
+            root, containers[containerIndex], &value) != kAXErrorSuccess ||
+        value == NULL)
+      continue;
+    if (CFGetTypeID(value) == CFArrayGetTypeID()) {
+      CFArrayRef children = (CFArrayRef)value;
+      CFIndex count = MIN(CFArrayGetCount(children), 512);
+      traversedChildren = count > 0;
+      for (CFIndex index = 0; index < count; index += 1) {
+        CollectExpectedMatches(
+            (AXUIElementRef)CFArrayGetValueAtIndex(children, index),
+            expected,
+            expectedCount,
+            attributes,
+            attributeCount,
+            childrenOnly,
+            depth + 1,
+            counts,
+            visited);
+        if (MatchCountsExceedOne(counts, expectedCount)) break;
+      }
+    }
+    CFRelease(value);
+    if (traversedChildren || MatchCountsExceedOne(counts, expectedCount))
+      break;
+  }
+}
+
+static BOOL HasUniqueSet(
+    AXUIElementRef application,
+    const CFStringRef *expected,
+    NSUInteger expectedCount) {
+  if (expectedCount < 1 || expectedCount > 8) return NO;
+  const CFStringRef attributes[] = {
+    kAXIdentifierAttribute,
+    CFSTR("AXDOMIdentifier"),
+    kAXTitleAttribute,
+    kAXDescriptionAttribute,
+    kAXValueAttribute,
+  };
+  NSUInteger counts[8] = {0};
+  NSUInteger visited = 0;
+  CollectExpectedMatches(
+      application,
+      expected,
+      expectedCount,
+      attributes,
+      sizeof(attributes) / sizeof(attributes[0]),
+      NO,
+      0,
+      counts,
+      &visited);
+  for (NSUInteger index = 0; index < expectedCount; index += 1) {
+    if (counts[index] != 1) return NO;
+  }
+  return YES;
+}
+
+static BOOL HasAnyUniqueValue(
+    AXUIElementRef application,
+    const CFStringRef *expected,
+    NSUInteger expectedCount) {
+  if (expectedCount < 1 || expectedCount > 8) return NO;
+  const CFStringRef attributes[] = {kAXValueAttribute};
+  NSUInteger counts[8] = {0};
+  NSUInteger visited = 0;
+  CollectExpectedMatches(
+      application,
+      expected,
+      expectedCount,
+      attributes,
+      sizeof(attributes) / sizeof(attributes[0]),
+      YES,
+      0,
+      counts,
+      &visited);
+  BOOL found = NO;
+  for (NSUInteger index = 0; index < expectedCount; index += 1) {
+    if (counts[index] > 1) return NO;
+    if (counts[index] == 1) found = YES;
+  }
+  return found;
+}
+
 static AXUIElementRef FindPickerPanel(AXUIElementRef application) {
   CFTypeRef value = NULL;
   if (AXUIElementCopyAttributeValue(
@@ -411,12 +568,12 @@ static BOOL HasUnique(AXUIElementRef application, CFStringRef expected) {
 }
 
 static BOOL HasCancellationProjection(AXUIElementRef application) {
-  return HasUnique(
-             application,
-             CFSTR("Keiko beendet den Codex-Lauf sicher.")) ||
-      HasUnique(
-          application,
-          CFSTR("Der Codex-Lauf wurde abgebrochen und vollständig beendet."));
+  const CFStringRef expected[] = {
+    CFSTR("Keiko beendet den Codex-Lauf sicher."),
+    CFSTR("Der Codex-Lauf wurde abgebrochen und vollständig beendet."),
+  };
+  return HasAnyUniqueValue(
+      application, expected, sizeof(expected) / sizeof(expected[0]));
 }
 
 static BOOL Perform(
@@ -624,11 +781,14 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
       passed = HasUnique(application, CFSTR("codex-task")) ||
           Press(application, CFSTR("Foundation öffnen"));
     } else if ([action isEqualToString:@"probe-canvas"]) {
-      passed =
-          HasUnique(application, CFSTR("ime-harness")) &&
-          HasUnique(application, CFSTR("codex-task")) &&
-          HasUnique(application, CFSTR("Repository auswählen")) &&
-          HasUnique(application, CFSTR("Codex-Bereitschaft prüfen"));
+      const CFStringRef expected[] = {
+        CFSTR("ime-harness"),
+        CFSTR("codex-task"),
+        CFSTR("Repository auswählen"),
+        CFSTR("Codex-Bereitschaft prüfen"),
+      };
+      passed = HasUniqueSet(
+          application, expected, sizeof(expected) / sizeof(expected[0]));
     } else if ([action isEqualToString:@"open-workspace-picker"]) {
       passed =
           Press(application, CFSTR("Repository auswählen")) ||
