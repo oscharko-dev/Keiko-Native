@@ -634,8 +634,9 @@ text, or scheduling order alone grants no authority.
 At most one authenticated recovery record may consume a recovery-target identity. The new request
 binds the derived identity through ADR-0011's existing version-1
 `authorized_request_identity` field; no record schema changes. Duplicate or reordered commands
-serialize under the issue lock. The first valid settlement consumes the target, and every command
-for an already consumed target is a replay no-op regardless of provider order.
+serialize under the issue lock. The first valid recovery publication consumes the target: an orphan
+uses its settlement claim, while suffix overflow uses its version-2 transition/read-back checkpoint.
+Every command for an already consumed target is a replay no-op regardless of provider order.
 
 The direct plain-issue recovery-comment locator takes precedence and the coordinator considers only
 that candidate. Other wakes, including a pull-request-comment wake with explicit null recovery

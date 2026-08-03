@@ -2361,7 +2361,7 @@ test("pins the protected lifecycle recovery wake decision", async () => {
   );
   assert.match(
     adr,
-    /At most one authenticated recovery record may consume a recovery-target identity[\s\S]{0,400}replay no-op/iu,
+    /At most one authenticated recovery record may consume a recovery-target identity[\s\S]{0,600}replay no-op/iu,
   );
   assert.match(
     adr,

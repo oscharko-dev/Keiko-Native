@@ -94,12 +94,14 @@ Each record digest is SHA-256 of its exact canonical record bytes with a distinc
 - `keiko-native.lifecycle-record.phase-fence-claim`
 - `keiko-native.lifecycle-record.transition-read-back`
 
-The domain, schema version `1`, algorithm `sha-256`, and record body are fixed fields in the record.
-The existing generation-input domain `keiko-native.lifecycle-input-generation` remains unchanged.
-Every producer and consumer independently parses the bytes, recomputes the digest, decodes both
-fixed-length values, and compares them in constant time. A caller-supplied digest is never trusted.
-Changing a domain, algorithm, grammar, or field meaning requires a later accepted ADR and schema
-version; runtime negotiation is prohibited.
+The domain, algorithm `sha-256`, schema version, and record body are fixed fields in the record.
+Generation-request, producer-result, phase/fence-claim, and ordinary transition/read-back records
+use schema version `1`; the exact overflow transition/read-back below is the sole version-2
+exception. The existing generation-input domain `keiko-native.lifecycle-input-generation` remains
+unchanged. Every producer and consumer independently parses the bytes, recomputes the digest,
+decodes both fixed-length values, and compares them in constant time. A caller-supplied digest is
+never trusted. Changing a domain, algorithm, grammar, or field meaning requires a later accepted
+ADR and schema version; runtime negotiation is prohibited.
 
 Closed producer identities are exactly `issue-contract-current`, `pr-contract`, and
 `contract-publication`. The first two are produced by `.github/workflows/pr-contract.yml`; the
