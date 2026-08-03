@@ -113,8 +113,10 @@ ADR-0011's lifecycle handoff records must also remain inert until Issue #55. Pro
 use only the built-in `github-actions[bot]` and short-lived `GITHUB_TOKEN`; no account, installed
 App, PAT, broker, database, hosted service, application/runtime dependency, or second credential is
 provisioned. Any GitHub-maintained attestation transport is full-SHA pinned under the refreshed #51
-contract. Before activation, a generation may emit only sanitized non-applied observations and must
-not change a lifecycle label, commit status, branch, pull request, queue, or merge.
+contract. Before activation, an ordinary generation may emit only sanitized non-applied
+observations and must not change a lifecycle label, commit status, branch, pull request, queue, or
+merge. The sole additional content effect is the separately accepted defect's exact null-effect
+overflow-v2 checkpoint for issue #52 described below.
 
 Overflow recovery must be implemented and proven before Issue #55 can activate the protocol. While
 activation is disabled, its exact allowlisted direct plain-issue command may only append one
@@ -122,20 +124,32 @@ null-effect version-2 transition/read-back checkpoint over the exact authenticat
 suffix. The probe must preserve the ordinary 15-record bound; reject a 17th record, checkpoint plus
 16, and request 201; prove the exact 84 + 84 + 6 + 26 request budget; preserve every existing
 comment, anchor, and attestation; count every subject-qualified attestation inventory request and
-consume the bundles returned in that response; prove replay is a no-op; recover zero through four
-interrupted v2 publications while denying a fifth; and prove superseded generations authenticate
+consume the bundles returned in that response; replace redundant run reads with attestation-backed
+exact job reads; and independently exact-ID-reread every candidate comment and inventory,
+metadata-reread, and download every distinct locator artifact. It must prove replay is a no-op;
+recover zero through four interrupted v2 publications while denying a fifth; and prove superseded
+generations authenticate
 their frozen generation, closed partial producer set, first superseding witness, and any later
 terminal non-equality witness by refreshing the checkpoint projection under the same fence before
-terminalizing ahead of a successor; a post-anchor fact change cannot stale that exactly attested
-null-effect checkpoint. Every interrupted candidate must prove its exact pre-comment locator
-attestation, terminal writer job, locator-free record projection, deterministic ordering, and
-duplicate rejection; an optional post-comment anchor must remain unattested. Any mismatch produces
-no record or effect.
+terminalizing ahead of a successor with owner `invalidation`, null effect, outcome `superseded`, and
+reason `superseded`; a post-anchor fact change cannot stale that exactly attested null-effect
+checkpoint. The writer must reserve the 14th non-checkpoint slot for a terminal fence and immediate
+checkpoint so a prior-checkpoint-plus-16 suffix is unreachable. Every interrupted candidate must
+prove its exact pre-comment locator attestation, terminal writer job, locator-free record
+projection, deterministic ordering, and
+duplicate rejection; an optional post-comment anchor must remain unattested and its digest must hash
+the sole canonical artifact-anchor file rather than the provider archive. Any mismatch produces no
+record or effect.
 The overflow path adds no account, App, PAT, broker,
 database, hosted service, dependency, second credential, lifecycle authority, or merge authority.
 Issue #55 remains
 the sole signed activation owner and must keep policy status `disabled` until the complete positive
 and hostile complement is green on protected `dev`.
+
+Before that activation, the separate accepted defect issue required by decision #170 is expressly
+authorized to append only issue #52's exact null-effect version-2 checkpoint after its complete
+effect-disabled implementation and hostile complement are green. It owns no other issue content or
+lifecycle effect, and its pull request to `dev` remains human-only.
 
 The activation probe authenticates the exact bot user, GitHub Actions App ID `15368`, protected
 workflow path/ref/commit, run, attempt, job, result, and a post-publication GitHub-native

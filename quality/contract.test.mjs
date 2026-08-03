@@ -2588,6 +2588,10 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
+    /two-record terminalization reserve[\s\S]{0,500}13 non-checkpoint records[\s\S]{0,500}(?:terminal|superseded)[\s\S]{0,500}14[\s\S]{0,500}checkpoint[\s\S]{0,700}checkpoint-plus-16/iu,
+  );
+  assert.match(
+    protocol,
     /superseded[\s\S]{0,320}terminal transition\/read-back checkpoint[\s\S]{0,320}successor generation/iu,
   );
   assert.match(
@@ -2601,6 +2605,10 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   assert.match(
     protocol,
     /terminal superseded transition\/read-back checkpoint[\s\S]{0,900}phase_fence_digest[\s\S]{0,500}producer-owning fence[\s\S]{0,500}precedes the superseded fence/iu,
+  );
+  assert.match(
+    protocol,
+    /superseded terminal checkpoint[\s\S]{0,700}transition_owner[\s\S]{0,120}`invalidation`[\s\S]{0,300}outcome[\s\S]{0,120}`superseded`[\s\S]{0,300}reason_code[\s\S]{0,120}`superseded`/iu,
   );
   assert.match(
     protocol,
@@ -2620,7 +2628,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /For overflow v2 only[\s\S]{0,500}overflow-publication-locator identity[\s\S]{0,500}one immutable artifact[\s\S]{0,2600}independent post-publication requests[\s\S]{0,600}locator pair in the v2 body/iu,
+    /For overflow v2 only[\s\S]{0,700}overflow-publication-locator identity[\s\S]{0,500}one immutable artifact[\s\S]{0,2600}independent locator-verification requests[\s\S]{0,900}locator pair in the v2 body/iu,
   );
   assert.match(
     protocol,
@@ -2632,7 +2640,15 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /ordinary 68[\s\S]{0,500}16 per-subject attestation inventory requests[\s\S]{0,500}response contains the attestation bundles[\s\S]{0,700}24 per-subject attestation inventory requests[\s\S]{0,700}add exactly 16\s+requests/iu,
+    /ordinary 52[\s\S]{0,700}16 per-subject attestation[\s\S]{0,400}16 exact writer-job reads[\s\S]{0,500}attestation response contains the attestation bundles/iu,
+  );
+  assert.match(
+    protocol,
+    /Recovery adds exactly 32\s+requests[\s\S]{0,1400}52 \+ 32 = 84/iu,
+  );
+  assert.match(
+    protocol,
+    /Recovery adds exactly 32 requests per pass: four candidate comment exact-ID rereads; four\s+candidate-locator exact-name or run-scoped artifact inventories; four exact locator metadata\s+rereads by provider artifact ID; four locator artifact downloads/iu,
   );
   assert.match(
     protocol,
@@ -2649,6 +2665,10 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   assert.match(
     protocol,
     /overflow_publication_locator_attestation_digest[\s\S]{0,800}provider\s+bundle bytes[\s\S]{0,300}not hashed/iu,
+  );
+  assert.match(
+    protocol,
+    /anchor_artifact_digest[\s\S]{0,500}SHA-256[\s\S]{0,500}sole canonical file[\s\S]{0,500}artifact-anchor identity[\s\S]{0,500}(?:archive|provider)[\s\S]{0,300}not hashed/iu,
   );
   assert.match(
     protocol,
@@ -2669,6 +2689,14 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   assert.match(
     protocol,
     /remaining 26 requests[\s\S]{0,300}three locator upload\/finalization calls[\s\S]{0,100}three\s+locator-attestation publication calls[\s\S]{0,100}four independent locator-verification calls/iu,
+  );
+  assert.match(
+    protocol,
+    /protected writer-job read[\s\S]{0,500}before[\s\S]{0,300}(?:encod|construct)[\s\S]{0,300}overflow-publication-locator identity/iu,
+  );
+  assert.match(
+    protocol,
+    /Four[\s\S]{0,100}independent locator-verification requests[\s\S]{0,900}pre-locator read is one of these four/iu,
   );
   assert.match(protocol, /3 \+ 3 \+ 4 \+ 2 \+ 3 \+ 3 \+ 8 = 26/iu);
   assert.match(
@@ -2695,6 +2723,10 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   assert.match(
     protocol,
     /Issue #170[\s\S]{0,400}separate defect issue[\s\S]{0,400}implementation/iu,
+  );
+  assert.match(
+    wake,
+    /Before issue #55[\s\S]{0,700}separate defect issue[\s\S]{0,700}exact[\s\S]{0,300}null-effect[\s\S]{0,300}version-2 transition\/read-back checkpoint[\s\S]{0,600}issue #52/iu,
   );
   assert.doesNotMatch(
     projections.join("\n"),

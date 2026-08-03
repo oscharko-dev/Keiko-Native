@@ -55,8 +55,11 @@ authority, lifecycle authority, merge authority, or a substitute for repository-
 The coordinator remains the sole owner of lane, requested target, activation, lifecycle
 reconciliation, and handoff outcome. Producers evaluate only their named predicate and cannot
 select or widen those decisions. Before issue #55's signed activation, the complete protocol is
-inert: it may emit only sanitized planned, denied, failed, or unavailable observations and performs
-no lifecycle, status, branch, pull-request, queue, or merge mutation.
+inert: ordinary generations may emit only sanitized planned, denied, failed, or unavailable
+observations. The sole additional content effect is the separately accepted defect's exact
+null-effect overflow-v2 checkpoint for issue #52 defined by this amendment and ADR-0012; it carries
+no lifecycle authority. Neither path performs a lifecycle, status, branch, pull-request, queue, or
+merge mutation.
 
 ### Canonical record envelope
 
@@ -522,6 +525,16 @@ wrappers are verification inputs and are not hashed into this identity. A missin
 claim-mismatched attestation yields no locator-attestation identity, candidate, checkpoint, or
 effect.
 
+For a quarantined member, a non-null `anchor_artifact_digest` is exactly SHA-256 over the exact bytes
+of the sole canonical file extracted from that candidate's post-comment anchor artifact after the
+archive has passed the ordinary single-regular-file, size, name, and traversal checks. Those bytes
+must decode byte-for-byte as the ADR-0004 canonical `artifact anchor` auxiliary schema for the
+candidate and the resulting digest must equal the recomputed artifact-anchor identity. The provider
+archive digest, archive container bytes, compression, entry metadata, JSON, and transport response
+are verification inputs and are not hashed into this field. A null anchor uses a null digest; any
+other source, missing file, second file, non-canonical bytes, or identity mismatch yields no
+candidate, checkpoint, or effect.
+
 The overflow target binds one complete genesis suffix: repository, issue, explicit null prior-
 checkpoint fields, first record pair, chain-tip pair, the literal count `16`, and checkpoint
 sequence `1`. The first record must be the unique authenticated null-predecessor generation request.
@@ -537,6 +550,18 @@ from the unique genesis root, all anchors, attestations, protected runs/jobs/ref
 links, stable provider reads, and the exact target before it appends this one checkpoint. A 17th
 record, any checkpoint-plus-16 shape, any missing or conflicting fact, or an already consumed target
 produces no record or effect.
+
+The ordinary writer additionally enforces a two-record terminalization reserve without changing
+that hard 15-record loader bound. At 13 non-checkpoint records after a genesis root or authenticated
+checkpoint, the only permitted next append is the generation's terminal or superseded phase/fence
+claim; while that claim is the 14th record at the chain tip, the only permitted next append is its
+immediate transition/read-back checkpoint. A nonterminal append at 13, any non-checkpoint append
+after the reserved fence at 14, or any other 14-record open shape stops with no record or effect.
+The caller-held per-issue group spans both reserved writes, and a crash after the fence may resume
+only the exact checkpoint for that same frozen generation and fence. Every lane must prove before
+its first record that its closed maximum can reach a checkpoint within this reserve. This prevents
+ordinary execution from ever creating the prior-checkpoint-plus-16 shape that overflow recovery
+correctly rejects.
 
 Successful publication and stable authentication of the v2 checkpoint compact the 16 records in
 the ordinary way and may also settle at most four strictly ordered quarantined overflow-publication
@@ -605,7 +630,9 @@ deleted run, missing or invalid attestation, changed identity, unavailable metad
 contradictory reread fails closed.
 
 The attestation and artifact anchor are provider evidence, not additional lifecycle record types.
-For overflow v2 only, the protected writer first encodes the overflow-publication-locator identity,
+For overflow v2 only, the protected writer first performs the exact protected writer-job read and
+requires its own fixed coordinator job in the current run and attempt. It binds the returned
+positive job ID to that run before it encodes the overflow-publication-locator identity,
 uploads those canonical bytes as the sole file in one immutable artifact named exactly
 `keiko-lifecycle-overflow-locator-v1-issue-{decimal-issue}-run-{decimal-run-id}-attempt-{decimal-run-attempt}`,
 and publishes a GitHub-native attestation. The attestation subject name is exactly
@@ -613,10 +640,14 @@ and publishes a GitHub-native attestation. The attestation subject name is exact
 and its digest is exactly `sha256:{overflow-publication-locator-identity}`. The artifact inventory
 must expose exactly that provider-assigned ID, name, associated run ID, and unexpired immutable
 artifact; the attestation supplies the run attempt. Duplicates or disagreement fail closed. Four
-independent post-publication requests—one artifact inventory, one exact artifact metadata reread,
-one locator-subject attestation inventory whose response contains the matching bundle, and one
-independent protected job read—must stably verify the locator artifact ID, identity, projection
-commitment, attestation, and job before the writer places the locator pair in the v2 body. That
+independent locator-verification requests are budgeted: that pre-locator protected writer-job read,
+then after publication one artifact inventory, one exact artifact metadata reread, and one
+locator-subject attestation inventory whose response contains the matching bundle. Together they
+must stably verify the locator artifact ID, identity, projection commitment, attestation, and job
+before the writer places the locator pair in the v2 body. The pre-locator read is one of these four,
+not a fifth unbudgeted request; its stable job ID and run association are reused rather than reread
+after upload. The writer is still running at this point, so this read grants no terminal conclusion;
+later recovery must independently prove a failed, cancelled, or timed-out terminal conclusion. That
 locator grants no record, checkpoint,
 predecessor, or effect authority; it exists solely so a later recovery can authenticate an
 anchorless interrupted comment to its protected writer run and job.
@@ -829,21 +860,26 @@ allows it. The global group prevents lifecycle-on-lifecycle races, while unrelat
 use can reduce availability but cannot create authority or bypass stable rereads.
 
 Overflow recovery uses a separate hard 200-request counter. Two complete recovery passes consume at
-most 84 requests each. The ordinary 68 base-record requests are exactly two comment-page requests,
-one artifact inventory, 16 base-anchor downloads, 16 per-subject attestation inventory requests,
-32 base run/job reads, and one complete current-source GraphQL read. Each subject-qualified
-attestation response contains the attestation bundles for that exact digest; verification performs
-no separate provider bundle-download request.
+most 84 requests each. The ordinary 52 base-record requests are exactly two comment-page requests,
+one exact-name base-anchor artifact inventory, 16 base-anchor downloads, 16 per-subject attestation
+inventory requests, 16 exact writer-job reads, and one complete current-source GraphQL read. Each
+subject-qualified attestation response contains the attestation bundles for that exact digest and
+cryptographically binds repository, protected workflow path, ref, commit, run, and attempt. The
+matching exact writer-job read independently binds the encoded job to that attested run; a redundant
+workflow-run read and a separate provider bundle-download request are neither permitted nor counted.
 
-Recovery expands each pass to at most 24 per-subject attestation inventory requests: 16 base-anchor
-subjects, four pre-comment candidate-locator subjects, and four optional post-comment
-candidate-anchor subjects. Relative to the ordinary 68, the eight added subject requests, four
-optional candidate-anchor downloads, and four exact terminal writer-job reads add exactly 16
-requests. The locator attestation supplies the protected workflow path, ref, commit, run, and
-attempt; the job read binds its job to that run and terminal conclusion, so no additional candidate
-run or locator-artifact download is permitted or required. An optional candidate-anchor subject
-returning any attestation fails closed without granting authority. The one current-source GraphQL
-read covers the issue, pull request, readiness, and equal-observation projection atomically.
+Recovery adds exactly 32 requests per pass: four candidate comment exact-ID rereads; four
+candidate-locator exact-name or run-scoped artifact inventories; four exact locator metadata
+rereads by provider artifact ID; four locator artifact downloads; eight additional subject-qualified
+attestation inventory requests for four candidate locators and four optional candidate anchors;
+four optional candidate-anchor downloads; and four exact terminal writer-job reads. Thus the pass
+uses at most 24 subject-qualified attestation requests and exactly `52 + 32 = 84` total requests.
+The locator inventory, metadata, and downloaded sole canonical file must agree on its exact name,
+provider ID, run, expiry, identity, and candidate projection in both passes; candidates from
+distinct runs or names never share an inventory request. Each candidate comment exact-ID reread
+must match the body found by complete pagination. An optional candidate-anchor subject returning any
+attestation fails closed without granting authority. The one current-source GraphQL read covers the
+issue, pull request, readiness, equal-observation projection, and protected `dev` ref atomically.
 ADR-0012's direct command authentication consumes at most six requests. The remaining 26 requests
 are reserved for the checkpoint: at most three locator upload/finalization calls, at most three
 locator-attestation publication calls, and exactly four independent locator-verification calls
@@ -851,9 +887,10 @@ before the comment; one comment create and one immediate reread; at most three a
 upload/finalization calls and at most three anchor-attestation publication calls after it; and the
 eight final comment, anchor, anchor-attestation, run, job, issue, source-observation, and
 protected-ref rereads. These maxima are exactly `3 + 3 + 4 + 2 + 3 + 3 + 8 = 26`. Locator
-verification is completed from inventories created after locator publication and before comment
-creation; any later recovery pass independently reauthenticates it from that pass's bounded
-inventories. The implementation gate
+verification uses the protected writer-job read before locator construction plus the artifact and
+attestation inventories created after locator publication and before comment creation; any later
+recovery pass independently reauthenticates it from that pass's bounded inventories. The
+implementation gate
 rejects a provider composition that cannot statically prove this 26-request maximum. At runtime a
 27th publication request is denied; an already-created comment then remains an incomplete candidate
 under the bounded explicit recovery path above.
@@ -916,11 +953,14 @@ Duplicate wake-ups and duplicate identical results are no-ops. An authenticated 
 creates a new generation digest. If the authenticated current facts supersede an open generation,
 the coordinator first appends its superseded phase/fence claim and then must append a terminal
 transition/read-back checkpoint for that generation before it may append a successor generation
-request. That terminal checkpoint has equal source, desired, and observed state, null effect, a
-closed non-success outcome, and only the authenticated producer results already present, which may
-be the empty set. A wake that cannot publish and stably authenticate the terminal checkpoint stops;
-it cannot begin the successor generation. Repeated or reordered facts therefore cannot starve
-checkpoint creation or consume the live suffix through generation churn.
+request. That ordinary v1 superseded terminal checkpoint has equal source, desired, and observed
+state; `transition_owner` exactly `invalidation`; `effect_identity` explicit null; `outcome` exactly
+`superseded`; `reason_code` exactly `superseded`; and only the authenticated producer results already
+present, which may be the empty set. Its phase fence, frozen-generation authentication, checkpoint
+sequence, compacted prefix, predecessor, protected commit, and timestamp follow the existing exact
+v1 rules with no alternate default. A wake that cannot publish and stably authenticate the terminal
+checkpoint stops; it cannot begin the successor generation. Repeated or reordered facts therefore
+cannot starve checkpoint creation or consume the live suffix through generation churn.
 
 In short, a superseded fence requires a terminal transition/read-back checkpoint before any
 successor generation.

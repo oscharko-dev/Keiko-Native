@@ -94,19 +94,27 @@ normal rejection at record 16, overflow rejection at record 17, rejection of che
 the exact 84 + 84 + 6 + 26 request-200 success arithmetic, request-201 denial, stable double-read,
 replay no-op, append-only evidence, null effect, and exact checkpoint read-back through the actual
 provider's subject-qualified attestation requests. Each returned response carries its bundles; no
-invented bulk or bundle-download endpoint is permitted. It must prove zero through four interrupted
-v2 publications are quarantined only inside a later successful checkpoint,
-a fifth is denied, and the target remains unconsumed until full authentication. It must also prove
+invented bulk or bundle-download endpoint is permitted. Each 84-request pass must pin the
+52-request attestation-plus-job base and 32-request candidate addition, including four exact-ID
+comment rereads and four separate locator inventories, metadata rereads, and downloads. It must
+prove zero through four interrupted v2 publications are quarantined only inside a later successful
+checkpoint, a fifth is denied, and the target remains unconsumed until full authentication. It must
+also prove
 every interrupted candidate has one valid pre-comment locator attestation for the protected writer
 run and terminal job, an exact locator-free candidate-record projection, deterministic member
 ordering, and no duplicate canonical identity while its optional post-comment anchor has no
 attestation. The locator-attestation digest must be the canonical auxiliary identity over normalized
-verified claims, never a hash of provider bundle serialization. Every superseded
+verified claims, never a hash of provider bundle serialization. A non-null optional-anchor digest
+must hash the downloaded sole canonical artifact-anchor file, equal its auxiliary identity, and
+never hash the provider archive. Every superseded
 fence authenticates its frozen generation, the exact partial producer subset already present, its
 first superseding witness, and the final stable terminal non-equality witness encoded before
-publication under the same fence. A later fact change cannot stale an exactly attested null-effect
-checkpoint, which then
-terminalizes as a checkpoint before a successor generation. Hostile wrong-actor, edited-command,
+publication under the same fence. Its ordinary v1 checkpoint fixes owner `invalidation`, outcome
+`superseded`, reason `superseded`, and null effect. The normal writer's two-record terminalization
+reserve rejects a nonterminal append at 13, permits only the terminal fence at 14 followed by its
+checkpoint, and proves the checkpoint-plus-16 state is unreachable. A later fact change cannot stale
+an exactly attested null-effect checkpoint, which then terminalizes as a checkpoint before a
+successor generation. Hostile wrong-actor, edited-command,
 wrong-target, missing/changed record, anchor, attestation, run, job, ref, SHA, predecessor,
 checkpoint, and provider-unavailable fixtures produce no record or effect. Overflow recovery remains
 inert before Issue #55, adds no principal or credential, and remains a human-only manual merge to

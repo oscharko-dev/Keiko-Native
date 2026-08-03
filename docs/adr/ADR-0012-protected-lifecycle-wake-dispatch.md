@@ -715,22 +715,35 @@ unknown-provenance, or attested candidate fails closed. Reordered simultaneous c
 no-ops, and there is no scheduled or automatic publication retry.
 
 Every provider request is counted against a separate hard ceiling of 200. Two complete recovery
-passes consume at most 84 requests each. Each pass uses one artifact inventory and at most 24
-subject-qualified attestation inventory requests for the 16 base anchors, four candidate locators,
-and four optional candidate anchors; each subject response contains its matching bundles and no
-separate bundle-download request exists. Eight subject calls, four optional-anchor downloads, and
-four terminal-job reads add 16 to the ordinary 68, totaling 84.
+passes consume at most 84 requests each. The 52-request base uses two comment pages, one exact-name
+base-anchor inventory, 16 base-anchor downloads, 16 subject-qualified attestation inventories, 16
+exact writer-job reads, and one current-source GraphQL read. Attestation claims replace redundant
+workflow-run reads while each exact job read independently binds its job to the attested run.
+Recovery adds exactly 32 requests: four candidate comment exact-ID rereads; four locator artifact
+inventories, four exact locator metadata rereads, and four locator downloads across the candidates'
+distinct runs and names; eight subject requests for four locator and four optional-anchor subjects;
+four optional-anchor downloads; and four terminal-job reads. Each subject response contains its
+matching bundles and no separate bundle-download request exists, totaling exactly 84 per pass.
 
 The exact direct-comment authentication consumes at most six requests. The remaining 26 requests
-are reserved for at most three locator-upload, three locator-attestation, four independent
-locator-verification,
-two comment create/read-back, three anchor-upload, three anchor-attestation, and eight final stable
-read-back calls. These maxima are exactly 26 and total 200. Request 201 produces no record or
-effect. The implementation gate rejects a provider
-composition that cannot prove the 26-request publication maximum; a runtime 27th publication request
-is denied and any already-created comment remains subject to the bounded interrupted-publication
-path. No unused allowance from normal operation or orphan recovery is transferred, and no provider
-response or rate-limit estimate can raise the ceiling.
+are reserved for:
+
+- at most three locator upload/finalization calls;
+- at most three locator-attestation publication calls;
+- four independent locator-verification calls: one protected writer-job read before locator
+  construction and three post-publication artifact/attestation reads;
+- two comment create/read-back calls;
+- at most three anchor upload/finalization calls;
+- at most three anchor-attestation publication calls; and
+- eight final stable read-back calls.
+
+These maxima are exactly 26 and total 200.
+
+Request 201 produces no record or effect. The implementation gate rejects a provider composition
+that cannot prove the 26-request publication maximum; a runtime 27th publication request is denied
+and any already-created comment remains subject to the bounded interrupted-publication path. No
+unused allowance from normal operation or orphan recovery is transferred, and no provider response
+or rate-limit estimate can raise the ceiling.
 
 Overflow recovery remains effect-disabled before Issue #55 and cannot enter ordinary orphan
 settlement, cursor recovery, normal lifecycle mutation, or automatic retry. Its bounded
@@ -742,9 +755,15 @@ disabled, and any implementation pull request to `dev` stops for a human-only ma
 ### Inert rollout
 
 Before issue #55's signed activation, the caller and reusable coordinator remain inert. They may
-produce only the guarded-off sanitized observations expressly authorized by issue #51. They perform
-no lifecycle, label, status, content, branch, pull-request, queue, merge, or repository-setting
-effect.
+produce only the guarded-off sanitized observations expressly authorized by issue #51 and the one
+effect-disabled overflow artifact expressly authorized by the separate defect issue required by
+decision issue #170: the exact null-effect version-2 transition/read-back checkpoint over issue
+#52's authenticated 16-record genesis suffix. That defect must itself be accepted and ready, must
+name issue #52 and the exact recovery target in its Execution Authority, and may publish the command
+only after its implementation and complete hostile complement are green. It cannot emit an ordinary
+lifecycle record or recover any other issue. Both paths perform no lifecycle, label, status, branch,
+pull-request, queue, merge, or repository-setting effect; the checkpoint comment is the sole
+expressly authorized pre-activation content effect beyond issue #51's guarded-off observations.
 
 Issue #51 must prove the exact source closure, zero Actions-write permission, locator rejection
 matrix, provider-budget-only resolver serialization, caller-held lock duration, nested producer

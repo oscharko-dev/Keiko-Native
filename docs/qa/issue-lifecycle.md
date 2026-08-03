@@ -221,8 +221,11 @@ may append only ADR-0011's version-2 form of the existing transition/read-back c
 effect; two 84-request recovery passes, six authorization requests, and 26 publication requests
 exhaust the ceiling exactly. Each recovery pass counts one request for every exact attestation
 subject; the subject response carries its bundles and no fictitious bulk or separate bundle call is
-assumed. The same four record types remain authoritative. Overflow recovery is a human-only manual
-delivery to `dev`.
+assumed. Its 52-request base replaces redundant workflow-run reads with 16 attestation-backed exact
+writer-job reads. Its 32-request recovery addition independently rereads all four candidate comments
+and, for every distinct locator, inventories, rereads metadata, and downloads the exact artifact.
+The same four record types remain authoritative. Overflow recovery is a human-only manual delivery
+to `dev`.
 A 17th record, request 201, replay, edit, unavailable fact, or any chain, anchor, attestation,
 run/job/ref/SHA mismatch produces no record or lifecycle effect. Authenticated evidence is never
 edited, deleted, skipped, or reclassified. If v2 publication is interrupted before authentication,
@@ -230,20 +233,26 @@ a fresh explicit maintainer command may retry the unconsumed target; the success
 binds and quarantines at most four fully proven incomplete publications. Each candidate must carry
 its exact pre-comment locator artifact and valid locator attestation binding the protected writer
 run, terminal job, and locator-free candidate-record projection; its optional post-comment anchor
-must have no attestation. Authenticated members precede quarantined candidates, which sort by
-ascending comment ID and reject duplicates. A fifth or ambiguous candidate fails closed, and no
-retry is automatic.
+must have no attestation. A non-null anchor digest is SHA-256 of the downloaded sole canonical
+artifact-anchor file and equals its recomputed auxiliary identity, never a provider archive digest.
+Authenticated members precede quarantined candidates, which sort by ascending comment ID and reject
+duplicates. A fifth or ambiguous candidate fails closed, and no retry is automatic.
 
 Every superseded phase/fence claim must be followed by its terminal transition/read-back checkpoint
 before a successor generation request. That checkpoint carries only the authenticated producer
-subset already present before the superseded fence. A later fact change refreshes the terminal
-non-equality observation under the same frozen generation and fence rather than appending another
-claim. Once its exact anchor attests that null-effect checkpoint, a later fact change cannot stale
-the historical terminalization. This prevents event churn or missing stale producers from starving
-checkpoints.
+subset already present before the superseded fence and fixes `transition_owner` to `invalidation`,
+null effect, `outcome` to `superseded`, and `reason_code` to `superseded`. A later fact change
+refreshes the terminal non-equality observation under the same frozen generation and fence rather
+than appending another claim. Once its exact anchor attests that null-effect checkpoint, a later
+fact change cannot stale the historical terminalization. The ordinary writer reserves the 14th
+non-checkpoint slot for the terminal or superseded fence and immediately checkpoints it; it rejects
+a nonterminal append at 13 and therefore never creates a prior-checkpoint-plus-16 suffix. This
+prevents event churn or missing stale producers from starving checkpoints.
 Overflow recovery remains disabled for lifecycle effects before Issue #55, adds no principal or
 credential, and changes no merge authority. Any implementing pull request to `dev` is a human-only
-manual delivery.
+manual delivery. The separate accepted defect issue required by decision #170 may nevertheless
+append only issue #52's exact null-effect v2 checkpoint after its effect-disabled implementation and
+hostile complement are green; that comment is the sole pre-activation content effect it owns.
 
 The record protocol preserves all nine states and the exact allowed edge graph above.
 `no-lifecycle` is an outside-graph observation only for creation, reopen, and non-completed closure,
