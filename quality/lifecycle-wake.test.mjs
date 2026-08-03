@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   authenticateLifecycleRecoveryComment,
   boundedScheduledLocators,
+  directLifecycleWakeLocator,
   lifecycleRecoveryTargetAvailable,
   lifecycleWakeLocatorBytes,
   parseLifecycleRecoveryCommand,
@@ -16,6 +17,39 @@ const repository = "oscharko-dev/Keiko-Native";
 const commit = "a".repeat(40);
 const target = "b".repeat(64);
 const body = `/keiko-native lifecycle-recovery v1 target=sha256:${target}`;
+
+test("separates plain-issue recovery from pull-request comment wakes", () => {
+  const common = {
+    action: "created",
+    commentId: 9007199254740991,
+    eventName: "issue_comment",
+    issueNumber: 51,
+    protectedDevSha: commit,
+    repository,
+  };
+  assert.equal(
+    directLifecycleWakeLocator({
+      ...common,
+      recoveryCommentId: "9007199254740991",
+    }).recovery_comment_id,
+    "9007199254740991",
+  );
+  const pullRequest = directLifecycleWakeLocator({
+    ...common,
+    pullRequestNumber: 17,
+    recoveryCommentId: "",
+  });
+  assert.equal(pullRequest.pull_request_number, 17);
+  assert.equal(pullRequest.recovery_comment_id, "");
+  for (const invalid of [
+    { ...common, commentId: "9007199254740991" },
+    { ...common, recoveryCommentId: "" },
+    { ...common, pullRequestNumber: 17, recoveryCommentId: "101" },
+  ])
+    assert.throws(() => directLifecycleWakeLocator(invalid), {
+      code: "direct-locator-invalid",
+    });
+});
 
 function comment(overrides = {}) {
   return {

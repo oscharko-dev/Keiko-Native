@@ -182,6 +182,51 @@ test("maps one stable pull request to its accepted issue in exactly two reads", 
   assert.deepEqual(api.calls, [path, path]);
 });
 
+for (const action of ["created", "edited", "deleted"])
+  test(`routes a pull-request comment ${action} wake without recovery authority`, async () => {
+    const path = `/repos/${repository}/pulls/17`;
+    const api = provider({
+      [path]: {
+        base: { ref: "dev" },
+        body: "## Scope\n\n- Accepted issue: #51\n",
+        head: { sha: "b".repeat(40) },
+        number: 17,
+        state: "open",
+        updated_at: "2026-07-29T10:00:00Z",
+      },
+    });
+    const result = await resolveLifecycleWakeup({
+      environment: environment("pull-request", "issue_comment"),
+      event: baseEvent({
+        action,
+        comment: { id: 9007199254740991 },
+        issue: { number: 17, pull_request: {} },
+      }),
+      provider: api,
+    });
+    assert.deepEqual(result.locators, [
+      { issue_number: 51, recovery_comment_id: "" },
+    ]);
+    assert.equal(result.requestCount, 2);
+    assert.deepEqual(api.calls, [path, path]);
+  });
+
+test("rejects malformed comment IDs for issue and pull-request comment wakes", async () => {
+  for (const [resolver, issue] of [
+    ["issue", { number: 51 }],
+    ["pull-request", { number: 17, pull_request: {} }],
+  ])
+    for (const id of [undefined, null, 0, -1, 1.5, "1", 9007199254740992])
+      await assert.rejects(
+        resolveLifecycleWakeup({
+          environment: environment(resolver, "issue_comment"),
+          event: baseEvent({ action: "created", comment: { id }, issue }),
+          provider: provider({}),
+        }),
+        { code: "direct-locator-invalid" },
+      );
+});
+
 test("authenticates PR-target governance sources from an exact base or closed-run caller SHA", async () => {
   const valid = governanceProvider();
   const result = await resolveLifecycleWakeup({
