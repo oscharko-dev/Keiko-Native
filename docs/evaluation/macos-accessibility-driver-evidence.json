@@ -6,15 +6,15 @@
     "contractVersion": "v3",
     "readinessFingerprint": "6d95dc95700c17a2d29850d1f517ad45c53df4a95318e3ae482f7d32d5dc75d7",
     "frozenBaseHead": "f8228706a5d60c5e85fa8e5ab576a64b3542c4ea",
-    "evaluationHead": "edd50520f02b9d0e5d4a5400f01a6d5bd7743346",
-    "evaluationSourceSha256": "fceb1e240655a5b0c301e9013d5512faf5c2d47458d3a0653c11e6efb68df513",
-    "preparedEvidenceSha256": "7e2d944be1718aafc3c59c6af9fd70294f56ea16064df3b46cafdc0770494d29",
-    "allowedCaptureSha256": "5b6b69e0d567fa260f022654c239a91a9d002d65b3ee4178e8d16b0a647aaa7f",
-    "deniedCaptureSha256": "73f4f240c0d559e30dd9334c4de7967caf4366e2c6f3a72e9ca0f12daf482c1b",
-    "revokedCaptureSha256": "f250d56070db5622f11ebfa3df8c83b560718019fe6cf5d8945acb42b0288bec",
-    "recoveredCaptureSha256": "99c3e43bed9dceab64a6c0a6be9537431bd8384ec14c36672a0ba78104bf8413",
-    "foundationPackageSha256": "79ccf9312b811721c21fcbc367b71d25d554bbff50ff862dff7668d562a8e16d",
-    "foundationEvidenceSha256": "88cafe54634c05b865a3aa01adaeeacc44ad1cd3ab5b90293f65f022a49a600e",
+    "evaluationHead": "6df13bfed5dd0d5a71031e4c7304fad998b0af27",
+    "evaluationSourceSha256": "7bb83da1c35b1590343fb14171b5da1a5ad556ed6153c7a30c79a7ce512d85d3",
+    "preparedEvidenceSha256": "dac9512a9b453081ca1ac45ed50791b7d7651a2b8975692abbcc7929813ec1e0",
+    "allowedCaptureSha256": "001a55ae22934741cc61735d15c6b399da8d5fe592e50288dbbd75d2c77f478e",
+    "deniedCaptureSha256": "c5f825c61b5633b2f5e41065a8fccae5efbb69872f3369fd38f2a760dfa4dabe",
+    "revokedCaptureSha256": "82a373a1834f4520c38ad9012ac9792cc82bb5f5af91f49fd96dfd8c25ebeb5d",
+    "recoveredCaptureSha256": "bf15dca8265c5ad5f429393b59eb18e2f467d5061705f11419a1a1d4eb6f60bd",
+    "foundationPackageSha256": "8241d395cad92973dcf620117bcae7577440fd894dcb4682b0657a5b60ab3cb3",
+    "foundationEvidenceSha256": "2446fc46e06d08301b83207c31a3df8b8bdd8a37d9ccb89cd9ab346b788e1db9",
     "representativePackageSha256": "9221319c3d37bdd7c2e36c0558f039d60d1aa3b3223f49668c3b4fa7aedf3e0c",
     "axuielementCandidateSha256": "067860e0e034bea56c66816302fc7ceb76a93696b246a4a743a63db7ddc4ab6b",
     "systemEventsCandidateSha256": "40a389c429c149259897b3eba79368e5f8fb0a85356581d3d2e2e6676b687287"
@@ -164,7 +164,7 @@
           "cleanupOwnedDescendants": 0
         }
       },
-      "diagnostics": "Exact AXUIElement errors, closed reason codes, two-second per-checkpoint subprocess bounds, a separate bounded five-second natural-quit observation, and zero-owned-descendant cleanup were verified physically on macOS 26.5.1 build 25F80, Mac16,1 arm64, Apple clang 21.0.0, Node 24.18.0. The retained 20-run distribution spans 3009-3392 ms per journey (mean 3192 ms), with an 838 ms maximum checkpoint observation.",
+      "diagnostics": "Exact AXUIElement errors, closed reason codes, two-second per-checkpoint subprocess bounds, a separate bounded five-second natural-quit observation, and zero-owned-descendant cleanup were verified physically on macOS 26.5.1 build 25F80, Mac16,1 arm64, Apple clang 21.0.0, Node 24.18.0. The retained 20-run distribution spans 3177-4700 ms per journey (mean 3306.25 ms), with an 858 ms maximum checkpoint observation.",
       "dependencyInventory": [
         "macOS ApplicationServices AXUIElement system API"
       ],
