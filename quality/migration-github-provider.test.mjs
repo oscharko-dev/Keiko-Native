@@ -452,6 +452,39 @@ test("derives a validated in-progress claim and reopen invalidation from history
   assert.equal(observed.reopenedAt, "2026-08-01T10:00:00Z");
 });
 
+test("propagates collaborator-permission lookup unavailability", async () => {
+  const harness = graphqlHarness((values) => {
+    const observed = values.issues.data.repository.issues.nodes[0];
+    observed.labels.nodes[0].name = "status: in progress";
+    observed.comments.nodes[0].body = acceptedReadinessBody;
+    observed.timelineItems = {
+      nodes: [
+        {
+          __typename: "AssignedEvent",
+          actor: { login: "Niko4417" },
+          assignee: { login: "Niko4417" },
+          createdAt: "2026-08-01T11:30:00Z",
+          id: "assigned-1",
+        },
+      ],
+      pageInfo,
+      totalCount: 1,
+    };
+  });
+  const provider = createMigrationGithubProvider({
+    contracts: emptyContracts,
+    graphql: harness.graphql,
+    json: async (path) => {
+      if (path.includes("/collaborators/")) throw new Error("sensitive");
+      return harness.json(path);
+    },
+  });
+  await assert.rejects(
+    provider.snapshot(repository),
+    /migration-provider-collaborator-unavailable/u,
+  );
+});
+
 test("rejects assignment claims older than readiness or issue invalidation", async () => {
   for (const mutate of [
     (observed) => {

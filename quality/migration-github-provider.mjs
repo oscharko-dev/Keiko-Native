@@ -209,6 +209,7 @@ const sanitizedProviderFailureCodes = new Set([
   "migration-manifest-tree-invalid",
   "migration-provider-assignees-incomplete",
   "migration-provider-checked-out-dev-mismatch",
+  "migration-provider-collaborator-unavailable",
   "migration-provider-comment-invalid",
   "migration-provider-comments-incomplete",
   "migration-provider-connection-invalid",
@@ -633,7 +634,7 @@ async function collaboratorCanClaim(json, repository, login) {
     );
     return claimPermissions.has(result?.permission);
   } catch {
-    return false;
+    providerFailure("migration-provider-collaborator-unavailable");
   }
 }
 
