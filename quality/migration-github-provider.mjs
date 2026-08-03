@@ -141,7 +141,17 @@ const PULL_REQUESTS_QUERY = `query MigrationPullRequests($owner: String!, $name:
           signature { isValid state }
           parents(first: 2) { totalCount nodes { oid } }
         }
-        commits(last: 1) {
+        commits(first: 100) {
+          totalCount
+          pageInfo { endCursor hasNextPage }
+          nodes {
+            commit {
+              oid
+              signature { isValid state }
+            }
+          }
+        }
+        headCommit: commits(last: 1) {
           totalCount
           nodes {
             commit {
@@ -159,6 +169,24 @@ const PULL_REQUESTS_QUERY = `query MigrationPullRequests($owner: String!, $name:
               }
               statusCheckRollup { state }
             }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+const PULL_REQUEST_COMMITS_QUERY = `query MigrationPullRequestCommits($owner: String!, $name: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    nameWithOwner
+    pullRequest(number: $number) {
+      commits(first: 100, after: $after) {
+        totalCount
+        pageInfo { endCursor hasNextPage }
+        nodes {
+          commit {
+            oid
+            signature { isValid state }
           }
         }
       }
@@ -190,6 +218,7 @@ const sanitizedProviderFailureCodes = new Set([
   "migration-provider-issue-invalid",
   "migration-provider-issue-labels-incomplete",
   "migration-provider-pr-labels-incomplete",
+  "migration-provider-pr-commits-incomplete",
   "migration-provider-protected-dev-drift",
   "migration-provider-protected-dev-invalid",
   "migration-provider-protected-tree-drift",
@@ -346,6 +375,15 @@ function commitVerification(signature) {
   };
 }
 
+function pullRequestCommitNode(node) {
+  if (!shaPattern.test(node?.commit?.oid ?? ""))
+    providerFailure("migration-provider-pull-request-invalid");
+  return {
+    ...commitVerification(node.commit.signature),
+    sha: node.commit.oid,
+  };
+}
+
 function statusContext(status) {
   const actor = status?.creator;
   if (
@@ -375,9 +413,10 @@ function statusContext(status) {
   };
 }
 
-function pullRequestNode(pullRequest) {
-  const commit = pullRequest?.commits?.nodes?.[0]?.commit;
+function pullRequestNode(pullRequest, commits) {
+  const commit = pullRequest?.headCommit?.nodes?.[0]?.commit;
   const rollupState = commit?.statusCheckRollup?.state;
+  const headRepository = pullRequest?.headRepository?.nameWithOwner ?? null;
   if (
     !Number.isSafeInteger(pullRequest?.number) ||
     !["OPEN", "CLOSED", "MERGED"].includes(pullRequest.state) ||
@@ -386,11 +425,25 @@ function pullRequestNode(pullRequest) {
     !["CONFLICTING", "MERGEABLE", "UNKNOWN"].includes(pullRequest.mergeable) ||
     typeof pullRequest.title !== "string" ||
     typeof pullRequest.body !== "string" ||
-    !repositoryPattern.test(pullRequest.headRepository?.nameWithOwner ?? "") ||
-    !Array.isArray(pullRequest.commits?.nodes)
+    !(headRepository === null || repositoryPattern.test(headRepository)) ||
+    !record(pullRequest.headCommit) ||
+    !Number.isSafeInteger(pullRequest.headCommit.totalCount) ||
+    pullRequest.headCommit.totalCount < 1 ||
+    !Array.isArray(pullRequest.headCommit.nodes) ||
+    pullRequest.headCommit.nodes.length !== 1
   ) {
     providerFailure("migration-provider-pull-request-invalid");
   }
+  const commitObservations = completePagedNodes(
+    commits,
+    (item) => item.sha,
+    "migration-provider-pr-commits-incomplete",
+  );
+  if (
+    pullRequest.headCommit.totalCount !== commitObservations.length ||
+    commitObservations.at(-1)?.sha !== commit?.oid
+  )
+    providerFailure("migration-provider-pr-commits-incomplete");
   const labels = completeSmallConnection(
     pullRequest.labels,
     (label) => label?.name,
@@ -433,10 +486,15 @@ function pullRequestNode(pullRequest) {
     },
     head: {
       ref: pullRequest.headRefName ?? null,
-      repository: pullRequest.headRepository.nameWithOwner,
+      repository: headRepository,
       sha: headOid,
     },
     headCommit: commitVerification(commit?.signature),
+    commitsVerified:
+      commitObservations.length > 0 &&
+      commitObservations.every(
+        ({ reason, verified }) => reason === "valid" && verified === true,
+      ),
     labels,
     isDraft: pullRequest.isDraft,
     mergeCommit,
@@ -536,6 +594,30 @@ async function issueEvents(load, variables, issue, initial) {
       response?.data?.repository?.issue?.timelineItems,
       after,
       issueEvent,
+    );
+    pages.push(page);
+    after = page.endCursor;
+  }
+  return { pages };
+}
+
+async function pullRequestCommits(load, variables, pullRequest, initial) {
+  const pages = [connectionPage(initial, null, pullRequestCommitNode)];
+  let after = pages[0].endCursor;
+  while (pages.at(-1).hasNextPage) {
+    const response = await load(PULL_REQUEST_COMMITS_QUERY, {
+      after,
+      name: variables.name,
+      number: pullRequest.number,
+      owner: variables.owner,
+      repository: variables.repository,
+    });
+    if (response?.data?.repository?.nameWithOwner !== variables.repository)
+      providerFailure("migration-provider-repository-mismatch");
+    const page = connectionPage(
+      response?.data?.repository?.pullRequest?.commits,
+      after,
+      pullRequestCommitNode,
     );
     pages.push(page);
     after = page.endCursor;
@@ -892,8 +974,21 @@ async function scan({
     PULL_REQUESTS_QUERY,
     variables,
     (value) => value.pullRequests,
-    pullRequestNode,
+    (value) => value,
   );
+  for (const page of pullRequests.pages) {
+    const mapped = [];
+    for (const pullRequest of page.nodes) {
+      const commits = await pullRequestCommits(
+        graphql,
+        variables,
+        pullRequest,
+        pullRequest.commits,
+      );
+      mapped.push(pullRequestNode(pullRequest, commits));
+    }
+    page.nodes = mapped;
+  }
   const contractSnapshot = await contracts({
     json,
     protectedDev,

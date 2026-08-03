@@ -154,6 +154,41 @@ function fixtures() {
                       },
                     },
                   ],
+                  pageInfo,
+                  totalCount: 1,
+                },
+                headCommit: {
+                  nodes: [
+                    {
+                      commit: {
+                        oid: head,
+                        signature: { isValid: true, state: "VALID" },
+                        status: {
+                          contexts: [
+                            {
+                              context: "Issue contract current",
+                              creator: {
+                                __typename: "Bot",
+                                databaseId: 41898282,
+                                login: "github-actions",
+                              },
+                              state: "SUCCESS",
+                            },
+                            {
+                              context: "PR contract",
+                              creator: {
+                                __typename: "Bot",
+                                databaseId: 41898282,
+                                login: "github-actions",
+                              },
+                              state: "SUCCESS",
+                            },
+                          ],
+                        },
+                        statusCheckRollup: { state: "SUCCESS" },
+                      },
+                    },
+                  ],
                   totalCount: 1,
                 },
                 headRefName: "codex/30-work",
@@ -236,6 +271,7 @@ test("collects a complete stable double-read without mutation capability", async
     result.pullRequests.pages[0].nodes[0].head.repository,
     repository,
   );
+  assert.equal(result.pullRequests.pages[0].nodes[0].commitsVerified, true);
   assert.deepEqual(result.pullRequests.pages[0].nodes[0].checks.required, [
     {
       conclusion: "SUCCESS",
@@ -250,6 +286,77 @@ test("collects a complete stable double-read without mutation capability", async
   ]);
   assert.equal(result.contractsProtectedDev, dev);
   assert.equal(result.manifestsProtectedDev, dev);
+});
+
+test("paginates every pull-request commit and retains an invalid earlier signature", async () => {
+  const unsigned = "b".repeat(40);
+  const harness = graphqlHarness((values) => {
+    const pullRequest =
+      values.pullRequests.data.repository.pullRequests.nodes[0];
+    pullRequest.commits = {
+      nodes: [
+        {
+          commit: {
+            oid: unsigned,
+            signature: { isValid: false, state: "UNSIGNED" },
+          },
+        },
+      ],
+      pageInfo: { endCursor: "commit-page-1", hasNextPage: true },
+      totalCount: 2,
+    };
+    pullRequest.headCommit.totalCount = 2;
+  });
+  const provider = createMigrationGithubProvider({
+    contracts: emptyContracts,
+    graphql: async (query, variables) => {
+      if (query.includes("MigrationPullRequestCommits"))
+        return {
+          data: {
+            repository: {
+              nameWithOwner: repository,
+              pullRequest: {
+                commits: {
+                  nodes: [
+                    {
+                      commit: {
+                        oid: head,
+                        signature: { isValid: true, state: "VALID" },
+                      },
+                    },
+                  ],
+                  pageInfo: { endCursor: "commit-page-2", hasNextPage: false },
+                  totalCount: 2,
+                },
+              },
+            },
+          },
+        };
+      return harness.graphql(query, variables);
+    },
+    json: harness.json,
+  });
+  const result = await provider.snapshot(repository);
+  const observed = result.pullRequests.pages[0].nodes[0];
+  assert.equal(observed.headCommit.verified, true);
+  assert.equal(observed.commitsVerified, false);
+});
+
+test("preserves a missing head repository for closed unmerged history", async () => {
+  const harness = graphqlHarness((values) => {
+    const pullRequest =
+      values.pullRequests.data.repository.pullRequests.nodes[0];
+    pullRequest.headRepository = null;
+    pullRequest.mergeable = "UNKNOWN";
+    pullRequest.state = "CLOSED";
+  });
+  const provider = createMigrationGithubProvider({
+    contracts: emptyContracts,
+    graphql: harness.graphql,
+    json: harness.json,
+  });
+  const result = await provider.snapshot(repository);
+  assert.equal(result.pullRequests.pages[0].nodes[0].head.repository, null);
 });
 
 test("rejects provider drift between complete reads", async () => {
@@ -484,7 +591,7 @@ test("loads the immutable manifest chain from protected dev", async () => {
 
 test("preserves the complete exact-head rollup independently of commit statuses", async () => {
   const harness = graphqlHarness((values) => {
-    values.pullRequests.data.repository.pullRequests.nodes[0].commits.nodes[0].commit.statusCheckRollup.state =
+    values.pullRequests.data.repository.pullRequests.nodes[0].headCommit.nodes[0].commit.statusCheckRollup.state =
       "FAILURE";
   });
   const provider = createMigrationGithubProvider({

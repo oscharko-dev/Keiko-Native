@@ -388,7 +388,8 @@ function validPullRequestCore(item, associatedIssue, base, head) {
     shaPattern.test(base.sha ?? "") &&
     record(head) &&
     typeof head.ref === "string" &&
-    repositoryPattern.test(head.repository ?? "") &&
+    (head.repository === null ||
+      repositoryPattern.test(head.repository ?? "")) &&
     shaPattern.test(head.sha ?? "") &&
     (associatedIssue === undefined || positiveInteger(associatedIssue))
   );
@@ -558,6 +559,8 @@ function validateAssociatedPullRequest(
     return { fact, verified: true };
   if (base.ref !== issue.target)
     return { disposition: "pull-request-target-mismatch", fact };
+  if (item.commitsVerified !== true)
+    return { disposition: "pr-commit-signature-invalid", fact };
   if (item.headCommit?.verified !== true || item.headCommit?.reason !== "valid")
     return { disposition: "pr-head-signature-invalid", fact };
   return item.merged
@@ -876,10 +879,14 @@ function recordIssue(state, input, issue, prepared, verifiedPullRequests) {
   );
   const current = [...issue.lifecycle].sort(compareCodeUnits);
   const planningState = issue.lifecycle[0];
+  const planningReadinessAbsent = ["missing", "superseded"].includes(
+    readiness.reason,
+  );
   const planningExcluded =
     issue.state === "open" &&
     issue.lifecycle.length === 1 &&
     !readiness.current &&
+    planningReadinessAbsent &&
     (["status: new", "status: blocked", "status: waiting for user"].includes(
       planningState,
     ) ||

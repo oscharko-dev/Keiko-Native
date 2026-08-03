@@ -105,6 +105,7 @@ function pullRequest(number, issueNumber, overrides = {}) {
       sha: head,
     },
     headCommit: { reason: "valid", verified: true },
+    commitsVerified: true,
     isDraft: false,
     labels: ["status: pr open"],
     mergeCommit: null,
@@ -380,6 +381,38 @@ test("rejects unknown lifecycle labels, bad signatures, and failed required chec
   }
 });
 
+test("rejects an invalid earlier pull-request commit signature", async () => {
+  const input = await acceptedSnapshot();
+  input.pullRequests.pages[0].nodes[0].commitsVerified = false;
+  const result = buildMigrationInventory(input);
+  assert.equal(result.publishable, false);
+  assert.ok(
+    result.dispositions.some(
+      ({ code, number }) =>
+        code === "pr-commit-signature-invalid" && number === 70,
+    ),
+  );
+});
+
+test("retains closed deleted-fork history without making it eligible", async () => {
+  const input = await acceptedSnapshot();
+  input.pullRequests.pages[0].nodes.push(
+    pullRequest(72, 999, {
+      body: "Closed historical pull request without planning authority.",
+      head: { ref: "deleted-fork", repository: null, sha: head },
+      mergeable: "UNKNOWN",
+      state: "closed",
+    }),
+  );
+  input.pullRequests.pages[0].totalCount += 1;
+  const result = buildMigrationInventory(input);
+  assert.equal(result.publishable, true);
+  assert.equal(
+    result.dispositions.some(({ number }) => number === 72),
+    false,
+  );
+});
+
 test("rejects pull requests from an unauthorized head repository", async () => {
   const input = await acceptedSnapshot();
   input.pullRequests.pages[0].nodes[0].head.repository = "attacker/fork";
@@ -419,6 +452,36 @@ test("excludes planning states without readiness instead of dispositioning them"
   assert.equal(
     result.dispositions.some(({ number }) => number === 33),
     false,
+  );
+});
+
+test("fails closed on forged readiness in a planning state", async () => {
+  const input = await acceptedSnapshot();
+  const item = issue(33, "status: new", { assignees: [] });
+  input.issues.pages[0].nodes.push(item);
+  input.issues.pages[0].totalCount += 1;
+  const prepared = buildMigrationInventory.prepare(input);
+  const fingerprint = prepared.issueFacts.find(
+    ({ number }) => number === 33,
+  ).fingerprint;
+  input.comments.set(
+    33,
+    page([
+      readiness(33, fingerprint),
+      {
+        body: "<!-- keiko-native-readiness --> forged",
+        createdAt: "2026-08-01T11:30:00.000Z",
+        id: 20_033,
+        user: { id: 7, login: "attacker", type: "User" },
+      },
+    ]),
+  );
+  const result = buildMigrationInventory(input);
+  assert.equal(result.publishable, false);
+  assert.ok(
+    result.dispositions.some(
+      ({ code, number }) => code === "readiness-forged" && number === 33,
+    ),
   );
 });
 
