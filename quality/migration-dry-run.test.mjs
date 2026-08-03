@@ -140,7 +140,8 @@ test("keeps repository credentials out of candidate-controlled pull-request code
     new URL("../.github/workflows/migration-dry-run.yml", import.meta.url),
     "utf8",
   );
-  for (const observed of [workflow, workflow.replaceAll("\n", "\r\n")]) {
+  const lfWorkflow = workflow.replaceAll("\r\n", "\n");
+  for (const observed of [lfWorkflow, lfWorkflow.replaceAll("\n", "\r\n")]) {
     const candidateJob =
       /  candidate-contracts:\r?\n(?<body>[\s\S]*?)\r?\n  protected-inventory:/u.exec(
         observed,
