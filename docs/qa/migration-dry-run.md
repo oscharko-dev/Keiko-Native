@@ -6,25 +6,33 @@ a manifest, create or update a pull request, freeze work, enqueue a merge, or sw
 
 ## Exact snapshot
 
-The provider performs two complete reads of labels, issues, comments, pull requests, exact heads,
-combined statuses, commit signatures, assignments, associations, and repository contract paths.
+The provider performs two complete reads of labels, issues, timestamped comments, body-edit and
+reopen invalidations, assignment history, pull requests, exact heads, combined statuses, commit
+signatures, associations, and repository contract paths from the exact protected `dev` tree.
 Every paginated connection carries its provider total, cursor chain, and terminal page. An omitted,
 duplicated, malformed, unavailable, or changed observation fails closed. Only the exact built-in
-Actions bot identity `github-actions[bot]@41898282` can authenticate a readiness record.
+Actions bot identity `github-actions[bot]@41898282` can authenticate a readiness record or required
+commit status. An accepted readiness record must be newer than the latest body edit and reopen.
 
-The inventory first evaluates the current accepted-readiness fingerprint and only then evaluates
-the issue's sole lifecycle label. Every current-ready open issue is retained, including paused and
-in-flight work. PR-open or ready-for-human-review entries additionally bind exactly one pull
-request, its accepted target, and its exact head. Closed completed issues require a signed merge
-proof from an allowlisted maintainer. Other closures and pull requests receive no desired status
-label. Unverifiable observations enter a sanitized disposition queue and produce no publishable
-manifest. Every open pull request without an exact accepted-issue locator is dispositioned because
-it would also make ADR-0012's complete hourly lifecycle reconciliation fail closed. Unassociated
-closed historical pull requests remain non-blocking inventory facts.
+The repository must expose exactly the nine canonical lifecycle labels. The inventory first
+evaluates current accepted readiness and only then evaluates the issue's sole lifecycle label.
+Valid `new` and `triaged` planning work without readiness is excluded. Every current-ready retained
+issue is included, including paused work with zero or one ineligible open pull request. `in
+progress` additionally requires a current, authorized assignment claim. `pr open` requires the
+trusted Issue and PR contract statuses; `ready for human review` also requires the trusted
+Lifecycle handoff and the complete exact-head rollup to pass. Closed completed issues require the
+canonical terminal PR contract, exact-head gates, acceptance and audit evidence, signed head and
+merge commits, the accepted target, and an allowlisted human merger. Other closures and pull
+requests receive no desired status label. Unverifiable observations enter a sanitized disposition
+queue and produce no publishable manifest. Every open pull request without an exact accepted-issue
+locator is dispositioned because it would also make ADR-0012's complete hourly lifecycle
+reconciliation fail closed. Unassociated closed historical pull requests remain non-blocking
+inventory facts.
 
 ## Deterministic outputs
 
-An exact, disposition-free snapshot produces canonical terminal-manifest bytes, a SHA-256 digest,
+An exact, disposition-free snapshot—including a repository with zero migration members—produces
+canonical terminal-manifest bytes, a SHA-256 digest,
 candidate identities, and receipt inputs without titles, bodies, comment bodies, endpoints, or
 credentials. An independent rebuild must equal the complete output. The workflow report contains
 only numeric identities, lifecycle and reconciliation metadata, digests, paths, counts, timestamps,
@@ -45,5 +53,8 @@ Run the hermetic contracts locally with:
 node --test quality/migration-dry-run.test.mjs quality/migration-github-provider.test.mjs quality/migration-inventory.test.mjs quality/migration-orchestrator.test.mjs
 ```
 
-Run the production-composition dry run through the protected `Migration inventory dry run`
-workflow. Its token permissions are read-only and the provider interface exposes only `snapshot`.
+Pull-request runs execute only the hermetic migration contracts with no repository token exposed to
+candidate-controlled code. Run the live production-composition inventory by manually dispatching
+the protected `Migration inventory dry run` workflow from `dev`. Only that protected-dev job
+receives a read-only token, loads its executable code and contract blobs from the exact protected
+revision, and exposes only the provider's `snapshot` interface.

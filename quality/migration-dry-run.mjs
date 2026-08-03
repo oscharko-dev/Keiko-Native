@@ -1,10 +1,7 @@
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
-import {
-  createMigrationGithubProvider,
-  loadRepositoryContractBindings,
-} from "./migration-github-provider.mjs";
+import { createMigrationGithubProvider } from "./migration-github-provider.mjs";
 import {
   buildMigrationInventory,
   verifyMigrationInventory,
@@ -57,7 +54,7 @@ export async function runMigrationDryRun({
       ok: false,
       status: "indeterminate",
     };
-  if (verify(snapshot, structuredClone(inventory)).ok !== true)
+  if (verify(snapshot, inventory).ok !== true)
     return { code: "independent-verification-failed", ok: false };
   const memberIssues = inventory.inventory.issues
     .filter((issue) => issue.classification === "migration-member")
@@ -112,9 +109,7 @@ export async function runMigrationDryRun({
 }
 
 async function main() {
-  const provider = createMigrationGithubProvider({
-    contracts: () => loadRepositoryContractBindings(process.cwd()),
-  });
+  const provider = createMigrationGithubProvider();
   const result = await runMigrationDryRun({
     generation: Number(process.env.KEIKO_MIGRATION_GENERATION ?? "1"),
     now: new Date().toISOString(),

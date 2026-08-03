@@ -7,7 +7,11 @@ import {
 } from "./issue-contract.mjs";
 import { evaluateCurrentReadiness } from "./issue-lifecycle-readiness.mjs";
 import { readinessRecordFromComments } from "./issue-readiness-action.mjs";
-import { issueDeliveryTarget, pullRequestIssueNumber } from "./pr-contract.mjs";
+import {
+  issueDeliveryTarget,
+  pullRequestIssueNumber,
+  validatePullRequestContract,
+} from "./pr-contract.mjs";
 import { contractSha256, parseContractPath } from "./repository-contract.mjs";
 import { compareCodeUnits } from "./deterministic-order.mjs";
 
@@ -39,6 +43,11 @@ const repositoryPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 const actorPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u;
 const manifestPath = "docs/qa/repository-migration-manifest-v1.md";
 const readinessProducer = "issue-readiness.yml@protected-dev";
+const trustedActionsProducer = Object.freeze({
+  id: 41898282,
+  login: "github-actions[bot]",
+  type: "Bot",
+});
 
 const record = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -138,7 +147,14 @@ function prepareIssue(item) {
     !Array.isArray(item.labels) ||
     !Array.isArray(item.assignees) ||
     item.assignees.some((actor) => !actorPattern.test(actor)) ||
-    typeof item.updatedAt !== "string"
+    typeof item.updatedAt !== "string" ||
+    ![item.lastEditedAt, item.reopenedAt].every(
+      (value) => value === null || typeof value === "string",
+    ) ||
+    ![item.lastEditedAt, item.reopenedAt]
+      .filter((value) => value !== null)
+      .every((value) => Number.isFinite(Date.parse(value))) ||
+    !(item.claim === null || record(item.claim))
   ) {
     return { failure: "issue-observation-malformed" };
   }
@@ -166,9 +182,12 @@ function prepareIssue(item) {
       assignees: [...item.assignees].sort(compareCodeUnits),
       body: item.body,
       contractFailure,
+      claim: item.claim,
       fingerprint: semanticIssueFingerprint(item.body, item.title),
       lifecycle: lifecycleLabels(item.labels),
+      lastEditedAt: item.lastEditedAt,
       number: item.number,
+      reopenedAt: item.reopenedAt,
       state: item.state,
       stateReason: item.stateReason,
       target,
@@ -203,13 +222,21 @@ function prepareSnapshot(input) {
     (value) => value.failure !== undefined,
   );
   if (failed !== undefined) return indeterminate(failed.failure);
-  if (
-    labels.nodes.some(
-      (label) => label.startsWith("status: ") && !canonicalStates.has(label),
-    )
-  ) {
+  const observedLifecycleLabels = labels.nodes.filter((label) =>
+    label.startsWith("status: "),
+  );
+  if (observedLifecycleLabels.some((label) => !canonicalStates.has(label))) {
     return indeterminate("unknown-lifecycle-label");
   }
+  if (
+    observedLifecycleLabels.length !== canonicalStates.size ||
+    [...canonicalStates].some(
+      (label) => !observedLifecycleLabels.includes(label),
+    )
+  )
+    return indeterminate("canonical-lifecycle-labels-missing");
+  if (input.contractsProtectedDev !== input.protectedDev)
+    return indeterminate("contract-tree-not-protected-dev");
   const contractBindings = [];
   for (const item of contracts.nodes) {
     const parsed = parseContractPath(item?.path);
@@ -250,7 +277,7 @@ function commentsFor(input, issue) {
 }
 
 function readinessFor(input, issue, comments) {
-  const record = readinessRecordFromComments(comments);
+  const readinessRecord = readinessRecordFromComments(comments);
   const result = evaluateCurrentReadiness({
     availability: "available",
     comments,
@@ -258,15 +285,28 @@ function readinessFor(input, issue, comments) {
     currentFingerprint: issue.fingerprint,
     currentTitle: issue.title,
     currentVersion: `v${issue.version}`,
-    expectedCommentId: record?.commentId,
+    expectedCommentId: readinessRecord?.commentId,
   });
-  return result.ok
-    ? {
-        current: true,
-        producer: readinessProducer,
-        url: `https://github.com/${input.repository}/issues/${issue.number}#issuecomment-${record.commentId}`,
-      }
-    : { current: false, reason: result.reason };
+  if (!result.ok) return { current: false, reason: result.reason };
+  const acceptedComment = comments.find(
+    (comment) => comment?.id === readinessRecord.commentId,
+  );
+  const invalidations = [issue.lastEditedAt, issue.reopenedAt].filter(
+    (value) => value !== null,
+  );
+  if (
+    typeof acceptedComment?.createdAt !== "string" ||
+    !Number.isFinite(Date.parse(acceptedComment.createdAt)) ||
+    invalidations.some(
+      (value) => Date.parse(value) >= Date.parse(acceptedComment.createdAt),
+    )
+  )
+    return { current: false, reason: "stale" };
+  return {
+    current: true,
+    producer: readinessProducer,
+    url: `https://github.com/${input.repository}/issues/${issue.number}#issuecomment-${readinessRecord.commentId}`,
+  };
 }
 
 function validPullRequestCore(item, associatedIssue, base, head) {
@@ -295,17 +335,28 @@ function requiredChecksDisposition(item, issue, head) {
   ) {
     return "pr-check-head-mismatch";
   }
-  const exactContextsRequired =
-    issue.state === "open" &&
+  const prOpen =
+    issue.lifecycle.length === 1 && issue.lifecycle[0] === "status: pr open";
+  const reviewReady =
     issue.lifecycle.length === 1 &&
-    prTrackedStates.has(issue.lifecycle[0]);
+    issue.lifecycle[0] === "status: ready for human review";
+  const exactContextsRequired = prOpen || reviewReady || item.merged === true;
+  const expectedContexts = [
+    "Issue contract current",
+    "PR contract",
+    ...(reviewReady || item.merged === true ? ["Lifecycle handoff"] : []),
+  ];
   const required = item.checks.required;
   const unique = new Set(required.map((check) => check?.name)).size;
-  const exactContextsPresent = ["Issue contract current", "PR contract"].every(
-    (name) =>
-      required.some(
-        (check) => check?.name === name && check?.conclusion === "SUCCESS",
-      ),
+  const exactContextsPresent = expectedContexts.every((name) =>
+    required.some(
+      (check) => check?.name === name && check?.conclusion === "SUCCESS",
+    ),
+  );
+  const producerInvalid = required.some(
+    (check) =>
+      expectedContexts.includes(check?.name) &&
+      !isDeepStrictEqual(check?.producer, trustedActionsProducer),
   );
   const invalidEntry = required.some(
     (check) =>
@@ -314,7 +365,9 @@ function requiredChecksDisposition(item, issue, head) {
       !["ERROR", "FAILURE", "PENDING", "SUCCESS"].includes(check.conclusion) ||
       (exactContextsRequired && check.conclusion !== "SUCCESS"),
   );
-  return (exactContextsRequired && item.checks.allPassing !== true) ||
+  if (producerInvalid) return "pr-required-check-producer-invalid";
+  return ((reviewReady || item.merged === true) &&
+    item.checks.allPassing !== true) ||
     unique !== required.length ||
     (exactContextsRequired && !exactContextsPresent) ||
     invalidEntry
@@ -337,7 +390,46 @@ function validMergeProof(item, allowlistedMergers) {
   );
 }
 
-function pullRequestFact(item, issueByNumber, allowlistedMergers) {
+function terminalDeliveryValid(input, item, issue, comments) {
+  if (item.merged !== true || typeof item.title !== "string") return false;
+  const invalidations = [issue.lastEditedAt, issue.reopenedAt].filter(
+    (value) => value !== null,
+  );
+  const freshAcceptedReadiness = comments.some((comment) => {
+    const accepted = readinessRecordFromComments([comment]);
+    return (
+      accepted?.status === "accepted" &&
+      accepted.version === `v${issue.version}` &&
+      accepted.fingerprint === issue.fingerprint &&
+      typeof comment.createdAt === "string" &&
+      invalidations.every(
+        (value) => Date.parse(value) < Date.parse(comment.createdAt),
+      )
+    );
+  });
+  if (!freshAcceptedReadiness) return false;
+  const validation = validatePullRequestContract({
+    comments,
+    issue: {
+      body: issue.body,
+      labels: [
+        { name: `type: ${issue.type}` },
+        ...issue.lifecycle.map((name) => ({ name })),
+      ],
+      number: issue.number,
+      state: issue.state,
+      state_reason: issue.stateReason,
+      title: issue.title,
+    },
+    lifecycleActivation: "enabled",
+    pullRequest: item,
+    repository: input.repository,
+    terminalDelivery: true,
+  });
+  return validation.failures.length === 0;
+}
+
+function pullRequestFact(input, item, issueByNumber, allowlistedMergers) {
   const associatedIssue = pullRequestIssueNumber(item?.body);
   const hasAssociationLocator =
     typeof item?.body === "string" && /- Accepted issue:/u.test(item.body);
@@ -402,6 +494,15 @@ function pullRequestFact(item, issueByNumber, allowlistedMergers) {
     if (!validMergeProof(item, allowlistedMergers)) {
       return { disposition: "pr-merge-proof-invalid", fact };
     }
+    const comments = commentsFor(input, issue);
+    if (comments === undefined)
+      return { disposition: "comment-pagination-incomplete", fact };
+    fact.finalDeliveryValidated = terminalDeliveryValid(
+      input,
+      item,
+      issue,
+      comments,
+    );
   } else if (item.state !== "open" || item.mergeCommit !== null) {
     return { disposition: "pr-state-inconsistent", fact };
   }
@@ -443,12 +544,22 @@ function safeIssue(issue, classification, readiness) {
   };
 }
 
-function collectPullRequestFacts(prepared, issueByNumber, allowlistedMergers) {
+function collectPullRequestFacts(
+  input,
+  prepared,
+  issueByNumber,
+  allowlistedMergers,
+) {
   const dispositions = [];
   const facts = [];
   const verified = [];
   for (const item of prepared.pullRequests) {
-    const result = pullRequestFact(item, issueByNumber, allowlistedMergers);
+    const result = pullRequestFact(
+      input,
+      item,
+      issueByNumber,
+      allowlistedMergers,
+    );
     facts.push(result.fact);
     if (result.disposition !== undefined)
       dispositions.push(
@@ -464,7 +575,8 @@ function recordClosedIssue(state, issue, readiness, associated, current) {
   const completed =
     issue.stateReason === "completed" &&
     associated.length === 1 &&
-    associated[0].merged === true;
+    associated[0].merged === true &&
+    associated[0].finalDeliveryValidated === true;
   const classification = completed ? "completed" : "closed-without-completion";
   state.issueInventory.push(safeIssue(issue, classification, readiness));
   state.reconciliation.push({
@@ -487,6 +599,16 @@ function recordNonReadyIssue(state, issue, readiness) {
       ? "stale-readiness"
       : `readiness-${readiness.reason}`;
   state.dispositions.push(disposition("issue", issue.number, reason));
+}
+
+function recordPlanningExcludedIssue(state, issue, readiness, current) {
+  state.issueInventory.push(safeIssue(issue, "planning-excluded", readiness));
+  state.reconciliation.push({
+    current,
+    desired: current,
+    kind: "issue",
+    number: issue.number,
+  });
 }
 
 function recordMigrationMember(
@@ -552,15 +674,35 @@ function recordReadyIssue(
     return;
   }
   const tracked = prTrackedStates.has(issue.lifecycle[0]);
+  const paused = ["status: blocked", "status: waiting for user"].includes(
+    issue.lifecycle[0],
+  );
   const openAssociated = associated.filter(
     (pullRequest) => pullRequest.state === "open" && !pullRequest.merged,
   );
-  if (tracked !== (openAssociated.length === 1)) {
+  const topologyValid = tracked
+    ? openAssociated.length === 1
+    : paused
+      ? openAssociated.length <= 1
+      : openAssociated.length === 0;
+  if (!topologyValid) {
     state.issueInventory.push(
       safeIssue(issue, "linked-pr-unverifiable", readiness),
     );
     state.dispositions.push(
       disposition("issue", issue.number, "linked-pr-topology-invalid"),
+    );
+    return;
+  }
+  if (
+    issue.lifecycle[0] === "status: in progress" &&
+    issue.claim?.validated !== true
+  ) {
+    state.issueInventory.push(
+      safeIssue(issue, "claim-unverifiable", readiness),
+    );
+    state.dispositions.push(
+      disposition("issue", issue.number, "assignment-claim-invalid"),
     );
     return;
   }
@@ -574,13 +716,14 @@ function recordReadyIssue(
     );
     return;
   }
-  const linked = tracked
-    ? {
-        head: openAssociated[0].head,
-        number: openAssociated[0].number,
-        target: openAssociated[0].target,
-      }
-    : null;
+  const linked =
+    openAssociated.length === 1
+      ? {
+          head: openAssociated[0].head,
+          number: openAssociated[0].number,
+          target: openAssociated[0].target,
+        }
+      : null;
   recordMigrationMember(state, issue, readiness, identity, linked, current);
 }
 
@@ -596,6 +739,14 @@ function recordIssue(state, input, issue, prepared, verifiedPullRequests) {
     (pullRequest) => pullRequest.associatedIssue === issue.number,
   );
   const current = [...issue.lifecycle].sort(compareCodeUnits);
+  const planningExcluded =
+    issue.state === "open" &&
+    issue.lifecycle.length === 1 &&
+    ["status: new", "status: triaged"].includes(issue.lifecycle[0]);
+  if (planningExcluded) {
+    recordPlanningExcludedIssue(state, issue, readiness, current);
+    return undefined;
+  }
   if (issue.contractFailure !== null)
     state.dispositions.push(
       disposition("issue", issue.number, issue.contractFailure),
@@ -632,7 +783,7 @@ function finalInventoryResult(input, state, pullRequestFacts) {
     pullRequests: pullRequestFacts,
     repository: input.repository,
   };
-  if (state.dispositions.length !== 0 || state.observations.length === 0) {
+  if (state.dispositions.length !== 0) {
     return {
       candidateInputs: [],
       dispositions: state.dispositions,
@@ -676,6 +827,7 @@ function build(input) {
     prepared.issueFacts.map((issue) => [issue.number, issue]),
   );
   const pullRequests = collectPullRequestFacts(
+    input,
     prepared,
     issueByNumber,
     input.allowlistedMergers,

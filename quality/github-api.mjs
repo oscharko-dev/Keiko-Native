@@ -72,6 +72,20 @@ const routes = [
   ),
   route(
     "GET",
+    String.raw`/git/trees/${SHA}\?recursive=1`,
+    ["sha"],
+    ([owner, repository, sha]) =>
+      `/repos/${owner}/${repository}/git/trees/${sha}?recursive=1`,
+  ),
+  route(
+    "GET",
+    `/git/blobs/${SHA}`,
+    ["sha"],
+    ([owner, repository, sha]) =>
+      `/repos/${owner}/${repository}/git/blobs/${sha}`,
+  ),
+  route(
+    "GET",
     `/collaborators/${ENCODED_SEGMENT}/permission`,
     ["actor"],
     ([owner, repository, actor]) =>

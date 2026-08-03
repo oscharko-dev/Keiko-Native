@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { issueSchemaForLabels } from "./issue-contract.mjs";
+import { validPullRequestBody } from "./pr-contract-test-fixture.mjs";
 import {
   buildMigrationInventory,
   verifyMigrationInventory,
@@ -20,6 +21,7 @@ const readiness = (issue, fingerprint, version = 1) => ({
     `- Fingerprint: \`${fingerprint}\``,
   ].join("\n"),
   id: 10_000 + issue,
+  createdAt: "2026-08-01T11:00:00.000Z",
   user: { id: 41898282, login: "github-actions[bot]", type: "Bot" },
 });
 
@@ -65,6 +67,9 @@ function issue(number, lifecycle, overrides = {}) {
     number,
     state: overrides.state ?? "open",
     stateReason: overrides.stateReason ?? null,
+    claim: overrides.claim ?? null,
+    lastEditedAt: overrides.lastEditedAt ?? null,
+    reopenedAt: overrides.reopenedAt ?? null,
     title,
     type,
     updatedAt: overrides.updatedAt ?? "2026-08-01T12:00:00.000Z",
@@ -82,8 +87,16 @@ function pullRequest(number, issueNumber, overrides = {}) {
       complete: true,
       head,
       required: [
-        { conclusion: "SUCCESS", name: "PR contract" },
-        { conclusion: "SUCCESS", name: "Issue contract current" },
+        {
+          conclusion: "SUCCESS",
+          name: "PR contract",
+          producer: { id: 41898282, login: "github-actions[bot]", type: "Bot" },
+        },
+        {
+          conclusion: "SUCCESS",
+          name: "Issue contract current",
+          producer: { id: 41898282, login: "github-actions[bot]", type: "Bot" },
+        },
       ],
     },
     head: { ref: `codex/${issueNumber}-work`, sha: head },
@@ -94,6 +107,7 @@ function pullRequest(number, issueNumber, overrides = {}) {
     mergedBy: null,
     number,
     state: "open",
+    title: `Deliver governed issue ${issueNumber}`,
     ...overrides,
   };
 }
@@ -110,6 +124,26 @@ function snapshot() {
   });
   const pr = pullRequest(70, 30, { target: "epic/9-migration" });
   const merged = pullRequest(71, 31, {
+    body: validPullRequestBody("dev")
+      .replaceAll("#42", "#31")
+      .replaceAll("issues/42#issuecomment-99", "issues/31#issuecomment-10031")
+      .replaceAll("keiko/Keiko-Native", repository)
+      .replaceAll("codex/42-governed-workspace", "codex/31-work")
+      .replaceAll("c".repeat(40), head),
+    checks: {
+      allPassing: true,
+      complete: true,
+      head,
+      required: [
+        "Issue contract current",
+        "PR contract",
+        "Lifecycle handoff",
+      ].map((name) => ({
+        conclusion: "SUCCESS",
+        name,
+        producer: { id: 41898282, login: "github-actions[bot]", type: "Bot" },
+      })),
+    },
     labels: ["status: ready for human review"],
     mergeCommit: {
       parents: [dev],
@@ -148,6 +182,7 @@ function snapshot() {
     ]),
     observedAt: "2026-08-01T12:00:00.000Z",
     protectedDev: dev,
+    contractsProtectedDev: dev,
     pullRequests: page([pr, merged]),
     repository,
     _fingerprints: fingerprints,
@@ -335,6 +370,139 @@ test("rejects unknown lifecycle labels, bad signatures, and failed required chec
     assert.equal(result.publishable, false);
     assert.equal(result.manifest, null);
   }
+});
+
+test("requires the exact canonical lifecycle label set", async () => {
+  const input = await acceptedSnapshot();
+  input.labels.pages[0].nodes = input.labels.pages[0].nodes.filter(
+    (label) => label !== "status: triaged",
+  );
+  input.labels.pages[0].totalCount -= 1;
+  assert.equal(
+    buildMigrationInventory(input).code,
+    "canonical-lifecycle-labels-missing",
+  );
+});
+
+test("excludes planning states without readiness instead of dispositioning them", async () => {
+  const input = await acceptedSnapshot();
+  input.issues.pages[0].nodes.push(issue(33, "status: new", { assignees: [] }));
+  input.issues.pages[0].totalCount += 1;
+  input.comments.set(33, page([]));
+  const result = buildMigrationInventory(input);
+  assert.equal(result.publishable, true);
+  assert.equal(
+    result.inventory.issues.find(({ number }) => number === 33)?.classification,
+    "planning-excluded",
+  );
+  assert.equal(
+    result.dispositions.some(({ number }) => number === 33),
+    false,
+  );
+});
+
+test("accepts paused retained work with at most one ineligible open pull request", async () => {
+  const input = await acceptedSnapshot();
+  const paused = issue(33, "status: blocked");
+  input.issues.pages[0].nodes.push(paused);
+  input.issues.pages[0].totalCount += 1;
+  const prepared = buildMigrationInventory.prepare(input);
+  const fingerprint = prepared.issueFacts.find(
+    ({ number }) => number === 33,
+  ).fingerprint;
+  input.comments.set(33, page([readiness(33, fingerprint)]));
+  input.pullRequests.pages[0].nodes.push(pullRequest(72, 33));
+  input.pullRequests.pages[0].totalCount += 1;
+  const result = buildMigrationInventory(input);
+  assert.equal(result.publishable, true);
+  assert.equal(
+    result.manifest.entries.find(({ number }) => number === 33)
+      .linkedPullRequest.number,
+    72,
+  );
+});
+
+test("requires a validated assignment claim for in-progress work", async () => {
+  const input = await acceptedSnapshot();
+  input.issues.pages[0].nodes[0].labels = ["status: in progress", "type: task"];
+  input.pullRequests.pages[0].nodes = input.pullRequests.pages[0].nodes.filter(
+    ({ number }) => number !== 70,
+  );
+  input.pullRequests.pages[0].totalCount -= 1;
+  const result = buildMigrationInventory(input);
+  assert.equal(result.publishable, false);
+  assert.ok(
+    result.dispositions.some(({ code }) => code === "assignment-claim-invalid"),
+  );
+});
+
+test("invalidates readiness older than a body edit or reopen", async () => {
+  for (const field of ["lastEditedAt", "reopenedAt"]) {
+    const input = await acceptedSnapshot();
+    input.issues.pages[0].nodes[0][field] = "2026-08-01T11:30:00.000Z";
+    const result = buildMigrationInventory(input);
+    assert.equal(result.publishable, false);
+    assert.ok(
+      result.dispositions.some(({ code }) => code === "stale-readiness"),
+    );
+  }
+});
+
+test("authenticates status producers and the review handoff", async () => {
+  const input = await acceptedSnapshot();
+  input.pullRequests.pages[0].nodes[0].checks.required[0].producer.login =
+    "untrusted";
+  assert.ok(
+    buildMigrationInventory(input).dispositions.some(
+      ({ code }) => code === "pr-required-check-producer-invalid",
+    ),
+  );
+
+  const handoffMissing = await acceptedSnapshot();
+  handoffMissing.issues.pages[0].nodes[0].labels = [
+    "status: ready for human review",
+    "type: task",
+  ];
+  assert.ok(
+    buildMigrationInventory(handoffMissing).dispositions.some(
+      ({ code }) => code === "pr-required-check-failed",
+    ),
+  );
+});
+
+test("requires canonical terminal delivery proof before classifying completion", async () => {
+  const input = await acceptedSnapshot();
+  input.pullRequests.pages[0].nodes[1].body =
+    "## Scope\n\n- Accepted issue: #31";
+  const result = buildMigrationInventory(input);
+  assert.equal(
+    result.inventory.issues.find(({ number }) => number === 31)?.classification,
+    "closed-without-completion",
+  );
+  assert.ok(
+    result.dispositions.some(({ code }) => code === "completion-unverifiable"),
+  );
+
+  const stale = await acceptedSnapshot();
+  stale.issues.pages[0].nodes.find(({ number }) => number === 31).lastEditedAt =
+    "2026-08-01T11:30:00.000Z";
+  assert.equal(
+    buildMigrationInventory(stale).inventory.issues.find(
+      ({ number }) => number === 31,
+    )?.classification,
+    "closed-without-completion",
+  );
+});
+
+test("publishes an exact empty terminal manifest", () => {
+  const input = snapshot();
+  input.issues = page([]);
+  input.pullRequests = page([]);
+  input.comments = new Map();
+  const result = buildMigrationInventory(input);
+  assert.equal(result.publishable, true);
+  assert.deepEqual(result.manifest.entries, []);
+  assert.deepEqual(result.receiptInput.observations, []);
 });
 
 test("independent verification rejects changed immutable output", async () => {

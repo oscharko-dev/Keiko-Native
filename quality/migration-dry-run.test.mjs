@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { runMigrationDryRun } from "./migration-dry-run.mjs";
@@ -105,5 +106,48 @@ test("fails closed on invalid input, provider failure, and verifier mismatch", a
   assert.deepEqual(
     await runMigrationDryRun({ ...base, verify: () => ({ ok: false }) }),
     { code: "independent-verification-failed", ok: false },
+  );
+});
+
+test("passes publishable manifest bytes unchanged to independent verification", async () => {
+  const bytes = Buffer.from('{"entries":[]}\n');
+  let observed;
+  const result = await runMigrationDryRun({
+    build: () => ({
+      ...inventory({ publishable: true }),
+      manifest: {
+        bytes,
+        digest: "a".repeat(64),
+        entries: [],
+        path: "docs/qa/repository-migration-manifest-v1.md",
+      },
+    }),
+    generation: 1,
+    now: snapshot.observedAt,
+    provider: { snapshot: async () => snapshot },
+    repository,
+    verify: (_snapshot, output) => {
+      observed = output.manifest.bytes;
+      return { ok: Buffer.isBuffer(observed) };
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(observed, bytes);
+});
+
+test("keeps repository credentials out of candidate-controlled pull-request code", async () => {
+  const workflow = await readFile(
+    new URL("../.github/workflows/migration-dry-run.yml", import.meta.url),
+    "utf8",
+  );
+  const candidateJob =
+    /  candidate-contracts:\n(?<body>[\s\S]*?)\n  protected-inventory:/u.exec(
+      workflow,
+    )?.groups?.body;
+  assert.match(candidateJob, /if: github\.event_name == 'pull_request'/u);
+  assert.doesNotMatch(candidateJob, /GITHUB_TOKEN|github\.token/u);
+  assert.match(
+    workflow,
+    /protected-inventory:\n    if: github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/heads\/dev'/u,
   );
 });
