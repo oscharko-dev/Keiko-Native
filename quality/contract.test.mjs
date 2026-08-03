@@ -2543,7 +2543,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     wake,
     /direct plain-issue `issue_comment`[\s\S]{0,500}exactly 16 authenticated non-checkpoint records[\s\S]{0,500}17th record[\s\S]{0,320}no record or\s+effect/iu,
   );
-  assert.match(wake, /request 201[\s\S]{0,160}no record or effect/iu);
+  assert.match(wake, /request 201[\s\S]{0,160}no record or\s+effect/iu);
   assert.match(
     wake,
     /prior\s+checkpoint plus 16 records[\s\S]{0,300}no record or\s+effect/iu,
