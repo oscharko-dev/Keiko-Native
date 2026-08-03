@@ -168,7 +168,7 @@ The exact auxiliary v1 schemas are:
 | recovery scan identity       | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `scan_direction:enum(backward)`, `provider_cursor:string-or-null`, `scanned_page_count:uint`, `scanned_comment_count:uint`, `accumulated_suffix_identity:sha256`, `complete:bool`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | recovery target              | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `orphan_comment_id:uint`, `orphan_comment_body_sha256:sha256`, `orphan_record_digest:sha256`, `last_authenticated_comment_id:uint-or-null`, `last_authenticated_record_digest:sha256-or-null`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | overflow recovery target     | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `prior_checkpoint_comment_id:null`, `prior_checkpoint_record_digest:null`, `first_record_comment_id:uint`, `first_record_digest:sha256`, `chain_tip_comment_id:uint`, `chain_tip_record_digest:sha256`, `non_checkpoint_record_count:uint=16`, `next_checkpoint_sequence:uint=1`                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| overflow publication locator | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `overflow_recovery_authorization_identity:sha256`, `overflow_recovery_target_identity:sha256`, `workflow_path:coordinator-path`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `workflow_job_id:uint`, `protected_dev_sha:commit`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| overflow publication locator | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `overflow_recovery_authorization_identity:sha256`, `overflow_recovery_target_identity:sha256`, `candidate_record_projection_digest:sha256`, `workflow_path:coordinator-path`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `workflow_job_id:uint`, `protected_dev_sha:commit`                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | recovery settlement          | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `authorized_request_identity:sha256`, `recovery_target_identity:sha256`, `orphan_comment_id:uint`, `orphan_comment_body_sha256:sha256`, `orphan_record_digest:sha256`, `orphan_author_login:enum(github-actions[bot])`, `orphan_author_id:uint=41898282`, `orphan_actor_type:enum(Bot)`, `orphan_app_id:uint=15368`, `orphan_workflow_path:protected-writer-path`, `orphan_workflow_run_id:uint`, `orphan_workflow_run_attempt:uint`, `orphan_protected_dev_sha:commit`, `orphan_run_conclusion:enum(failure,cancelled,timed-out)`, `orphan_anchor_count:uint=0`, `orphan_attestation_count:uint=0`, `last_authenticated_comment_id:uint-or-null`, `last_authenticated_record_digest:sha256-or-null`, `quarantine_reason:enum(anchor-publication-interrupted)` |
 | artifact anchor              | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `record_type:record-type`, `record_digest:sha256`, `comment_id:uint`, `comment_body_sha256:sha256`, `generation_identity:sha256`, `attempt:uint`, `workflow_path:protected-writer-path`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `protected_dev_sha:commit`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
@@ -201,6 +201,18 @@ same-generation, same-attempt, same-fence results already precede the superseded
 included producer remains unique and expected; an unexpected, duplicate, late, or post-fence result
 is malformed. Missing producers grant no result, success, or effect and cannot publish after the
 superseded fence. No other transition/read-back may omit an expected producer.
+
+The locator's `candidate_record_projection_digest` is precomputable without circular provider
+identities. Its SHA-256 preimage is one ADR-0004 canonical `list` node whose first member is the enum
+`keiko-native.lifecycle-overflow-candidate-record-projection` and whose remaining members are the
+complete named field nodes of the intended transition/read-back v2 record, in canonical field
+order, omitting exactly `overflow_publication_locator_identity` and
+`overflow_publication_locator_artifact_id`. No other field, type, value, envelope rule, or record
+digest input is omitted. After parsing a candidate's strict canonical body, recovery independently
+recomputes this projection digest and requires an exact match to the value authenticated inside the
+locator. The locator pair itself must separately match the exact artifact ID, locator identity, and
+attestation. Thus changing any other candidate-record byte changes the projection, while copying or
+changing either locator field fails its independent provider binding.
 
 The nested `checkpoint-member` schema is exactly `comment_id:uint` and `record_digest:sha256`, in
 that order. Its enclosing list preserves authenticated predecessor order and rejects duplicate
@@ -451,7 +463,9 @@ fields, in order, are the complete transition/read-back v1 field sequence with
 
 No other field, order, type, domain, or envelope changes. Version 2 is accepted only for the exact
 overflow-recovery path. It requires `transition_owner` `recovery`, `effect_identity` explicit null,
-`producer_results` an empty set, `outcome` `superseded`, and `reason_code` `recovery-required`.
+`producer_results` equal to the exact authenticated pre-fence subset defined above, including the
+empty set when no producer result preceded the superseded fence, `outcome` `superseded`, and
+`reason_code` `recovery-required`.
 `request_identity` remains the authenticated request identity of the terminalized generation;
 `overflow_recovery_authorization_identity` is ADR-0012's stably authenticated direct-comment
 authorization, `overflow_recovery_target_identity` is the exact target above, and the locator pair
@@ -483,6 +497,14 @@ a predecessor, fence, checkpoint, authority, or effect. It instead carries, in o
 `quarantine_reason:enum(anchor-publication-interrupted)`. The two anchor fields are both null or
 both non-null. No other auxiliary identity accepts schema version 2.
 
+The overflow compacted-prefix list has one total order. Its first 16 members are exactly the
+authenticated-record members in predecessor order from the unique genesis request through the
+terminal superseded fence. Zero through four quarantined overflow-publication members follow those
+16 and sort by ascending numeric `comment_id`. The complete list rejects duplicate comment IDs,
+record digests, locator identities, and locator artifact IDs. A candidate that is not strictly
+greater than its preceding quarantined member, or any alternate interleaving or ordering, is
+malformed and produces no checkpoint or effect.
+
 The overflow target binds one complete genesis suffix: repository, issue, explicit null prior-
 checkpoint fields, first record pair, chain-tip pair, the literal count `16`, and checkpoint
 sequence `1`. The first record must be the unique authenticated null-predecessor generation request.
@@ -505,9 +527,17 @@ members for that same unconsumed target. Each candidate must be a complete exact
 Actions Bot/App and protected coordinator and bind the same target and base chain. Before creating
 that comment, the writer must have published the exact locator artifact and valid locator
 attestation identified in the body. The locator claim binds the protected coordinator path, ref,
-commit, run, attempt, and job; one exact job read must bind that job to the attested run and prove a
-terminal failed, cancelled, or timed-out conclusion. The candidate has either no post-comment anchor
-or one exact matching anchor with no anchor attestation in both stable passes. A fully valid
+commit, run, attempt, job, and candidate-record projection; one exact job read must bind that job to
+the attested run and prove a terminal failed, cancelled, or timed-out conclusion. Recovery must
+recompute the projection from the candidate body and match the locator before the candidate can
+enter the ordered quarantine set. Candidate discovery groups byte-identical copies carrying the
+same locator pair. Exactly one fully authenticated post-comment anchor/attestation tuple in that
+group authenticates the existing checkpoint and makes every copy irrelevant; two such tuples are
+ambiguous. When the group has no fully authenticated tuple, only its lowest numeric `comment_id` is
+the candidate; later copies are irrelevant and do not consume the candidate allowance. A
+conflicting copy cannot match the locator-bound projection and produces no checkpoint or effect.
+The candidate has either no post-comment anchor or one exact
+matching anchor with no anchor attestation in both stable passes. A fully valid
 post-comment anchor/attestation tuple authenticates the existing checkpoint instead; a fifth
 candidate, missing or invalid locator attestation, any anchor attestation, mismatched or multiple
 artifact, nonterminal job, unknown provenance, or conflicting body is ambiguous and produces no
@@ -542,12 +572,15 @@ frozen generation. Immediately before constructing the checkpoint, the coordinat
 terminal current observation twice; it may differ from that first witness but must still differ from
 the frozen generation. The checkpoint's read-back projection binds this latest stable observation.
 A second or later fact change before comment creation therefore refreshes only that projection under
-the same fence and never appends another claim or starts a successor. The final read-back after
-comment creation must exactly match the terminal observation bound by the checkpoint; a further fact
-change leaves that publication unauthenticated and requires the ordinary retry path to construct a
-new checkpoint projection under the same frozen generation and fence. Reversion to the frozen
-generation, an unavailable read, or failure to prove either exact witness authenticates no
-checkpoint or successor.
+the same fence and never appends another claim or starts a successor. After the canonical comment
+and exact anchor attestation exist, a post-anchor fact change, including reversion to the frozen
+generation, does not stale this null-effect historical checkpoint. The final provider read still
+must succeed and the comment, anchor, attestation, protected run/job/ref/SHA, frozen generation,
+first witness, and bound pre-comment terminal projection must remain exact; the then-current
+observation is availability evidence only and is not compared with or encoded into the immutable
+record. When those conditions hold, the attested tuple authenticates the existing checkpoint and
+no quarantine or retry is needed. An unavailable read or failure of any immutable binding
+authenticates no checkpoint or successor.
 
 Login, marker, author association, check name, details URL, event timing, or a copied comment cannot
 authenticate a record alone. A missing `performed_via_github_app`, wrong App, wrong workflow/ref,
@@ -561,9 +594,12 @@ uploads those canonical bytes as the sole file in one immutable artifact named e
 and publishes a GitHub-native attestation. The attestation subject name is exactly
 `keiko-native/lifecycle-overflow-locator/v1/{repository}/{decimal-issue}/{overflow-recovery-target-identity}/{decimal-run-id}/{decimal-run-attempt}/{decimal-job-id}`
 and its digest is exactly `sha256:{overflow-publication-locator-identity}`. The artifact inventory
-must expose exactly that provider-assigned ID, name, run, attempt, and unexpired immutable artifact;
-duplicates or disagreement fail closed. The writer stably verifies the locator artifact ID and
-attestation before placing both in the v2 body. That locator grants no record, checkpoint,
+must expose exactly that provider-assigned ID, name, associated run ID, and unexpired immutable
+artifact; the attestation supplies the run attempt. Duplicates or disagreement fail closed. Four
+independent post-publication requests—one artifact inventory, one exact artifact metadata reread,
+one bulk attestation inventory, and one matching attestation-bundle download—must stably verify the
+locator artifact ID, identity, projection commitment, and attestation before the writer places the
+locator pair in the v2 body. That locator grants no record, checkpoint,
 predecessor, or effect authority; it exists solely so a later recovery can authenticate an
 anchorless interrupted comment to its protected writer run and job.
 
@@ -786,12 +822,15 @@ locator-artifact download is permitted or required. A candidate anchor returning
 the bulk inventory fails closed without a bundle download. These maxima add exactly 16 requests to
 the ordinary 68.
 ADR-0012's direct command authentication consumes at most six requests. The remaining 26 requests
-are reserved for the checkpoint: one comment create and one immediate reread; at most four locator
-upload/finalization calls and four locator-attestation publication calls before the comment; at most
-four anchor upload/finalization calls and four anchor-attestation publication calls after it; and
-final comment, anchor, anchor-attestation, run, job, issue, source-observation, and protected-ref
-rereads. Locator verification is completed before comment creation and is reauthenticated from the
-same artifact and attestation inventories on any later recovery pass. The implementation gate
+are reserved for the checkpoint: at most three locator upload/finalization calls, at most three
+locator-attestation publication calls, and exactly four independent locator-verification calls
+before the comment; one comment create and one immediate reread; at most three anchor
+upload/finalization calls and at most three anchor-attestation publication calls after it; and the
+eight final comment, anchor, anchor-attestation, run, job, issue, source-observation, and
+protected-ref rereads. These maxima are exactly `3 + 3 + 4 + 2 + 3 + 3 + 8 = 26`. Locator
+verification is completed from inventories created after locator publication and before comment
+creation; any later recovery pass independently reauthenticates it from that pass's bounded
+inventories. The implementation gate
 rejects a provider composition that cannot statically prove this 26-request maximum. At runtime a
 27th publication request is denied; an already-created comment then remains an incomplete candidate
 under the bounded explicit recovery path above.

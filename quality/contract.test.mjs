@@ -1888,6 +1888,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       "issue_number:uint",
       "overflow_recovery_authorization_identity:sha256",
       "overflow_recovery_target_identity:sha256",
+      "candidate_record_projection_digest:sha256",
       "workflow_path:coordinator-path",
       "workflow_run_id:uint",
       "workflow_run_attempt:uint",
@@ -2581,6 +2582,10 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
+    /overflow-recovery path[\s\S]{0,500}producer_results[\s\S]{0,500}exact[\s\S]{0,300}pre-fence subset/iu,
+  );
+  assert.match(
+    protocol,
     /two complete recovery passes[\s\S]{0,240}84 requests each[\s\S]{0,240}six-request[\s\S]{0,240}26 requests[\s\S]{0,160}200/iu,
   );
   assert.match(
@@ -2593,7 +2598,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /For overflow v2 only[\s\S]{0,500}overflow-publication-locator identity[\s\S]{0,500}one immutable artifact[\s\S]{0,1600}before placing both in the v2 body/iu,
+    /For overflow v2 only[\s\S]{0,500}overflow-publication-locator identity[\s\S]{0,500}one immutable artifact[\s\S]{0,2600}independent post-publication requests[\s\S]{0,600}locator pair in the v2 body/iu,
   );
   assert.match(
     protocol,
@@ -2618,8 +2623,25 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   assert.match(protocol, /24 exact subjects[\s\S]{0,300}at most 20 bundles/iu);
   assert.match(
     protocol,
-    /final read-back after[\s\S]{0,80}comment creation[\s\S]{0,240}exactly match the terminal observation[\s\S]{0,300}ordinary retry path/iu,
+    /post-anchor fact change[\s\S]{0,300}reversion to the frozen[\s\S]{0,500}availability evidence only[\s\S]{0,500}authenticates the existing checkpoint/iu,
   );
+  assert.match(
+    protocol,
+    /locator's `candidate_record_projection_digest`[\s\S]{0,800}omitting exactly[\s\S]{0,500}locator[\s\S]{0,500}recomputes[\s\S]{0,500}exact match/iu,
+  );
+  assert.match(
+    protocol,
+    /overflow compacted-prefix list has one total order[\s\S]{0,300}16 members[\s\S]{0,300}predecessor order[\s\S]{0,300}quarantined[\s\S]{0,300}ascending numeric `comment_id`[\s\S]{0,300}duplicate/iu,
+  );
+  assert.match(
+    protocol,
+    /byte-identical copies[\s\S]{0,300}same locator pair[\s\S]{0,400}exactly one[\s\S]{0,300}fully authenticated[\s\S]{0,300}authenticates[\s\S]{0,400}no fully authenticated[\s\S]{0,300}lowest numeric `comment_id`[\s\S]{0,300}later copies[\s\S]{0,300}irrelevant[\s\S]{0,300}conflicting copy[\s\S]{0,300}no checkpoint or effect/iu,
+  );
+  assert.match(
+    protocol,
+    /remaining 26 requests[\s\S]{0,300}three locator upload\/finalization calls[\s\S]{0,100}three\s+locator-attestation publication calls[\s\S]{0,100}four independent locator-verification calls/iu,
+  );
+  assert.match(protocol, /3 \+ 3 \+ 4 \+ 2 \+ 3 \+ 3 \+ 8 = 26/iu);
   assert.match(
     protocol,
     /same four record types[\s\S]{0,220}not a fifth record type/iu,

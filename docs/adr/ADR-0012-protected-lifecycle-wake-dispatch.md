@@ -693,17 +693,20 @@ After authentication, the coordinator performs two complete stable reads of all 
 their anchors, attestations, protected runs, jobs, refs, SHAs, predecessor chain, null genesis root,
 and current equal lifecycle observation. It recomputes the target and then appends
 only ADR-0011's overflow recovery transition/read-back v2 checkpoint. The record binds both the
-authorized request identity and overflow target identity, has a null effect, and cannot alter a
-lifecycle label, status, branch, pull request, queue, merge, or repository setting.
+authorized request identity and overflow target identity, carries the exact authenticated pre-fence
+producer subset, has a null effect, and cannot alter a lifecycle label, status, branch, pull
+request, queue, merge, or repository setting.
 
 An interrupted v2 publication does not consume its overflow target. After two stable passes prove
 that the prior writer job is terminal, its exact pre-comment locator artifact has a valid
 GitHub-native attestation binding the protected coordinator path, ref, commit, run, attempt, and
-job, and its optional post-comment anchor has no attestation, a fresh explicit maintainer command
+job plus the locator-free candidate-record projection, and its optional post-comment anchor has no
+attestation, a fresh explicit maintainer command
 may authorize another attempt for the same target. The coordinator
-accepts at most four strictly ordered candidates, binds their closed quarantine evidence in the
-successful v2 compacted-prefix, and appends no ordinary orphan-settlement record after the 16-record
-base chain. The retry must arrive as a fresh direct `issue_comment` event; the terminal
+accepts at most four candidates ordered by ascending comment ID after the 16 predecessor-ordered
+authenticated members, rejects every duplicate canonical identity, binds their closed quarantine
+evidence in the successful v2 compacted-prefix, and appends no ordinary orphan-settlement record
+after the 16-record base chain. The retry must arrive as a fresh direct `issue_comment` event; the terminal
 authorization paired with an interrupted candidate is ineligible for fallback selection and cannot
 starve it.
 Until the new checkpoint is fully authenticated, the target remains unconsumed. An existing fully
@@ -717,9 +720,10 @@ inventory cover the 16 base anchors plus at most four candidate locators and fou
 the incremental allowance is exactly four locator-attestation bundle downloads, four optional
 candidate-anchor downloads, four terminal writer-job reads, and four current-state reads. The exact
 direct-comment authentication consumes at most six requests. The remaining 26 requests are reserved
-for bounded pre-comment locator upload and attestation, checkpoint comment creation and immediate
-read-back, post-comment anchor upload and attestation, and final stable read-back work. These maxima
-total 200. Request 201 produces no record or effect. The implementation gate rejects a provider
+for at most three locator-upload, three locator-attestation, four independent locator-verification,
+two comment create/read-back, three anchor-upload, three anchor-attestation, and eight final stable
+read-back calls. These maxima are exactly 26 and total 200. Request 201 produces no record or effect.
+The implementation gate rejects a provider
 composition that cannot prove the 26-request publication maximum; a runtime 27th publication request
 is denied and any already-created comment remains subject to the bounded interrupted-publication
 path. No unused allowance from normal operation or orphan recovery is transferred, and no provider

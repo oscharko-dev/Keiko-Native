@@ -125,9 +125,11 @@ comment, anchor, and attestation; prove replay is a no-op; recover zero through 
 publications while denying a fifth; and prove superseded generations authenticate their frozen
 generation, closed partial producer set, first superseding witness, and any later terminal
 non-equality witness by refreshing the checkpoint projection under the same fence before
-terminalizing ahead of a successor. Every
-interrupted candidate must prove its exact pre-comment locator attestation and terminal writer job;
-an optional post-comment anchor must remain unattested. Any mismatch produces no record or effect.
+terminalizing ahead of a successor; a post-anchor fact change cannot stale that exactly attested
+null-effect checkpoint. Every interrupted candidate must prove its exact pre-comment locator
+attestation, terminal writer job, locator-free record projection, deterministic ordering, and
+duplicate rejection; an optional post-comment anchor must remain unattested. Any mismatch produces
+no record or effect.
 The overflow path adds no account, App, PAT, broker,
 database, hosted service, dependency, second credential, lifecycle authority, or merge authority.
 Issue #55 remains
