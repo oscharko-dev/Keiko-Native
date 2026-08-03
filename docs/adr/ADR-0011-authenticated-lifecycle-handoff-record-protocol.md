@@ -155,27 +155,27 @@ domain prefix.
 
 The exact auxiliary v1 schemas are:
 
-| Identity                     | Fixed fields, in order                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| request identity             | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `pull_request_number:uint-or-null`, `exact_head_sha:commit-or-null`, `exact_target:string-or-null`, `generation_identity:sha256`, `attempt:uint`, `request_payload_digest:sha256`, `expected_producers:set<producer>`, `predecessor_comment_id:uint-or-null`, `predecessor_record_digest:sha256-or-null`                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| request payload              | `schema_version:uint=1`, `request_kind:enum(event-reconciliation,planner-request,pause-request,recovery-request,scheduled-reconciliation)`, `requested_state:requested-lifecycle-state-or-null`, `request_owner:enum(planner,assignment,pull-request,handoff,closure,reopen,invalidation,recovery,schedule)`, `recovery_target_identity:sha256-or-null`, `reason_code:closed-reason-code`                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| source observation           | `schema_version:uint=1`, `generation_bytes_sha256:sha256`, `observed_state:lifecycle-observation`, `issue_updated_at:timestamp`, `readiness_identity:sha256-or-null`, `assignment_identity:sha256`, `pr_topology_identity:sha256`, `reviews_identity:sha256`, `conversations_identity:sha256`, `checks_identity:sha256`, `evidence_identity:sha256`, `activation_identity:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| fence identity               | `schema_version:uint=1`, `generation_identity:sha256`, `attempt:uint`, `phase:phase-enum`, `fence_sequence:uint`, `owner_workflow_path:coordinator-path`, `owner_run_id:uint`, `owner_run_attempt:uint`, `source_observation_identity:sha256`, `predecessor_comment_id:uint-or-null`, `predecessor_record_digest:sha256-or-null`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| result identity              | `schema_version:uint=1`, `expected_producer:producer`, `producer_contract_version:uint`, `generation_identity:sha256`, `attempt:uint`, `phase_fence_digest:sha256`, `workflow_path:producer-path`, `workflow_id:uint`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `workflow_job_id:uint`, `provider_observation_identity:sha256`, `conclusion:producer-conclusion`, `reason_code:closed-reason-code`                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| provider observation         | `schema_version:uint=1`, `expected_producer:producer`, `generation_identity:sha256`, `exact_head_sha:commit-or-null`, `phase_fence_digest:sha256`, `provider_result_id:uint`, `provider_result_name:closed-producer-result-name`, `provider_result_conclusion:producer-conclusion`, `provider_result_sha:commit-or-null`, `producer_payload_digest:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| effect identity              | `schema_version:uint=1`, `generation_identity:sha256`, `attempt:uint`, `phase_fence_digest:sha256`, `source_state:lifecycle-observation`, `desired_state:lifecycle-observation`, `transition_owner:transition-owner`, `mutation:enum(no-effect,set-lifecycle,remove-lifecycle)`, `source_observation_identity:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| read-back identity           | `schema_version:uint=1`, `generation_identity:sha256`, `attempt:uint`, `phase_fence_digest:sha256`, `effect_identity:sha256-or-null`, `observed_state:lifecycle-observation`, `issue_updated_at:timestamp`, `source_observation_identity:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| publication candidate set    | `schema_version:uint=1`, `exact_commit_sha:commit`, `root_tree_sha:tree`, `entries:set<candidate-entry>`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| compacted prefix             | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `prior_checkpoint_identity:sha256-or-null`, `members:list<checkpoint-member>`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| checkpoint identity          | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `prior_checkpoint_comment_id:uint-or-null`, `prior_checkpoint_record_digest:sha256-or-null`, `compacted_prefix_identity:sha256`, `chain_tip_comment_id:uint`, `chain_tip_record_digest:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| recovery suffix accumulator  | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `scan_direction:enum(backward)`, `accumulator_step:uint`, `prior_accumulated_suffix_identity:sha256-or-null`, `page_members:list<recovery-suffix-member>`, `cumulative_member_count:uint`, `next_provider_cursor:string-or-null`, `complete:bool`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| recovery scan identity       | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `scan_direction:enum(backward)`, `provider_cursor:string-or-null`, `scanned_page_count:uint`, `scanned_comment_count:uint`, `accumulated_suffix_identity:sha256`, `complete:bool`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| recovery target              | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `orphan_comment_id:uint`, `orphan_comment_body_sha256:sha256`, `orphan_record_digest:sha256`, `last_authenticated_comment_id:uint-or-null`, `last_authenticated_record_digest:sha256-or-null`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| overflow recovery target     | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `prior_checkpoint_comment_id:null`, `prior_checkpoint_record_digest:null`, `first_record_comment_id:uint`, `first_record_digest:sha256`, `chain_tip_comment_id:uint`, `chain_tip_record_digest:sha256`, `non_checkpoint_record_count:uint=16`, `next_checkpoint_sequence:uint=1`                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| overflow publication locator | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `overflow_recovery_authorization_identity:sha256`, `overflow_recovery_target_identity:sha256`, `candidate_record_projection_digest:sha256`, `workflow_path:coordinator-path`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `workflow_job_id:uint`, `protected_dev_sha:commit`                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| overflow locator attestation | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `overflow_recovery_target_identity:sha256`, `overflow_publication_locator_identity:sha256`, `subject_name:string`, `subject_digest:sha256`, `issuer:enum(https://token.actions.githubusercontent.com)`, `workflow_path:coordinator-path`, `workflow_ref:enum(refs/heads/dev)`, `protected_dev_sha:commit`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `workflow_job_id:uint`                                                                                                                                                                                                                                                                                                                                                                         |
-| recovery settlement          | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `authorized_request_identity:sha256`, `recovery_target_identity:sha256`, `orphan_comment_id:uint`, `orphan_comment_body_sha256:sha256`, `orphan_record_digest:sha256`, `orphan_author_login:enum(github-actions[bot])`, `orphan_author_id:uint=41898282`, `orphan_actor_type:enum(Bot)`, `orphan_app_id:uint=15368`, `orphan_workflow_path:protected-writer-path`, `orphan_workflow_run_id:uint`, `orphan_workflow_run_attempt:uint`, `orphan_protected_dev_sha:commit`, `orphan_run_conclusion:enum(failure,cancelled,timed-out)`, `orphan_anchor_count:uint=0`, `orphan_attestation_count:uint=0`, `last_authenticated_comment_id:uint-or-null`, `last_authenticated_record_digest:sha256-or-null`, `quarantine_reason:enum(anchor-publication-interrupted)` |
-| artifact anchor              | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `record_type:record-type`, `record_digest:sha256`, `comment_id:uint`, `comment_body_sha256:sha256`, `generation_identity:sha256`, `attempt:uint`, `workflow_path:protected-writer-path`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `protected_dev_sha:commit`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Identity                     | Fixed fields, in order                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| request identity             | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `pull_request_number:uint-or-null`, `exact_head_sha:commit-or-null`, `exact_target:string-or-null`, `generation_identity:sha256`, `attempt:uint`, `request_payload_digest:sha256`, `expected_producers:set<producer>`, `predecessor_comment_id:uint-or-null`, `predecessor_record_digest:sha256-or-null`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| request payload              | `schema_version:uint=1`, `request_kind:enum(event-reconciliation,planner-request,pause-request,recovery-request,scheduled-reconciliation)`, `requested_state:requested-lifecycle-state-or-null`, `request_owner:enum(planner,assignment,pull-request,handoff,closure,reopen,invalidation,recovery,schedule)`, `recovery_target_identity:sha256-or-null`, `reason_code:closed-reason-code`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| source observation           | `schema_version:uint=1`, `generation_bytes_sha256:sha256`, `observed_state:lifecycle-observation`, `issue_updated_at:timestamp`, `readiness_identity:sha256-or-null`, `assignment_identity:sha256`, `pr_topology_identity:sha256`, `reviews_identity:sha256`, `conversations_identity:sha256`, `checks_identity:sha256`, `evidence_identity:sha256`, `activation_identity:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| fence identity               | `schema_version:uint=1`, `generation_identity:sha256`, `attempt:uint`, `phase:phase-enum`, `fence_sequence:uint`, `owner_workflow_path:coordinator-path`, `owner_run_id:uint`, `owner_run_attempt:uint`, `source_observation_identity:sha256`, `predecessor_comment_id:uint-or-null`, `predecessor_record_digest:sha256-or-null`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| result identity              | `schema_version:uint=1`, `expected_producer:producer`, `producer_contract_version:uint`, `generation_identity:sha256`, `attempt:uint`, `phase_fence_digest:sha256`, `workflow_path:producer-path`, `workflow_id:uint`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `workflow_job_id:uint`, `provider_observation_identity:sha256`, `conclusion:producer-conclusion`, `reason_code:closed-reason-code`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| provider observation         | `schema_version:uint=1`, `expected_producer:producer`, `generation_identity:sha256`, `exact_head_sha:commit-or-null`, `phase_fence_digest:sha256`, `provider_result_id:uint`, `provider_result_name:closed-producer-result-name`, `provider_result_conclusion:producer-conclusion`, `provider_result_sha:commit-or-null`, `producer_payload_digest:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| effect identity              | `schema_version:uint=1`, `generation_identity:sha256`, `attempt:uint`, `phase_fence_digest:sha256`, `source_state:lifecycle-observation`, `desired_state:lifecycle-observation`, `transition_owner:transition-owner`, `mutation:enum(no-effect,set-lifecycle,remove-lifecycle)`, `source_observation_identity:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| read-back identity           | `schema_version:uint=1`, `generation_identity:sha256`, `attempt:uint`, `phase_fence_digest:sha256`, `effect_identity:sha256-or-null`, `observed_state:lifecycle-observation`, `issue_updated_at:timestamp`, `source_observation_identity:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| publication candidate set    | `schema_version:uint=1`, `exact_commit_sha:commit`, `root_tree_sha:tree`, `entries:set<candidate-entry>`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| compacted prefix             | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `prior_checkpoint_identity:sha256-or-null`, `members:list<checkpoint-member>`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| checkpoint identity          | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `prior_checkpoint_comment_id:uint-or-null`, `prior_checkpoint_record_digest:sha256-or-null`, `compacted_prefix_identity:sha256`, `chain_tip_comment_id:uint`, `chain_tip_record_digest:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| recovery suffix accumulator  | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `scan_direction:enum(backward)`, `accumulator_step:uint`, `prior_accumulated_suffix_identity:sha256-or-null`, `page_members:list<recovery-suffix-member>`, `cumulative_member_count:uint`, `next_provider_cursor:string-or-null`, `complete:bool`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| recovery scan identity       | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `scan_direction:enum(backward)`, `provider_cursor:string-or-null`, `scanned_page_count:uint`, `scanned_comment_count:uint`, `accumulated_suffix_identity:sha256`, `complete:bool`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| recovery target              | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `orphan_comment_id:uint`, `orphan_comment_body_sha256:sha256`, `orphan_record_digest:sha256`, `last_authenticated_comment_id:uint-or-null`, `last_authenticated_record_digest:sha256-or-null`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| overflow recovery target     | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `prior_checkpoint_comment_id:null`, `prior_checkpoint_record_digest:null`, `first_record_comment_id:uint`, `first_record_digest:sha256`, `chain_tip_comment_id:uint`, `chain_tip_record_digest:sha256`, `non_checkpoint_record_count:uint=16`, `next_checkpoint_sequence:uint=1`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| overflow publication locator | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `overflow_recovery_authorization_identity:sha256`, `overflow_recovery_target_identity:sha256`, `candidate_record_projection_digest:sha256`, `workflow_path:coordinator-path`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `workflow_job_id:uint`, `protected_dev_sha:commit`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| overflow locator attestation | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `overflow_recovery_target_identity:sha256`, `overflow_publication_locator_identity:sha256`, `subject_name:string`, `subject_digest:sha256`, `issuer:enum(https://token.actions.githubusercontent.com)`, `workflow_path:coordinator-path`, `workflow_ref:enum(refs/heads/dev)`, `protected_dev_sha:commit`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `workflow_job_id:uint`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| recovery settlement          | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `authorized_request_identity:sha256`, `recovery_target_identity:sha256`, `orphan_comment_id:uint`, `orphan_comment_body_sha256:sha256`, `orphan_record_digest:sha256`, `orphan_author_login:enum(github-actions[bot])`, `orphan_author_id:uint=41898282`, `orphan_actor_type:enum(Bot)`, `orphan_app_id:uint=15368`, `orphan_workflow_path:protected-writer-path`, `orphan_workflow_run_id:uint`, `orphan_workflow_run_attempt:uint`, `orphan_workflow_job_id:uint`, `orphan_protected_dev_sha:commit`, `orphan_run_conclusion:enum(failure,cancelled,timed-out)`, `orphan_anchor_count:uint=0-or-1`, `orphan_anchor_artifact_id:uint-or-null`, `orphan_anchor_artifact_digest:sha256-or-null`, `orphan_attestation_count:uint=0`, `orphan_anchor_attestation_step:enum(skipped)`, `last_authenticated_comment_id:uint-or-null`, `last_authenticated_record_digest:sha256-or-null`, `quarantine_reason:enum(anchor-publication-interrupted)` |
+| artifact anchor              | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `record_type:record-type`, `record_digest:sha256`, `comment_id:uint`, `comment_body_sha256:sha256`, `generation_identity:sha256`, `attempt:uint`, `workflow_path:protected-writer-path`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `protected_dev_sha:commit`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 `requested-lifecycle-state` is exactly `status: new`, `status: triaged`, `status: ready`,
 `status: in progress`, `status: pr open`, `status: ready for human review`, `status: blocked`,
@@ -551,17 +551,43 @@ links, stable provider reads, and the exact target before it appends this one ch
 record, any checkpoint-plus-16 shape, any missing or conflicting fact, or an already consumed target
 produces no record or effect.
 
-The ordinary writer additionally enforces a two-record terminalization reserve without changing
-that hard 15-record loader bound. At 13 non-checkpoint records after a genesis root or authenticated
+The ordinary writer additionally enforces a three-record terminalization reserve without changing
+that hard 15-record loader bound. At 12 non-checkpoint records after a genesis root or authenticated
 checkpoint, the only permitted next append is the generation's terminal or superseded phase/fence
-claim; while that claim is the 14th record at the chain tip, the only permitted next append is its
-immediate transition/read-back checkpoint. A nonterminal append at 13, any non-checkpoint append
-after the reserved fence at 14, or any other 14-record open shape stops with no record or effect.
-The caller-held per-issue group spans both reserved writes, and a crash after the fence may resume
-only the exact checkpoint for that same frozen generation and fence. Every lane must prove before
-its first record that its closed maximum can reach a checkpoint within this reserve. This prevents
-ordinary execution from ever creating the prior-checkpoint-plus-16 shape that overflow recovery
-correctly rejects.
+claim, which becomes record 13. From that reserved terminal fence the writer may append only its
+immediate transition/read-back checkpoint, or one exact authorized orphan settlement for an
+interrupted checkpoint publication as record 14 followed immediately by the recovery-owned
+transition/read-back checkpoint as record 15. A nonterminal append at 12, any other non-checkpoint
+append after the reserved fence at 13, any append other than that exact checkpoint after the
+settlement at 14, or any other open 13- or 14-record shape stops with no record or effect. The
+caller-held per-issue group spans the ordinary fence and checkpoint writes; a later explicit
+recovery holds the same group and binds the exact frozen fence and orphan.
+
+If issue, pull-request, or check facts drift after the reserved terminal fence but before its
+checkpoint is authenticated, the writer does not append a second or additional fence. The same
+fence is the predecessor of a closed reserved-fence supersession projection: two stable
+pre-comment reads must differ from the frozen generation; the checkpoint uses equal source,
+desired, and observed state from the final read, `transition_owner` `invalidation`, null effect,
+`outcome` `superseded`, and `reason_code` `superseded`. The first stable post-fence difference is
+the immutable superseding witness; later pre-comment changes refresh only the final projection
+under the same fence. A reversion to the frozen generation before comment creation resumes the
+ordinary terminal projection instead. After an exact checkpoint anchor and attestation exist,
+later facts are availability evidence only and cannot stale the historical terminalization.
+
+If the reserved checkpoint comment is accepted but anchor publication is interrupted, the existing
+authorized orphan recovery may append the exact settlement as record 14 only when the fixed
+anchor-attestation publication step is proven `skipped` in two stable exact writer-job reads. The
+settlement binds zero or one exact un-attested anchor artifact; zero attestations are mandatory.
+Once that settlement is authenticated, record 15 is an ordinary v1 checkpoint with equal stable
+states, `transition_owner` `recovery`, null effect, `outcome` `abandoned`, and reason
+`recovery-required`. It compacts the frozen terminal fence and settlement before any
+successor generation. An attempted, started, failed, cancelled, timed-out, missing, or unknown
+anchor-attestation step is ambiguous and permits no retry, quarantine, checkpoint, or effect;
+authorized human reconciliation is required. Repeated failure of the bounded settlement or final
+checkpoint remains fail-closed rather than raising the loader limit. Every lane must prove before
+its first record that its closed maximum can reach this reserve. These rules prevent ordinary
+execution from ever creating the prior-checkpoint-plus-16 shape that overflow recovery correctly
+rejects while preserving a forward path for one interrupted reserved checkpoint.
 
 Successful publication and stable authentication of the v2 checkpoint compact the 16 records in
 the ordinary way and may also settle at most four strictly ordered quarantined overflow-publication
@@ -578,13 +604,16 @@ group authenticates the existing checkpoint and makes every copy irrelevant; two
 ambiguous. When the group has no fully authenticated tuple, only its lowest numeric `comment_id` is
 the candidate; later copies are irrelevant and do not consume the candidate allowance. A
 conflicting copy cannot match the locator-bound projection and produces no checkpoint or effect.
-The candidate has either no post-comment anchor or one exact
-matching anchor with no anchor attestation in both stable passes. A fully valid
-post-comment anchor/attestation tuple authenticates the existing checkpoint instead; a fifth
-candidate, missing or invalid locator attestation, any anchor attestation, mismatched or multiple
-artifact, nonterminal job, unknown provenance, or conflicting body is ambiguous and produces no
-record or effect. Existing evidence remains append-only and auditable. Subsequent wakes use the
-normal v1 protocol and 15-record bound; overflow recovery grants no standing exception.
+The candidate has either no post-comment anchor or one exact matching anchor with no anchor
+attestation in both stable passes, and the exact terminal writer-job projection must show the fixed
+anchor-attestation publication step as `skipped`. A fully valid post-comment anchor/attestation
+tuple authenticates the existing checkpoint instead. If that step was attempted, started, failed,
+cancelled, timed out, is missing, or has unknown status, absence from attestation inventories cannot
+prove non-acceptance: the candidate is ambiguous and permits no retry, quarantine, checkpoint, or
+effect. A fifth candidate, missing or invalid locator attestation, any anchor attestation,
+mismatched or multiple artifact, nonterminal job, unknown provenance, or conflicting body likewise
+fails closed. Existing evidence remains append-only and auditable. Subsequent wakes use the normal
+v1 protocol and 15-record bound; overflow recovery grants no standing exception.
 
 ### Record authentication and chain reconstruction
 
@@ -607,12 +636,15 @@ loaded facts match:
 
 A superseded checkpoint authenticates its request, head, target, generation, attempt, and closed
 partial producer set against the frozen generation reconstructed from the authenticated predecessor
-chain, not by pretending they remain current. Its predecessor must be that frozen generation's exact
-`claim_outcome=superseded` phase/fence claim. The claim's authenticated
+chain, not by pretending they remain current. Ordinarily its predecessor is that frozen
+generation's exact `claim_outcome=superseded` phase/fence claim. The claim's authenticated
 `source_observation_identity` is the immutable first superseding witness and must differ from the
-frozen generation. Immediately before constructing the checkpoint, the coordinator recomputes a
-terminal current observation twice; it may differ from that first witness but must still differ from
-the frozen generation. The checkpoint's read-back projection binds this latest stable observation.
+frozen generation. The sole alternate predecessor is the exact reserved terminal fence at record
+13: when facts first drift after that fence, the first stable post-fence observation is the
+immutable superseding witness and no second fence is appended. Immediately before constructing the
+checkpoint, the coordinator recomputes a terminal current observation twice; it may differ from
+that first witness but must still differ from the frozen generation. The checkpoint's read-back
+projection binds this latest stable observation.
 A second or later fact change before comment creation therefore refreshes only that projection under
 the same fence and never appends another claim or starts a successor. After the canonical comment
 and exact anchor attestation exist, a post-anchor fact change, including reversion to the frozen
@@ -639,16 +671,17 @@ and publishes a GitHub-native attestation. The attestation subject name is exact
 `keiko-native/lifecycle-overflow-locator/v1/{repository}/{decimal-issue}/{overflow-recovery-target-identity}/{decimal-run-id}/{decimal-run-attempt}/{decimal-job-id}`
 and its digest is exactly `sha256:{overflow-publication-locator-identity}`. The artifact inventory
 must expose exactly that provider-assigned ID, name, associated run ID, and unexpired immutable
-artifact; the attestation supplies the run attempt. Duplicates or disagreement fail closed. Four
-independent locator-verification requests are budgeted: that pre-locator protected writer-job read,
-then after publication one artifact inventory, one exact artifact metadata reread, and one
-locator-subject attestation inventory whose response contains the matching bundle. Together they
-must stably verify the locator artifact ID, identity, projection commitment, attestation, and job
-before the writer places the locator pair in the v2 body. The pre-locator read is one of these four,
-not a fifth unbudgeted request; its stable job ID and run association are reused rather than reread
-after upload. The writer is still running at this point, so this read grants no terminal conclusion;
-later recovery must independently prove a failed, cancelled, or timed-out terminal conclusion. That
-locator grants no record, checkpoint,
+artifact; the attestation supplies the run attempt. Duplicates or disagreement fail closed. Six
+locator-verification requests are budgeted: that pre-locator protected writer-job read, then after
+publication one artifact inventory, one exact artifact metadata reread, the two provider requests
+for the locator archive download redirect chain, and one locator-subject attestation inventory
+whose response contains the matching bundle. The downloaded archive must pass the single-file,
+name, size, and traversal checks; its exact canonical bytes must reproduce the locator identity and
+candidate projection before the writer places the locator pair in the v2 body. The pre-locator read
+is one of these six, not an added request; its stable job ID and run association are reused rather
+than reread after upload. The writer is still running at this point, so this read grants no terminal
+conclusion; later recovery must independently prove a failed, cancelled, or timed-out terminal
+conclusion. That locator grants no record, checkpoint,
 predecessor, or effect authority; it exists solely so a later recovery can authenticate an
 anchorless interrupted comment to its protected writer run and job.
 
@@ -661,11 +694,17 @@ artifact-attestation capability with only `id-token: write`, `attestations: writ
 `contents: read`, and the writer's separately scoped comment permission. It attests a subject whose
 name is exactly
 `keiko-native/lifecycle-comment/v1/{repository}/{decimal-issue}/{decimal-comment-id}/{generation-identity}/{decimal-attempt}/{record-type}/{decimal-run-id}/{decimal-run-attempt}`
-and whose digest is exactly `sha256:{artifact-anchor-identity}`. The writer performs a final
-comment, artifact, attestation, run, and job reread and may expose the record to a later phase only
-after that complete binding is stable. A crash before the post-publication anchor completes leaves
-an unauthenticated comment and grants no authority. A raw OIDC token, signing certificate,
-Sigstore bundle, credential, or provider response is never placed in the issue record.
+and whose digest is exactly `sha256:{artifact-anchor-identity}`. The writer's final six-request
+verification reads the exact comment, exact anchor metadata, the anchor archive through its
+two-request redirect chain, the anchor-subject attestation inventory, and one complete
+current-source GraphQL projection covering issue, source observation, and protected `dev`. The
+downloaded sole canonical file must reproduce the artifact-anchor identity. Verified attestation
+claims bind the
+protected run and attempt, while the earlier exact job read binds the locator's job, so separate
+final run and job rereads are redundant and prohibited. The writer may expose the record to a later
+phase only after that complete binding is stable. A crash before the post-publication anchor
+completes leaves an unauthenticated comment and grants no authority. A raw OIDC token, signing
+certificate, Sigstore bundle, credential, or provider response is never placed in the issue record.
 
 The exact writer permission set is `actions: read`, `attestations: write`, `contents: read`,
 `id-token: write`, and `issues: write`; every other permission is `none`. A producer that also owns
@@ -774,9 +813,15 @@ request binds the exact recovery-target identity: orphan comment ID, body digest
 digest, and last authenticated predecessor. Under the per-issue fence, two complete stable reads
 must independently verify the unchanged canonical orphan body and digest; built-in bot user, ID,
 type, and Actions App; claimed protected writer path, `refs/heads/dev`, protected commit, run, and
-attempt; a terminal `failure`, `cancelled`, or `timed-out` run conclusion; and zero matching anchors
-and attestations. Orphan body fields are candidate locators only and grant nothing until every
-provider fact is independently loaded.
+attempt; a terminal `failure`, `cancelled`, or `timed-out` run conclusion; the exact fixed writer
+job and its complete step projection; zero or one exact matching anchor artifact; and zero matching
+attestations. The fixed anchor-attestation publication step must be `skipped` in both job reads. If
+it was attempted, started, failed, cancelled, timed out, is absent, or has unknown status, the
+provider may have accepted an attestation that is not yet visible and the orphan remains ambiguous
+forever; inventory absence cannot authorize a retry. When one un-attested anchor exists, its
+provider ID and the SHA-256 of its safely extracted sole canonical file are included in the
+settlement; the pair is explicitly null only when no anchor exists. Orphan body fields are
+candidate locators only and grant nothing until every provider fact is independently loaded.
 
 The coordinator then appends one normally authenticated phase/fence claim with the exact settlement
 matrix above and the last authenticated record as predecessor, or a null predecessor when none
@@ -786,8 +831,10 @@ predecessor, and reason `anchor-publication-interrupted`. Once that settlement's
 comment/anchor/attestation tuple is stably authenticated, chain reconstruction quarantines only the
 exact orphan ID/body pair as a non-member and may continue from the settlement. A changed body,
 different or missing provider fact, non-terminal or successful run, existing anchor or attestation,
-authorization mismatch, second orphan, unstable reread, or settlement-publication failure remains
-blocked and effect-disabled; it cannot be settled by inference.
+authorization mismatch, attempted or unknown anchor-attestation step, second orphan, unstable
+reread, or settlement-publication failure remains blocked and effect-disabled; it cannot be settled
+by inference. The sole existing-anchor exception is the exact un-attested anchor bound into the
+settlement above.
 
 If two comment pages do not reach the checkpoint, the workflow performs no lifecycle or status
 effect and enters recovery mode only when the stable reads prove that relevant non-empty history
@@ -859,43 +906,64 @@ pagination overflow, lower observed limit, or unavailable response yields
 allows it. The global group prevents lifecycle-on-lifecycle races, while unrelated workflow quota
 use can reduce availability but cannot create authority or bypass stable rereads.
 
-Overflow recovery uses a separate hard 200-request counter. Two complete recovery passes consume at
-most 84 requests each. The ordinary 52 base-record requests are exactly two comment-page requests,
-one exact-name base-anchor artifact inventory, 16 base-anchor downloads, 16 per-subject attestation
-inventory requests, 16 exact writer-job reads, and one complete current-source GraphQL read. Each
-subject-qualified attestation response contains the attestation bundles for that exact digest and
+Overflow recovery uses a separate hard 200-request counter. The first recovery pass consumes at
+most 108 requests and the second stable pass at most 60. Every GitHub artifact archive download is
+exactly two provider requests: the authenticated artifact `/zip` request and its redirect to the
+archive response. The first-pass base is therefore 68 requests: two comment pages, one exact-name
+base-anchor inventory, 32 calls for 16 base-anchor download redirect chains, 16 per-subject
+attestation inventories, 16 exact writer-job reads, and one complete current-source GraphQL read.
+Each subject-qualified attestation response contains the bundles for that exact digest and
 cryptographically binds repository, protected workflow path, ref, commit, run, and attempt. The
-matching exact writer-job read independently binds the encoded job to that attested run; a redundant
-workflow-run read and a separate provider bundle-download request are neither permitted nor counted.
+matching exact writer-job read independently binds the encoded job to that attested run; a
+redundant workflow-run read and a separate provider bundle-download request are prohibited.
 
-Recovery adds exactly 32 requests per pass: four candidate comment exact-ID rereads; four
-candidate-locator exact-name or run-scoped artifact inventories; four exact locator metadata
-rereads by provider artifact ID; four locator artifact downloads; eight additional subject-qualified
-attestation inventory requests for four candidate locators and four optional candidate anchors;
-four optional candidate-anchor downloads; and four exact terminal writer-job reads. Thus the pass
-uses at most 24 subject-qualified attestation requests and exactly `52 + 32 = 84` total requests.
-The locator inventory, metadata, and downloaded sole canonical file must agree on its exact name,
-provider ID, run, expiry, identity, and candidate projection in both passes; candidates from
-distinct runs or names never share an inventory request. Each candidate comment exact-ID reread
-must match the body found by complete pagination. An optional candidate-anchor subject returning any
-attestation fails closed without granting authority. The one current-source GraphQL read covers the
-issue, pull request, readiness, equal-observation projection, and protected `dev` ref atomically.
+The first-pass candidate addition is exactly 40 requests: four candidate comment exact-ID rereads;
+four candidate-locator exact-name or run-scoped artifact inventories; four exact locator metadata
+rereads; eight calls for four locator download redirect chains; eight subject-qualified attestation
+inventories for four locator and four optional-anchor subjects; eight calls for four optional-anchor
+download redirect chains; and four exact terminal writer-job reads including their fixed step
+projections. Thus the first pass is exactly `68 + 40 = 108` requests and downloads at most 24
+archives once into bounded in-memory canonical-byte buffers.
+
+The second pass reuses only those cached canonical file bytes; it never reuses provider metadata,
+comments, attestations, jobs, or current facts. GitHub Actions artifacts are immutable after upload,
+and the second pass must independently reproduce the same provider artifact IDs, names, run IDs,
+expiry state, provider digests, exact metadata, and attestation subjects before the cached bytes can
+be reused. Any changed, deleted, expired, ambiguous, or mismatched artifact fails closed. Its
+36-request base repeats the two comment pages, base inventory, 16 attestation inventories, 16 job
+reads, and current-source GraphQL read without another archive request. Its 24-request candidate
+addition repeats the four exact-ID comments, four locator inventories, four locator metadata reads,
+eight subject inventories, and four terminal-job reads. The second pass is exactly `36 + 24 = 60`.
+This asymmetric stable read proves current provider bindings twice while counting the 24 archive
+download redirects once rather than pretending each archive costs one request in both passes.
+
+The locator inventory, metadata, and cached downloaded sole canonical file must agree on exact
+name, provider ID, run, expiry, identity, and candidate projection across both passes; candidates
+from distinct runs or names never share an inventory request. Each candidate comment exact-ID
+reread must match complete pagination. An optional candidate-anchor subject returning any
+attestation fails closed without granting authority. Each terminal writer-job read must also prove
+the fixed anchor-attestation publication step `skipped`; an attempted or unknown step is ambiguous
+and denies quarantine. The one current-source GraphQL read covers the issue, pull request,
+readiness, equal-observation projection, and protected `dev` ref atomically.
+
 ADR-0012's direct command authentication consumes at most six requests. The remaining 26 requests
 are reserved for the checkpoint: at most three locator upload/finalization calls, at most three
-locator-attestation publication calls, and exactly four independent locator-verification calls
-before the comment; one comment create and one immediate reread; at most three anchor
-upload/finalization calls and at most three anchor-attestation publication calls after it; and the
-eight final comment, anchor, anchor-attestation, run, job, issue, source-observation, and
-protected-ref rereads. These maxima are exactly `3 + 3 + 4 + 2 + 3 + 3 + 8 = 26`. Locator
-verification uses the protected writer-job read before locator construction plus the artifact and
-attestation inventories created after locator publication and before comment creation; any later
-recovery pass independently reauthenticates it from that pass's bounded inventories. The
-implementation gate
-rejects a provider composition that cannot statically prove this 26-request maximum. At runtime a
-27th publication request is denied; an already-created comment then remains an incomplete candidate
-under the bounded explicit recovery path above.
-Thus two complete recovery passes at 84 requests each, six-request authentication, and 26 requests
-for publication total exactly 200. Request 201 produces no record or effect. Unused normal or
+locator-attestation publication calls, and six locator-verification requests before the comment—one
+protected writer-job read, one artifact inventory, one exact metadata reread, the locator archive's
+two-request download redirect chain, and one attestation inventory; one comment create and one
+immediate reread; at most three anchor upload/finalization calls; at most three anchor-attestation
+publication calls; and six final verification calls. Those final calls are one exact comment read,
+one exact anchor metadata read, the anchor archive's two-request download redirect chain, one
+anchor-attestation inventory, and one complete current-source GraphQL read. Attestation claims bind
+the protected run and attempt, and the pre-locator job read binds the writer job, so separate final
+run and job calls are neither needed nor allowed. These maxima are exactly
+`3 + 3 + 6 + 2 + 3 + 3 + 6 = 26`.
+
+The implementation gate rejects a provider composition that cannot statically prove this
+26-request maximum. At runtime a 27th publication request is denied; an already-created comment then
+remains an incomplete candidate under the bounded explicit recovery path above. The first recovery
+pass at 108 requests, second pass at 60, six-request authentication, and 26-request publication
+total exactly `108 + 60 + 6 + 26 = 200`. Request 201 produces no record or effect. Unused normal or
 orphan-recovery allowance is not transferable. The counter covers every provider call, including
 redirects and upload/finalization calls as well as cardinality, command, permission, record,
 artifact, attestation, run, job, write, and read-back requests.
@@ -953,14 +1021,17 @@ Duplicate wake-ups and duplicate identical results are no-ops. An authenticated 
 creates a new generation digest. If the authenticated current facts supersede an open generation,
 the coordinator first appends its superseded phase/fence claim and then must append a terminal
 transition/read-back checkpoint for that generation before it may append a successor generation
-request. That ordinary v1 superseded terminal checkpoint has equal source, desired, and observed
-state; `transition_owner` exactly `invalidation`; `effect_identity` explicit null; `outcome` exactly
-`superseded`; `reason_code` exactly `superseded`; and only the authenticated producer results already
-present, which may be the empty set. Its phase fence, frozen-generation authentication, checkpoint
-sequence, compacted prefix, predecessor, protected commit, and timestamp follow the existing exact
-v1 rules with no alternate default. A wake that cannot publish and stably authenticate the terminal
-checkpoint stops; it cannot begin the successor generation. Repeated or reordered facts therefore
-cannot starve checkpoint creation or consume the live suffix through generation churn.
+request. The closed reserved-boundary exception above uses the already-authenticated reserved
+terminal fence as that same generation's superseding fence when facts first drift after record 13;
+it appends no second fence. That ordinary v1 superseded terminal checkpoint has equal source,
+desired, and observed state; `transition_owner` exactly `invalidation`; `effect_identity` explicit
+null; `outcome` exactly `superseded`; `reason_code` exactly `superseded`; and only the authenticated
+producer results already present, which may be the empty set. Its phase fence, frozen-generation
+authentication, checkpoint sequence, compacted prefix, predecessor, protected commit, and timestamp
+follow the existing exact v1 rules with no alternate default. A wake that cannot publish and stably
+authenticate the terminal checkpoint stops; it cannot begin the successor generation. Repeated or
+reordered facts therefore cannot starve checkpoint creation or consume the live suffix through
+generation churn.
 
 In short, a superseded fence requires a terminal transition/read-back checkpoint before any
 successor generation.

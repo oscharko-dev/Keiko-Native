@@ -1081,7 +1081,7 @@ Provider protection excludes every agent identity from the \`dev\` update allowl
       `projection ${index} omitted protected-branch mutation verbs`,
     );
     const retryMutation = document.replace(
-      /no\s+retr(?:y|ies)/giu,
+      /(?:no|never)\s+retr(?:y|ies)/giu,
       "retries are allowed",
     );
     assert.notEqual(retryMutation, document);
@@ -1929,10 +1929,14 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       "orphan_workflow_path:protected-writer-path",
       "orphan_workflow_run_id:uint",
       "orphan_workflow_run_attempt:uint",
+      "orphan_workflow_job_id:uint",
       "orphan_protected_dev_sha:commit",
       "orphan_run_conclusion:enum(failure,cancelled,timed-out)",
-      "orphan_anchor_count:uint=0",
+      "orphan_anchor_count:uint=0-or-1",
+      "orphan_anchor_artifact_id:uint-or-null",
+      "orphan_anchor_artifact_digest:sha256-or-null",
       "orphan_attestation_count:uint=0",
+      "orphan_anchor_attestation_step:enum(skipped)",
       "last_authenticated_comment_id:uint-or-null",
       "last_authenticated_record_digest:sha256-or-null",
       "quarantine_reason:enum(anchor-publication-interrupted)",
@@ -2067,7 +2071,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   );
   assert.match(
     adr,
-    /final\s+comment, artifact, attestation, run, and job reread[\s\S]{0,250}complete binding is stable/iu,
+    /final six-request[\s\S]{0,300}exact comment[\s\S]{0,300}anchor archive[\s\S]{0,300}attestation inventory[\s\S]{0,300}current-source[\s\S]{0,500}complete binding is stable/iu,
   );
   const permissionSet = adr.match(
     /The exact writer permission set is ([\s\S]+?); every other permission/u,
@@ -2588,7 +2592,15 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /two-record terminalization reserve[\s\S]{0,500}13 non-checkpoint records[\s\S]{0,500}(?:terminal|superseded)[\s\S]{0,500}14[\s\S]{0,500}checkpoint[\s\S]{0,700}checkpoint-plus-16/iu,
+    /three-record terminalization reserve[\s\S]{0,500}12 non-checkpoint records[\s\S]{0,500}(?:terminal|superseded)[\s\S]{0,500}13[\s\S]{0,600}(?:orphan settlement|settlement)[\s\S]{0,400}14[\s\S]{0,500}checkpoint[\s\S]{0,500}15/iu,
+  );
+  assert.match(
+    protocol,
+    /facts drift after the reserved terminal fence[\s\S]{0,300}does not append a second[\s\S]{0,500}same\s+fence[\s\S]{0,500}`outcome` `superseded`/iu,
+  );
+  assert.match(
+    protocol,
+    /reserved checkpoint comment[\s\S]{0,300}anchor publication[\s\S]{0,500}settlement as record 14[\s\S]{0,500}record 15[\s\S]{0,300}`transition_owner` `recovery`/iu,
   );
   assert.match(
     protocol,
@@ -2616,7 +2628,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /two complete recovery passes[\s\S]{0,240}84 requests each[\s\S]{0,240}six-request[\s\S]{0,240}26 requests[\s\S]{0,160}200/iu,
+    /first recovery\s+pass at 108 requests[\s\S]{0,160}second pass at 60[\s\S]{0,160}six-request authentication[\s\S]{0,160}26-request publication[\s\S]{0,160}200/iu,
   );
   assert.match(
     wake,
@@ -2628,7 +2640,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /For overflow v2 only[\s\S]{0,700}overflow-publication-locator identity[\s\S]{0,500}one immutable artifact[\s\S]{0,2600}independent locator-verification requests[\s\S]{0,900}locator pair in the v2 body/iu,
+    /For overflow v2 only[\s\S]{0,700}overflow-publication-locator identity[\s\S]{0,500}one immutable artifact[\s\S]{0,2600}six\s+locator-verification requests[\s\S]{0,1200}locator pair in the v2 body/iu,
   );
   assert.match(
     protocol,
@@ -2640,15 +2652,27 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /ordinary 52[\s\S]{0,700}16 per-subject attestation[\s\S]{0,400}16 exact writer-job reads[\s\S]{0,500}attestation response contains the attestation bundles/iu,
+    /first-pass base[\s\S]{0,200}68[\s\S]{0,500}32 calls for 16 base-anchor download redirect chains[\s\S]{0,300}16 per-subject[\s\S]{0,100}attestation inventories/iu,
   );
   assert.match(
     protocol,
-    /Recovery adds exactly 32\s+requests[\s\S]{0,1400}52 \+ 32 = 84/iu,
+    /16 exact writer-job reads[\s\S]{0,500}attestation response contains the bundles/iu,
   );
   assert.match(
     protocol,
-    /Recovery adds exactly 32 requests per pass: four candidate comment exact-ID rereads; four\s+candidate-locator exact-name or run-scoped artifact inventories; four exact locator metadata\s+rereads by provider artifact ID; four locator artifact downloads/iu,
+    /first-pass candidate addition[\s\S]{0,200}40[\s\S]{0,1200}68 \+ 40 = 108/iu,
+  );
+  assert.match(
+    protocol,
+    /second pass[\s\S]{0,300}reuses[\s\S]{0,300}cached canonical[\s\S]{0,500}36[\s\S]{0,400}24[\s\S]{0,200}60/iu,
+  );
+  assert.match(
+    protocol,
+    /Every GitHub artifact archive download[\s\S]{0,300}exactly two provider requests/iu,
+  );
+  assert.match(
+    protocol,
+    /downloads at most 24[\s\S]{0,300}cached canonical file bytes[\s\S]{0,500}second pass/iu,
   );
   assert.match(
     protocol,
@@ -2688,7 +2712,11 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /remaining 26 requests[\s\S]{0,300}three locator upload\/finalization calls[\s\S]{0,100}three\s+locator-attestation publication calls[\s\S]{0,100}four independent locator-verification calls/iu,
+    /remaining 26 requests[\s\S]{0,300}three locator upload\/finalization calls[\s\S]{0,200}three\s+locator-attestation publication calls[\s\S]{0,200}six locator-verification requests/iu,
+  );
+  assert.match(
+    protocol,
+    /six locator-verification requests[\s\S]{0,500}locator archive's[\s\S]{0,100}two-request download redirect chain/iu,
   );
   assert.match(
     protocol,
@@ -2696,9 +2724,17 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /Four[\s\S]{0,100}independent locator-verification requests[\s\S]{0,900}pre-locator read is one of these four/iu,
+    /Six[\s\S]{0,100}locator-verification requests[\s\S]{0,500}download redirect chain/iu,
   );
-  assert.match(protocol, /3 \+ 3 \+ 4 \+ 2 \+ 3 \+ 3 \+ 8 = 26/iu);
+  assert.match(
+    protocol,
+    /pre-locator read\s+is one of these six, not an added request/iu,
+  );
+  assert.match(protocol, /3 \+ 3 \+ 6 \+ 2 \+ 3 \+ 3 \+ 6 = 26/iu);
+  assert.match(
+    protocol,
+    /anchor-attestation publication step[\s\S]{0,500}`skipped`[\s\S]{0,500}(?:attempted|started|unknown)[\s\S]{0,500}ambiguous[\s\S]{0,500}no (?:retry|quarantine|checkpoint)/iu,
+  );
   assert.match(
     protocol,
     /same four record types[\s\S]{0,220}not a fifth record type/iu,

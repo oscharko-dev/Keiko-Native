@@ -122,24 +122,30 @@ Overflow recovery must be implemented and proven before Issue #55 can activate t
 activation is disabled, its exact allowlisted direct plain-issue command may only append one
 null-effect version-2 transition/read-back checkpoint over the exact authenticated 16-record genesis
 suffix. The probe must preserve the ordinary 15-record bound; reject a 17th record, checkpoint plus
-16, and request 201; prove the exact 84 + 84 + 6 + 26 request budget; preserve every existing
-comment, anchor, and attestation; count every subject-qualified attestation inventory request and
-consume the bundles returned in that response; replace redundant run reads with attestation-backed
-exact job reads; and independently exact-ID-reread every candidate comment and inventory,
-metadata-reread, and download every distinct locator artifact. It must prove replay is a no-op;
+16, and request 201; prove the exact 108 + 60 + 6 + 26 request budget; preserve every existing
+comment, anchor, and attestation; count both calls in every artifact-download redirect chain; cache
+bounded canonical archive bytes only between the two passes while independently rereading all
+provider identities, metadata, attestations, complete job/step projections, and current facts;
+consume bundles from each subject-qualified response; and download/reproduce the new locator before
+comment creation and the final anchor before success. It must prove replay is a no-op;
 recover zero through four interrupted v2 publications while denying a fifth; and prove superseded
 generations authenticate
 their frozen generation, closed partial producer set, first superseding witness, and any later
 terminal non-equality witness by refreshing the checkpoint projection under the same fence before
 terminalizing ahead of a successor with owner `invalidation`, null effect, outcome `superseded`, and
 reason `superseded`; a post-anchor fact change cannot stale that exactly attested null-effect
-checkpoint. The writer must reserve the 14th non-checkpoint slot for a terminal fence and immediate
-checkpoint so a prior-checkpoint-plus-16 suffix is unreachable. Every interrupted candidate must
+checkpoint. The writer must use a three-record terminalization reserve: reject a nonterminal append
+at 12, place the terminal fence at record 13, permit its immediate checkpoint or exact
+skipped-attestation orphan settlement at record 14, and then permit only the recovery-owned
+null-effect checkpoint at record 15. Post-fence fact drift must use the same fence and a superseded
+checkpoint projection; one interrupted checkpoint publication must retain that forward path, and
+an ambiguous attestation submission must never retry. Every interrupted candidate must
 prove its exact pre-comment locator attestation, terminal writer job, locator-free record
 projection, deterministic ordering, and
-duplicate rejection; an optional post-comment anchor must remain unattested and its digest must hash
-the sole canonical artifact-anchor file rather than the provider archive. Any mismatch produces no
-record or effect.
+duplicate rejection; its fixed anchor-attestation publication step must be `skipped`. An optional
+post-comment anchor must remain unattested and its digest must hash the sole canonical
+artifact-anchor file rather than the provider archive. Any attempted or unknown attestation step or
+other mismatch produces no record or effect.
 The overflow path adds no account, App, PAT, broker,
 database, hosted service, dependency, second credential, lifecycle authority, or merge authority.
 Issue #55 remains

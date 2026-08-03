@@ -209,8 +209,10 @@ numbering begins at one through the exact domain-separated null-root compacted-p
 pre-checkpoint crash either remains empty, resumes a completely authenticated genesis suffix, or
 uses a protected forward recovery settlement. That settlement requires an explicit request binding
 the exact orphan and last authenticated predecessor, independently verifies the failed protected run
-and stable anchor/attestation absence, and quarantines only that orphan without treating it as a
-record. Every mismatch remains blocked and effect-disabled.
+and fixed writer job, requires the anchor-attestation publication step to be stably `skipped`, binds
+zero or one exact un-attested anchor, and quarantines only that orphan without treating it as a
+record. An attempted or unknown attestation step is ambiguous regardless of current inventory
+absence. Every mismatch remains blocked and effect-disabled.
 
 Authenticated suffix-overflow recovery is a distinct effect-disabled path. Normal operation keeps
 the hard limit of at most 15 non-checkpoint records. An allowlisted maintainer may post ADR-0012's
@@ -218,12 +220,14 @@ exact direct plain-issue overflow recovery command for a target binding exactly 
 fully authenticated records from the unique genesis root with no prior checkpoint. A prior
 checkpoint plus 16 is denied. Within a hard 200-provider-request counter, the protected coordinator
 may append only ADR-0011's version-2 form of the existing transition/read-back checkpoint with null
-effect; two 84-request recovery passes, six authorization requests, and 26 publication requests
-exhaust the ceiling exactly. Each recovery pass counts one request for every exact attestation
-subject; the subject response carries its bundles and no fictitious bulk or separate bundle call is
-assumed. Its 52-request base replaces redundant workflow-run reads with 16 attestation-backed exact
-writer-job reads. Its 32-request recovery addition independently rereads all four candidate comments
-and, for every distinct locator, inventories, rereads metadata, and downloads the exact artifact.
+effect; a 108-request first recovery pass, 60-request second pass, six authorization requests, and
+26 publication requests exhaust the ceiling exactly. Every archive download counts its authenticated
+artifact request plus the redirect response. Pass one downloads and bounds all canonical bytes;
+pass two reuses only those immutable cached bytes while independently rereading all comments,
+artifact identities/metadata, attestation subjects, complete jobs/steps, and current facts. Each
+exact attestation-subject response carries its bundles and no fictitious bulk or separate bundle
+call is assumed. Publication downloads and verifies the locator before comment creation and the
+anchor before success; its arithmetic is exactly `3 + 3 + 6 + 2 + 3 + 3 + 6 = 26`.
 The same four record types remain authoritative. Overflow recovery is a human-only manual delivery
 to `dev`.
 A 17th record, request 201, replay, edit, unavailable fact, or any chain, anchor, attestation,
@@ -233,7 +237,9 @@ a fresh explicit maintainer command may retry the unconsumed target; the success
 binds and quarantines at most four fully proven incomplete publications. Each candidate must carry
 its exact pre-comment locator artifact and valid locator attestation binding the protected writer
 run, terminal job, and locator-free candidate-record projection; its optional post-comment anchor
-must have no attestation. A non-null anchor digest is SHA-256 of the downloaded sole canonical
+must have no attestation, and the fixed anchor-attestation publication step must be proven
+`skipped`. An attempted or unknown step permits no retry because late visibility could create two
+authenticated checkpoints. A non-null anchor digest is SHA-256 of the downloaded sole canonical
 artifact-anchor file and equals its recomputed auxiliary identity, never a provider archive digest.
 Authenticated members precede quarantined candidates, which sort by ascending comment ID and reject
 duplicates. A fifth or ambiguous candidate fails closed, and no retry is automatic.
@@ -243,11 +249,16 @@ before a successor generation request. That checkpoint carries only the authenti
 subset already present before the superseded fence and fixes `transition_owner` to `invalidation`,
 null effect, `outcome` to `superseded`, and `reason_code` to `superseded`. A later fact change
 refreshes the terminal non-equality observation under the same frozen generation and fence rather
-than appending another claim. Once its exact anchor attests that null-effect checkpoint, a later
-fact change cannot stale the historical terminalization. The ordinary writer reserves the 14th
-non-checkpoint slot for the terminal or superseded fence and immediately checkpoints it; it rejects
-a nonterminal append at 13 and therefore never creates a prior-checkpoint-plus-16 suffix. This
-prevents event churn or missing stale producers from starving checkpoints.
+than appending another claim. At the reserved boundary the existing terminal fence itself becomes
+that closed supersession predecessor; no second fence is appended. Once its exact anchor attests
+that null-effect checkpoint, a later fact change cannot stale the historical terminalization. The
+ordinary writer uses a three-record terminalization reserve: it rejects a nonterminal append at 12,
+places the terminal or superseded fence at record 13, permits either its immediate checkpoint or an
+exact interrupted-publication orphan settlement at record 14, and after that settlement permits
+only the recovery-owned null-effect checkpoint at record 15. The settlement is allowed only when
+the checkpoint writer's anchor-attestation step was stably `skipped`; attempted or unknown
+submission remains ambiguous. This makes a prior-checkpoint-plus-16 suffix unreachable and prevents
+event churn or one interrupted reserved checkpoint from starving terminalization.
 Overflow recovery remains disabled for lifecycle effects before Issue #55, adds no principal or
 credential, and changes no merge authority. Any implementing pull request to `dev` is a human-only
 manual delivery. The separate accepted defect issue required by decision #170 may nevertheless

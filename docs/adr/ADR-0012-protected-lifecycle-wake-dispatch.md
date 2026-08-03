@@ -701,7 +701,8 @@ An interrupted v2 publication does not consume its overflow target. After two st
 that the prior writer job is terminal, its exact pre-comment locator artifact has a valid
 GitHub-native attestation binding the protected coordinator path, ref, commit, run, attempt, and
 job plus the locator-free candidate-record projection, and its optional post-comment anchor has no
-attestation, a fresh explicit maintainer command
+attestation, and the prior writer's fixed anchor-attestation publication step is proven `skipped`
+in both exact terminal-job reads, a fresh explicit maintainer command
 may authorize another attempt for the same target. The coordinator
 accepts at most four candidates ordered by ascending comment ID after the 16 predecessor-ordered
 authenticated members, rejects every duplicate canonical identity, binds their closed quarantine
@@ -712,32 +713,44 @@ starve it.
 Until the new checkpoint is fully authenticated, the target remains unconsumed. An existing fully
 authenticated candidate makes the command a replay no-op; a fifth, conflicting, still-running,
 unknown-provenance, or attested candidate fails closed. Reordered simultaneous commands remain
-no-ops, and there is no scheduled or automatic publication retry.
+no-ops, and there is no scheduled or automatic publication retry. If the attestation step was
+attempted, started, failed, cancelled, timed out, is missing, or is unknown, a timed-out submission
+may later become visible; absence from two inventories is not proof of non-acceptance and the
+candidate remains ambiguous with no retry, quarantine, checkpoint, or effect.
 
-Every provider request is counted against a separate hard ceiling of 200. Two complete recovery
-passes consume at most 84 requests each. The 52-request base uses two comment pages, one exact-name
-base-anchor inventory, 16 base-anchor downloads, 16 subject-qualified attestation inventories, 16
-exact writer-job reads, and one current-source GraphQL read. Attestation claims replace redundant
-workflow-run reads while each exact job read independently binds its job to the attested run.
-Recovery adds exactly 32 requests: four candidate comment exact-ID rereads; four locator artifact
-inventories, four exact locator metadata rereads, and four locator downloads across the candidates'
-distinct runs and names; eight subject requests for four locator and four optional-anchor subjects;
-four optional-anchor downloads; and four terminal-job reads. Each subject response contains its
-matching bundles and no separate bundle-download request exists, totaling exactly 84 per pass.
+Every provider request is counted against a separate hard ceiling of 200. Each archive download is
+two calls because GitHub redirects the authenticated artifact `/zip` request to the archive. The
+first recovery pass consumes at most 108 requests: a 68-request base counts 32 calls for 16
+base-anchor redirect chains, and a 40-request candidate addition counts eight calls for four locator
+redirect chains plus eight for four optional-anchor redirect chains. The other calls are the two
+comment pages; base and candidate artifact inventories/metadata; 24 subject-qualified attestation
+inventories; 20 exact job reads; four candidate exact-ID rereads; and the current-source GraphQL
+read specified by ADR-0011.
+
+The second stable pass consumes at most 60 requests. It reuses only the bounded canonical bytes
+downloaded in pass one while independently rereading every comment, artifact identity and metadata,
+attestation subject, complete job/step projection, and current fact. Immutable artifact IDs and
+provider digests must remain exact; any expiry, deletion, change, or ambiguity fails closed. Its
+36-request base plus 24-request candidate addition contains no archive download. Subject responses
+contain their matching bundles and no separate bundle-download endpoint exists.
 
 The exact direct-comment authentication consumes at most six requests. The remaining 26 requests
 are reserved for:
 
 - at most three locator upload/finalization calls;
 - at most three locator-attestation publication calls;
-- four independent locator-verification calls: one protected writer-job read before locator
-  construction and three post-publication artifact/attestation reads;
+- six locator-verification requests: one protected writer-job read before locator construction,
+  artifact inventory and exact metadata reads, the locator archive's two-call download redirect,
+  and the locator-subject attestation inventory;
 - two comment create/read-back calls;
 - at most three anchor upload/finalization calls;
 - at most three anchor-attestation publication calls; and
-- eight final stable read-back calls.
+- six final verification calls: exact comment and anchor metadata reads, the anchor archive's
+  two-call download redirect, its attestation inventory, and one current-source GraphQL read.
 
-These maxima are exactly 26 and total 200.
+These maxima are exactly `3 + 3 + 6 + 2 + 3 + 3 + 6 = 26`. The first recovery pass at 108,
+second pass at 60, authentication at six, and publication at 26 total exactly
+`108 + 60 + 6 + 26 = 200`.
 
 Request 201 produces no record or effect. The implementation gate rejects a provider composition
 that cannot prove the 26-request publication maximum; a runtime 27th publication request is denied
