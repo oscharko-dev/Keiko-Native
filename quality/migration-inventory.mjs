@@ -362,12 +362,12 @@ function pullRequestFact(item, issueByNumber, allowlistedMergers) {
     };
   const issue = issueByNumber.get(associatedIssue);
   if (associatedIssue === undefined && !hasAssociationLocator)
-    return {
-      fact: {
-        ...basicFact,
-      },
-      verified: false,
-    };
+    return item.state === "open"
+      ? {
+          disposition: "pull-request-association-missing",
+          fact: basicFact,
+        }
+      : { fact: basicFact, verified: false };
   if (issue === undefined)
     return {
       disposition: "pull-request-association-unverifiable",

@@ -228,6 +228,38 @@ test("builds the exact current-readiness-first inventory and reconciliation plan
   assert.equal(verifyMigrationInventory(input, result).ok, true);
 });
 
+test("dispositions open pull requests without an accepted issue locator", async () => {
+  const input = await acceptedSnapshot();
+  const open = pullRequest(72, 30, {
+    body: "Automated dependency update without planning authority.",
+    labels: [],
+  });
+  const closed = pullRequest(73, 30, {
+    body: "Closed historical pull request without planning authority.",
+    labels: [],
+    state: "closed",
+  });
+  input.pullRequests.pages[0].nodes.push(open, closed);
+  input.pullRequests.pages[0].totalCount += 2;
+
+  const result = buildMigrationInventory(input);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.publishable, false);
+  assert.deepEqual(
+    result.dispositions.filter(
+      ({ code }) => code === "pull-request-association-missing",
+    ),
+    [
+      {
+        code: "pull-request-association-missing",
+        kind: "pull-request",
+        number: 72,
+      },
+    ],
+  );
+});
+
 test("is deterministic under provider node ordering", async () => {
   const input = await acceptedSnapshot();
   const first = buildMigrationInventory(input);

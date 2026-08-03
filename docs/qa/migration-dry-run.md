@@ -18,7 +18,9 @@ in-flight work. PR-open or ready-for-human-review entries additionally bind exac
 request, its accepted target, and its exact head. Closed completed issues require a signed merge
 proof from an allowlisted maintainer. Other closures and pull requests receive no desired status
 label. Unverifiable observations enter a sanitized disposition queue and produce no publishable
-manifest.
+manifest. Every open pull request without an exact accepted-issue locator is dispositioned because
+it would also make ADR-0012's complete hourly lifecycle reconciliation fail closed. Unassociated
+closed historical pull requests remain non-blocking inventory facts.
 
 ## Deterministic outputs
 
