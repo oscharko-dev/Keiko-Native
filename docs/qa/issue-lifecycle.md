@@ -216,10 +216,14 @@ uses a protected forward recovery settlement. New settlements use the version-2 
 original version-1 zero-anchor identity remains read-only compatibility. A settlement requires an
 explicit request binding the exact orphan and last authenticated predecessor, independently
 verifies the failed protected run and fixed writer job, requires the anchor-attestation publication
-step to be stably `skipped`, binds
+step to match its exact protected-writer name and provider-visible number with conclusion stably
+`skipped`, binds
 zero or one exact un-attested anchor, and quarantines only that orphan without treating it as a
 record. An attempted or unknown attestation step is ambiguous regardless of current inventory
-absence. Every mismatch remains blocked and effect-disabled.
+absence. The parent is an exact phase/fence record v2 carrying
+`recovery_settlement_schema_version=2`; version-first dispatch never guesses between legacy and
+forward settlement bytes. A historical settlement-bearing phase/fence v1 selects only the
+read-only legacy settlement v1 schema. Every mismatch remains blocked and effect-disabled.
 
 Authenticated suffix-overflow recovery is a distinct effect-disabled path. Normal operation keeps
 the hard limit of at most 15 non-checkpoint records. An allowlisted maintainer may post ADR-0012's
@@ -228,17 +232,21 @@ fully authenticated records from the unique genesis root with no prior checkpoin
 checkpoint plus 16 is denied. Within a hard 200-provider-request counter, the protected coordinator
 may append only ADR-0011's version-2 form of the existing transition/read-back checkpoint with null
 effect; a 108-request first recovery pass, 60-request second pass, six authorization requests, and
-26 publication requests exhaust the ceiling exactly. Every archive download counts its authenticated
-artifact request plus the redirect response. Pass one downloads and bounds all canonical bytes;
-pass two reuses only those immutable cached bytes while independently rereading all comments,
+26 publication requests define the closed worst-case ceiling; successful coordinator records omit
+inapplicable numeric job reads rather than padding the count. Every archive download counts its
+authenticated artifact request plus the redirect response. Pass one downloads and bounds all
+canonical bytes; pass two reuses only those immutable cached bytes while independently rereading
+all comments,
 artifact identities/metadata, attestation subjects, complete jobs/steps, and current facts. Each
 exact attestation-subject response carries its bundles and no fictitious bulk or separate bundle
 call is assumed. Publication downloads and verifies the locator before comment creation and the
 anchor before success; its arithmetic is exactly `3 + 3 + 6 + 2 + 3 + 3 + 6 = 26`.
 For this effect-disabled exact-target path only, verified GitHub-native attestation claims replace
 independent workflow-run and referenced-workflow-inventory requests for historical records; an
-exact job read still binds each job and full step projection to the attested run. Ordinary record
-authentication retains both provider run and inventory reads.
+exact job read binds each encoded job and full step projection to the attested run. Successful
+coordinator records carry no job ID and instead require their unique artifact-anchor attestation to
+bind the exact comment, record, caller, reusable writer, run, attempt, and protected SHA; no job ID
+is inferred. Ordinary record authentication retains both provider run and inventory reads.
 The same four record types remain authoritative. Overflow recovery is a human-only manual delivery
 to `dev`.
 A 17th record, request 201, replay, edit, unavailable fact, or any chain, anchor, attestation,
@@ -249,7 +257,8 @@ binds and quarantines at most four fully proven incomplete publications. Each ca
 its exact pre-comment locator artifact and valid locator attestation binding the protected writer
 run, terminal job, and locator-free candidate-record projection; its optional post-comment anchor
 must have no attestation, and the fixed anchor-attestation publication step must be proven
-`skipped`. An attempted or unknown step permits no retry because late visibility could create two
+by its exact mapped name and provider-visible number with conclusion `skipped`. An attempted or
+unknown step permits no retry because late visibility could create two
 authenticated checkpoints. A non-null anchor digest is SHA-256 of the downloaded sole canonical
 artifact-anchor file and equals its recomputed auxiliary identity, never a provider archive digest.
 Authenticated members precede quarantined candidates, which sort by ascending comment ID and reject
@@ -270,8 +279,11 @@ or an exact version-2 interrupted-checkpoint settlement at record 14 followed on
 recovery-owned null-effect checkpoint at record 15. If the reserved fence publication itself is
 interrupted, its version-2 settlement occupies record 13 after the 12 authenticated records and
 only the recovery-owned checkpoint may follow at record 14. Either settlement is allowed only when
-the writer's anchor-attestation step was stably `skipped`; attempted or unknown submission remains
-ambiguous. This makes a prior-checkpoint-plus-16 suffix unreachable and prevents event churn or one
+the writer's anchor-attestation step's mapped name and provider-visible number were stably observed
+with conclusion `skipped`; attempted or unknown submission remains ambiguous. Each recovery-owned
+`abandoned` checkpoint carries the exact authenticated pre-fence producer subset, including empty;
+no other abandoned checkpoint may omit an expected producer. This makes a
+prior-checkpoint-plus-16 suffix unreachable and prevents event churn or one
 interrupted reserved fence or checkpoint from starving terminalization.
 Overflow recovery remains disabled for lifecycle effects before Issue #55, adds no principal or
 credential, and changes no merge authority. Any implementing pull request to `dev` is a human-only

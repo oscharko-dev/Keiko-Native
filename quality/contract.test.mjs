@@ -1975,7 +1975,23 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   assert.match(adr, /\| recovery settlement v2\s+\| `schema_version:uint=2`/iu);
   assert.match(
     adr,
-    /`orphan_workflow_job_id:uint`[\s\S]{0,500}`orphan_anchor_count:uint=0-or-1`[\s\S]{0,500}`orphan_anchor_attestation_step:enum\(skipped\)`/iu,
+    /`orphan_workflow_job_id:uint`[\s\S]{0,500}`orphan_anchor_attestation_step_number:uint`[\s\S]{0,500}`orphan_anchor_attestation_step_name:protected-writer-attestation-step-name`[\s\S]{0,500}`orphan_anchor_attestation_step_conclusion:enum\(skipped\)`[\s\S]{0,500}`orphan_anchor_count:uint=0-or-1`/iu,
+  );
+  assert.match(
+    adr,
+    /Phase\/fence claim v2[\s\S]{0,500}`schema_version`: uint `2`[\s\S]{0,1800}`recovery_settlement_schema_version`: uint `2`[\s\S]{0,1000}only[\s\S]{0,300}recovery settlement/iu,
+  );
+  assert.match(
+    adr,
+    /Phase\/fence claim v1[\s\S]{0,5000}non-null[\s\S]{0,500}recovery_settlement_identity[\s\S]{0,500}(?:selects|means)[\s\S]{0,300}(?:legacy|version-1)[\s\S]{0,300}recovery settlement[\s\S]{0,500}read-only/iu,
+  );
+  assert.match(
+    adr,
+    /recovery settlement v2[\s\S]{0,1000}`orphan_anchor_attestation_step_number:uint`[\s\S]{0,500}`orphan_anchor_attestation_step_name:protected-writer-attestation-step-name`/iu,
+  );
+  assert.match(
+    adr,
+    /protected-writer-attestation-step-name[\s\S]{0,1000}issue-lifecycle\.yml[\s\S]{0,300}Attest exact lifecycle anchor identity[\s\S]{0,300}(?:number|provider-visible)[^\n]*6[\s\S]{0,1000}pr-contract\.yml[\s\S]{0,300}Attest exact producer anchor identity[\s\S]{0,300}(?:number|provider-visible)[^\n]*7[\s\S]{0,1000}contract-publication\.yml[\s\S]{0,300}Attest exact producer anchor identity[\s\S]{0,300}(?:number|provider-visible)[^\n]*7/iu,
   );
 
   const requestedStateDefinition = adr.match(
@@ -2097,7 +2113,10 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
     [...claimSet[1].matchAll(/`([^`]+)`/gu)].map((match) => match[1]),
     [
       "repository",
+      "workflow_ref",
+      "workflow_sha",
       "job_workflow_ref",
+      "job_workflow_sha",
       "ref",
       "sha",
       "run_id",
@@ -2171,6 +2190,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
         "recovery_settlement_identity",
         "sha-256 of exact version-2 recovery-settlement preimage",
       ],
+      ["recovery_settlement_schema_version", "2"],
       ["predecessor", "last authenticated record or null root"],
       ["orphan_authority", "quarantined-only"],
     ],
@@ -2598,7 +2618,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /reserved fence comment[\s\S]{0,300}anchor publication[\s\S]{0,500}settlement as record 13[\s\S]{0,500}record 14[\s\S]{0,300}`transition_owner` `recovery`/iu,
+    /reserved fence comment[\s\S]{0,300}anchor publication[\s\S]{0,500}settlement as record 13[\s\S]{0,900}record 14[\s\S]{0,300}`transition_owner` `recovery`/iu,
   );
   assert.match(
     protocol,
@@ -2606,7 +2626,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /reserved checkpoint comment[\s\S]{0,300}anchor publication[\s\S]{0,500}settlement as record 14[\s\S]{0,500}record 15[\s\S]{0,300}`transition_owner` `recovery`/iu,
+    /reserved checkpoint comment[\s\S]{0,300}anchor publication[\s\S]{0,500}settlement as record 14[\s\S]{0,900}record 15[\s\S]{0,300}`transition_owner` `recovery`/iu,
   );
   assert.match(
     protocol,
@@ -2638,11 +2658,15 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /first recovery\s+pass at 108 requests[\s\S]{0,160}second pass at 60[\s\S]{0,160}six-request authentication[\s\S]{0,160}26-request publication[\s\S]{0,160}200/iu,
+    /recovery-owned[\s\S]{0,500}abandoned[\s\S]{0,500}producer_results[\s\S]{0,500}exact authenticated pre-fence subset[\s\S]{0,300}including the empty set[\s\S]{0,800}No other[\s\S]{0,300}abandoned[\s\S]{0,300}omit\s+an expected producer/iu,
+  );
+  assert.match(
+    protocol,
+    /first recovery\s+pass ceiling of 108 requests[\s\S]{0,160}second-pass ceiling of 60[\s\S]{0,160}six-request authentication[\s\S]{0,160}26-request\s+publication[\s\S]{0,200}200/iu,
   );
   assert.match(
     wake,
-    /interrupted v2 publication[\s\S]{0,500}fresh\s+explicit[\s\S]{0,500}at\s+most\s+four[\s\S]{0,500}compacted-prefix[\s\S]{0,500}target\s+remains\s+unconsumed/iu,
+    /interrupted v2 publication[\s\S]{0,800}fresh\s+explicit[\s\S]{0,500}at\s+most\s+four[\s\S]{0,500}compacted-prefix[\s\S]{0,500}target\s+remains\s+unconsumed/iu,
   );
   assert.match(
     protocol,
@@ -2666,7 +2690,11 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /16 exact writer-job reads[\s\S]{0,500}attestation response contains the bundles/iu,
+    /up to 16 exact writer-job reads[\s\S]{0,500}only[\s\S]{0,300}(?:record|candidate)[\s\S]{0,300}(?:carries|encodes)[\s\S]{0,200}workflow_job_id/iu,
+  );
+  assert.match(
+    protocol,
+    /successful coordinator[\s\S]{0,500}unique[\s\S]{0,500}artifact-anchor identity[\s\S]{0,700}workflow_ref[\s\S]{0,300}job_workflow_ref[\s\S]{0,500}no exact writer-job read/iu,
   );
   assert.match(
     wake,
@@ -2678,7 +2706,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /second pass[\s\S]{0,300}reuses[\s\S]{0,300}cached canonical[\s\S]{0,500}36[\s\S]{0,400}24[\s\S]{0,200}60/iu,
+    /second pass[\s\S]{0,300}reuses[\s\S]{0,300}cached canonical[\s\S]{0,700}36[\s\S]{0,500}24[\s\S]{0,200}60/iu,
   );
   assert.match(
     protocol,

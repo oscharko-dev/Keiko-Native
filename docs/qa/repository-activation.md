@@ -128,9 +128,10 @@ bounded canonical archive bytes only between the two passes while independently 
 provider identities, metadata, attestations, complete job/step projections, and current facts;
 consume bundles from each subject-qualified response; and download/reproduce the new locator before
 comment creation and the final anchor before success. It must prove replay is a no-op;
-prove that verified protected caller/writer attestation claims plus exact bound job/step reads
-replace workflow-run and referenced-workflow-inventory requests only inside this effect-disabled
-exact-target path while ordinary authentication retains them;
+prove that verified protected caller/writer attestation claims plus exact bound job/step reads only
+for records that encode a job replace workflow-run and referenced-workflow-inventory requests inside
+this effect-disabled exact-target path, while successful coordinator records require their unique
+artifact-anchor attestation correlation and ordinary authentication retains the provider reads;
 recover zero through four interrupted v2 publications while denying a fifth; and prove superseded
 generations authenticate
 their frozen generation and closed partial producer set. An ordinary superseded fence binds its
@@ -143,12 +144,17 @@ at 12, place the terminal fence at record 13, permit its immediate checkpoint or
 skipped-attestation checkpoint-orphan settlement at record 14, and then permit only the
 recovery-owned null-effect checkpoint at record 15. An interrupted fence instead uses its exact
 version-2 settlement at record 13 and checkpoint at record 14. Version 1 remains read-only
-zero-anchor compatibility. Post-fence fact drift must use the same fence and a superseded checkpoint
+zero-anchor compatibility; the parent phase/fence record encodes settlement schema version 2 before
+its identity, while a legacy settlement-bearing phase/fence v1 selects only settlement v1. Each
+recovery-owned `abandoned` checkpoint must carry the exact authenticated
+pre-fence producer subset, including empty, and no other abandoned checkpoint may omit an expected
+producer. Post-fence fact drift must use the same fence and a superseded checkpoint
 projection; both interrupted publication shapes must retain a forward path, and an ambiguous
 attestation submission must never retry. Every interrupted candidate must
 prove its exact pre-comment locator attestation, terminal writer job, locator-free record
 projection, deterministic ordering, and
-duplicate rejection; its fixed anchor-attestation publication step must be `skipped`. An optional
+duplicate rejection; its fixed anchor-attestation publication step must have its mapped exact name,
+provider-visible number, and conclusion `skipped`. An optional
 post-comment anchor must remain unattested and its digest must hash the sole canonical
 artifact-anchor file rather than the provider archive. Any attempted or unknown attestation step or
 other mismatch produces no record or effect.

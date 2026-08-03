@@ -691,8 +691,10 @@ exact command-body digest distinguishes the two grammars. One target may be cons
 and a reordered duplicate is a no-op.
 
 After authentication, the coordinator performs two complete stable reads of all 16 records and
-their anchors, attestations, attested protected-run identities, exact jobs, refs, SHAs, predecessor
-chain, null genesis root, and current equal lifecycle observation. It recomputes the target and then
+their anchors, attestations, attested protected-run identities, applicable exact jobs, refs, SHAs,
+predecessor chain, null genesis root, and current equal lifecycle observation. A producer result
+that encodes a job requires that exact job read; a successful coordinator record instead requires
+its unique artifact-anchor attestation correlation. It recomputes the target and then
 appends only ADR-0011's overflow recovery transition/read-back v2 checkpoint. That record binds the
 authorized request and overflow target identities, carries the exact authenticated pre-fence
 producer subset, has a null effect, and cannot alter lifecycle state, labels, branches, pull
@@ -705,9 +707,14 @@ referenced-workflow inventory. Instead, each GitHub-native attestation must cryp
 the fixed issuer, repository, protected top-level caller and reusable writer paths, immutable
 `refs/heads/dev`, protected commit, run ID, run attempt, subject name, and digest through its
 verified SLSA/OIDC claims. One separate exact job read binds the encoded job ID to that same run and
-loads its complete fixed step projection. The closed protected workflow graph is still checked
-locally. A missing claim, absent job, mutable ref, different run, path, commit, or subject, or any
-attestation/job/record disagreement fails closed. This substitution exists only inside the
+loads its complete fixed step projection for every producer record or interrupted candidate that
+actually carries `workflow_job_id`. A successful coordinator base record carries no such field:
+its unique attestation subject binds the artifact-anchor identity, comment, record digest, writer
+path, run, attempt, and protected SHA, while `workflow_ref`/`workflow_sha` bind the fixed caller and
+`job_workflow_ref`/`job_workflow_sha` bind the reusable writer; no numeric job is invented. The
+closed protected workflow graph is still checked locally. A missing claim, an absent applicable
+job, mutable ref, different run, path, commit, or subject, or any attestation/job/record
+disagreement fails closed. This substitution exists only inside the
 effect-disabled, exact-target, hard-200 overflow recovery; ordinary record authentication,
 writing, and lifecycle effects retain the complete provider run and referenced-workflow inventory.
 
@@ -716,17 +723,24 @@ unanchored reserved-fence comment may be settled only by an exact version-2 reco
 claim at record 13 and an immediate recovery-owned null-effect checkpoint at record 14. After an
 authenticated reserved fence at record 13, an unanchored checkpoint comment may be settled only by
 the corresponding version-2 claim at record 14 and immediate checkpoint at record 15. Both paths
+use the version-2 phase/fence marker and its encoded `recovery_settlement_schema_version=2`, so the
+parent record selects the settlement parser before downstream bytes are decoded. A historical
+settlement-bearing phase/fence v1 selects only the read-only settlement v1 schema. Both paths
 require a terminal failed/cancelled/timed-out writer job whose fixed attestation-publication step is
-stably `skipped`; an attempted or unknown submission remains blocked. Post-fence fact drift uses
-the final encoded read-back source observation as the sole durable superseding witness under the
-same fence.
+proven in both reads by its exact protected-writer mapped name, provider-visible number, and
+`skipped` conclusion; an attempted or unknown submission remains blocked. Each resulting
+recovery-owned `abandoned` checkpoint carries the exact authenticated pre-fence producer subset,
+including empty, and no other abandoned checkpoint may omit an expected producer. Post-fence fact
+drift uses the final encoded read-back source observation as the sole durable superseding witness
+under the same fence.
 
 An interrupted v2 publication does not consume its overflow target. After two stable passes prove
 that the prior writer job is terminal, its exact pre-comment locator artifact has a valid
 GitHub-native attestation binding the protected coordinator path, ref, commit, run, attempt, and
 job plus the locator-free candidate-record projection, and its optional post-comment anchor has no
-attestation, and the prior writer's fixed anchor-attestation publication step is proven `skipped`
-in both exact terminal-job reads, a fresh explicit maintainer command
+attestation, and the prior writer's fixed anchor-attestation publication step is proven by its exact
+mapped name, provider-visible number, and `skipped` conclusion in both exact terminal-job reads, a
+fresh explicit maintainer command
 may authorize another attempt for the same target. The coordinator
 accepts at most four candidates ordered by ascending comment ID after the 16 predecessor-ordered
 authenticated members, rejects every duplicate canonical identity, binds their closed quarantine
@@ -748,8 +762,9 @@ first recovery pass consumes at most 108 requests: a 68-request base counts 32 c
 base-anchor redirect chains, and a 40-request candidate addition counts eight calls for four locator
 redirect chains plus eight for four optional-anchor redirect chains. The other calls are the two
 comment pages; base and candidate artifact inventories/metadata; 24 subject-qualified attestation
-inventories; 20 exact job reads; four candidate exact-ID rereads; and the current-source GraphQL
-read specified by ADR-0011.
+inventories; up to 20 exact job reads only for base records and candidates that encode a job; four
+candidate exact-ID rereads; and the current-source GraphQL read specified by ADR-0011. Successful
+coordinator records reduce the actual total below the ceiling.
 
 The second stable pass consumes at most 60 requests. It reuses only the bounded canonical bytes
 downloaded in pass one while independently rereading every comment, artifact identity and metadata,
@@ -773,8 +788,8 @@ are reserved for:
   two-call download redirect, its attestation inventory, and one current-source GraphQL read.
 
 These maxima are exactly `3 + 3 + 6 + 2 + 3 + 3 + 6 = 26`. The first recovery pass at 108,
-second pass at 60, authentication at six, and publication at 26 total exactly
-`108 + 60 + 6 + 26 = 200`.
+second pass at 60, authentication at six, and publication at 26 form the closed worst-case ceiling
+`108 + 60 + 6 + 26 = 200`; inapplicable base-record job reads are omitted rather than padded.
 
 Request 201 produces no record or effect. The implementation gate rejects a provider composition
 that cannot prove the 26-request publication maximum; a runtime 27th publication request is denied

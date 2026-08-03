@@ -77,19 +77,24 @@ Sequence-one bootstrap proves the exact compacted-prefix domain, schema, null pr
 identity, and complete ordered genesis member list. Forward orphan settlement requires a
 request-bound recovery-target digest, version-first recovery-settlement parsing, an independently
 verified failed protected writer run, stable zero-or-one-anchor/zero-attestation reads with a
-`skipped` attestation step, and a normally authenticated version-2 settlement claim chained from
-the last authenticated predecessor. Version 1 remains read-only zero-anchor compatibility. The
+mapped exact-name and provider-visible-number attestation step whose conclusion is `skipped`, and a
+normally authenticated version-2 settlement claim chained from the last authenticated predecessor.
+The phase/fence parent encodes settlement schema version 2 before the settlement identity; version 1
+remains read-only zero-anchor compatibility and is selected only by a legacy settlement-bearing
+phase/fence v1 parent. The
 orphan never becomes a record or authority source.
 
-Generation-request, producer-result, phase/fence-claim, and transition/read-back records use strict
-version-1 canonical bytes and domain-separated SHA-256 digests. The loader performs full-body
-parsing, bounded complete pagination, and stable double-reads. Deletion, edits, forks, cycles, gaps,
-conflicts, truncation, wrong producer/generation/fence, or unavailable evidence fail closed.
+Generation-request, producer-result, ordinary phase/fence-claim, and ordinary transition/read-back
+records use strict version-1 canonical bytes and domain-separated SHA-256 digests. The loader
+performs full-body parsing, bounded complete pagination, and stable double-reads. Deletion, edits,
+forks, cycles, gaps, conflicts, truncation, wrong producer/generation/fence, or unavailable evidence
+fail closed.
 Protected producers independently recompute the generation and evaluate only their owned predicate;
 they cannot choose lifecycle lane, target, activation, transition, or merge authority.
 
-At the record-type level, overflow recovery is the sole schema-version exception: it uses version 2
-of the existing transition/read-back type, never a fifth record type. The auxiliary
+At the record-type level, the exact recovery-settlement phase/fence and overflow checkpoint are the
+only schema-version exceptions: each uses version 2 of its existing type, never a fifth record type.
+The auxiliary
 recovery-settlement identity separately retains its accepted version-1 zero-anchor schema and uses
 an exact version-2 schema for every new settlement; parser dispatch is version-first and never
 reinterprets legacy bytes. The deterministic gate must prove the exact
@@ -105,7 +110,9 @@ immutable bytes while independently rereading every comment, artifact identity/m
 attestation, full job/step projection, and current fact. It must
 prove that this effect-disabled exact-target profile replaces independent workflow-run and
 referenced-workflow-inventory requests only with verified protected caller/writer attestation
-claims plus an exact bound job and complete step projection; ordinary authentication retains the
+claims plus an exact bound job and complete step projection only where the record encodes a job.
+Successful coordinator records instead require a unique artifact-anchor attestation binding the
+exact caller, reusable writer, record, run, attempt, and SHA. Ordinary authentication retains the
 provider run and inventory reads. It must
 prove zero through four interrupted v2 publications are quarantined only inside a later successful
 checkpoint, a fifth is denied, and the target remains unconsumed until full authentication. It must
@@ -113,7 +120,8 @@ also prove
 every interrupted candidate has one valid pre-comment locator attestation for the protected writer
 run and terminal job, an exact locator-free candidate-record projection, deterministic member
 ordering, and no duplicate canonical identity while its optional post-comment anchor has no
-attestation and the fixed anchor-attestation publication step is `skipped`. An attempted, unknown,
+attestation and the fixed anchor-attestation publication step has its exact mapped name,
+provider-visible number, and conclusion `skipped`. An attempted, unknown,
 or ambiguously completed attestation step must deny retry even when both inventories are empty. The
 26-request publication matrix must download and reproduce the locator before comment creation and
 download and reproduce the final anchor before success. The locator-attestation digest must be the
@@ -130,6 +138,9 @@ immediate checkpoint or the exact version-2 skipped-attestation checkpoint-orpha
 record 14, and after that settlement permits only the recovery-owned null-effect checkpoint at
 record 15. If fence publication is interrupted, the exact version-2 fence-orphan settlement is
 record 13 and only its recovery-owned checkpoint may follow at record 14. The gate must prove that
+each resulting recovery-owned `abandoned` checkpoint carries exactly the authenticated pre-fence
+producer subset, including empty, while every other abandoned checkpoint requires the complete
+expected set; that the parent phase/fence record's encoded version selects settlement v2; and that
 post-fence fact drift uses the same reserved fence and superseded checkpoint projection, both
 interrupted publication shapes have a forward path, ambiguous attestation submission never retries,
 and checkpoint plus 16 is unreachable. A later fact change cannot stale an exactly attested

@@ -98,13 +98,14 @@ Each record digest is SHA-256 of its exact canonical record bytes with a distinc
 - `keiko-native.lifecycle-record.transition-read-back`
 
 The domain, algorithm `sha-256`, schema version, and record body are fixed fields in the record.
-Generation-request, producer-result, phase/fence-claim, and ordinary transition/read-back records
-use schema version `1`; the exact overflow transition/read-back below is the sole version-2
-exception. The existing generation-input domain `keiko-native.lifecycle-input-generation` remains
-unchanged. Every producer and consumer independently parses the bytes, recomputes the digest,
-decodes both fixed-length values, and compares them in constant time. A caller-supplied digest is
-never trusted. Changing a domain, algorithm, grammar, or field meaning requires a later accepted
-ADR and schema version; runtime negotiation is prohibited.
+Generation-request, producer-result, ordinary phase/fence-claim, and ordinary
+transition/read-back records use schema version `1`. The exact forward recovery-settlement
+phase/fence claim and overflow transition/read-back below are the only record version-2 exceptions.
+The existing generation-input domain `keiko-native.lifecycle-input-generation` remains unchanged.
+Every producer and consumer independently parses the bytes, recomputes the digest, decodes both
+fixed-length values, and compares them in constant time. A caller-supplied digest is never trusted.
+Changing a domain, algorithm, grammar, or field meaning requires a later accepted ADR and schema
+version; runtime negotiation is prohibited.
 
 Closed producer identities are exactly `issue-contract-current`, `pr-contract`, and
 `contract-publication`. The first two are produced by `.github/workflows/pr-contract.yml`; the
@@ -180,9 +181,9 @@ The exact auxiliary v1 schemas are:
 
 The exact recovery-settlement version-2 schema is:
 
-| Identity               | Fixed fields, in order                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| recovery settlement v2 | `schema_version:uint=2`, `repository:string`, `issue_number:uint`, `authorized_request_identity:sha256`, `recovery_target_identity:sha256`, `orphan_comment_id:uint`, `orphan_comment_body_sha256:sha256`, `orphan_record_digest:sha256`, `orphan_author_login:enum(github-actions[bot])`, `orphan_author_id:uint=41898282`, `orphan_actor_type:enum(Bot)`, `orphan_app_id:uint=15368`, `orphan_workflow_path:protected-writer-path`, `orphan_workflow_run_id:uint`, `orphan_workflow_run_attempt:uint`, `orphan_workflow_job_id:uint`, `orphan_protected_dev_sha:commit`, `orphan_run_conclusion:enum(failure,cancelled,timed-out)`, `orphan_anchor_count:uint=0-or-1`, `orphan_anchor_artifact_id:uint-or-null`, `orphan_anchor_artifact_digest:sha256-or-null`, `orphan_attestation_count:uint=0`, `orphan_anchor_attestation_step:enum(skipped)`, `last_authenticated_comment_id:uint-or-null`, `last_authenticated_record_digest:sha256-or-null`, `quarantine_reason:enum(anchor-publication-interrupted)` |
+| Identity               | Fixed fields, in order                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| recovery settlement v2 | `schema_version:uint=2`, `repository:string`, `issue_number:uint`, `authorized_request_identity:sha256`, `recovery_target_identity:sha256`, `orphan_comment_id:uint`, `orphan_comment_body_sha256:sha256`, `orphan_record_digest:sha256`, `orphan_author_login:enum(github-actions[bot])`, `orphan_author_id:uint=41898282`, `orphan_actor_type:enum(Bot)`, `orphan_app_id:uint=15368`, `orphan_workflow_path:protected-writer-path`, `orphan_workflow_run_id:uint`, `orphan_workflow_run_attempt:uint`, `orphan_workflow_job_id:uint`, `orphan_protected_dev_sha:commit`, `orphan_run_conclusion:enum(failure,cancelled,timed-out)`, `orphan_anchor_attestation_step_number:uint`, `orphan_anchor_attestation_step_name:protected-writer-attestation-step-name`, `orphan_anchor_attestation_step_conclusion:enum(skipped)`, `orphan_anchor_count:uint=0-or-1`, `orphan_anchor_artifact_id:uint-or-null`, `orphan_anchor_artifact_digest:sha256-or-null`, `orphan_attestation_count:uint=0`, `last_authenticated_comment_id:uint-or-null`, `last_authenticated_record_digest:sha256-or-null`, `quarantine_reason:enum(anchor-publication-interrupted)` |
 
 Version 1 remains byte-for-byte readable only as the accepted legacy zero-anchor schema above; no
 new writer emits it after this amendment. Every new forward orphan settlement uses version 2,
@@ -190,6 +191,16 @@ including a zero-anchor settlement, and dispatches on the encoded schema version
 later field. The anchor ID and digest are both null when count is zero and both non-null when count
 is one. A version-1 parser never accepts version-2 bytes, a version-2 parser never reinterprets a
 version-1 preimage, and neither form negotiates fields at runtime.
+
+`protected-writer-attestation-step-name` and its numeric companion form one closed mapping to the
+provider-visible GitHub job-step projection. For `.github/workflows/issue-lifecycle.yml`, the exact
+name is `Attest exact lifecycle anchor identity`, its declared YAML step ordinal is `5`, and its
+provider-visible step number is `6`. For `.github/workflows/pr-contract.yml`, the exact name is
+`Attest exact producer anchor identity`, its declared YAML step ordinal is `6`, and its
+provider-visible step number is `7`. For `.github/workflows/contract-publication.yml`, the exact
+name is `Attest exact producer anchor identity`, its declared YAML step ordinal is `6`, and its
+provider-visible step number is `7`. A missing, duplicate, renamed, renumbered, or differently
+positioned tuple is unknown rather than `skipped` and therefore cannot authorize settlement.
 
 `requested-lifecycle-state` is exactly `status: new`, `status: triaged`, `status: ready`,
 `status: in progress`, `status: pr open`, `status: ready for human review`, `status: blocked`,
@@ -389,11 +400,33 @@ An incomplete `recovery` scan uses a non-null recovery-scan identity, positive p
 counts, its non-null accumulated-suffix identity, a non-null cursor, `false`, and a null settlement
 identity. Its final scan claim preserves the cumulative positive counts and accumulator, uses an
 explicit null cursor, sets completion to `true`, and keeps the settlement identity null. A forward
-orphan settlement instead uses null, zero, zero, null, null, `false`, and a non-null
-`recovery_settlement_identity`. Every non-recovery claim uses null, zero, zero, null, null, `false`,
-and null. A cursor is accepted only after Issue #55's live probe proves GitHub's backward GraphQL
-timeline cursor preserves the exact stable page boundary under the held per-issue group. It is an
-opaque provider locator, never authority.
+orphan settlement encoded before this amendment may use null, zero, zero, null, null, `false`, and a
+non-null `recovery_settlement_identity`; that phase/fence claim v1 selects the exact legacy
+recovery settlement v1 schema and remains read-only compatibility. No new writer emits that shape.
+Every non-recovery claim uses null, zero, zero, null, null, `false`, and null. A cursor is accepted
+only after Issue #55's live probe proves GitHub's backward GraphQL timeline cursor preserves the
+exact stable page boundary under the held per-issue group. It is an opaque provider locator, never
+authority.
+
+### Phase/fence claim v2
+
+Marker:
+
+`<!-- keiko-native-lifecycle-phase-fence-claim:v2 -->`
+
+This is schema version `2` of the existing `phase-fence-claim` record type, not a fifth record type.
+Its fields are the complete Phase/fence claim v1 sequence with `schema_version`: uint `2` and one
+`recovery_settlement_schema_version`: uint `2` field inserted immediately after
+`recovery_settlement_identity`. No other field, order, type, domain, or envelope changes. The claim
+must use phase `recovery`, claim outcome `settled`, null recovery-scan identity, zero page and comment
+counts, null accumulated suffix and provider cursor, `recovery_scan_complete` false, and a non-null
+`recovery_settlement_identity` computed from the exact recovery settlement v2 schema. A phase/fence
+claim v2 is accepted only for that exact forward recovery settlement; every other phase, outcome,
+settlement version, or field shape is malformed. A settlement-bearing version-1 claim selects only
+the legacy recovery settlement v1 schema, while a settlement-bearing version-2 claim selects only
+version 2. The loader dispatches on the parent record schema version before selecting the bound
+settlement schema. It never probes both settlement parsers or infers a version from downstream
+bytes.
 
 For each issue, the unique serialization domain is exactly
 `issue-lifecycle-${decimal issue number}` with `queue: max` and no `cancel-in-progress` key. Every
@@ -600,7 +633,8 @@ authorized orphan recovery may append its exact version-2 phase/fence settlement
 the 12 authenticated records. The orphan body must parse as the one terminal or superseded fence
 authorized for that frozen generation and predecessor, but remains quarantined-only and is never a
 record or predecessor. Two stable exact writer-job reads must prove its fixed anchor-attestation
-publication step `skipped`, zero or one exact un-attested anchor, and zero attestations. Once that
+publication step has the exact protected-writer mapped name and provider-visible number and the
+conclusion `skipped`, zero or one exact un-attested anchor, and zero attestations. Once that
 settlement is authenticated, record 14 is an ordinary v1 checkpoint with equal stable states,
 `transition_owner` `recovery`, null effect, `outcome` `abandoned`, and reason
 `recovery-required`. It compacts the 12-record generation suffix plus settlement before any
@@ -608,8 +642,9 @@ successor generation.
 
 If the reserved checkpoint comment is accepted but anchor publication is interrupted, the existing
 authorized orphan recovery may append the exact version-2 settlement as record 14 only when the
-fixed anchor-attestation publication step is proven `skipped` in two stable exact writer-job reads. The
-settlement binds zero or one exact un-attested anchor artifact; zero attestations are mandatory.
+fixed anchor-attestation publication step's exact mapped name, provider-visible number, and
+`skipped` conclusion are proven in two stable exact writer-job reads. The settlement binds zero or
+one exact un-attested anchor artifact; zero attestations are mandatory.
 Once that settlement is authenticated, record 15 is an ordinary v1 checkpoint with equal stable
 states, `transition_owner` `recovery`, null effect, `outcome` `abandoned`, and reason
 `recovery-required`. It compacts the frozen terminal fence and settlement before any
@@ -620,6 +655,14 @@ checkpoint remains fail-closed rather than raising the loader limit. Every lane 
 its first record that its closed maximum can reach this reserve. These rules prevent ordinary
 execution from ever creating the prior-checkpoint-plus-16 shape that overflow recovery correctly
 rejects while preserving a forward path for one interrupted reserved checkpoint.
+
+Each recovery-owned `abandoned` checkpoint immediately following either exact version-2 settlement
+uses `producer_results` equal to the exact authenticated pre-fence subset for the frozen generation,
+including the empty set. Every included member retains the producer-owning phase-fence digest that
+precedes the interrupted reserved fence or checkpoint; recovery does not retarget a producer to its
+own settlement fence. This is the sole partial-cardinality exception for an `abandoned` outcome and
+requires that exact settlement as predecessor. No other `abandoned` transition/read-back may omit
+an expected producer, and no recovery checkpoint may add, replace, or rebind one.
 
 Successful publication and stable authentication of the v2 checkpoint compact the 16 records in
 the ordinary way and may also settle at most four strictly ordered quarantined overflow-publication
@@ -638,7 +681,8 @@ the candidate; later copies are irrelevant and do not consume the candidate allo
 conflicting copy cannot match the locator-bound projection and produces no checkpoint or effect.
 The candidate has either no post-comment anchor or one exact matching anchor with no anchor
 attestation in both stable passes, and the exact terminal writer-job projection must show the fixed
-anchor-attestation publication step as `skipped`. A fully valid post-comment anchor/attestation
+anchor-attestation publication step's mapped name, provider-visible number, and conclusion
+`skipped`. A fully valid post-comment anchor/attestation
 tuple authenticates the existing checkpoint instead. If that step was attempted, started, failed,
 cancelled, timed out, is missing, or has unknown status, absence from attestation inventories cannot
 prove non-acceptance: the candidate is ambiguous and permits no retry, quarantine, checkpoint, or
@@ -654,7 +698,9 @@ loaded facts match:
 
 - comment author login `github-actions[bot]`, numeric user ID `41898282`, and type `Bot`;
 - `performed_via_github_app.id` equals GitHub Actions App ID `15368`;
-- the referenced workflow, run, attempt, job, and result exist and equal the record;
+- the referenced workflow, run, attempt, and result exist and equal the record; a producer result or
+  interrupted locator that encodes `workflow_job_id` additionally requires that exact job, while a
+  successful coordinator record is correlated by its unique attested artifact-anchor tuple below;
 - the workflow path is the expected repository-owned protected producer or coordinator path;
 - the workflow ref is exactly `refs/heads/dev`;
 - the loaded workflow commit equals the record's `protected_dev_sha` and is reachable from
@@ -740,11 +786,14 @@ certificate, Sigstore bundle, credential, or provider response is never placed i
 The exact writer permission set is `actions: read`, `attestations: write`, `contents: read`,
 `id-token: write`, and `issues: write`; every other permission is `none`. A producer that also owns
 an existing check receives only that already-declared check permission in its separately fenced
-check-publication job. The exact verified attestation claim set is `repository`,
-`job_workflow_ref`, `ref`, `sha`, `run_id`, `run_attempt`, and `iss`. Claims map respectively to
-the record's repository, protected workflow path, `refs/heads/dev`, `protected_dev_sha`,
-`workflow_run_id`, `workflow_run_attempt`, and GitHub Actions OIDC issuer. Missing, additional
-authority-bearing, or mismatched claim values reject the attestation.
+check-publication job. The exact verified attestation claim set is `repository`, `workflow_ref`,
+`workflow_sha`, `job_workflow_ref`, `job_workflow_sha`, `ref`, `sha`, `run_id`, `run_attempt`, and
+`iss`. Claims map respectively to the record's repository; the fixed top-level caller
+`.github/workflows/lifecycle-wakeup.yml` at `refs/heads/dev`; that caller's exact
+`protected_dev_sha`; the exact protected reusable coordinator or producer path at the same ref;
+that writer's exact same SHA; `refs/heads/dev`; `protected_dev_sha`; `workflow_run_id`;
+`workflow_run_attempt`; and the GitHub Actions OIDC issuer. Missing, additional authority-bearing,
+or mismatched claim values reject the attestation.
 
 Verification downloads the anchor artifact, requires one exact canonical file and matching
 artifact digest, recomputes its artifact-anchor identity, and matches its comment ID,
@@ -759,6 +808,16 @@ matching verified bundle. This binds the shared Actions App comment to the parti
 without adding an account, App, PAT, machine user, broker, database, or hosted Keiko service.
 Attestation and anchor creation and verification are GitHub-provider operations; repository code
 must use full-SHA-pinned GitHub-maintained transports and may not add an npm or runtime dependency.
+
+For a successful coordinator generation, phase/fence, or transition record, the unique verified
+attestation is the writer correlation: its subject binds the one artifact-anchor identity, which in
+turn binds exact comment ID, body digest, record digest, writer path, run, attempt, and protected
+SHA; its `workflow_ref` and `workflow_sha` bind the fixed top-level caller, while
+`job_workflow_ref` and `job_workflow_sha` bind the exact reusable coordinator. Such coordinator
+record schemas do not encode `workflow_job_id`, so no exact writer-job read is performed or
+invented for them. A producer-result record does encode that ID and therefore still requires the
+matching exact job read. More than one matching bundle or any disagreement makes the record
+unauthenticated.
 
 The effect-capable loader first reads issue comments newest-first through the GitHub GraphQL
 timeline, 100 comments per page and at most two pages, until it finds the latest authenticated
@@ -836,6 +895,7 @@ The forward orphan-settlement record is exactly:
 | `recovery_provider_cursor`             | `null`                                                    |
 | `recovery_scan_complete`               | `false`                                                   |
 | `recovery_settlement_identity`         | `sha-256 of exact version-2 recovery-settlement preimage` |
+| `recovery_settlement_schema_version`   | `2`                                                       |
 | `predecessor`                          | `last authenticated record or null root`                  |
 | `orphan_authority`                     | `quarantined-only`                                        |
 
@@ -848,7 +908,8 @@ must independently verify the unchanged canonical orphan body and digest; built-
 type, and Actions App; claimed protected writer path, `refs/heads/dev`, protected commit, run, and
 attempt; a terminal `failure`, `cancelled`, or `timed-out` run conclusion; the exact fixed writer
 job and its complete step projection; zero or one exact matching anchor artifact; and zero matching
-attestations. The fixed anchor-attestation publication step must be `skipped` in both job reads. If
+attestations. The fixed anchor-attestation publication step must match the protected-writer
+mapping's exact name and provider-visible number and have conclusion `skipped` in both job reads. If
 it was attempted, started, failed, cancelled, timed out, is absent, or has unknown status, the
 provider may have accepted an attestation that is not yet visible and the orphan remains ambiguous
 forever; inventory absence cannot authorize a retry. When one un-attested anchor exists, its
@@ -856,9 +917,10 @@ provider ID and the SHA-256 of its safely extracted sole canonical file are incl
 settlement; the pair is explicitly null only when no anchor exists. Orphan body fields are
 candidate locators only and grant nothing until every provider fact is independently loaded.
 
-The coordinator then appends one normally authenticated phase/fence claim with the exact settlement
-matrix above and the last authenticated record as predecessor, or a null predecessor when none
-exists. Its domain-separated recovery-settlement identity binds the authorized request,
+The coordinator then appends one normally authenticated phase/fence claim v2 with the exact
+settlement matrix above and the last authenticated record as predecessor, or a null predecessor
+when none exists. The parent version and encoded settlement version select only recovery-settlement
+schema v2. Its domain-separated recovery-settlement identity binds the authorized request,
 recovery-target identity, all exact verified orphan/provider facts, the last authenticated
 predecessor, and reason `anchor-publication-interrupted`. Once that settlement's own
 comment/anchor/attestation tuple is stably authenticated, chain reconstruction quarantines only the
@@ -944,22 +1006,28 @@ authentication profile that replaces ADR-0012's independent workflow-run GET and
 referenced-workflow inventory for the 16 base records and up to four interrupted candidates. The
 GitHub-native attestation's verified issuer and SLSA/OIDC claims must bind repository, protected
 caller and writer paths, immutable `dev` ref and commit, run ID, run attempt, and subject digest;
-the separate exact writer-job read must bind the encoded job to that same attested run and expose
-the complete fixed step projection. This exception does not apply to normal loading, ordinary
+for each record or interrupted candidate that carries `workflow_job_id`, a separate exact
+writer-job read must bind the encoded job to that same attested run and expose the complete fixed
+step projection. A successful coordinator base record has no job field and instead requires the
+unique artifact-anchor attestation correlation defined above. This exception does not apply to
+normal loading, ordinary
 writing, effects, or any record without that exact attestation, and it permits no caller-supplied
 provenance. Consequently overflow recovery does not call the workflow-run endpoint or consume a
-referenced-workflow inventory; disagreement between the attestation, job, record, or static closed
-workflow graph fails closed.
+referenced-workflow inventory; disagreement between the attestation, any applicable job, record, or
+static closed workflow graph fails closed.
 
 The first recovery pass consumes at
 most 108 requests and the second stable pass at most 60. Every GitHub artifact archive download is
 exactly two provider requests: the authenticated artifact `/zip` request and its redirect to the
 archive response. The first-pass base is therefore 68 requests: two comment pages, one exact-name
 base-anchor inventory, 32 calls for 16 base-anchor download redirect chains, 16 per-subject
-attestation inventories, 16 exact writer-job reads, and one complete current-source GraphQL read.
+attestation inventories, up to 16 exact writer-job reads only for each base record that carries a
+`workflow_job_id`, and one complete current-source GraphQL read. Sixty-eight is the closed ceiling;
+successful coordinator records reduce the actual count rather than consuming fictitious job reads.
 Each subject-qualified attestation response contains the bundles for that exact digest and
-cryptographically binds repository, protected workflow path, ref, commit, run, and attempt. The
-matching exact writer-job read independently binds the encoded job to that attested run; a
+cryptographically binds repository, protected caller and writer workflow paths, ref, commit, run,
+and attempt. Where a record encodes a job, the matching exact writer-job read independently binds it
+to that attested run; a
 redundant workflow-run read and a separate provider bundle-download request are prohibited.
 
 The first-pass candidate addition is exactly 40 requests: four candidate comment exact-ID rereads;
@@ -967,7 +1035,7 @@ four candidate-locator exact-name or run-scoped artifact inventories; four exact
 rereads; eight calls for four locator download redirect chains; eight subject-qualified attestation
 inventories for four locator and four optional-anchor subjects; eight calls for four optional-anchor
 download redirect chains; and four exact terminal writer-job reads including their fixed step
-projections. Thus the first pass is exactly `68 + 40 = 108` requests and downloads at most 24
+projections. Thus the first pass is at most `68 + 40 = 108` requests and downloads at most 24
 archives once into bounded in-memory canonical-byte buffers.
 
 The second pass reuses only those cached canonical file bytes; it never reuses provider metadata,
@@ -975,20 +1043,24 @@ comments, attestations, jobs, or current facts. GitHub Actions artifacts are imm
 and the second pass must independently reproduce the same provider artifact IDs, names, run IDs,
 expiry state, provider digests, exact metadata, and attestation subjects before the cached bytes can
 be reused. Any changed, deleted, expired, ambiguous, or mismatched artifact fails closed. Its
-36-request base repeats the two comment pages, base inventory, 16 attestation inventories, 16 job
-reads, and current-source GraphQL read without another archive request. Its 24-request candidate
+36-request base ceiling repeats the two comment pages, base inventory, 16 attestation inventories,
+up to 16 applicable job reads, and current-source GraphQL read without another archive request. Its
+24-request candidate
 addition repeats the four exact-ID comments, four locator inventories, four locator metadata reads,
 eight subject inventories, and four terminal-job reads. The second pass is exactly `36 + 24 = 60`.
 This asymmetric stable read proves current provider bindings twice while counting the 24 archive
-download redirects once rather than pretending each archive costs one request in both passes.
+download redirects once rather than pretending each archive costs one request in both passes. The
+36-request second-pass base likewise contains up to 16 job reads only for base records that encode
+`workflow_job_id`; successful coordinator records reduce the actual total.
 
 The locator inventory, metadata, and cached downloaded sole canonical file must agree on exact
 name, provider ID, run, expiry, identity, and candidate projection across both passes; candidates
 from distinct runs or names never share an inventory request. Each candidate comment exact-ID
 reread must match complete pagination. An optional candidate-anchor subject returning any
 attestation fails closed without granting authority. Each terminal writer-job read must also prove
-the fixed anchor-attestation publication step `skipped`; an attempted or unknown step is ambiguous
-and denies quarantine. The one current-source GraphQL read covers the issue, pull request,
+the fixed anchor-attestation publication step's mapped name, provider-visible number, and conclusion
+`skipped`; an attempted or unknown step is ambiguous and denies quarantine. The one current-source
+GraphQL read covers the issue, pull request,
 readiness, equal-observation projection, and protected `dev` ref atomically.
 
 ADR-0012's direct command authentication consumes at most six requests. The remaining 26 requests
@@ -1007,9 +1079,10 @@ run and job calls are neither needed nor allowed. These maxima are exactly
 The implementation gate rejects a provider composition that cannot statically prove this
 26-request maximum. At runtime a 27th publication request is denied; an already-created comment then
 remains an incomplete candidate under the bounded explicit recovery path above. The first recovery
-pass at 108 requests, second pass at 60, six-request authentication, and 26-request publication
-total exactly `108 + 60 + 6 + 26 = 200`. Request 201 produces no record or effect. Unused normal or
-orphan-recovery allowance is not transferable. The counter covers every provider call, including
+pass ceiling of 108 requests, second-pass ceiling of 60, six-request authentication, and 26-request
+publication form the closed worst-case ceiling `108 + 60 + 6 + 26 = 200`; requests omitted for
+coordinator records without job IDs are not spent or replaced. Request 201 produces no record or
+effect. Unused normal or orphan-recovery allowance is not transferable. The counter covers every
 redirects and upload/finalization calls as well as cardinality, command, permission, record,
 artifact, attestation, run, job, write, and read-back requests.
 
