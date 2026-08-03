@@ -112,6 +112,8 @@ export function completedEvidence() {
 }
 
 export function retainedEvaluationInput(evidence = completedEvidence()) {
+  evidence.bindings.foundationEvidenceSha256 = sha256(foundationAcceptanceRaw);
+  evidence.bindings.foundationPackageSha256 = sha256(foundationManifestRaw);
   const prepared = {
     schemaVersion: "keiko-native-macos-accessibility-driver-prepared/v1",
     sourceHead: evidence.bindings.evaluationHead,

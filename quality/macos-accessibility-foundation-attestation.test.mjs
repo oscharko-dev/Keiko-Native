@@ -143,6 +143,12 @@ test("fails closed on missing package policy, redaction, or cleanup outcomes", (
     (evidence) => {
       evidence.readinessFingerprint = "f".repeat(64);
     },
+    (evidence) => {
+      evidence.foundationReadinessFingerprint = "f".repeat(64);
+    },
+    (evidence) => {
+      evidence.workspaceAcknowledgementMs = evidence.acknowledgementMs + 1;
+    },
   ];
   for (const mutate of mutations) {
     const changed = changedJson(acceptanceEvidenceRaw, mutate);
