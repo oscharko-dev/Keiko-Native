@@ -9,6 +9,11 @@ This record completes ADR-0004's protected exact-head handoff persistence and pr
 does not amend ADR-0009's guarded child-to-epic merge effect, ADR-0010's staged activation, or the
 human-only `dev` boundary.
 
+Decision issue #170 amends this record with Option A: exact authenticated suffix-overflow recovery
+and mandatory supersession terminalization. That amendment becomes accepted only through a manual
+human merge to `dev`. It preserves normal operation's 15-record bound, the same four record types,
+the disabled activation state, and the human-only `dev` boundary.
+
 ## Context
 
 ADR-0004 defines one canonical nine-state lifecycle, a two-phase exact-head handoff, canonical
@@ -125,6 +130,7 @@ Every auxiliary identity is also SHA-256 over ADR-0004 canonical bytes with one 
 - recovery suffix accumulator: `keiko-native.lifecycle-recovery-suffix-identity`
 - recovery scan identity: `keiko-native.lifecycle-recovery-scan-identity`
 - recovery target: `keiko-native.lifecycle-recovery-target-identity`
+- overflow recovery target: `keiko-native.lifecycle-overflow-recovery-target-identity`
 - recovery settlement: `keiko-native.lifecycle-recovery-settlement-identity`
 - artifact anchor: `keiko-native.lifecycle-artifact-anchor`
 
@@ -155,6 +161,7 @@ The exact auxiliary v1 schemas are:
 | recovery suffix accumulator | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `scan_direction:enum(backward)`, `accumulator_step:uint`, `prior_accumulated_suffix_identity:sha256-or-null`, `page_members:list<recovery-suffix-member>`, `cumulative_member_count:uint`, `next_provider_cursor:string-or-null`, `complete:bool`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | recovery scan identity      | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `scan_direction:enum(backward)`, `provider_cursor:string-or-null`, `scanned_page_count:uint`, `scanned_comment_count:uint`, `accumulated_suffix_identity:sha256`, `complete:bool`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | recovery target             | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `orphan_comment_id:uint`, `orphan_comment_body_sha256:sha256`, `orphan_record_digest:sha256`, `last_authenticated_comment_id:uint-or-null`, `last_authenticated_record_digest:sha256-or-null`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| overflow recovery target    | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `prior_checkpoint_comment_id:null`, `prior_checkpoint_record_digest:null`, `first_record_comment_id:uint`, `first_record_digest:sha256`, `chain_tip_comment_id:uint`, `chain_tip_record_digest:sha256`, `non_checkpoint_record_count:uint=16`, `next_checkpoint_sequence:uint=1`                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | recovery settlement         | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `authorized_request_identity:sha256`, `recovery_target_identity:sha256`, `orphan_comment_id:uint`, `orphan_comment_body_sha256:sha256`, `orphan_record_digest:sha256`, `orphan_author_login:enum(github-actions[bot])`, `orphan_author_id:uint=41898282`, `orphan_actor_type:enum(Bot)`, `orphan_app_id:uint=15368`, `orphan_workflow_path:protected-writer-path`, `orphan_workflow_run_id:uint`, `orphan_workflow_run_attempt:uint`, `orphan_protected_dev_sha:commit`, `orphan_run_conclusion:enum(failure,cancelled,timed-out)`, `orphan_anchor_count:uint=0`, `orphan_attestation_count:uint=0`, `last_authenticated_comment_id:uint-or-null`, `last_authenticated_record_digest:sha256-or-null`, `quarantine_reason:enum(anchor-publication-interrupted)` |
 | artifact anchor             | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `record_type:record-type`, `record_digest:sha256`, `comment_id:uint`, `comment_body_sha256:sha256`, `generation_identity:sha256`, `attempt:uint`, `workflow_path:protected-writer-path`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `protected_dev_sha:commit`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
@@ -411,6 +418,53 @@ digest. Checkpoint sequence starts at one and increments exactly once. A checkpo
 already authenticated canonical evidence; it cannot change an outcome or make missing suffix
 evidence valid.
 
+### Overflow recovery transition/read-back v2
+
+Marker:
+
+`<!-- keiko-native-lifecycle-transition-read-back:v2 -->`
+
+This is schema version `2` of the existing `transition-read-back` record type, not a fifth record
+type. Its fixed prefix is `record_type:enum(transition-read-back)`, `schema_version:uint=2`,
+`digest_algorithm:enum(sha-256)`, and
+`digest_domain:enum(keiko-native.lifecycle-record.transition-read-back)`. Its fixed
+fields, in order, are the complete transition/read-back v1 field sequence with
+`schema_version:uint=2` and these two fields inserted immediately after `read_back_identity`:
+
+1. `overflow_recovery_authorization_identity`: SHA-256
+2. `overflow_recovery_target_identity`: SHA-256
+
+No other field, order, type, domain, or envelope changes. Version 2 is accepted only for the exact
+overflow-recovery path. It requires `transition_owner` `recovery`, `effect_identity` explicit null,
+`producer_results` an empty set, `outcome` `superseded`, and `reason_code` `recovery-required`.
+`request_identity` remains the authenticated request identity of the terminalized generation;
+`overflow_recovery_authorization_identity` is ADR-0012's stably authenticated direct-comment
+authorization, and `overflow_recovery_target_identity` is the exact auxiliary identity above.
+The source, desired, and observed lifecycle values must be equal and independently read back, so
+the record proves no lifecycle effect. The phase fence must be the exact authenticated superseded
+fence at the chain tip. A v2 record outside this closed shape, or a v1 record carrying either new
+field, is malformed.
+
+The overflow target binds one complete genesis suffix: repository, issue, explicit null prior-
+checkpoint fields, first record pair, chain-tip pair, the literal count `16`, and checkpoint
+sequence `1`. The first record must be the unique authenticated null-predecessor generation request.
+The ordered predecessor chain and compacted-prefix identity still bind every intermediate member.
+The target cannot select a lifecycle state, branch, pull request, activation, producer result,
+merge, or arbitrary range.
+
+Normal operation permits at most 15 non-checkpoint records after a checkpoint or genesis root. A
+normal loader still rejects the 16th as `record-live-suffix-overflow`; it cannot silently accept,
+truncate, or checkpoint that suffix. Only ADR-0012's exact direct plain-issue authorization may
+enter overflow recovery. That path must authenticate exactly 16 contiguous non-checkpoint records
+from the unique genesis root, all anchors, attestations, protected runs/jobs/refs/SHAs, predecessor
+links, stable provider reads, and the exact target before it appends this one checkpoint. A 17th
+record, any checkpoint-plus-16 shape, any missing or conflicting fact, or an already consumed target
+produces no record or effect.
+
+Successful publication and stable authentication of the v2 checkpoint compact the 16 records in
+the ordinary way. Existing evidence remains append-only and auditable. Subsequent wakes use the
+normal v1 protocol and 15-record bound; overflow recovery grants no standing exception.
+
 ### Record authentication and chain reconstruction
 
 Authorship is necessary but insufficient. A record is trusted only when all these independently
@@ -640,6 +694,14 @@ pagination overflow, lower observed limit, or unavailable response yields
 allows it. The global group prevents lifecycle-on-lifecycle races, while unrelated workflow quota
 use can reduce availability but cannot create authority or bypass stable rereads.
 
+Overflow recovery uses a separate hard 200-request counter. Its two complete 93-request suffix
+passes plus ADR-0012's six-request exact-comment authentication consume at most 192 requests; at
+most eight remaining requests cover checkpoint publication and its exact comment, anchor,
+attestation, and provider read-back. Request 201 produces no record or effect. Unused normal or
+orphan-recovery allowance is not transferable. The counter covers every provider call, including
+early cardinality, command, permission, record, artifact, attestation, run, job, write, and
+read-back requests.
+
 Protected workflows never edit or delete canonical records. GitHub comments are only logically
 append-only, so deletion cannot be made impossible. A missing previously referenced comment, an
 unmatched relevant writer run proving suffix loss, rewritten body, or incomplete predecessor
@@ -688,13 +750,28 @@ The phases are:
    predecessor.
 
 Duplicate wake-ups and duplicate identical results are no-ops. An authenticated input change
-creates a new generation digest. An unchanged failed or abandoned generation is terminal and does
-not retry automatically. A crash before any external effect may resume the same generation only
-after stable reconstruction proves the exact current fence and that no effect occurred. A crash,
-timeout, deletion, or unavailable response at or after a possibly accepted effect is ambiguous,
-blocked, and never retried. Explicit recovery increments the attempt, uses a new request identity,
-binds the settled predecessor, and revalidates all current authority. Responses classified as
-403, 404, 409, 422, 429, timeout, malformed, unavailable, or partial never become success.
+creates a new generation digest. If the authenticated current facts supersede an open generation,
+the coordinator first appends its superseded phase/fence claim and then must append a terminal
+transition/read-back checkpoint for that generation before it may append a successor generation
+request. That terminal checkpoint has equal source, desired, and observed state, null effect, a
+closed non-success outcome, and only the authenticated producer results already present, which may
+be the empty set. A wake that cannot publish and stably authenticate the terminal checkpoint stops;
+it cannot begin the successor generation. Repeated or reordered facts therefore cannot starve
+checkpoint creation or consume the live suffix through generation churn.
+
+In short, a superseded fence requires a terminal transition/read-back checkpoint before any
+successor generation.
+
+An unchanged failed or abandoned generation is terminal and does not retry automatically. A crash
+before any external effect may resume the same generation only after stable reconstruction proves
+the exact current fence and that no effect occurred. A crash, timeout, deletion, or unavailable
+response at or after a possibly accepted effect is ambiguous, blocked, and never retried. Explicit
+recovery increments the attempt, uses a new request identity, binds the settled predecessor, and
+revalidates all current authority. Responses classified as 403, 404, 409, 422, 429, timeout,
+malformed, unavailable, or partial never become success.
+
+An ambiguous effect is never retried; explicit recovery increments the attempt only after complete
+authorized reconstruction.
 
 ### Protected producer interface
 
@@ -812,6 +889,13 @@ generation, attempt, fence, effect identity, and observed outcome before a new a
 Recovery moves forward; it never edits or deletes a record, guesses an outcome, restores stale
 review evidence, or weakens the sacred `dev` boundary.
 
+Suffix-overflow recovery is narrower than ambiguous-effect or orphan recovery. It cannot settle an
+effect, quarantine evidence, skip a member, raise the normal 15-record limit, or accept a malformed
+chain. It only terminalizes one explicitly authorized, fully authenticated 16-record suffix as a
+null-effect v2 checkpoint. The same four record types remain authoritative; version 2 of
+transition/read-back is not a fifth record type. Activation remains disabled until Issue #55, and
+every `dev` delivery remains a human-only manual merge.
+
 ## Governance and rollout
 
 This ADR is inert documentation. It creates no workflow, token permission, lifecycle transition,
@@ -836,6 +920,13 @@ a new account, installed GitHub App, PAT, machine user, broker, database, hosted
 credential, application/runtime dependency, private-source access, or automated `dev` effect. A
 GitHub-maintained attestation transport is provider composition, must be pinned to a full commit
 SHA under the refreshed #51 contract, and receives only the permissions declared above.
+
+Issue #170 owns only this ADR and documentation amendment. After its human-only manual merge to
+`dev`, a separate defect issue must own implementation, hostile fixtures, request arithmetic, live
+effect-disabled recovery of issue #52, and exact-head qualification. That defect may salvage
+conforming code but may not activate the lifecycle, post the recovery command before its own
+accepted authority, or mutate issue #52's record chain during this decision. Sacred `dev` remains
+human-only.
 
 ## Consequences
 

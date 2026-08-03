@@ -11,6 +11,11 @@ existing recovery-settlement `authorized_request_identity` field. It does not ch
 version-1 record schemas, any existing auxiliary identity schema, producer identities, coordinator
 ownership, lifecycle state graph, activation boundary, or the human-only `dev` merge rule.
 
+Decision issue #170 adds a second exact command grammar for authenticated suffix-overflow recovery.
+It reuses the same protected direct-comment route, authorization identity, allowlist, coordinator,
+and four record types. It adds no workflow, permission, principal, credential, or automatic `dev`
+authority, and becomes accepted only through a human-only manual merge to `dev`.
+
 ## Context
 
 ADR-0011 names `.github/workflows/issue-lifecycle.yml` as the sole coordinator and requires every
@@ -655,6 +660,50 @@ fresh never-edited command. A changed or deleted comment, wrong actor or permiss
 malformed command, target mismatch, already consumed target, more than one attempted candidate, or
 any other ADR-0011 recovery-precondition failure produces no record or effect.
 
+### Bounded authenticated suffix-overflow recovery
+
+The second recovery entry point is a direct plain-issue `issue_comment` whose Unicode-NFC body is
+exactly one line:
+
+```text
+/keiko-native lifecycle-overflow-recovery v1 target=sha256:{64 lowercase hexadecimal characters}
+```
+
+The braces describe the fixed-width digest slot and are not literal bytes. The digest is the exact
+ADR-0011 overflow-recovery-target identity. No fallback scan, scheduled discovery, pull-request
+comment, alternate algorithm, uppercase hexadecimal, whitespace, second line, reason, lifecycle
+state, branch, pull request, generation, or free-form payload is permitted.
+
+The direct plain-issue `issue_comment` route accepts exactly 16 authenticated non-checkpoint records
+from the unique null-predecessor genesis root and no prior checkpoint. A 17th record, a prior
+checkpoint plus 16 records, wrong count, wrong endpoint pair, edited or replayed command, or any
+record, anchor, attestation, run, job, ref, SHA, or predecessor mismatch produces no record or
+effect. It uses the existing direct-event six-request stable comment and
+live-permission authentication, the same protected two-principal allowlist constant, and the same
+`keiko-native.lifecycle-recovery-authorized-request` identity. For this command that identity's
+`recovery_target_identity` field contains the overflow target rather than an orphan target; the
+exact command-body digest distinguishes the two grammars. One target may be consumed at most once,
+and a reordered duplicate is a no-op.
+
+After authentication, the coordinator performs two complete stable reads of all 16 records and
+their anchors, attestations, protected runs, jobs, refs, SHAs, predecessor chain, null genesis root,
+and current equal lifecycle observation. It recomputes the target and then appends
+only ADR-0011's overflow recovery transition/read-back v2 checkpoint. The record binds both the
+authorized request identity and overflow target identity, has a null effect, and cannot alter a
+lifecycle label, status, branch, pull request, queue, merge, or repository setting.
+
+Every provider request is counted against a separate hard ceiling of 200. Two complete suffix
+passes and direct-comment authentication consume at most 192 requests, leaving at most eight for
+checkpoint publication and stable comment, anchor, attestation, and read-back verification.
+Request 201 produces no record or effect. No unused allowance from normal operation or orphan
+recovery is transferred, and no provider response or rate-limit estimate can raise the ceiling.
+
+Overflow recovery remains effect-disabled before Issue #55 and cannot enter orphan settlement,
+cursor recovery, normal lifecycle mutation, or automatic retry. It is implemented only by the
+existing protected caller and coordinator. No account, App, PAT, broker, database, hosted service,
+dependency, or second credential is added. Activation remains disabled, and any implementation
+pull request to `dev` stops for a human-only manual merge.
+
 ### Inert rollout
 
 Before issue #55's signed activation, the caller and reusable coordinator remain inert. They may
@@ -678,6 +727,13 @@ prove the PR-comment routing correction while activation remains disabled. That 
 must preserve the existing locator schema, protected topology, permission ceilings, stable PR
 double read, exact accepted-issue mapping, plain-issue recovery authentication, and every
 activation-disabled zero-effect guarantee.
+
+Decision issue #170 owns only the suffix-overflow ADR amendment. After a human-only manual merge to
+`dev`, a separate defect issue owns its implementation and the exact issue #52 recovery. That defect
+must freeze the direct-command locator, version-2 transition/read-back schema, exact-16 and
+request-200 complements, hostile fixtures, mandatory supersession terminalization, and live
+effect-disabled evidence before any recovery command is posted. Issue #55 remains the sole
+activation owner.
 
 ## Alternatives
 

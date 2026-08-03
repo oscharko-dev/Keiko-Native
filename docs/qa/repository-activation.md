@@ -116,6 +116,17 @@ provisioned. Any GitHub-maintained attestation transport is full-SHA pinned unde
 contract. Before activation, a generation may emit only sanitized non-applied observations and must
 not change a lifecycle label, commit status, branch, pull request, queue, or merge.
 
+Overflow recovery must be implemented and proven before Issue #55 can activate the protocol. While
+activation is disabled, its exact allowlisted direct plain-issue command may only append one
+null-effect version-2 transition/read-back checkpoint over the exact authenticated 16-record genesis
+suffix. The probe must preserve the ordinary 15-record bound; reject a 17th record, checkpoint plus
+16, and request 201; preserve every existing comment, anchor, and attestation; prove replay is a
+no-op; and prove superseded generations terminalize before a successor begins. Any mismatch
+produces no record or effect. The overflow path adds no account, App, PAT, broker, database, hosted
+service, dependency, second credential, lifecycle authority, or merge authority. Issue #55 remains
+the sole signed activation owner and must keep policy status `disabled` until the complete positive
+and hostile complement is green on protected `dev`.
+
 The activation probe authenticates the exact bot user, GitHub Actions App ID `15368`, protected
 workflow path/ref/commit, run, attempt, job, result, and a post-publication GitHub-native
 attestation over an immutable anchor binding provider comment ID, exact body digest, record digest,

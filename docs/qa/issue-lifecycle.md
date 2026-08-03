@@ -212,6 +212,24 @@ the exact orphan and last authenticated predecessor, independently verifies the 
 and stable anchor/attestation absence, and quarantines only that orphan without treating it as a
 record. Every mismatch remains blocked and effect-disabled.
 
+Authenticated suffix-overflow recovery is a distinct effect-disabled path. Normal operation keeps
+the hard limit of at most 15 non-checkpoint records. An allowlisted maintainer may post ADR-0012's
+exact direct plain-issue overflow recovery command for a target binding exactly 16 contiguous,
+fully authenticated records from the unique genesis root with no prior checkpoint. A prior
+checkpoint plus 16 is denied. Within a hard 200-provider-request counter, the protected coordinator
+may append only ADR-0011's version-2 form of the existing transition/read-back checkpoint with null
+effect; the same four record types remain authoritative.
+Overflow recovery is a human-only manual delivery to `dev`.
+A 17th record, request 201, replay, edit, unavailable fact, or any chain, anchor, attestation,
+run/job/ref/SHA mismatch produces no record or lifecycle effect. Existing evidence is never edited,
+deleted, skipped, or reclassified.
+
+Every superseded phase/fence claim must be followed by its terminal transition/read-back checkpoint
+before a successor generation request. This prevents event churn from starving checkpoints.
+Overflow recovery remains disabled for lifecycle effects before Issue #55, adds no principal or
+credential, and changes no merge authority. Any implementing pull request to `dev` is a human-only
+manual delivery.
+
 The record protocol preserves all nine states and the exact allowed edge graph above.
 `no-lifecycle` is an outside-graph observation only for creation, reopen, and non-completed closure,
 not a tenth label. A self-state observation is a no-op; every unlisted source/target pair is denied.

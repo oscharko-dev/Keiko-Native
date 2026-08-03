@@ -87,6 +87,18 @@ conflicts, truncation, wrong producer/generation/fence, or unavailable evidence 
 Protected producers independently recompute the generation and evaluate only their owned predicate;
 they cannot choose lifecycle lane, target, activation, transition, or merge authority.
 
+Overflow recovery is the sole schema-version exception: it uses version 2 of the existing
+transition/read-back type, never a fifth record type. The deterministic gate must prove the exact
+direct plain-issue command and authorization identity, exact target over 16 authenticated records,
+normal rejection at record 16, overflow rejection at record 17, rejection of checkpoint plus 16,
+request-200 success arithmetic, request-201 denial, stable double-read, replay no-op, append-only
+evidence, null effect, and exact checkpoint read-back. It must also prove every superseded fence
+terminalizes as a checkpoint before a successor generation. Hostile wrong-actor, edited-command,
+wrong-target, missing/changed record, anchor, attestation, run, job, ref, SHA, predecessor,
+checkpoint, and provider-unavailable fixtures produce no record or effect. Overflow recovery remains
+inert before Issue #55, adds no principal or credential, and remains a human-only manual merge to
+`dev`.
+
 Publication evidence uses the exact candidate commit's complete, non-truncated recursive Git tree
 and exact regular-file blob bytes, modes, object IDs, sizes, and SHA-256 digests. The pull-request
 files API is not complete tree authority. Candidate-set drift, non-regular entries, malformed blobs,

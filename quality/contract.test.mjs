@@ -1587,7 +1587,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
     const headingIndex = recordHeadings.indexOf(heading);
     const nextHeading =
       recordHeadings[headingIndex + 1] ??
-      "Record authentication and chain reconstruction";
+      "Overflow recovery transition/read-back v2";
     assert.deepEqual(recordFields(heading, nextHeading), fields, heading);
     assert.deepEqual(
       recordSchema(heading, nextHeading),
@@ -1648,6 +1648,8 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       "keiko-native.lifecycle-recovery-suffix-identity",
     "recovery scan identity": "keiko-native.lifecycle-recovery-scan-identity",
     "recovery target": "keiko-native.lifecycle-recovery-target-identity",
+    "overflow recovery target":
+      "keiko-native.lifecycle-overflow-recovery-target-identity",
     "recovery settlement":
       "keiko-native.lifecycle-recovery-settlement-identity",
     "artifact anchor": "keiko-native.lifecycle-artifact-anchor",
@@ -1864,6 +1866,19 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       "orphan_record_digest:sha256",
       "last_authenticated_comment_id:uint-or-null",
       "last_authenticated_record_digest:sha256-or-null",
+    ],
+    "overflow recovery target": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "prior_checkpoint_comment_id:null",
+      "prior_checkpoint_record_digest:null",
+      "first_record_comment_id:uint",
+      "first_record_digest:sha256",
+      "chain_tip_comment_id:uint",
+      "chain_tip_record_digest:sha256",
+      "non_checkpoint_record_count:uint=16",
+      "next_checkpoint_sequence:uint=1",
     ],
     "recovery settlement": [
       "schema_version:uint=1",
@@ -2482,6 +2497,90 @@ test("pins the protected lifecycle recovery wake decision", async () => {
       "author_type:enum(User)",
       "recovery_target_identity:sha256",
     ],
+  );
+});
+
+test("pins bounded authenticated lifecycle suffix-overflow recovery", async () => {
+  const root = join(import.meta.dirname, "..");
+  const [protocol, wake, lifecycle, gates, activation] = await Promise.all([
+    readFile(
+      join(
+        root,
+        "docs/adr/ADR-0011-authenticated-lifecycle-handoff-record-protocol.md",
+      ),
+      "utf8",
+    ),
+    readFile(
+      join(root, "docs/adr/ADR-0012-protected-lifecycle-wake-dispatch.md"),
+      "utf8",
+    ),
+    readFile(join(root, "docs/qa/issue-lifecycle.md"), "utf8"),
+    readFile(join(root, "docs/qa/quality-gates.md"), "utf8"),
+    readFile(join(root, "docs/qa/repository-activation.md"), "utf8"),
+  ]);
+  const projections = [protocol, wake, lifecycle, gates, activation];
+
+  assert.match(
+    wake,
+    /\/keiko-native lifecycle-overflow-recovery v1 target=sha256:\{64 lowercase hexadecimal characters\}/u,
+  );
+  assert.match(
+    wake,
+    /direct plain-issue `issue_comment`[\s\S]{0,500}exactly 16 authenticated non-checkpoint records[\s\S]{0,500}17th record[\s\S]{0,320}no record or\s+effect/iu,
+  );
+  assert.match(wake, /request 201[\s\S]{0,160}no record or effect/iu);
+  assert.match(
+    wake,
+    /prior\s+checkpoint plus 16 records[\s\S]{0,300}no record or\s+effect/iu,
+  );
+  assert.match(
+    protocol,
+    /keiko-native-lifecycle-transition-read-back:v2[\s\S]{0,800}record_type[\s\S]{0,80}transition-read-back[\s\S]{0,300}schema_version[\s\S]{0,80}2/iu,
+  );
+  assert.match(
+    protocol,
+    /overflow_recovery_authorization_identity[\s\S]{0,300}overflow_recovery_target_identity/iu,
+  );
+  assert.match(
+    protocol,
+    /overflow recovery target[\s\S]{0,160}keiko-native\.lifecycle-overflow-recovery-target-identity/iu,
+  );
+  assert.match(
+    protocol,
+    /normal operation[\s\S]{0,180}at most 15 non-checkpoint[\s\S]{0,500}exactly 16[\s\S]{0,500}checkpoint/iu,
+  );
+  assert.match(
+    protocol,
+    /superseded[\s\S]{0,320}terminal transition\/read-back checkpoint[\s\S]{0,320}successor generation/iu,
+  );
+  assert.match(
+    protocol,
+    /same four record types[\s\S]{0,220}not a fifth record type/iu,
+  );
+
+  for (const projection of projections) {
+    assert.match(
+      projection,
+      /overflow recovery[\s\S]{0,900}(?:activation remains disabled|before Issue #55|no lifecycle[^.]{0,120}effect)/iu,
+    );
+  }
+  for (const projection of [protocol, wake, lifecycle, gates]) {
+    assert.match(
+      projection,
+      /overflow recovery[\s\S]{0,1200}(?:human-only|manual)[\s\S]{0,160}`dev`/iu,
+    );
+  }
+  assert.match(
+    activation,
+    /overflow recovery[\s\S]{0,1200}Issue #55[\s\S]{0,240}disabled/iu,
+  );
+  assert.match(
+    protocol,
+    /Issue #170[\s\S]{0,400}separate defect issue[\s\S]{0,400}implementation/iu,
+  );
+  assert.doesNotMatch(
+    projections.join("\n"),
+    /overflow recovery[\s\S]{0,300}(?:new account|new App|new PAT|new broker|new database|new hosted service)/iu,
   );
 });
 
