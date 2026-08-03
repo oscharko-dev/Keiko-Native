@@ -132,8 +132,11 @@ prove that verified protected caller/writer attestation claims plus exact bound 
 for records that encode a job replace workflow-run and referenced-workflow-inventory requests inside
 this effect-disabled exact-target path, while successful coordinator records require their unique
 artifact-anchor attestation correlation and ordinary authentication retains the provider reads;
-recover zero through four interrupted v2 publications while denying a fifth; and prove superseded
-generations authenticate
+recover incomplete publications only under a hard cap of four total candidate comment copies.
+Every byte-identical copy is authenticated before grouping and consumes one request-budget slot; a
+fifth copy fails closed with no record or effect. Each copy's distinct comment-bound anchor and
+attestation tuple must be verified before it becomes irrelevant. It must
+also prove superseded generations authenticate
 their frozen generation and closed partial producer set. An ordinary superseded fence binds its
 first witness; the reserved-fence exception uses the final encoded read-back source observation as
 its sole durable witness and refreshes that projection under the same fence before

@@ -247,17 +247,21 @@ The nested `candidate-entry` schema is exactly `path:string`, `mode:enum(100644,
 `record_digest:sha256`, `workflow_run_id:uint`, `workflow_job_id:uint`, and
 `result_identity:sha256`, in that order. Candidate entries sort by their complete canonical path
 node and reject duplicate normalized paths. Producer-result references sort by their complete
-canonical producer node and require exactly one member for every expected producer.
-The sole cardinality exception is a terminal superseded transition/read-back checkpoint. It carries
-the exact sorted subset, including the empty set, of expected producers whose fully authenticated
-same-generation and same-attempt results already precede the superseded fence. Each included
-result's `phase_fence_digest` must match its unique authenticated producer-owning fence in the
-frozen predecessor chain. Each producer-owning fence precedes the superseded fence, and its result
-record must also precede that terminal fence. The result is not rebound to the later superseded
-fence. Every included producer remains
-unique and expected; an unexpected, duplicate, late, or post-fence result is malformed. Missing
-producers grant no result, success, or effect and cannot publish after the superseded fence. No
-other transition/read-back may omit an expected producer.
+canonical producer node and normally require exactly one member for every expected producer.
+There are exactly two closed cardinality exceptions. A terminal superseded transition/read-back
+checkpoint carries the exact sorted subset, including the empty set, of expected producers whose
+fully authenticated same-generation and same-attempt results already precede the superseded fence.
+Each included result's `phase_fence_digest` must match its unique authenticated producer-owning
+fence in the frozen predecessor chain. Each producer-owning fence precedes the superseded fence,
+and its result record must also precede that terminal fence. The result is not rebound to the later
+superseded fence. Every included producer remains unique and expected; an unexpected, duplicate,
+late, or post-fence result is malformed. Missing producers grant no result, success, or effect and
+cannot publish after the superseded fence.
+
+The second exception is only the recovery-owned `abandoned` checkpoint immediately following one
+exact version-2 recovery settlement described below. It carries the exact authenticated pre-fence
+subset for that frozen generation, including the empty set, and retains each producer's original
+owning fence. No other transition/read-back may omit an expected producer.
 
 The locator's `candidate_record_projection_digest` is precomputable without circular provider
 identities. Its SHA-256 preimage is one ADR-0004 canonical `list` node whose first member is the enum
@@ -689,19 +693,24 @@ an expected producer, and no recovery checkpoint may add, replace, or rebind one
 
 Successful publication and stable authentication of the v2 checkpoint compact the 16 records in
 the ordinary way and may also settle at most four strictly ordered quarantined overflow-publication
-members for that same unconsumed target. Each candidate must be a complete exact v2 comment from the
+members for that same unconsumed target. Overflow recovery has a hard cap of four total candidate
+comment copies. Every byte-identical copy is authenticated before grouping and consumes one
+request-budget slot; a fifth copy fails closed with no record or effect. Each candidate copy must be
+a complete exact v2 comment from the
 Actions Bot/App and protected coordinator and bind the same target and base chain. Before creating
 that comment, the writer must have published the exact locator artifact and valid locator
 attestation identified in the body. The locator claim binds the protected coordinator path, ref,
 commit, run, attempt, job, and candidate-record projection; one exact job read must bind that job to
 the attested run and prove a terminal failed, cancelled, or timed-out conclusion. Recovery must
 recompute the projection from the candidate body and match the locator before the candidate can
-enter the ordered quarantine set. Candidate discovery groups byte-identical copies carrying the
-same locator pair. Exactly one fully authenticated post-comment anchor/attestation tuple in that
-group authenticates the existing checkpoint and makes every copy irrelevant; two such tuples are
-ambiguous. When the group has no fully authenticated tuple, only its lowest numeric `comment_id` is
-the candidate; later copies are irrelevant and do not consume the candidate allowance. A
-conflicting copy cannot match the locator-bound projection and produces no checkpoint or effect.
+enter the ordered quarantine set. Recovery fully authenticates every byte-identical copy in a
+locator-pair group, including each copy's distinct comment-bound anchor and attestation tuple,
+before it may classify any later copy as irrelevant. Exactly one fully authenticated
+post-comment anchor/attestation tuple in that group authenticates the existing checkpoint and makes
+every other fully checked copy irrelevant; two such tuples are ambiguous. When the group has no
+fully authenticated tuple, only its lowest numeric `comment_id` is the quarantined candidate;
+later fully checked copies are irrelevant only after consuming their candidate slots. A conflicting
+copy cannot match the locator-bound projection and produces no checkpoint or effect.
 The candidate has either no post-comment anchor or one exact matching anchor with no anchor
 attestation in both stable passes, and the exact terminal writer-job projection must show the fixed
 anchor-attestation publication step's mapped name, provider-visible number, and conclusion
@@ -709,7 +718,7 @@ anchor-attestation publication step's mapped name, provider-visible number, and 
 tuple authenticates the existing checkpoint instead. If that step was attempted, started, failed,
 cancelled, timed out, is missing, or has unknown status, absence from attestation inventories cannot
 prove non-acceptance: the candidate is ambiguous and permits no retry, quarantine, checkpoint, or
-effect. A fifth candidate, missing or invalid locator attestation, any anchor attestation,
+effect. A fifth copy, missing or invalid locator attestation, any anchor attestation,
 mismatched or multiple artifact, nonterminal job, unknown provenance, or conflicting body likewise
 fails closed. Existing evidence remains append-only and auditable. Subsequent wakes use the normal
 v1 protocol and 15-record bound; overflow recovery grants no standing exception.
@@ -1050,7 +1059,8 @@ use can reduce availability but cannot create authority or bypass stable rereads
 
 Overflow recovery uses a separate hard 200-request counter. It has one closed historical-record
 authentication profile that replaces ADR-0012's independent workflow-run GET and
-referenced-workflow inventory for the 16 base records and up to four interrupted candidates. The
+referenced-workflow inventory for the 16 base records and at most four total interrupted candidate
+comment copies, counting every byte-identical copy before grouping. The
 GitHub-native attestation's verified issuer and SLSA/OIDC claims must bind repository, protected
 caller and writer paths, immutable `dev` ref and commit, run ID, run attempt, and subject digest;
 for each record or interrupted candidate that carries `workflow_job_id`, a separate exact
@@ -1077,13 +1087,15 @@ and attempt. Where a record encodes a job, the matching exact writer-job read in
 to that attested run; a
 redundant workflow-run read and a separate provider bundle-download request are prohibited.
 
-The first-pass candidate addition is exactly 40 requests: four candidate comment exact-ID rereads;
-four candidate-locator exact-name or run-scoped artifact inventories; four exact locator metadata
-rereads; eight calls for four locator download redirect chains; eight subject-qualified attestation
-inventories for four locator and four optional-anchor subjects; eight calls for four optional-anchor
-download redirect chains; and four exact terminal writer-job reads including their fixed step
-projections. Thus the first pass is at most `68 + 40 = 108` requests and downloads at most 24
-archives once into bounded in-memory canonical-byte buffers.
+The first-pass candidate addition is exactly 40 requests across four comment-copy slots: four
+candidate comment exact-ID rereads; four candidate-locator exact-name or run-scoped artifact
+inventories; four exact locator metadata rereads; eight calls for four locator download redirect
+chains; eight subject-qualified attestation inventories for four locator and four optional-anchor
+subjects; eight calls for four optional-anchor download redirect chains; and four exact terminal
+writer-job reads including their fixed step projections. A byte-identical copy consumes a complete
+slot because its comment-bound anchor and attestation tuple are distinct. Thus the first pass is at
+most `68 + 40 = 108` requests and downloads at most 24 archives once into bounded in-memory
+canonical-byte buffers.
 
 The second pass reuses only those cached canonical file bytes; it never reuses provider metadata,
 comments, attestations, jobs, or current facts. GitHub Actions artifacts are immutable after upload,
@@ -1093,8 +1105,9 @@ be reused. Any changed, deleted, expired, ambiguous, or mismatched artifact fail
 36-request base ceiling repeats the two comment pages, base inventory, 16 attestation inventories,
 up to 16 applicable job reads, and current-source GraphQL read without another archive request. Its
 24-request candidate
-addition repeats the four exact-ID comments, four locator inventories, four locator metadata reads,
-eight subject inventories, and four terminal-job reads. The second pass is exactly `36 + 24 = 60`.
+addition repeats the four exact-ID comment-copy slots, four locator inventories, four locator
+metadata reads, eight subject inventories, and four terminal-job reads. The second pass is exactly
+`36 + 24 = 60`.
 This asymmetric stable read proves current provider bindings twice while counting the 24 archive
 download redirects once rather than pretending each archive costs one request in both passes. The
 36-request second-pass base likewise contains up to 16 job reads only for base records that encode
@@ -1337,8 +1350,9 @@ settle an effect, skip an authenticated member, raise the normal 15-record limit
 malformed chain. It only terminalizes one explicitly authorized, fully authenticated 16-record
 suffix as a null-effect v2 checkpoint. If an earlier v2 checkpoint comment was accepted but its
 post-publication authentication was interrupted, a fresh explicit maintainer command may retry the
-still-unconsumed target and the successful v2 compacted prefix quarantines at most four such
-incomplete publications. This is not automatic retry, and no ordinary settlement record is
+still-unconsumed target and the successful v2 compacted prefix quarantines incomplete publications
+only after a complete set capped at four total candidate comment copies has been authenticated; a
+fifth copy is denied. This is not automatic retry, and no ordinary settlement record is
 appended ahead of the checkpoint. The same four record types remain authoritative; version 2 of
 transition/read-back is not a fifth record type. Activation remains disabled until Issue #55, and
 every `dev` delivery remains a human-only manual merge.

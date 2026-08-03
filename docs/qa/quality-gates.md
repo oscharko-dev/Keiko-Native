@@ -115,10 +115,12 @@ claims plus an exact bound job and complete step projection only where the recor
 Successful coordinator records instead require a unique artifact-anchor attestation binding the
 exact caller, reusable writer, record, run, attempt, and SHA. Ordinary authentication retains the
 provider run and inventory reads. It must
-prove zero through four interrupted v2 publications are quarantined only inside a later successful
-checkpoint, a fifth is denied, and the target remains unconsumed until full authentication. It must
-also prove
-every interrupted candidate has one valid pre-comment locator attestation for the protected writer
+prove a hard cap of four total candidate comment copies. Every byte-identical copy is authenticated
+before grouping and consumes one request-budget slot; a fifth copy fails closed with no record or
+effect. Each copy's distinct comment-bound anchor and attestation tuple must be verified before it
+may become irrelevant, and the
+target remains unconsumed until full authentication. It must also prove every interrupted candidate
+has one valid pre-comment locator attestation for the protected writer
 run and terminal job, an exact locator-free candidate-record projection, deterministic member
 ordering, and no duplicate canonical identity while its optional post-comment anchor has no
 attestation and the fixed anchor-attestation publication step has its exact mapped name,

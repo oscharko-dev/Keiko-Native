@@ -702,7 +702,8 @@ requests, queues, merges, or repository settings.
 
 The exact overflow recovery authentication profile is the sole exception to the ordinary
 coordinator-record provider-run reads above. For the 16 historical base records and at most four
-interrupted candidates, it does not call the workflow-run endpoint and does not load the
+total interrupted candidate comment copies, counting every byte-identical copy before grouping, it
+does not call the workflow-run endpoint and does not load the
 referenced-workflow inventory. Instead, each GitHub-native attestation must cryptographically bind
 the fixed issuer, repository, protected top-level caller and reusable writer paths, immutable
 `refs/heads/dev`, protected commit, run ID, run attempt, subject name, and digest through its
@@ -744,15 +745,20 @@ job plus the locator-free candidate-record projection, and its optional post-com
 attestation, and the prior writer's fixed anchor-attestation publication step is proven by its exact
 mapped name, provider-visible number, and `skipped` conclusion in both exact terminal-job reads, a
 fresh explicit maintainer command
-may authorize another attempt for the same target. The coordinator
-accepts at most four candidates ordered by ascending comment ID after the 16 predecessor-ordered
-authenticated members, rejects every duplicate canonical identity, binds their closed quarantine
-evidence in the successful v2 compacted-prefix, and appends no ordinary orphan-settlement record
-after the 16-record base chain. The retry must arrive as a fresh direct `issue_comment` event; the terminal
+may authorize another attempt for the same target. Overflow recovery has a hard cap of four total
+candidate comment copies. Every byte-identical copy is authenticated before locator-pair grouping
+and consumes one request-budget slot; a fifth copy fails closed with no record or effect. The
+copies are ordered by ascending comment ID after the 16 predecessor-ordered authenticated members.
+The coordinator fully authenticates every copy's distinct comment-bound anchor and attestation
+tuple before treating a later copy as irrelevant, rejects every duplicate canonical member
+identity, binds the selected
+closed quarantine evidence in the successful v2 compacted-prefix, and appends no ordinary
+orphan-settlement record after the 16-record base chain. The retry must arrive as a fresh direct
+`issue_comment` event; the terminal
 authorization paired with an interrupted candidate is ineligible for fallback selection and cannot
 starve it.
 Until the new checkpoint is fully authenticated, the target remains unconsumed. An existing fully
-authenticated candidate makes the command a replay no-op; a fifth, conflicting, still-running,
+authenticated candidate makes the command a replay no-op; a conflicting, still-running,
 unknown-provenance, or attested candidate fails closed. Reordered simultaneous commands remain
 no-ops, and there is no scheduled or automatic publication retry. If the attestation step was
 attempted, started, failed, cancelled, timed out, is missing, or is unknown, a timed-out submission
@@ -772,19 +778,22 @@ that anchor attestation step 10 was skipped.
 Every provider request is counted against a separate hard ceiling of 200. Each archive download is
 two calls because GitHub redirects the authenticated artifact `/zip` request to the archive. The
 first recovery pass consumes at most 108 requests: a 68-request base counts 32 calls for 16
-base-anchor redirect chains, and a 40-request candidate addition counts eight calls for four locator
-redirect chains plus eight for four optional-anchor redirect chains. The other calls are the two
-comment pages; base and candidate artifact inventories/metadata; 24 subject-qualified attestation
-inventories; up to 20 exact job reads only for base records and candidates that encode a job; four
-candidate exact-ID rereads; and the current-source GraphQL read specified by ADR-0011. Successful
+base-anchor redirect chains, and a 40-request candidate addition counts four complete comment-copy
+slots, including eight calls for four locator redirect chains plus eight for four optional-anchor
+redirect chains. The other calls are the two comment pages; base and candidate artifact
+inventories/metadata; 24 subject-qualified attestation inventories; up to 20 exact job reads only
+for base records and candidate copies that encode a job; four candidate exact-ID rereads; and the
+current-source GraphQL read specified by ADR-0011. Successful
 coordinator records reduce the actual total below the ceiling.
 
 The second stable pass consumes at most 60 requests. It reuses only the bounded canonical bytes
 downloaded in pass one while independently rereading every comment, artifact identity and metadata,
 attestation subject, complete job/step projection, and current fact. Immutable artifact IDs and
 provider digests must remain exact; any expiry, deletion, change, or ambiguity fails closed. Its
-36-request base plus 24-request candidate addition contains no archive download. Subject responses
-contain their matching bundles and no separate bundle-download endpoint exists.
+36-request base plus 24-request candidate addition contains no archive download. Every
+byte-identical copy consumes one of the four complete candidate slots in both passes. Subject
+responses contain their matching bundles and no separate bundle-download endpoint exists. A fifth
+copy fails closed and produces no record or effect.
 
 The exact direct-comment authentication consumes at most six requests. The remaining 26 requests
 are reserved for:

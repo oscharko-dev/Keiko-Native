@@ -2681,11 +2681,15 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /terminal superseded transition\/read-back checkpoint[\s\S]{0,600}exact sorted subset[\s\S]{0,300}including the empty set[\s\S]{0,1200}No\s+other transition\/read-back may omit an expected producer/iu,
+    /terminal superseded transition\/read-back\s+checkpoint[\s\S]{0,600}exact sorted subset[\s\S]{0,300}including the empty set/iu,
   );
   assert.match(
     protocol,
-    /terminal superseded transition\/read-back checkpoint[\s\S]{0,900}phase_fence_digest[\s\S]{0,500}producer-owning fence[\s\S]{0,500}precedes the superseded fence/iu,
+    /exactly two closed cardinality exceptions[\s\S]{0,500}terminal superseded transition\/read-back\s+checkpoint[\s\S]{0,900}recovery-owned `abandoned` checkpoint[\s\S]{0,900}No other transition\/read-back may omit an expected producer/iu,
+  );
+  assert.match(
+    protocol,
+    /terminal superseded transition\/read-back\s+checkpoint[\s\S]{0,900}phase_fence_digest[\s\S]{0,500}producer-owning fence[\s\S]{0,500}precedes the superseded fence/iu,
   );
   assert.match(
     protocol,
@@ -2717,7 +2721,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     wake,
-    /interrupted v2 publication[\s\S]{0,800}fresh\s+explicit[\s\S]{0,500}at\s+most\s+four[\s\S]{0,500}compacted-prefix[\s\S]{0,500}target\s+remains\s+unconsumed/iu,
+    /interrupted v2 publication[\s\S]{0,800}fresh\s+explicit[\s\S]{0,500}hard cap of four/iu,
   );
   assert.match(
     protocol,
@@ -2805,7 +2809,19 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /byte-identical copies[\s\S]{0,300}same locator pair[\s\S]{0,400}exactly one[\s\S]{0,300}fully authenticated[\s\S]{0,300}authenticates[\s\S]{0,400}no fully authenticated[\s\S]{0,300}lowest numeric `comment_id`[\s\S]{0,300}later copies[\s\S]{0,300}irrelevant[\s\S]{0,300}conflicting copy[\s\S]{0,300}no checkpoint or effect/iu,
+    /hard cap of four total\s+candidate\s+comment copies[\s\S]{0,100}Every byte-identical copy is authenticated[\s\S]{0,160}fifth copy fails closed with no record or\s+effect/iu,
+  );
+  assert.match(
+    protocol,
+    /fully authenticates every byte-identical copy[\s\S]{0,200}distinct comment-bound anchor and attestation tuple/iu,
+  );
+  assert.match(
+    protocol,
+    /Exactly one fully authenticated[\s\S]{0,200}authenticates the existing checkpoint[\s\S]{0,300}two such tuples are ambiguous/iu,
+  );
+  assert.match(
+    protocol,
+    /no\s+fully authenticated tuple[\s\S]{0,200}lowest numeric `comment_id`[\s\S]{0,300}later fully checked copies are irrelevant only after consuming their candidate slots/iu,
   );
   assert.match(
     protocol,
@@ -2841,6 +2857,10 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     assert.match(
       projection,
       /overflow recovery[\s\S]{0,900}(?:activation remains disabled|before Issue #55|no lifecycle[^.]{0,120}effect)/iu,
+    );
+    assert.match(
+      projection,
+      /hard cap of four total\s+candidate\s+comment copies[\s\S]{0,100}Every byte-identical copy is authenticated[\s\S]{0,160}fifth copy fails closed with no record or\s+effect/iu,
     );
   }
   for (const projection of [protocol, wake, lifecycle, gates]) {

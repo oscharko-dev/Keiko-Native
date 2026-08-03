@@ -257,7 +257,11 @@ A 17th record, request 201, replay, edit, unavailable fact, or any chain, anchor
 run/job/ref/SHA mismatch produces no record or lifecycle effect. Authenticated evidence is never
 edited, deleted, skipped, or reclassified. If v2 publication is interrupted before authentication,
 a fresh explicit maintainer command may retry the unconsumed target; the successful v2 checkpoint
-binds and quarantines at most four fully proven incomplete publications. Each candidate must carry
+binds and quarantines incomplete publications only after enforcing a hard cap of four total
+candidate comment copies. Every byte-identical copy is authenticated before grouping and consumes
+one request-budget slot; a fifth copy fails closed with no record or effect. Its distinct
+comment-bound anchor and attestation tuple must be fully authenticated before any later copy becomes
+irrelevant. Each candidate must carry
 its exact pre-comment locator artifact and valid locator attestation binding the protected writer
 run, terminal job, and locator-free candidate-record projection; its optional post-comment anchor
 must have no attestation, and the fixed anchor-attestation publication step must be proven
@@ -266,7 +270,8 @@ unknown step permits no retry because late visibility could create two
 authenticated checkpoints. A non-null anchor digest is SHA-256 of the downloaded sole canonical
 artifact-anchor file and equals its recomputed auxiliary identity, never a provider archive digest.
 Authenticated members precede quarantined candidates, which sort by ascending comment ID and reject
-duplicates. A fifth or ambiguous candidate fails closed, and no retry is automatic.
+duplicates. An ambiguous candidate fails closed and produces no record or effect, and
+no retry is automatic.
 For overflow v2, the protected writer's final topology places locator read/prepare, upload,
 attestation, and download/verification at YAML ordinals 3 through 6, comment publication and anchor
 upload at 7 and 8, and `Attest exact lifecycle anchor identity` at ordinal 9/provider-visible step
