@@ -24,6 +24,20 @@ export const tracerAccessibilityActions = Object.freeze([
   "quit",
 ]);
 
+export const tracerAccessibilityActivatingActions = Object.freeze([
+  "open-canvas",
+  "open-workspace-picker",
+  "select-workspace",
+  "cancel-workspace-picker",
+  "check-runtime",
+  "focus-task",
+  "set-task",
+  "submit-task",
+  "cancel-turn",
+  "set-unicode",
+  "quit",
+]);
+
 export const tracerAccessibilitySource = String.raw`#import <ApplicationServices/ApplicationServices.h>
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
@@ -585,16 +599,20 @@ int main(int argc, const char *argv[]) {
     NSSet<NSString *> *allowed = [NSSet setWithArray:@[
 ${tracerAccessibilityActions.map((action) => `      @"${action}",`).join("\n")}
     ]];
+    NSSet<NSString *> *activatingActions = [NSSet setWithArray:@[
+${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).join("\n")}
+    ]];
     if (pid < 1 || action == nil || ![allowed containsObject:action]) {
       Emit(NO, "invalid-invocation");
       return 2;
     }
-    if (![action isEqualToString:@"probe-start"] &&
-        !ActivateApplication(pid)) {
-      Emit(NO, "missing-or-ambiguous-semantic-target");
-      return 1;
+    if ([activatingActions containsObject:action]) {
+      if (!ActivateApplication(pid)) {
+        Emit(NO, "missing-or-ambiguous-semantic-target");
+        return 1;
+      }
+      usleep(50 * 1000);
     }
-    usleep(50 * 1000);
     AXUIElementRef application = AXUIElementCreateApplication(pid);
     BOOL passed = NO;
     if ([action isEqualToString:@"probe-start"]) {

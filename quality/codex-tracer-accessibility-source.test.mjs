@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  tracerAccessibilityActivatingActions,
   tracerAccessibilityActions,
   tracerAccessibilitySource,
 } from "./codex-tracer-accessibility-source.mjs";
@@ -36,10 +37,46 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
     "observe-response-semantics",
     "quit",
   ]);
+  assert.deepEqual(tracerAccessibilityActivatingActions, [
+    "open-canvas",
+    "open-workspace-picker",
+    "select-workspace",
+    "cancel-workspace-picker",
+    "check-runtime",
+    "focus-task",
+    "set-task",
+    "submit-task",
+    "cancel-turn",
+    "set-unicode",
+    "quit",
+  ]);
+  assert.deepEqual(
+    tracerAccessibilityActions.filter(
+      (action) => !tracerAccessibilityActivatingActions.includes(action),
+    ),
+    [
+      "probe-start",
+      "probe-canvas",
+      "observe-workspace-selected",
+      "observe-workspace-cancelled",
+      "observe-workspace-permission-denied",
+      "observe-runtime-ready",
+      "observe-streaming",
+      "observe-completed",
+      "observe-stopping",
+      "observe-cancelled",
+      "observe-failed",
+      "observe-response-semantics",
+    ],
+  );
   for (const action of tracerAccessibilityActions)
     assert.ok(tracerAccessibilitySource.includes(`@\"${action}\"`));
   assert.match(tracerAccessibilitySource, /AXUIElementCreateApplication/u);
   assert.match(tracerAccessibilitySource, /AXIsProcessTrustedWithOptions/u);
+  assert.match(
+    tracerAccessibilitySource,
+    /\[activatingActions containsObject:action\]/u,
+  );
   for (const attribute of [
     "kAXChildrenAttribute",
     "kAXRowsAttribute",
