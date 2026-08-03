@@ -193,14 +193,37 @@ is one. A version-1 parser never accepts version-2 bytes, a version-2 parser nev
 version-1 preimage, and neither form negotiates fields at runtime.
 
 `protected-writer-attestation-step-name` and its numeric companion form one closed mapping to the
-provider-visible GitHub job-step projection. For `.github/workflows/issue-lifecycle.yml`, the exact
-name is `Attest exact lifecycle anchor identity`, its declared YAML step ordinal is `5`, and its
-provider-visible step number is `6`. For `.github/workflows/pr-contract.yml`, the exact name is
-`Attest exact producer anchor identity`, its declared YAML step ordinal is `6`, and its
-provider-visible step number is `7`. For `.github/workflows/contract-publication.yml`, the exact
-name is `Attest exact producer anchor identity`, its declared YAML step ordinal is `6`, and its
-provider-visible step number is `7`. A missing, duplicate, renamed, renumbered, or differently
-positioned tuple is unknown rather than `skipped` and therefore cannot authorize settlement.
+provider-visible GitHub job-step projection. The record-bound `orphan_protected_dev_sha` selects one
+exact closed writer topology by loading `.github/workflows/issue-lifecycle.yml` at that protected
+commit and matching its ordered writer-step slots; record schema alone never selects a number, and
+a verifier never probes alternatives. The legacy topology has no overflow-locator slots: its anchor
+attestation is `Attest exact lifecycle anchor identity`, declared YAML step ordinal `5`, and
+provider-visible step number `6`. The post-amendment topology has this final closed sequence before
+verification for every record lane:
+
+| Exact step name                                              | Declared YAML step ordinal | Provider-visible step number | Condition                                                                 |
+| ------------------------------------------------------------ | -------------------------: | ---------------------------: | ------------------------------------------------------------------------- |
+| `Read current writer job and prepare exact overflow locator` |                          3 |                            4 | runs only for overflow v2                                                 |
+| `Upload immutable overflow locator`                          |                          4 |                            5 | runs only for overflow v2                                                 |
+| `Attest exact overflow locator identity`                     |                          5 |                            6 | runs only for overflow v2                                                 |
+| `Download and verify exact overflow locator`                 |                          6 |                            7 | runs only for overflow v2                                                 |
+| `Publish and read back the canonical comment`                |                          7 |                            8 | every record lane                                                         |
+| `Upload immutable per-issue anchor`                          |                          8 |                            9 | every record lane                                                         |
+| `Attest exact lifecycle anchor identity`                     |                          9 |                           10 | every record lane; this is the mapped anchor-attestation publication step |
+
+The four overflow-only steps remain present with conclusion `skipped` for another lane, so their
+declared and provider-visible positions do not collapse. Every record written by this topology uses
+anchor ordinal `9` and provider-visible number `10`; ordinal `5` and number `6` identify the locator
+attestation and can never prove anchor non-submission. An overflow transition/read-back version-2
+candidate necessarily binds this post-amendment topology. A historical version-1 record may bind
+the legacy topology, while a post-amendment version-1 record binds the final topology; its exact
+protected commit and ordered writer slots distinguish them without runtime negotiation.
+
+For `.github/workflows/pr-contract.yml`, `Attest exact producer anchor identity` is declared YAML
+step ordinal `6` and provider-visible step number `7`. The same exact name and numbers apply to
+`.github/workflows/contract-publication.yml`. A missing, duplicate, renamed, renumbered, differently
+positioned, protected-commit-mismatched, or topology-inconsistent tuple is unknown rather than
+`skipped` and therefore cannot authorize settlement.
 
 `requested-lifecycle-state` is exactly `status: new`, `status: triaged`, `status: ready`,
 `status: in progress`, `status: pr open`, `status: ready for human review`, `status: blocked`,
@@ -709,8 +732,8 @@ loaded facts match:
   provider-assigned comment ID, exact comment-body digest, record digest, repository, protected
   workflow, workflow ref, protected commit, run, and attempt claimed by the record; and
 - repository, issue, pull request, head, target, generation, request, predecessor, and fence
-  identities independently match current canonical inputs, except for the closed superseded
-  checkpoint projection below.
+  identities independently match current canonical inputs, except for the closed historical
+  projections below.
 
 A superseded checkpoint authenticates its request, head, target, generation, attempt, and closed
 partial producer set against the frozen generation reconstructed from the authenticated predecessor
@@ -732,6 +755,29 @@ then-current observation is availability evidence only and is not compared with 
 the immutable record. When those conditions hold, the attested tuple authenticates the existing
 checkpoint and no quarantine or retry is needed. An unavailable read or any failed immutable
 binding authenticates no checkpoint or successor.
+
+The closed historical recovery authentication projection applies only to an exact phase/fence
+claim v2 carrying recovery-settlement schema v2 and its immediate recovery-owned version-1
+`abandoned` checkpoint. The settlement authenticates repository, issue, pull request, head, target,
+generation, request, predecessor, and fence fields against the frozen generation reconstructed from
+the last authenticated predecessor and the quarantined orphan, rather than requiring those frozen
+fields to equal current canonical inputs. Its exact authorized recovery request and recovery-target
+identities must still bind that predecessor and orphan. Immediately before creating the settlement
+comment, the coordinator obtains two equal stable current source observations under the issue lock;
+the final observation is encoded as the settlement claim's `source_observation_identity`. A change
+between those reads restarts them and creates no record.
+
+The immediate recovery-owned `abandoned` checkpoint authenticates against the same frozen
+generation, authorized recovery request, exact settlement predecessor, and stable current source
+observation. Its source, desired, and observed states are equal to the state in that encoded
+observation; its effect is null, and its producer set remains the exact pre-fence subset above. It
+does not reload a different current generation or rebind any frozen identity. Once the settlement's
+exact comment, anchor, and attestation are authenticated, a later current-fact change does not stale
+that historical settlement or its mandatory immediate checkpoint, including when the change occurs
+before checkpoint publication. The final provider read must still prove every immutable settlement
+and checkpoint binding; then-current facts are availability evidence only. Any missing settlement,
+non-immediate checkpoint, changed immutable binding, or unavailable read remains blocked and grants
+no successor or effect.
 
 Login, marker, author association, check name, details URL, event timing, or a copied comment cannot
 authenticate a record alone. A missing `performed_via_github_app`, wrong App, wrong workflow/ref,
@@ -917,9 +963,10 @@ provider ID and the SHA-256 of its safely extracted sole canonical file are incl
 settlement; the pair is explicitly null only when no anchor exists. Orphan body fields are
 candidate locators only and grant nothing until every provider fact is independently loaded.
 
-The coordinator then appends one normally authenticated phase/fence claim v2 with the exact
-settlement matrix above and the last authenticated record as predecessor, or a null predecessor
-when none exists. The parent version and encoded settlement version select only recovery-settlement
+The coordinator then appends one phase/fence claim v2 authenticated through the closed historical
+recovery projection above, with the exact settlement matrix above and the last authenticated record
+as predecessor, or a null predecessor when none exists. The parent version and encoded settlement
+version select only recovery-settlement
 schema v2. Its domain-separated recovery-settlement identity binds the authorized request,
 recovery-target identity, all exact verified orphan/provider facts, the last authenticated
 predecessor, and reason `anchor-publication-interrupted`. Once that settlement's own

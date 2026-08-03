@@ -732,7 +732,10 @@ proven in both reads by its exact protected-writer mapped name, provider-visible
 recovery-owned `abandoned` checkpoint carries the exact authenticated pre-fence producer subset,
 including empty, and no other abandoned checkpoint may omit an expected producer. Post-fence fact
 drift uses the final encoded read-back source observation as the sole durable superseding witness
-under the same fence.
+under the same fence. The settlement and its immediate recovery-owned checkpoint use ADR-0011's
+closed historical recovery authentication projection: their generation and request stay bound to
+the frozen predecessor/orphan, the settlement records the final of two equal stable current source
+observations, and later current-fact drift cannot stale either authenticated null-effect record.
 
 An interrupted v2 publication does not consume its overflow target. After two stable passes prove
 that the prior writer job is terminal, its exact pre-comment locator artifact has a valid
@@ -755,6 +758,16 @@ no-ops, and there is no scheduled or automatic publication retry. If the attesta
 attempted, started, failed, cancelled, timed out, is missing, or is unknown, a timed-out submission
 may later become visible; absence from two inventories is not proof of non-acceptance and the
 candidate remains ambiguous with no retry, quarantine, checkpoint, or effect.
+
+For an overflow transition/read-back v2 candidate, the protected writer uses ADR-0011's final
+seven-step pre-verification topology. The locator read/prepare, upload, attestation, and
+download/verification steps occupy YAML ordinals 3 through 6; comment publication and anchor upload
+are ordinals 7 and 8; `Attest exact lifecycle anchor identity` is ordinal 9 and provider-visible
+step 10 for every lane because the four conditional locator slots remain present when skipped. A
+historical writer without those slots uses anchor ordinal 5/provider-visible step 6. The exact
+`orphan_protected_dev_sha` and loaded ordered writer topology select one closed mapping; record
+schema alone does not. A recovery verifier never treats overflow locator attestation step 6 as proof
+that anchor attestation step 10 was skipped.
 
 Every provider request is counted against a separate hard ceiling of 200. Each archive download is
 two calls because GitHub redirects the authenticated artifact `/zip` request to the archive. The

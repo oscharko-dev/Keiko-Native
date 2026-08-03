@@ -78,7 +78,8 @@ identity, and complete ordered genesis member list. Forward orphan settlement re
 request-bound recovery-target digest, version-first recovery-settlement parsing, an independently
 verified failed protected writer run, stable zero-or-one-anchor/zero-attestation reads with a
 mapped exact-name and provider-visible-number attestation step whose conclusion is `skipped`, and a
-normally authenticated version-2 settlement claim chained from the last authenticated predecessor.
+version-2 settlement claim authenticated through the closed historical recovery projection and
+chained from the last authenticated predecessor.
 The phase/fence parent encodes settlement schema version 2 before the settlement identity; version 1
 remains read-only zero-anchor compatibility and is selected only by a legacy settlement-bearing
 phase/fence v1 parent. The
@@ -123,8 +124,14 @@ ordering, and no duplicate canonical identity while its optional post-comment an
 attestation and the fixed anchor-attestation publication step has its exact mapped name,
 provider-visible number, and conclusion `skipped`. An attempted, unknown,
 or ambiguously completed attestation step must deny retry even when both inventories are empty. The
-26-request publication matrix must download and reproduce the locator before comment creation and
-download and reproduce the final anchor before success. The locator-attestation digest must be the
+gate must pin the overflow-v2 issue-lifecycle topology: locator read/prepare, upload, attestation,
+and download/verification at YAML ordinals 3 through 6, comment publication and anchor upload at 7
+and 8, and anchor attestation at ordinal 9/provider-visible step 10 for every lane. It must
+separately retain the historical topology's ordinal-5/provider-step-6 mapping and select exactly one
+closed mapping from the record-bound protected commit and loaded ordered writer topology, never from
+record schema alone or by probing. The 26-request publication matrix must download and reproduce the
+locator before comment creation and download and reproduce the final anchor before success. The
+locator-attestation digest must be the
 canonical auxiliary identity over normalized verified claims, never a hash of provider bundle
 serialization. A non-null optional-anchor digest
 must hash the downloaded sole canonical artifact-anchor file, equal its auxiliary identity, and
@@ -141,9 +148,12 @@ record 13 and only its recovery-owned checkpoint may follow at record 14. The ga
 each resulting recovery-owned `abandoned` checkpoint carries exactly the authenticated pre-fence
 producer subset, including empty, while every other abandoned checkpoint requires the complete
 expected set; that the parent phase/fence record's encoded version selects settlement v2; and that
-post-fence fact drift uses the same reserved fence and superseded checkpoint projection, both
-interrupted publication shapes have a forward path, ambiguous attestation submission never retries,
-and checkpoint plus 16 is unreachable. A later fact change cannot stale an exactly attested
+the settlement and immediate checkpoint bind the frozen generation and authorized recovery target,
+encode one twice-stable current source observation, remain authenticated across later current-fact
+drift, and never rebind to a new current generation. It must also prove that post-fence fact drift
+uses the same reserved fence and superseded checkpoint projection, both interrupted publication
+shapes have a forward path, ambiguous attestation submission never retries, and checkpoint plus 16
+is unreachable. A later fact change cannot stale an exactly attested
 null-effect checkpoint, which then terminalizes as a checkpoint before a successor generation.
 Hostile wrong-actor, edited-command,
 wrong-target, missing/changed record, anchor, attestation, run, job, ref, SHA, predecessor,

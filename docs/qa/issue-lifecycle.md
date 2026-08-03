@@ -223,7 +223,11 @@ record. An attempted or unknown attestation step is ambiguous regardless of curr
 absence. The parent is an exact phase/fence record v2 carrying
 `recovery_settlement_schema_version=2`; version-first dispatch never guesses between legacy and
 forward settlement bytes. A historical settlement-bearing phase/fence v1 selects only the
-read-only legacy settlement v1 schema. Every mismatch remains blocked and effect-disabled.
+read-only legacy settlement v1 schema. The phase/fence v2 settlement and its immediate
+recovery-owned `abandoned` checkpoint authenticate their frozen generation, request, predecessor,
+and orphan through the exact authorized recovery target, while the settlement encodes the final of
+two equal stable current source observations. Later current-fact drift cannot stale either
+authenticated null-effect historical record. Every mismatch remains blocked and effect-disabled.
 
 Authenticated suffix-overflow recovery is a distinct effect-disabled path. Normal operation keeps
 the hard limit of at most 15 non-checkpoint records. An allowlisted maintainer may post ADR-0012's
@@ -263,6 +267,13 @@ authenticated checkpoints. A non-null anchor digest is SHA-256 of the downloaded
 artifact-anchor file and equals its recomputed auxiliary identity, never a provider archive digest.
 Authenticated members precede quarantined candidates, which sort by ascending comment ID and reject
 duplicates. A fifth or ambiguous candidate fails closed, and no retry is automatic.
+For overflow v2, the protected writer's final topology places locator read/prepare, upload,
+attestation, and download/verification at YAML ordinals 3 through 6, comment publication and anchor
+upload at 7 and 8, and `Attest exact lifecycle anchor identity` at ordinal 9/provider-visible step
+10 for every lane. A historical topology without the four locator slots retains ordinal 5/step 6.
+The bound protected commit and exact ordered writer topology, not record schema alone, select one
+closed mapping; a verifier cannot confuse the overflow locator attestation at step 6 with anchor
+non-submission.
 
 Every superseded phase/fence claim must be followed by its terminal transition/read-back checkpoint
 before a successor generation request. That checkpoint carries only the authenticated producer
@@ -282,7 +293,10 @@ only the recovery-owned checkpoint may follow at record 14. Either settlement is
 the writer's anchor-attestation step's mapped name and provider-visible number were stably observed
 with conclusion `skipped`; attempted or unknown submission remains ambiguous. Each recovery-owned
 `abandoned` checkpoint carries the exact authenticated pre-fence producer subset, including empty;
-no other abandoned checkpoint may omit an expected producer. This makes a
+no other abandoned checkpoint may omit an expected producer. Both the settlement and immediate
+checkpoint retain the frozen generation and exact authorized recovery binding, use the
+settlement's stable current source observation, and remain valid across later current-fact drift.
+This makes a
 prior-checkpoint-plus-16 suffix unreachable and prevents event churn or one
 interrupted reserved fence or checkpoint from starving terminalization.
 Overflow recovery remains disabled for lifecycle effects before Issue #55, adds no principal or

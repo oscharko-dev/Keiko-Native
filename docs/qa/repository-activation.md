@@ -157,7 +157,16 @@ duplicate rejection; its fixed anchor-attestation publication step must have its
 provider-visible number, and conclusion `skipped`. An optional
 post-comment anchor must remain unattested and its digest must hash the sole canonical
 artifact-anchor file rather than the provider archive. Any attempted or unknown attestation step or
-other mismatch produces no record or effect.
+other mismatch produces no record or effect. The implementation must freeze the overflow-v2 writer
+topology with locator read/prepare, upload, attestation, and download/verification at YAML ordinals
+3 through 6, comment publication and anchor upload at 7 and 8, and anchor attestation at ordinal
+9/provider-visible step 10 for every lane. It must retain the historical no-locator topology's
+ordinal-5/provider-step-6 mapping and select exactly one from the record-bound protected commit and
+loaded ordered writer topology, never from record schema alone. The interrupted-publication
+settlement and its immediate recovery checkpoint must authenticate their frozen generation and
+authorized recovery target against the historical predecessor/orphan, bind the settlement's
+twice-stable current source observation, and remain valid after later current-fact drift without
+granting an effect.
 The overflow path adds no account, App, PAT, broker,
 database, hosted service, dependency, second credential, lifecycle authority, or merge authority.
 Issue #55 remains

@@ -1991,8 +1991,47 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   );
   assert.match(
     adr,
-    /protected-writer-attestation-step-name[\s\S]{0,1000}issue-lifecycle\.yml[\s\S]{0,300}Attest exact lifecycle anchor identity[\s\S]{0,300}(?:number|provider-visible)[^\n]*6[\s\S]{0,1000}pr-contract\.yml[\s\S]{0,300}Attest exact producer anchor identity[\s\S]{0,300}(?:number|provider-visible)[^\n]*7[\s\S]{0,1000}contract-publication\.yml[\s\S]{0,300}Attest exact producer anchor identity[\s\S]{0,300}(?:number|provider-visible)[^\n]*7/iu,
+    /overflow transition\/read-back version-2[\s\S]{0,100}candidate necessarily binds this post-amendment topology/iu,
   );
+  assert.match(
+    adr,
+    /pr-contract\.yml[\s\S]{0,300}Attest exact producer anchor identity[\s\S]{0,300}provider-visible step number `7`/iu,
+  );
+  assert.match(
+    adr,
+    /same exact name and numbers apply to[\s\S]{0,100}contract-publication\.yml/iu,
+  );
+  assert.match(
+    adr,
+    /record-bound `orphan_protected_dev_sha`[\s\S]{0,500}exact closed writer topology[\s\S]{0,500}record schema alone never selects/iu,
+  );
+  assert.match(
+    adr,
+    /four overflow-only steps remain present[\s\S]{0,300}`skipped`[\s\S]{0,500}Every record written by this topology[\s\S]{0,300}provider-visible number `10`/iu,
+  );
+  for (const [stepName, ordinal, providerNumber] of [
+    ["Read current writer job and prepare exact overflow locator", 3, 4],
+    ["Upload immutable overflow locator", 4, 5],
+    ["Attest exact overflow locator identity", 5, 6],
+    ["Download and verify exact overflow locator", 6, 7],
+    ["Publish and read back the canonical comment", 7, 8],
+    ["Upload immutable per-issue anchor", 8, 9],
+    ["Attest exact lifecycle anchor identity", 9, 10],
+  ]) {
+    assert.match(
+      adr,
+      new RegExp(
+        "\\| `" +
+          stepName +
+          "`\\s+\\|\\s+" +
+          ordinal +
+          " \\|\\s+" +
+          providerNumber +
+          " \\|",
+        "u",
+      ),
+    );
+  }
 
   const requestedStateDefinition = adr.match(
     /`requested-lifecycle-state` is exactly ([\s\S]+?); it excludes `no-lifecycle`\./u,
@@ -2659,6 +2698,18 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   assert.match(
     protocol,
     /recovery-owned[\s\S]{0,500}abandoned[\s\S]{0,500}producer_results[\s\S]{0,500}exact authenticated pre-fence subset[\s\S]{0,300}including the empty set[\s\S]{0,800}No other[\s\S]{0,300}abandoned[\s\S]{0,300}omit\s+an expected producer/iu,
+  );
+  assert.match(
+    protocol,
+    /closed historical recovery authentication projection[\s\S]{0,500}phase\/fence\s+claim v2[\s\S]{0,300}immediate recovery-owned[\s\S]{0,200}`abandoned` checkpoint/iu,
+  );
+  assert.match(
+    protocol,
+    /settlement authenticates[\s\S]{0,500}frozen generation[\s\S]{0,500}authorized recovery request[\s\S]{0,900}two equal stable current source observations/iu,
+  );
+  assert.match(
+    protocol,
+    /immediate recovery-owned `abandoned` checkpoint[\s\S]{0,1000}later current-fact change does not stale/iu,
   );
   assert.match(
     protocol,
