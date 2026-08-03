@@ -92,13 +92,16 @@ transition/read-back type, never a fifth record type. The deterministic gate mus
 direct plain-issue command and authorization identity, exact target over 16 authenticated records,
 normal rejection at record 16, overflow rejection at record 17, rejection of checkpoint plus 16,
 the exact 84 + 84 + 6 + 26 request-200 success arithmetic, request-201 denial, stable double-read,
-replay no-op, append-only evidence, null effect, and exact checkpoint read-back. It must prove zero
-through four interrupted v2 publications are quarantined only inside a later successful checkpoint,
+replay no-op, append-only evidence, null effect, and exact checkpoint read-back through the actual
+provider's subject-qualified attestation requests. Each returned response carries its bundles; no
+invented bulk or bundle-download endpoint is permitted. It must prove zero through four interrupted
+v2 publications are quarantined only inside a later successful checkpoint,
 a fifth is denied, and the target remains unconsumed until full authentication. It must also prove
 every interrupted candidate has one valid pre-comment locator attestation for the protected writer
 run and terminal job, an exact locator-free candidate-record projection, deterministic member
 ordering, and no duplicate canonical identity while its optional post-comment anchor has no
-attestation. Every superseded
+attestation. The locator-attestation digest must be the canonical auxiliary identity over normalized
+verified claims, never a hash of provider bundle serialization. Every superseded
 fence authenticates its frozen generation, the exact partial producer subset already present, its
 first superseding witness, and the final stable terminal non-equality witness encoded before
 publication under the same fence. A later fact change cannot stale an exactly attested null-effect

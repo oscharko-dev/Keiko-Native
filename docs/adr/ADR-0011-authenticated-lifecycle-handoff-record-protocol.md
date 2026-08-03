@@ -134,6 +134,7 @@ Every auxiliary identity is also SHA-256 over ADR-0004 canonical bytes with one 
 - recovery target: `keiko-native.lifecycle-recovery-target-identity`
 - overflow recovery target: `keiko-native.lifecycle-overflow-recovery-target-identity`
 - overflow publication locator: `keiko-native.lifecycle-overflow-publication-locator`
+- overflow locator attestation: `keiko-native.lifecycle-overflow-locator-attestation-identity`
 - recovery settlement: `keiko-native.lifecycle-recovery-settlement-identity`
 - artifact anchor: `keiko-native.lifecycle-artifact-anchor`
 
@@ -169,6 +170,7 @@ The exact auxiliary v1 schemas are:
 | recovery target              | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `orphan_comment_id:uint`, `orphan_comment_body_sha256:sha256`, `orphan_record_digest:sha256`, `last_authenticated_comment_id:uint-or-null`, `last_authenticated_record_digest:sha256-or-null`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | overflow recovery target     | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `prior_checkpoint_comment_id:null`, `prior_checkpoint_record_digest:null`, `first_record_comment_id:uint`, `first_record_digest:sha256`, `chain_tip_comment_id:uint`, `chain_tip_record_digest:sha256`, `non_checkpoint_record_count:uint=16`, `next_checkpoint_sequence:uint=1`                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | overflow publication locator | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `overflow_recovery_authorization_identity:sha256`, `overflow_recovery_target_identity:sha256`, `candidate_record_projection_digest:sha256`, `workflow_path:coordinator-path`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `workflow_job_id:uint`, `protected_dev_sha:commit`                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| overflow locator attestation | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `overflow_recovery_target_identity:sha256`, `overflow_publication_locator_identity:sha256`, `subject_name:string`, `subject_digest:sha256`, `issuer:enum(https://token.actions.githubusercontent.com)`, `workflow_path:coordinator-path`, `workflow_ref:enum(refs/heads/dev)`, `protected_dev_sha:commit`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `workflow_job_id:uint`                                                                                                                                                                                                                                                                                                                                                                         |
 | recovery settlement          | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `authorized_request_identity:sha256`, `recovery_target_identity:sha256`, `orphan_comment_id:uint`, `orphan_comment_body_sha256:sha256`, `orphan_record_digest:sha256`, `orphan_author_login:enum(github-actions[bot])`, `orphan_author_id:uint=41898282`, `orphan_actor_type:enum(Bot)`, `orphan_app_id:uint=15368`, `orphan_workflow_path:protected-writer-path`, `orphan_workflow_run_id:uint`, `orphan_workflow_run_attempt:uint`, `orphan_protected_dev_sha:commit`, `orphan_run_conclusion:enum(failure,cancelled,timed-out)`, `orphan_anchor_count:uint=0`, `orphan_attestation_count:uint=0`, `last_authenticated_comment_id:uint-or-null`, `last_authenticated_record_digest:sha256-or-null`, `quarantine_reason:enum(anchor-publication-interrupted)` |
 | artifact anchor              | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `record_type:record-type`, `record_digest:sha256`, `comment_id:uint`, `comment_body_sha256:sha256`, `generation_identity:sha256`, `attempt:uint`, `workflow_path:protected-writer-path`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `protected_dev_sha:commit`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
@@ -197,10 +199,14 @@ node and reject duplicate normalized paths. Producer-result references sort by t
 canonical producer node and require exactly one member for every expected producer.
 The sole cardinality exception is a terminal superseded transition/read-back checkpoint. It carries
 the exact sorted subset, including the empty set, of expected producers whose fully authenticated
-same-generation, same-attempt, same-fence results already precede the superseded fence. Every
-included producer remains unique and expected; an unexpected, duplicate, late, or post-fence result
-is malformed. Missing producers grant no result, success, or effect and cannot publish after the
-superseded fence. No other transition/read-back may omit an expected producer.
+same-generation and same-attempt results already precede the superseded fence. Each included
+result's `phase_fence_digest` must match its unique authenticated producer-owning fence in the
+frozen predecessor chain. Each producer-owning fence precedes the superseded fence, and its result
+record must also precede that terminal fence. The result is not rebound to the later superseded
+fence. Every included producer remains
+unique and expected; an unexpected, duplicate, late, or post-fence result is malformed. Missing
+producers grant no result, success, or effect and cannot publish after the superseded fence. No
+other transition/read-back may omit an expected producer.
 
 The locator's `candidate_record_projection_digest` is precomputable without circular provider
 identities. Its SHA-256 preimage is one ADR-0004 canonical `list` node whose first member is the enum
@@ -505,6 +511,17 @@ record digests, locator identities, and locator artifact IDs. A candidate that i
 greater than its preceding quarantined member, or any alternate interleaving or ordering, is
 malformed and produces no checkpoint or effect.
 
+For a quarantined member, `overflow_publication_locator_attestation_digest` is exactly the SHA-256
+identity produced by the `overflow locator attestation` auxiliary schema above. Recovery constructs
+that canonical identity from the unique matching attestation's verified subject, certificate, and
+SLSA provenance claims, normalized protected workflow/ref/commit/run/attempt values, and the job ID
+encoded in the exact subject name and locator. It then independently binds that job to the attested
+run. Provider
+bundle bytes, JSON member order, signatures, certificates, transparency-log material, and transport
+wrappers are verification inputs and are not hashed into this identity. A missing, duplicate, or
+claim-mismatched attestation yields no locator-attestation identity, candidate, checkpoint, or
+effect.
+
 The overflow target binds one complete genesis suffix: repository, issue, explicit null prior-
 checkpoint fields, first record pair, chain-tip pair, the literal count `16`, and checkpoint
 sequence `1`. The first record must be the unique authenticated null-predecessor generation request.
@@ -597,9 +614,10 @@ and its digest is exactly `sha256:{overflow-publication-locator-identity}`. The 
 must expose exactly that provider-assigned ID, name, associated run ID, and unexpired immutable
 artifact; the attestation supplies the run attempt. Duplicates or disagreement fail closed. Four
 independent post-publication requests—one artifact inventory, one exact artifact metadata reread,
-one bulk attestation inventory, and one matching attestation-bundle download—must stably verify the
-locator artifact ID, identity, projection commitment, and attestation before the writer places the
-locator pair in the v2 body. That locator grants no record, checkpoint,
+one locator-subject attestation inventory whose response contains the matching bundle, and one
+independent protected job read—must stably verify the locator artifact ID, identity, projection
+commitment, attestation, and job before the writer places the locator pair in the v2 body. That
+locator grants no record, checkpoint,
 predecessor, or effect authority; it exists solely so a later recovery can authenticate an
 anchorless interrupted comment to its protected writer run and job.
 
@@ -630,8 +648,9 @@ authority-bearing, or mismatched claim values reject the attestation.
 Verification downloads the anchor artifact, requires one exact canonical file and matching
 artifact digest, recomputes its artifact-anchor identity, and matches its comment ID,
 `comment_body_sha256`, record digest, workflow run, and protected head to independently loaded
-comment and run facts. It downloads the attestation bundle by the artifact-anchor identity,
-cryptographically verifies GitHub's trusted root and OIDC issuer, and requires the certificate and
+comment and run facts. It selects the unique matching attestation bundle from the
+subject-qualified inventory response, cryptographically verifies GitHub's trusted root and OIDC
+issuer, and requires the certificate and
 SLSA provenance claims to name the exact repository, protected workflow path, `refs/heads/dev`,
 `protected_dev_sha`, workflow run, and attempt in the record. The attestation subject name and
 digest must match exactly, including the provider-assigned comment ID, and there must be one
@@ -797,9 +816,10 @@ concurrently consuming the repository-wide `GITHUB_TOKEN` quota; it does not pre
 repository checks share that group.
 
 One normal stable pass is budgeted at no more than two comment-page requests, one exact-name
-artifact-list request, 16 artifact downloads, one bulk attestation-list request for at most 16
-digests, 16 bundle downloads, 32 run/job requests, and 25 current-provider-state requests: 93
-requests. The mandatory second pass is at most 186 requests, and write/read-back operations bring
+artifact-list request, 16 artifact downloads, 16 subject-qualified attestation inventory requests
+whose responses contain the matching bundles, 32 run/job requests, and 26
+current-provider-state requests: 93 requests. The mandatory second pass is at most 186 requests,
+and write/read-back operations bring
 the hard local request-counter ceiling to 200. Recovery mode has a separate 150-request ceiling and
 cannot perform a lifecycle/status/branch/merge effect. Neither mode relies on a racy
 `x-ratelimit-remaining` read for safety. Any core or secondary limit response, counter exhaustion,
@@ -809,18 +829,21 @@ allows it. The global group prevents lifecycle-on-lifecycle races, while unrelat
 use can reduce availability but cannot create authority or bypass stable rereads.
 
 Overflow recovery uses a separate hard 200-request counter. Two complete recovery passes consume at
-most 84 requests each. The ordinary 68 base-record requests retain one artifact inventory and one
-bulk attestation inventory; in recovery those inventories cover at most 24 exact subjects: 16 base
-anchors, four pre-comment candidate locators, and four optional post-comment candidate anchors. The
-base allowance downloads the 16 valid base attestation bundles, so at most 20 bundles are downloaded
-after the single bulk inventory. Recovery adds at most four valid
-locator-attestation bundle downloads, four optional candidate-anchor downloads, four exact terminal
-writer-job reads, and four current issue, pull-request, readiness, and equal-observation requests.
-The locator attestation itself supplies the protected workflow path, ref, commit, run, and attempt;
-the job read binds its job to that run and terminal conclusion, so no additional candidate run or
-locator-artifact download is permitted or required. A candidate anchor returning any attestation in
-the bulk inventory fails closed without a bundle download. These maxima add exactly 16 requests to
-the ordinary 68.
+most 84 requests each. The ordinary 68 base-record requests are exactly two comment-page requests,
+one artifact inventory, 16 base-anchor downloads, 16 per-subject attestation inventory requests,
+32 base run/job reads, and one complete current-source GraphQL read. Each subject-qualified
+attestation response contains the attestation bundles for that exact digest; verification performs
+no separate provider bundle-download request.
+
+Recovery expands each pass to at most 24 per-subject attestation inventory requests: 16 base-anchor
+subjects, four pre-comment candidate-locator subjects, and four optional post-comment
+candidate-anchor subjects. Relative to the ordinary 68, the eight added subject requests, four
+optional candidate-anchor downloads, and four exact terminal writer-job reads add exactly 16
+requests. The locator attestation supplies the protected workflow path, ref, commit, run, and
+attempt; the job read binds its job to that run and terminal conclusion, so no additional candidate
+run or locator-artifact download is permitted or required. An optional candidate-anchor subject
+returning any attestation fails closed without granting authority. The one current-source GraphQL
+read covers the issue, pull request, readiness, and equal-observation projection atomically.
 ADR-0012's direct command authentication consumes at most six requests. The remaining 26 requests
 are reserved for the checkpoint: at most three locator upload/finalization calls, at most three
 locator-attestation publication calls, and exactly four independent locator-verification calls
@@ -867,8 +890,10 @@ coordinator performs a stable complete double-read and requires:
 - the current claim is the sole latest valid fence for its generation, attempt, phase, and owning
   workflow run;
 - the protected workflow/run remains current and the fence has not been superseded; and
-- every producer result is authenticated, same-generation, same-attempt, same-fence, exact-head,
-  and from its expected producer.
+- every producer result is authenticated, same-generation, same-attempt, exact-head, bound to its
+  own unique authenticated producer-owning fence, and from its expected producer; an ordinary
+  non-superseded phase additionally requires the phase's current fence, while the closed superseded
+  exception retains each carried result's earlier pre-supersession fence.
 
 After an effect, the coordinator reloads the same complete facts and verifies exact desired
 read-back before writing the transition/read-back record. Lock loss, fence loss, unstable reads,

@@ -121,10 +121,11 @@ activation is disabled, its exact allowlisted direct plain-issue command may onl
 null-effect version-2 transition/read-back checkpoint over the exact authenticated 16-record genesis
 suffix. The probe must preserve the ordinary 15-record bound; reject a 17th record, checkpoint plus
 16, and request 201; prove the exact 84 + 84 + 6 + 26 request budget; preserve every existing
-comment, anchor, and attestation; prove replay is a no-op; recover zero through four interrupted v2
-publications while denying a fifth; and prove superseded generations authenticate their frozen
-generation, closed partial producer set, first superseding witness, and any later terminal
-non-equality witness by refreshing the checkpoint projection under the same fence before
+comment, anchor, and attestation; count every subject-qualified attestation inventory request and
+consume the bundles returned in that response; prove replay is a no-op; recover zero through four
+interrupted v2 publications while denying a fifth; and prove superseded generations authenticate
+their frozen generation, closed partial producer set, first superseding witness, and any later
+terminal non-equality witness by refreshing the checkpoint projection under the same fence before
 terminalizing ahead of a successor; a post-anchor fact change cannot stale that exactly attested
 null-effect checkpoint. Every interrupted candidate must prove its exact pre-comment locator
 attestation, terminal writer job, locator-free record projection, deterministic ordering, and

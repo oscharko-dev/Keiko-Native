@@ -715,12 +715,15 @@ unknown-provenance, or attested candidate fails closed. Reordered simultaneous c
 no-ops, and there is no scheduled or automatic publication retry.
 
 Every provider request is counted against a separate hard ceiling of 200. Two complete recovery
-passes consume at most 84 requests each. Their one artifact inventory and one bulk attestation
-inventory cover the 16 base anchors plus at most four candidate locators and four candidate anchors;
-the incremental allowance is exactly four locator-attestation bundle downloads, four optional
-candidate-anchor downloads, four terminal writer-job reads, and four current-state reads. The exact
-direct-comment authentication consumes at most six requests. The remaining 26 requests are reserved
-for at most three locator-upload, three locator-attestation, four independent locator-verification,
+passes consume at most 84 requests each. Each pass uses one artifact inventory and at most 24
+subject-qualified attestation inventory requests for the 16 base anchors, four candidate locators,
+and four optional candidate anchors; each subject response contains its matching bundles and no
+separate bundle-download request exists. Eight subject calls, four optional-anchor downloads, and
+four terminal-job reads add 16 to the ordinary 68, totaling 84.
+
+The exact direct-comment authentication consumes at most six requests. The remaining 26 requests
+are reserved for at most three locator-upload, three locator-attestation, four independent
+locator-verification,
 two comment create/read-back, three anchor-upload, three anchor-attestation, and eight final stable
 read-back calls. These maxima are exactly 26 and total 200. Request 201 produces no record or
 effect. The implementation gate rejects a provider
