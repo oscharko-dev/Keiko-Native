@@ -120,10 +120,13 @@ Overflow recovery must be implemented and proven before Issue #55 can activate t
 activation is disabled, its exact allowlisted direct plain-issue command may only append one
 null-effect version-2 transition/read-back checkpoint over the exact authenticated 16-record genesis
 suffix. The probe must preserve the ordinary 15-record bound; reject a 17th record, checkpoint plus
-16, and request 201; preserve every existing comment, anchor, and attestation; prove replay is a
-no-op; and prove superseded generations terminalize before a successor begins. Any mismatch
-produces no record or effect. The overflow path adds no account, App, PAT, broker, database, hosted
-service, dependency, second credential, lifecycle authority, or merge authority. Issue #55 remains
+16, and request 201; prove the exact 84 + 84 + 6 + 26 request budget; preserve every existing
+comment, anchor, and attestation; prove replay is a no-op; recover zero through four interrupted v2
+publications while denying a fifth; and prove superseded generations authenticate their frozen
+generation plus stable superseding observation before terminalizing ahead of a successor. Any
+mismatch produces no record or effect. The overflow path adds no account, App, PAT, broker,
+database, hosted service, dependency, second credential, lifecycle authority, or merge authority.
+Issue #55 remains
 the sole signed activation owner and must keep policy status `disabled` until the complete positive
 and hostile complement is green on protected `dev`.
 

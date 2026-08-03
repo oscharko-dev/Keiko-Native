@@ -218,11 +218,15 @@ exact direct plain-issue overflow recovery command for a target binding exactly 
 fully authenticated records from the unique genesis root with no prior checkpoint. A prior
 checkpoint plus 16 is denied. Within a hard 200-provider-request counter, the protected coordinator
 may append only ADR-0011's version-2 form of the existing transition/read-back checkpoint with null
-effect; the same four record types remain authoritative.
-Overflow recovery is a human-only manual delivery to `dev`.
+effect; two 84-request recovery passes, six authorization requests, and 26 publication requests
+exhaust the ceiling exactly, and the same four record types remain authoritative. Overflow recovery
+is a human-only manual delivery to `dev`.
 A 17th record, request 201, replay, edit, unavailable fact, or any chain, anchor, attestation,
-run/job/ref/SHA mismatch produces no record or lifecycle effect. Existing evidence is never edited,
-deleted, skipped, or reclassified.
+run/job/ref/SHA mismatch produces no record or lifecycle effect. Authenticated evidence is never
+edited, deleted, skipped, or reclassified. If v2 publication is interrupted before authentication,
+a fresh explicit maintainer command may retry the unconsumed target; the successful v2 checkpoint
+binds and quarantines at most four fully proven incomplete publications. A fifth or ambiguous
+candidate fails closed, and no retry is automatic.
 
 Every superseded phase/fence claim must be followed by its terminal transition/read-back checkpoint
 before a successor generation request. This prevents event churn from starving checkpoints.

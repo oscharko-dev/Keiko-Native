@@ -138,12 +138,15 @@ Every auxiliary identity is also SHA-256 over ADR-0004 canonical bytes with one 
 
 That list is the exact one-to-one domain-to-schema mapping: the label before each colon is the
 identity-schema row below, and the literal after it is that row's sole permitted domain. For every
-auxiliary identity, the SHA-256 preimage is one top-level ADR-0004 `record` node whose fields are
-exactly, in order: `digest_domain` as an `enum` containing that row's mapped literal;
-`schema_version` as `uint` `1`; `digest_algorithm` as `enum` `sha-256`; then every remaining field
-in that row's table schema after its leading `schema_version`, with the exact names and types shown.
-Thus the table's leading `schema_version` occupies the second preimage field and is not encoded
-twice. There is no wrapper, implicit type, omitted field, alternate domain, or raw domain prefix.
+ordinary auxiliary identity, the SHA-256 preimage is one top-level ADR-0004 `record` node whose
+fields are exactly, in order: `digest_domain` as an `enum` containing that row's mapped literal;
+`schema_version` as `uint` `1`; `digest_algorithm` as `enum` `sha-256`; then every
+remaining field in that row's table schema after its leading `schema_version`, with the exact names
+and types shown. The sole auxiliary version-2 exception is the compacted-prefix projection carried
+by the exact overflow transition/read-back v2 below; it retains the same compacted-prefix domain
+and is closed there. Thus a table's leading `schema_version` occupies the second preimage field and
+is not encoded twice. There is no wrapper, implicit type, omitted field, alternate domain, or raw
+domain prefix.
 
 The exact auxiliary v1 schemas are:
 
@@ -447,6 +450,26 @@ the record proves no lifecycle effect. The phase fence must be the exact authent
 fence at the chain tip. A v2 record outside this closed shape, or a v1 record carrying either new
 field, is malformed.
 
+The v2 record's `compacted_prefix_identity` is the sole version-2 use of the existing
+`keiko-native.lifecycle-compacted-prefix-identity` domain. Its exact fields are
+`schema_version:uint=2`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint=1`,
+`prior_checkpoint_identity:null`, and `members:list<overflow-checkpoint-member>`. The nested member
+starts with `member_kind:enum(authenticated-record,quarantined-overflow-publication)`. An
+`authenticated-record` then carries exactly the ordinary `comment_id:uint` and
+`record_digest:sha256` checkpoint-member fields. A quarantined overflow-publication member is
+evidence about an incomplete publication, not an authenticated lifecycle record; it cannot become
+a predecessor, fence, checkpoint, authority, or effect. It instead carries, in order,
+`comment_id:uint`, `comment_body_sha256:sha256`, `record_digest:sha256`,
+`overflow_recovery_target_identity:sha256`, `overflow_recovery_authorization_identity:sha256`,
+`author_login:enum(github-actions[bot])`, `author_id:uint=41898282`, `actor_type:enum(Bot)`,
+`app_id:uint=15368`, `workflow_path:coordinator-path`, `workflow_run_id:uint`,
+`workflow_run_attempt:uint`, `workflow_job_id:uint`, `protected_dev_sha:commit`,
+`run_conclusion:enum(failure,cancelled,timed-out)`,
+`job_conclusion:enum(failure,cancelled,timed-out)`, `anchor_artifact_id:uint-or-null`,
+`anchor_artifact_digest:sha256-or-null`, `attestation_count:uint=0`, and
+`quarantine_reason:enum(anchor-publication-interrupted)`. The two anchor fields are both null or
+both non-null. No other auxiliary identity accepts schema version 2.
+
 The overflow target binds one complete genesis suffix: repository, issue, explicit null prior-
 checkpoint fields, first record pair, chain-tip pair, the literal count `16`, and checkpoint
 sequence `1`. The first record must be the unique authenticated null-predecessor generation request.
@@ -464,8 +487,15 @@ record, any checkpoint-plus-16 shape, any missing or conflicting fact, or an alr
 produces no record or effect.
 
 Successful publication and stable authentication of the v2 checkpoint compact the 16 records in
-the ordinary way. Existing evidence remains append-only and auditable. Subsequent wakes use the
-normal v1 protocol and 15-record bound; overflow recovery grants no standing exception.
+the ordinary way and may also settle at most four strictly ordered quarantined overflow-publication
+members for that same unconsumed target. Each candidate must be a complete exact v2 comment from the
+Actions Bot/App and protected coordinator, bind the same target and base chain, have a terminal
+failed, cancelled, or timed-out writer run, and have either no anchor or one exact matching anchor
+with no attestation in both stable passes. A fully valid anchor/attestation tuple authenticates the
+existing checkpoint instead; a fifth candidate, any attestation, mismatched or multiple anchor,
+nonterminal run, unknown provenance, or conflicting body is ambiguous and produces no record or
+effect. Existing evidence remains append-only and auditable. Subsequent wakes use the normal v1
+protocol and 15-record bound; overflow recovery grants no standing exception.
 
 ### Record authentication and chain reconstruction
 
@@ -483,7 +513,17 @@ loaded facts match:
   provider-assigned comment ID, exact comment-body digest, record digest, repository, protected
   workflow, workflow ref, protected commit, run, and attempt claimed by the record; and
 - repository, issue, pull request, head, target, generation, request, predecessor, and fence
-  identities independently match current canonical inputs.
+  identities independently match current canonical inputs, except for the closed superseded
+  checkpoint projection below.
+
+A superseded checkpoint authenticates its request, head, target, generation, attempt, and producer
+set against the frozen generation reconstructed from the authenticated predecessor chain, not by
+pretending they remain current. Its predecessor must be that frozen generation's exact
+`claim_outcome=superseded` phase/fence claim. The claim's `source_observation_identity` must equal a
+freshly recomputed superseding observation, that observation must make the frozen generation differ
+from current canonical inputs, and two complete reads immediately before publication plus the final
+read-back must keep the superseding observation and current canonical inputs identical. A changed
+or unavailable observation authenticates neither generation and creates no checkpoint or successor.
 
 Login, marker, author association, check name, details URL, event timing, or a copied comment cannot
 authenticate a record alone. A missing `performed_via_github_app`, wrong App, wrong workflow/ref,
@@ -696,13 +736,23 @@ pagination overflow, lower observed limit, or unavailable response yields
 allows it. The global group prevents lifecycle-on-lifecycle races, while unrelated workflow quota
 use can reduce availability but cannot create authority or bypass stable rereads.
 
-Overflow recovery uses a separate hard 200-request counter. Its two complete 93-request suffix
-passes plus ADR-0012's six-request exact-comment authentication consume at most 192 requests; at
-most eight remaining requests cover checkpoint publication and its exact comment, anchor,
-attestation, and provider read-back. Request 201 produces no record or effect. Unused normal or
+Overflow recovery uses a separate hard 200-request counter. Two complete recovery passes consume at
+most 84 requests each: the ordinary 68 record/anchor/attestation/run/job requests, at most four
+current issue, pull-request, readiness, and equal-observation requests, at most four
+candidate-anchor downloads, and at most eight run/job requests for four bounded incomplete v2
+publication candidates.
+ADR-0012's direct command authentication consumes at most six requests. The remaining 26 requests
+are reserved for the checkpoint: one comment create and one immediate reread, at most eight anchor
+upload/finalization calls, at most eight attestation-publication calls, and final comment, artifact,
+attestation, run, job, issue, source-observation, and protected-ref rereads. The implementation gate
+rejects a provider composition that cannot statically prove this 26-request maximum. At runtime a
+27th publication request is denied; an already-created comment then remains an incomplete candidate
+under the bounded explicit recovery path above.
+Thus two complete recovery passes at 84 requests each, six-request authentication, and 26 requests
+for publication total exactly 200. Request 201 produces no record or effect. Unused normal or
 orphan-recovery allowance is not transferable. The counter covers every provider call, including
-early cardinality, command, permission, record, artifact, attestation, run, job, write, and
-read-back requests.
+redirects and upload/finalization calls as well as cardinality, command, permission, record,
+artifact, attestation, run, job, write, and read-back requests.
 
 Protected workflows never edit or delete canonical records. GitHub comments are only logically
 append-only, so deletion cannot be made impossible. A missing previously referenced comment, an
@@ -763,6 +813,10 @@ checkpoint creation or consume the live suffix through generation churn.
 
 In short, a superseded fence requires a terminal transition/read-back checkpoint before any
 successor generation.
+
+For that superseded terminal checkpoint, the frozen generation projection and the stable
+superseding-observation projection above are mandatory. Current facts prove why the old generation
+is terminal; they do not rewrite the old request or make its identities current.
 
 An unchanged failed or abandoned generation is terminal and does not retry automatically. A crash
 before any external effect may resume the same generation only after stable reconstruction proves
@@ -891,10 +945,14 @@ generation, attempt, fence, effect identity, and observed outcome before a new a
 Recovery moves forward; it never edits or deletes a record, guesses an outcome, restores stale
 review evidence, or weakens the sacred `dev` boundary.
 
-Suffix-overflow recovery is narrower than ambiguous-effect or orphan recovery. It cannot settle an
-effect, quarantine evidence, skip a member, raise the normal 15-record limit, or accept a malformed
-chain. It only terminalizes one explicitly authorized, fully authenticated 16-record suffix as a
-null-effect v2 checkpoint. The same four record types remain authoritative; version 2 of
+Suffix-overflow recovery is narrower than ambiguous-effect or ordinary orphan recovery. It cannot
+settle an effect, skip an authenticated member, raise the normal 15-record limit, or accept a
+malformed chain. It only terminalizes one explicitly authorized, fully authenticated 16-record
+suffix as a null-effect v2 checkpoint. If an earlier v2 checkpoint comment was accepted but its
+post-publication authentication was interrupted, a fresh explicit maintainer command may retry the
+still-unconsumed target and the successful v2 compacted prefix quarantines at most four such
+incomplete publications. This is not automatic retry, and no ordinary settlement record is
+appended ahead of the checkpoint. The same four record types remain authoritative; version 2 of
 transition/read-back is not a fifth record type. Activation remains disabled until Issue #55, and
 every `dev` delivery remains a human-only manual merge.
 

@@ -2555,6 +2555,26 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
+    /superseded checkpoint[\s\S]{0,500}frozen generation[\s\S]{0,500}superseding observation[\s\S]{0,500}current canonical inputs/iu,
+  );
+  assert.match(
+    protocol,
+    /two complete recovery passes[\s\S]{0,240}84 requests each[\s\S]{0,240}six-request[\s\S]{0,240}26 requests[\s\S]{0,160}200/iu,
+  );
+  assert.match(
+    wake,
+    /interrupted v2 publication[\s\S]{0,500}fresh\s+explicit[\s\S]{0,500}at\s+most\s+four[\s\S]{0,500}compacted-prefix[\s\S]{0,500}target\s+remains\s+unconsumed/iu,
+  );
+  assert.match(
+    protocol,
+    /quarantined overflow-publication member[\s\S]{0,1000}not\s+an\s+authenticated\s+lifecycle\s+record[\s\S]{0,500}cannot\s+become\s+a\s+predecessor/iu,
+  );
+  assert.match(
+    protocol,
+    /member_kind:enum\(authenticated-record,quarantined-overflow-publication\)[\s\S]{0,1400}anchor_artifact_id:uint-or-null[\s\S]{0,300}attestation_count:uint=0[\s\S]{0,500}both null or\s+both non-null/iu,
+  );
+  assert.match(
+    protocol,
     /same four record types[\s\S]{0,220}not a fifth record type/iu,
   );
 

@@ -8,13 +8,16 @@ only when an authorized maintainer manually merges its pull request to `dev`.
 This record narrowly amends ADR-0011's coordinator and producer authentication, invocation,
 recovery, and serialization topology. It adds one ADR-0012-owned auxiliary identity for the
 existing recovery-settlement `authorized_request_identity` field. It does not change ADR-0011's
-version-1 record schemas, any existing auxiliary identity schema, producer identities, coordinator
-ownership, lifecycle state graph, activation boundary, or the human-only `dev` merge rule.
+version-1 record schemas, auxiliary identity schemas, producer identities, coordinator ownership,
+lifecycle state graph, activation boundary, or human-only `dev` merge rule in its original #131
+scope.
 
 Decision issue #170 adds a second exact command grammar for authenticated suffix-overflow recovery.
 It reuses the same protected direct-comment route, authorization identity, allowlist, coordinator,
-and four record types. It adds no workflow, permission, principal, credential, or automatic `dev`
-authority, and becomes accepted only through a human-only manual merge to `dev`.
+and four record types. Its only existing-identity amendment is ADR-0011's closed version-2
+compacted-prefix projection for bounded failed-publication quarantine. It adds no workflow,
+permission, principal, credential, or automatic `dev` authority, and becomes accepted only through
+a human-only manual merge to `dev`.
 
 ## Context
 
@@ -693,17 +696,35 @@ only ADR-0011's overflow recovery transition/read-back v2 checkpoint. The record
 authorized request identity and overflow target identity, has a null effect, and cannot alter a
 lifecycle label, status, branch, pull request, queue, merge, or repository setting.
 
-Every provider request is counted against a separate hard ceiling of 200. Two complete suffix
-passes and direct-comment authentication consume at most 192 requests, leaving at most eight for
-checkpoint publication and stable comment, anchor, attestation, and read-back verification.
-Request 201 produces no record or effect. No unused allowance from normal operation or orphan
-recovery is transferred, and no provider response or rate-limit estimate can raise the ceiling.
+An interrupted v2 publication does not consume its overflow target. After two stable passes prove
+that the prior writer is terminal and its exact candidate has no valid attestation, a fresh explicit
+maintainer command may authorize another attempt for the same target. The coordinator
+accepts at most four strictly ordered candidates, binds their closed quarantine evidence in the
+successful v2 compacted-prefix, and appends no ordinary orphan-settlement record after the 16-record
+base chain. The retry must arrive as a fresh direct `issue_comment` event; the terminal
+authorization paired with an interrupted candidate is ineligible for fallback selection and cannot
+starve it.
+Until the new checkpoint is fully authenticated, the target remains unconsumed. An existing fully
+authenticated candidate makes the command a replay no-op; a fifth, conflicting, still-running,
+unknown-provenance, or attested candidate fails closed. Reordered simultaneous commands remain
+no-ops, and there is no scheduled or automatic publication retry.
 
-Overflow recovery remains effect-disabled before Issue #55 and cannot enter orphan settlement,
-cursor recovery, normal lifecycle mutation, or automatic retry. It is implemented only by the
-existing protected caller and coordinator. No account, App, PAT, broker, database, hosted service,
-dependency, or second credential is added. Activation remains disabled, and any implementation
-pull request to `dev` stops for a human-only manual merge.
+Every provider request is counted against a separate hard ceiling of 200. Two complete recovery
+passes consume at most 84 requests each, the exact direct-comment authentication consumes at most
+six requests, and 26 requests are reserved for bounded checkpoint comment, anchor, attestation,
+upload/finalization, and final stable read-back work. These maxima total 200. Request 201 produces
+no record or effect. The implementation gate rejects a provider composition that cannot prove the
+26-request publication maximum; a runtime 27th publication request is denied and any already-created
+comment remains subject to the bounded interrupted-publication path. No unused allowance from normal
+operation or orphan recovery is transferred, and no provider response or rate-limit estimate can
+raise the ceiling.
+
+Overflow recovery remains effect-disabled before Issue #55 and cannot enter ordinary orphan
+settlement, cursor recovery, normal lifecycle mutation, or automatic retry. Its bounded
+failed-publication quarantine is part of the one successful v2 checkpoint and grants no authority.
+It is implemented only by the existing protected caller and coordinator. No account, App, PAT,
+broker, database, hosted service, dependency, or second credential is added. Activation remains
+disabled, and any implementation pull request to `dev` stops for a human-only manual merge.
 
 ### Inert rollout
 

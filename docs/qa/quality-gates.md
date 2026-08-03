@@ -91,8 +91,11 @@ Overflow recovery is the sole schema-version exception: it uses version 2 of the
 transition/read-back type, never a fifth record type. The deterministic gate must prove the exact
 direct plain-issue command and authorization identity, exact target over 16 authenticated records,
 normal rejection at record 16, overflow rejection at record 17, rejection of checkpoint plus 16,
-request-200 success arithmetic, request-201 denial, stable double-read, replay no-op, append-only
-evidence, null effect, and exact checkpoint read-back. It must also prove every superseded fence
+the exact 84 + 84 + 6 + 26 request-200 success arithmetic, request-201 denial, stable double-read,
+replay no-op, append-only evidence, null effect, and exact checkpoint read-back. It must prove zero
+through four interrupted v2 publications are quarantined only inside a later successful checkpoint,
+a fifth is denied, and the target remains unconsumed until full authentication. It must also prove
+every superseded fence authenticates its frozen generation and stable superseding observation, then
 terminalizes as a checkpoint before a successor generation. Hostile wrong-actor, edited-command,
 wrong-target, missing/changed record, anchor, attestation, run, job, ref, SHA, predecessor,
 checkpoint, and provider-unavailable fixtures produce no record or effect. Overflow recovery remains
