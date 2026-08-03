@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
-import { createMigrationGithubProvider } from "./migration-github-provider.mjs";
+import {
+  createMigrationGithubProvider,
+  sanitizedMigrationProviderFailure,
+} from "./migration-github-provider.mjs";
 import {
   buildMigrationInventory,
   verifyMigrationInventory,
@@ -44,8 +47,8 @@ export async function runMigrationDryRun({
   let snapshot;
   try {
     snapshot = await provider.snapshot(repositoryIdentity);
-  } catch {
-    return { code: "provider-unavailable", ok: false };
+  } catch (error) {
+    return { code: sanitizedMigrationProviderFailure(error), ok: false };
   }
   const inventory = build(snapshot);
   if (inventory.ok !== true)

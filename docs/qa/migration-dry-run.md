@@ -14,14 +14,19 @@ Every paginated connection carries its provider total, cursor chain, and termina
 duplicated, malformed, unavailable, or changed observation fails closed. Only the exact built-in
 Actions bot identity `github-actions[bot]@41898282` can authenticate a readiness record or required
 commit status. An accepted readiness record must be newer than the latest body edit and reopen.
+Provider failures retain only an allowlisted recovery code; unknown exceptions collapse to the
+generic `provider-unavailable` result without leaking provider data.
 
 The repository must expose exactly the nine canonical lifecycle labels. The inventory first
 evaluates current accepted readiness and only then evaluates the issue's sole lifecycle label.
 Valid `new`, `triaged`, `blocked`, and `waiting for user` work without current readiness is excluded;
-a matching readiness record hidden behind `new` or `triaged` is a conflicting observation. Every
+triaged work is excluded only after its required type and contract classification validate. A
+matching readiness record hidden behind `new` or `triaged` is a conflicting observation. Every
 current-ready retained issue is included, including paused work with zero or one ineligible open
 pull request. A paused PR remains an inventory topology fact but is never an eligible manifest
-binding. `in progress` additionally requires a current, authorized assignment claim. `pr open`
+binding. `in progress` additionally requires a current, authorized assignment claim newer than the
+accepted readiness record and every body-edit or reopen invalidation. Every eligible delivery pull
+request must originate from the exact governed repository; fork heads fail closed. `pr open`
 requires the trusted Issue and PR contract statuses but permits the expected failed or pending
 Lifecycle handoff; `ready for human review` also requires a non-draft, mergeable PR, the trusted
 Lifecycle handoff, and the complete exact-head rollup to pass. Closed completed issues select one

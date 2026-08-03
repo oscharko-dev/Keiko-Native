@@ -7,6 +7,12 @@ const repository = "oscharko-dev/Keiko-Native";
 const dev = "d".repeat(40);
 const devTree = "e".repeat(40);
 const head = "a".repeat(40);
+const acceptedReadinessBody = [
+  "<!-- keiko-native-readiness -->",
+  "- Status: `accepted`",
+  "- Contract version: `v1`",
+  `- Fingerprint: \`${"f".repeat(64)}\``,
+].join("\n");
 
 const pageInfo = { endCursor: "end", hasNextPage: false };
 const emptyContracts = async () => ({
@@ -152,6 +158,7 @@ function fixtures() {
                 },
                 headRefName: "codex/30-work",
                 headRefOid: head,
+                headRepository: { nameWithOwner: repository },
                 isDraft: false,
                 labels: {
                   nodes: [{ name: "status: pr open" }],
@@ -224,6 +231,10 @@ test("collects a complete stable double-read without mutation capability", async
   assert.equal(
     result.comments.get(30).pages[0].nodes[0].user.login,
     "github-actions[bot]",
+  );
+  assert.equal(
+    result.pullRequests.pages[0].nodes[0].head.repository,
+    repository,
   );
   assert.deepEqual(result.pullRequests.pages[0].nodes[0].checks.required, [
     {
@@ -299,6 +310,7 @@ test("derives a validated in-progress claim and reopen invalidation from history
   const harness = graphqlHarness((values) => {
     const observed = values.issues.data.repository.issues.nodes[0];
     observed.labels.nodes[0].name = "status: in progress";
+    observed.comments.nodes[0].body = acceptedReadinessBody;
     observed.timelineItems = {
       nodes: [
         {
@@ -311,7 +323,7 @@ test("derives a validated in-progress claim and reopen invalidation from history
           __typename: "AssignedEvent",
           actor: { login: "Niko4417" },
           assignee: { login: "Niko4417" },
-          createdAt: "2026-08-01T11:00:00Z",
+          createdAt: "2026-08-01T11:30:00Z",
           id: "assigned-1",
         },
       ],
@@ -331,6 +343,54 @@ test("derives a validated in-progress claim and reopen invalidation from history
   const observed = result.issues.pages[0].nodes[0];
   assert.equal(observed.claim.validated, true);
   assert.equal(observed.reopenedAt, "2026-08-01T10:00:00Z");
+});
+
+test("rejects assignment claims older than readiness or issue invalidation", async () => {
+  for (const mutate of [
+    (observed) => {
+      observed.timelineItems.nodes[1].createdAt = "2026-08-01T10:30:00Z";
+    },
+    (observed) => {
+      observed.lastEditedAt = "2026-08-01T11:45:00Z";
+      observed.comments.nodes[0].createdAt = "2026-08-01T12:00:00Z";
+    },
+  ]) {
+    const harness = graphqlHarness((values) => {
+      const observed = values.issues.data.repository.issues.nodes[0];
+      observed.labels.nodes[0].name = "status: in progress";
+      observed.comments.nodes[0].body = acceptedReadinessBody;
+      observed.timelineItems = {
+        nodes: [
+          {
+            __typename: "ReopenedEvent",
+            actor: { login: "Niko4417" },
+            createdAt: "2026-08-01T10:00:00Z",
+            id: "reopened-1",
+          },
+          {
+            __typename: "AssignedEvent",
+            actor: { login: "Niko4417" },
+            assignee: { login: "Niko4417" },
+            createdAt: "2026-08-01T11:30:00Z",
+            id: "assigned-1",
+          },
+        ],
+        pageInfo,
+        totalCount: 2,
+      };
+      mutate(observed);
+    });
+    const provider = createMigrationGithubProvider({
+      contracts: emptyContracts,
+      graphql: harness.graphql,
+      json: async (path) =>
+        path.includes("/collaborators/")
+          ? { permission: "admin" }
+          : harness.json(path),
+    });
+    const result = await provider.snapshot(repository);
+    assert.equal(result.issues.pages[0].nodes[0].claim, null);
+  }
 });
 
 test("rejects incomplete or duplicate issue-event pagination", async () => {

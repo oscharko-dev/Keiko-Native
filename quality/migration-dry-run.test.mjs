@@ -103,6 +103,18 @@ test("fails closed on invalid input, provider failure, and verifier mismatch", a
     }),
     { code: "provider-unavailable", ok: false },
   );
+  for (const code of [
+    "migration-provider-drift",
+    "migration-provider-request-ceiling",
+    "migration-provider-issue-events-incomplete",
+  ])
+    assert.deepEqual(
+      await runMigrationDryRun({
+        ...base,
+        provider: { snapshot: async () => Promise.reject(new Error(code)) },
+      }),
+      { code, ok: false },
+    );
   assert.deepEqual(
     await runMigrationDryRun({ ...base, verify: () => ({ ok: false }) }),
     { code: "independent-verification-failed", ok: false },

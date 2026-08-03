@@ -230,15 +230,19 @@ function manifestSuccessor(nodes) {
   chain.sort((left, right) => left.version - right.version);
   for (let index = 0; index < chain.length; index += 1) {
     const item = chain[index];
-    const prior = chain[index - 1] ?? null;
+    if (item.version !== index + 1)
+      return { failure: "migration-manifest-chain-invalid" };
+    if (index === 0) {
+      if (item.predecessor !== null)
+        return { failure: "migration-manifest-chain-invalid" };
+      continue;
+    }
+    const prior = chain[index - 1];
     if (
-      item.version !== index + 1 ||
-      (prior === null
-        ? item.predecessor !== null
-        : !isDeepStrictEqual(item.predecessor, {
-            digest: prior.digest,
-            path: prior.path,
-          }))
+      !isDeepStrictEqual(item.predecessor, {
+        digest: prior.digest,
+        path: prior.path,
+      })
     )
       return { failure: "migration-manifest-chain-invalid" };
   }
@@ -384,6 +388,7 @@ function validPullRequestCore(item, associatedIssue, base, head) {
     shaPattern.test(base.sha ?? "") &&
     record(head) &&
     typeof head.ref === "string" &&
+    repositoryPattern.test(head.repository ?? "") &&
     shaPattern.test(head.sha ?? "") &&
     (associatedIssue === undefined || positiveInteger(associatedIssue))
   );
@@ -493,6 +498,80 @@ function terminalDeliveryValid(input, item, issue, comments) {
   return validation.failures.length === 0;
 }
 
+function validateMergedPullRequest(
+  input,
+  item,
+  issue,
+  fact,
+  head,
+  allowlistedMergers,
+) {
+  if (!validMergeProof(item, allowlistedMergers))
+    return { disposition: "pr-merge-proof-invalid", fact };
+  const comments = commentsFor(input, issue);
+  if (comments === undefined)
+    return { disposition: "comment-pagination-incomplete", fact };
+  fact.finalDeliveryValidated = terminalDeliveryValid(
+    input,
+    item,
+    issue,
+    comments,
+  );
+  if (!fact.finalDeliveryValidated) return { fact, verified: true };
+  const checksDisposition = requiredChecksDisposition(item, issue, head);
+  return checksDisposition === null
+    ? { fact, verified: true }
+    : { disposition: checksDisposition, fact };
+}
+
+function validateOpenPullRequest(item, issue, fact, head) {
+  if (item.state !== "open" || item.mergeCommit !== null)
+    return { disposition: "pr-state-inconsistent", fact };
+  const reviewReady =
+    issue.lifecycle.length === 1 &&
+    issue.lifecycle[0] === "status: ready for human review";
+  if (reviewReady && (item.isDraft || item.mergeable !== "MERGEABLE"))
+    return { disposition: "pr-review-state-ineligible", fact };
+  const checksDisposition = requiredChecksDisposition(item, issue, head);
+  return checksDisposition === null
+    ? { fact, verified: true }
+    : { disposition: checksDisposition, fact };
+}
+
+function validateAssociatedPullRequest(
+  input,
+  item,
+  issue,
+  fact,
+  base,
+  head,
+  allowlistedMergers,
+) {
+  if (head.repository !== input.repository)
+    return { disposition: "pr-head-repository-mismatch", fact };
+  const paused =
+    issue.lifecycle.length === 1 &&
+    ["status: blocked", "status: waiting for user"].includes(
+      issue.lifecycle[0],
+    );
+  if (item.state === "open" && !item.merged && paused)
+    return { fact, verified: true };
+  if (base.ref !== issue.target)
+    return { disposition: "pull-request-target-mismatch", fact };
+  if (item.headCommit?.verified !== true || item.headCommit?.reason !== "valid")
+    return { disposition: "pr-head-signature-invalid", fact };
+  return item.merged
+    ? validateMergedPullRequest(
+        input,
+        item,
+        issue,
+        fact,
+        head,
+        allowlistedMergers,
+      )
+    : validateOpenPullRequest(item, issue, fact, head);
+}
+
 function pullRequestFact(input, item, issueByNumber, allowlistedMergers) {
   const associatedIssue = pullRequestIssueNumber(item?.body);
   const hasAssociationLocator =
@@ -505,6 +584,7 @@ function pullRequestFact(input, item, issueByNumber, allowlistedMergers) {
     base: base?.sha ?? null,
     checksPassing: item?.checks?.allPassing ?? null,
     head: head?.sha ?? null,
+    headRepository: head?.repository ?? null,
     isDraft: item?.isDraft ?? null,
     lifecycle,
     merged: item?.merged ?? null,
@@ -540,6 +620,7 @@ function pullRequestFact(input, item, issueByNumber, allowlistedMergers) {
     base: base.sha,
     checksPassing: item?.checks?.allPassing ?? null,
     head: head.sha,
+    headRepository: head.repository,
     isDraft: item.isDraft,
     lifecycle,
     merged: item.merged,
@@ -553,52 +634,15 @@ function pullRequestFact(input, item, issueByNumber, allowlistedMergers) {
       ? { fact, verified: false }
       : { disposition: "pr-state-inconsistent", fact };
   }
-  const paused =
-    issue.lifecycle.length === 1 &&
-    ["status: blocked", "status: waiting for user"].includes(
-      issue.lifecycle[0],
-    );
-  if (item.state === "open" && item.merged === false && paused)
-    return { fact, verified: true };
-  if (base.ref !== issue.target)
-    return { disposition: "pull-request-target-mismatch", fact };
-  if (
-    item?.headCommit?.verified !== true ||
-    item?.headCommit?.reason !== "valid"
-  )
-    return { disposition: "pr-head-signature-invalid", fact };
-  if (item.merged) {
-    if (!validMergeProof(item, allowlistedMergers)) {
-      return { disposition: "pr-merge-proof-invalid", fact };
-    }
-    const comments = commentsFor(input, issue);
-    if (comments === undefined)
-      return { disposition: "comment-pagination-incomplete", fact };
-    fact.finalDeliveryValidated = terminalDeliveryValid(
-      input,
-      item,
-      issue,
-      comments,
-    );
-    if (fact.finalDeliveryValidated) {
-      const checksDisposition = requiredChecksDisposition(item, issue, head);
-      if (checksDisposition !== null)
-        return { disposition: checksDisposition, fact };
-    }
-  } else if (item.state !== "open" || item.mergeCommit !== null) {
-    return { disposition: "pr-state-inconsistent", fact };
-  } else {
-    if (
-      issue.lifecycle.length === 1 &&
-      issue.lifecycle[0] === "status: ready for human review" &&
-      (item.isDraft || item.mergeable !== "MERGEABLE")
-    )
-      return { disposition: "pr-review-state-ineligible", fact };
-    const checksDisposition = requiredChecksDisposition(item, issue, head);
-    if (checksDisposition !== null)
-      return { disposition: checksDisposition, fact };
-  }
-  return { fact, verified: true };
+  return validateAssociatedPullRequest(
+    input,
+    item,
+    issue,
+    fact,
+    base,
+    head,
+    allowlistedMergers,
+  );
 }
 
 function disposition(kind, number, code) {
@@ -774,11 +818,9 @@ function recordReadyIssue(
   const openAssociated = associated.filter(
     (pullRequest) => pullRequest.state === "open" && !pullRequest.merged,
   );
-  const topologyValid = tracked
-    ? openAssociated.length === 1
-    : paused
-      ? openAssociated.length <= 1
-      : openAssociated.length === 0;
+  let topologyValid = openAssociated.length === 0;
+  if (tracked) topologyValid = openAssociated.length === 1;
+  else if (paused) topologyValid = openAssociated.length <= 1;
   if (!topologyValid) {
     state.issueInventory.push(
       safeIssue(issue, "linked-pr-unverifiable", readiness),
@@ -833,16 +875,15 @@ function recordIssue(state, input, issue, prepared, verifiedPullRequests) {
     (pullRequest) => pullRequest.associatedIssue === issue.number,
   );
   const current = [...issue.lifecycle].sort(compareCodeUnits);
+  const planningState = issue.lifecycle[0];
   const planningExcluded =
     issue.state === "open" &&
     issue.lifecycle.length === 1 &&
     !readiness.current &&
-    [
-      "status: new",
-      "status: triaged",
-      "status: blocked",
-      "status: waiting for user",
-    ].includes(issue.lifecycle[0]);
+    (["status: new", "status: blocked", "status: waiting for user"].includes(
+      planningState,
+    ) ||
+      (planningState === "status: triaged" && issue.contractFailure === null));
   if (planningExcluded) {
     recordPlanningExcludedIssue(state, issue, readiness, current);
     return undefined;

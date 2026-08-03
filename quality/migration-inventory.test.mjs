@@ -99,7 +99,11 @@ function pullRequest(number, issueNumber, overrides = {}) {
         },
       ],
     },
-    head: { ref: `codex/${issueNumber}-work`, sha: head },
+    head: {
+      ref: `codex/${issueNumber}-work`,
+      repository,
+      sha: head,
+    },
     headCommit: { reason: "valid", verified: true },
     isDraft: false,
     labels: ["status: pr open"],
@@ -376,6 +380,19 @@ test("rejects unknown lifecycle labels, bad signatures, and failed required chec
   }
 });
 
+test("rejects pull requests from an unauthorized head repository", async () => {
+  const input = await acceptedSnapshot();
+  input.pullRequests.pages[0].nodes[0].head.repository = "attacker/fork";
+  const result = buildMigrationInventory(input);
+  assert.equal(result.publishable, false);
+  assert.ok(
+    result.dispositions.some(
+      ({ code, number }) =>
+        code === "pr-head-repository-mismatch" && number === 70,
+    ),
+  );
+});
+
 test("requires the exact canonical lifecycle label set", async () => {
   const input = await acceptedSnapshot();
   input.labels.pages[0].nodes = input.labels.pages[0].nodes.filter(
@@ -402,6 +419,22 @@ test("excludes planning states without readiness instead of dispositioning them"
   assert.equal(
     result.dispositions.some(({ number }) => number === 33),
     false,
+  );
+});
+
+test("validates triaged classification before planning exclusion", async () => {
+  const input = await acceptedSnapshot();
+  input.issues.pages[0].nodes.push(
+    issue(33, "status: triaged", { labels: ["status: triaged"] }),
+  );
+  input.issues.pages[0].totalCount += 1;
+  input.comments.set(33, page([]));
+  const result = buildMigrationInventory(input);
+  assert.equal(result.publishable, false);
+  assert.ok(
+    result.dispositions.some(
+      ({ code, number }) => code === "issue-type-ambiguous" && number === 33,
+    ),
   );
 });
 

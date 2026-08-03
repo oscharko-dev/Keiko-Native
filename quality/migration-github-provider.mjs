@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 import { githubGraphqlRequestFor, githubRequestFor } from "./github-api.mjs";
+import { readinessRecordFromComments } from "./issue-readiness-action.mjs";
 import { contractSha256, parseContractPath } from "./repository-contract.mjs";
 
 const graphqlRequest = githubGraphqlRequestFor(
@@ -19,6 +20,11 @@ const repositoryPattern = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/u;
 const shaPattern = /^[0-9a-f]{40}$/u;
 const manifestPathPattern =
   /^docs\/qa\/repository-migration-manifest-v([1-9]\d*)\.md$/u;
+const issueEventActions = new Map([
+  ["AssignedEvent", "assigned"],
+  ["ReopenedEvent", "reopened"],
+  ["UnassignedEvent", "unassigned"],
+]);
 
 const LABELS_QUERY = `query MigrationLabels($owner: String!, $name: String!, $after: String) {
   repository(owner: $owner, name: $name) {
@@ -127,6 +133,7 @@ const PULL_REQUESTS_QUERY = `query MigrationPullRequests($owner: String!, $name:
       pageInfo { endCursor hasNextPage }
       nodes {
         number title state merged isDraft mergeable body baseRefName baseRefOid headRefName headRefOid
+        headRepository { nameWithOwner }
         mergedBy { login }
         labels(first: 100) { totalCount nodes { name } }
         mergeCommit {
@@ -161,6 +168,44 @@ const PULL_REQUESTS_QUERY = `query MigrationPullRequests($owner: String!, $name:
 
 const record = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
+
+const sanitizedProviderFailureCodes = new Set([
+  "migration-contract-blob-invalid",
+  "migration-contract-path-invalid",
+  "migration-contract-protected-dev-mismatch",
+  "migration-contract-tree-invalid",
+  "migration-manifest-blob-invalid",
+  "migration-manifest-bytes-invalid",
+  "migration-manifest-bytes-noncanonical",
+  "migration-manifest-schema-invalid",
+  "migration-manifest-tree-invalid",
+  "migration-provider-assignees-incomplete",
+  "migration-provider-checked-out-dev-mismatch",
+  "migration-provider-comment-invalid",
+  "migration-provider-comments-incomplete",
+  "migration-provider-connection-invalid",
+  "migration-provider-drift",
+  "migration-provider-issue-event-invalid",
+  "migration-provider-issue-events-incomplete",
+  "migration-provider-issue-invalid",
+  "migration-provider-issue-labels-incomplete",
+  "migration-provider-pr-labels-incomplete",
+  "migration-provider-protected-dev-drift",
+  "migration-provider-protected-dev-invalid",
+  "migration-provider-protected-tree-drift",
+  "migration-provider-pull-request-invalid",
+  "migration-provider-repository-invalid",
+  "migration-provider-repository-mismatch",
+  "migration-provider-request-ceiling",
+  "migration-provider-status-context-conflict",
+  "migration-provider-status-invalid",
+]);
+
+export function sanitizedMigrationProviderFailure(error) {
+  return sanitizedProviderFailureCodes.has(error?.message)
+    ? error.message
+    : "provider-unavailable";
+}
 
 function providerFailure(code) {
   throw new Error(code);
@@ -238,12 +283,7 @@ function issueEvent(event) {
   )
     providerFailure("migration-provider-issue-event-invalid");
   return {
-    action:
-      event.__typename === "ReopenedEvent"
-        ? "reopened"
-        : event.__typename === "AssignedEvent"
-          ? "assigned"
-          : "unassigned",
+    action: issueEventActions.get(event.__typename),
     actor: actor ?? null,
     assignee: assignee ?? null,
     createdAt: event.createdAt,
@@ -346,6 +386,7 @@ function pullRequestNode(pullRequest) {
     !["CONFLICTING", "MERGEABLE", "UNKNOWN"].includes(pullRequest.mergeable) ||
     typeof pullRequest.title !== "string" ||
     typeof pullRequest.body !== "string" ||
+    !repositoryPattern.test(pullRequest.headRepository?.nameWithOwner ?? "") ||
     !Array.isArray(pullRequest.commits?.nodes)
   ) {
     providerFailure("migration-provider-pull-request-invalid");
@@ -390,7 +431,11 @@ function pullRequestNode(pullRequest) {
         .map((name) => statusContexts.find((status) => status.name === name))
         .filter((status) => status !== undefined),
     },
-    head: { ref: pullRequest.headRefName ?? null, sha: headOid },
+    head: {
+      ref: pullRequest.headRefName ?? null,
+      repository: pullRequest.headRepository.nameWithOwner,
+      sha: headOid,
+    },
     headCommit: commitVerification(commit?.signature),
     labels,
     isDraft: pullRequest.isDraft,
@@ -510,7 +555,13 @@ async function collaboratorCanClaim(json, repository, login) {
   }
 }
 
-async function addIssueHistoryEvidence(json, repository, issue, events) {
+async function addIssueHistoryEvidence(
+  json,
+  repository,
+  issue,
+  events,
+  comments,
+) {
   const ordered = completePagedNodes(
     events,
     (event) => event.id,
@@ -521,18 +572,36 @@ async function addIssueHistoryEvidence(json, repository, issue, events) {
         left.id.localeCompare(right.id)
       : left.createdAt.localeCompare(right.createdAt),
   );
-  const reopened = ordered.filter(({ action }) => action === "reopened").at(-1);
+  const reopened = ordered.findLast(({ action }) => action === "reopened");
   issue.reopenedAt = reopened?.createdAt ?? null;
   if (
     issue.labels.includes("status: in progress") &&
     issue.assignees.length === 1
   ) {
     const assignee = issue.assignees[0];
-    const latestAssignment = ordered
-      .filter((event) => event.assignee === assignee)
-      .at(-1);
+    const latestAssignment = ordered.findLast(
+      (event) => event.assignee === assignee,
+    );
+    const completeComments = completePagedNodes(
+      comments,
+      (comment) => comment.id,
+      "migration-provider-comments-incomplete",
+    );
+    const readiness = readinessRecordFromComments(completeComments);
+    const acceptedComment = completeComments.find(
+      (comment) => comment.id === readiness?.commentId,
+    );
+    const claimMustFollow = [
+      issue.lastEditedAt,
+      issue.reopenedAt,
+      readiness?.status === "accepted" ? acceptedComment?.createdAt : null,
+    ].filter((value) => value !== null && value !== undefined);
     if (
       latestAssignment?.action === "assigned" &&
+      claimMustFollow.every(
+        (value) => Date.parse(latestAssignment.createdAt) > Date.parse(value),
+      ) &&
+      readiness?.status === "accepted" &&
       (await collaboratorCanClaim(json, repository, latestAssignment.actor)) &&
       (await collaboratorCanClaim(json, repository, assignee))
     )
@@ -586,6 +655,95 @@ export async function loadRepositoryContractBindings(root) {
   };
 }
 
+async function readProtectedBlob({
+  blobFailure,
+  entry,
+  json,
+  repository,
+  treeFailure,
+  validPath,
+}) {
+  if (
+    entry.type !== "blob" ||
+    entry.mode !== "100644" ||
+    !shaPattern.test(entry.sha ?? "") ||
+    !validPath(entry.path)
+  )
+    providerFailure(treeFailure);
+  const blob = await json(`/repos/${repository}/git/blobs/${entry.sha}`);
+  if (
+    blob?.sha !== entry.sha ||
+    blob.encoding !== "base64" ||
+    typeof blob.content !== "string"
+  )
+    providerFailure(blobFailure);
+  const encoded = blob.content.replaceAll("\n", "");
+  const bytes = Buffer.from(encoded, "base64");
+  if (bytes.toString("base64") !== encoded) providerFailure(blobFailure);
+  return bytes;
+}
+
+async function protectedContractNodes(json, repository, entries) {
+  const nodes = [];
+  for (const entry of entries) {
+    const bytes = await readProtectedBlob({
+      blobFailure: "migration-contract-blob-invalid",
+      entry,
+      json,
+      repository,
+      treeFailure: "migration-contract-tree-invalid",
+      validPath: (path) => parseContractPath(path).ok === true,
+    });
+    nodes.push({
+      digest: contractSha256(bytes).digest,
+      mode: entry.mode,
+      path: entry.path,
+    });
+  }
+  return nodes;
+}
+
+function manifestPredecessor(bytes) {
+  let value;
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    value = JSON.parse(text);
+    if (text !== `${JSON.stringify(value)}\n`)
+      providerFailure("migration-manifest-bytes-noncanonical");
+  } catch (error) {
+    if (error?.message?.startsWith("migration-manifest-")) throw error;
+    providerFailure("migration-manifest-bytes-invalid");
+  }
+  if (
+    !record(value) ||
+    !Array.isArray(value.entries) ||
+    !(value.predecessor === null || record(value.predecessor))
+  )
+    providerFailure("migration-manifest-schema-invalid");
+  return value.predecessor;
+}
+
+async function protectedManifestNodes(json, repository, entries) {
+  const nodes = [];
+  for (const entry of entries) {
+    const bytes = await readProtectedBlob({
+      blobFailure: "migration-manifest-blob-invalid",
+      entry,
+      json,
+      repository,
+      treeFailure: "migration-manifest-tree-invalid",
+      validPath: (path) => manifestPathPattern.test(path),
+    });
+    nodes.push({
+      digest: contractSha256(bytes).digest,
+      mode: entry.mode,
+      path: entry.path,
+      predecessor: manifestPredecessor(bytes),
+    });
+  }
+  return nodes;
+}
+
 async function loadProtectedRepositoryContractBindings({
   json,
   protectedDev,
@@ -608,79 +766,18 @@ async function loadProtectedRepositoryContractBindings({
         entry.path.startsWith("docs/contracts/"),
     )
     .toSorted((left, right) => left.path.localeCompare(right.path));
-  const nodes = [];
-  for (const entry of contractEntries) {
-    if (
-      entry.type !== "blob" ||
-      entry.mode !== "100644" ||
-      !/^[0-9a-f]{40}$/u.test(entry.sha ?? "") ||
-      parseContractPath(entry.path).ok !== true
-    )
-      providerFailure("migration-contract-tree-invalid");
-    const blob = await json(`/repos/${repository}/git/blobs/${entry.sha}`);
-    if (
-      blob?.sha !== entry.sha ||
-      blob.encoding !== "base64" ||
-      typeof blob.content !== "string"
-    )
-      providerFailure("migration-contract-blob-invalid");
-    const bytes = Buffer.from(blob.content.replaceAll("\n", ""), "base64");
-    if (bytes.toString("base64") !== blob.content.replaceAll("\n", ""))
-      providerFailure("migration-contract-blob-invalid");
-    nodes.push({
-      digest: contractSha256(bytes).digest,
-      mode: entry.mode,
-      path: entry.path,
-    });
-  }
-  const manifests = [];
+  const nodes = await protectedContractNodes(json, repository, contractEntries);
   const manifestEntries = tree.tree
     .filter(
       (entry) =>
         typeof entry?.path === "string" && manifestPathPattern.test(entry.path),
     )
     .toSorted((left, right) => left.path.localeCompare(right.path));
-  for (const entry of manifestEntries) {
-    if (
-      entry.type !== "blob" ||
-      entry.mode !== "100644" ||
-      !shaPattern.test(entry.sha ?? "")
-    )
-      providerFailure("migration-manifest-tree-invalid");
-    const blob = await json(`/repos/${repository}/git/blobs/${entry.sha}`);
-    if (
-      blob?.sha !== entry.sha ||
-      blob.encoding !== "base64" ||
-      typeof blob.content !== "string"
-    )
-      providerFailure("migration-manifest-blob-invalid");
-    const encoded = blob.content.replaceAll("\n", "");
-    const bytes = Buffer.from(encoded, "base64");
-    if (bytes.toString("base64") !== encoded)
-      providerFailure("migration-manifest-blob-invalid");
-    let value;
-    try {
-      const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-      value = JSON.parse(text);
-      if (text !== `${JSON.stringify(value)}\n`)
-        providerFailure("migration-manifest-bytes-noncanonical");
-    } catch (error) {
-      if (error?.message?.startsWith("migration-manifest-")) throw error;
-      providerFailure("migration-manifest-bytes-invalid");
-    }
-    if (
-      !record(value) ||
-      !Array.isArray(value.entries) ||
-      !(value.predecessor === null || record(value.predecessor))
-    )
-      providerFailure("migration-manifest-schema-invalid");
-    manifests.push({
-      digest: contractSha256(bytes).digest,
-      mode: entry.mode,
-      path: entry.path,
-      predecessor: value.predecessor,
-    });
-  }
+  const manifests = await protectedManifestNodes(
+    json,
+    repository,
+    manifestEntries,
+  );
   return {
     contracts: {
       pages: [
@@ -782,7 +879,13 @@ async function scan({
       issue,
       initialEvents.get(issue.number),
     );
-    await addIssueHistoryEvidence(json, repository, issue, events);
+    await addIssueHistoryEvidence(
+      json,
+      repository,
+      issue,
+      events,
+      comments.get(issue.number),
+    );
   }
   const pullRequests = await allPages(
     graphql,
