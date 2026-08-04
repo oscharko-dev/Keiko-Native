@@ -1,9 +1,9 @@
 {
   "schema": "keiko-native-package-manifest/v1",
-  "sourceRevision": "8f09eed3b0726207bc27132556c3174bba1abe60",
+  "sourceRevision": "b49c1ed241892e3b1e18b6c883f64d128726d7e0",
   "target": "keiko-native-desktop",
   "platform": "macos-arm64",
-  "policySha256": "6e8578f2b0c2aef38306c0e1d9ea2de6c25741b0a0aff2ab33dbe181a71de3af",
+  "policySha256": "4863f24efdec90c6217acba75c50114076c7e65eee95b1e52b96043904d43507",
   "inventory": [
     {
       "mode": "0644",
@@ -13,12 +13,12 @@
     {
       "mode": "0755",
       "path": "Contents/MacOS/keiko-native-desktop",
-      "sha256": "b82e2ea0f43918eb1bddaff1fa8b316c9f658b0e3f878c0646f72dd39b289d97"
+      "sha256": "3a3c98a7c6487e9dfee06d4c5c53eb52f0b0b2f62bf23099ddfd3335fb37e6e0"
     },
     {
       "mode": "0644",
       "path": "Contents/Resources/THIRD-PARTY-NOTICES.json",
-      "sha256": "98713fae4f47907e9a137c53462a10b5668f89903664c814d8765ae00a01ac04"
+      "sha256": "8a5a83127bf3a246ae5ce2ca3db9a3aec063ea5540e625d4598f49cdccd0b1bc"
     }
   ],
   "redaction": "closed"

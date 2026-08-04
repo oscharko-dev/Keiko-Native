@@ -3,11 +3,11 @@
   "phase": "revoked",
   "predecessor": {
     "phase": "allowed",
-    "sha256": "f5633e0a1de457f64d319aeac1b42794646effbbcadd9b40c70ec2efe64dd307"
+    "sha256": "fd46fe8ec3dbeeaa71e0ba519536ef0e8da9baeb25afdd0bc42bcc156f8c94ef"
   },
   "prepared": {
     "schemaVersion": "keiko-native-macos-accessibility-driver-prepared/v1",
-    "sourceHead": "70af77905f55f5b08ba851e62a06b518ccf15140",
+    "sourceHead": "b49c1ed241892e3b1e18b6c883f64d128726d7e0",
     "sourceDigest": "7bb83da1c35b1590343fb14171b5da1a5ad556ed6153c7a30c79a7ce512d85d3",
     "bundleIdentifier": "dev.oscharko.keiko-native.evaluation.accessibility",
     "representativePackageSha256": "9221319c3d37bdd7c2e36c0558f039d60d1aa3b3223f49668c3b4fa7aedf3e0c",
