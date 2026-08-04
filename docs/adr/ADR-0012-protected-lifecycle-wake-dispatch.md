@@ -641,12 +641,20 @@ order, are `digest_domain:enum(keiko-native.lifecycle-recovery-authorized-reques
 one top-level ADR-0004 canonical `record` node. All existing domain-to-schema mappings remain
 unchanged.
 
-The coordinator recomputes that identity only after the stable reads and then independently
-reconstructs either the exact orphan comment/body/record digest and last authenticated predecessor,
-or the exact stable two-page cursor boundary strictly before the authenticated command comment ID
-and its incomplete recovery-scan target, plus current
-authority and every ADR-0011 target input. The event payload, comment ID, timing, digest text, or
-scheduling order alone grants no authority.
+The coordinator recomputes that identity only after the stable reads. Authenticated record topology
+selects exactly one closed target-derivation branch without probing. An orphan request reconstructs
+the exact orphan comment/body/record digest and last authenticated predecessor. An initial cursor
+completion reconstructs the exact stable two-page cursor boundary strictly before the authenticated
+command comment ID and its incomplete recovery-scan target. A cursor settlement first
+authenticates exactly one interrupted v4 claim or its immediate checkpoint and the original v4
+authorization/target chain, then derives its target only from that authenticated original v4
+`cursor_recovery_target_identity`. It requires the fresh command to name the same target and
+recomputes the fresh authorized-request identity with that value. The fresh command-edge cutoff is
+only its exact-comment ingress boundary; it never recomputes or replaces the original target,
+original command cutoff, scan identity, member list, or shadow summary. Missing, ambiguous, or
+multiple interrupted chains fail closed. Every branch also proves current authority and every
+ADR-0011 target input. The event payload, comment ID, timing, digest text, or scheduling order alone
+grants no authority.
 
 At most one authenticated recovery record may consume a recovery-target identity. An orphan request
 binds the derived identity through ADR-0011's existing version-1
@@ -660,8 +668,9 @@ Every command for an already consumed target is a replay no-op regardless of pro
 An authenticated v4 claim alone does not consume its cursor target. If v4 or its immediate
 checkpoint publication is interrupted, a fresh exact command for the still-unconsumed target may
 authorize only ADR-0011's corresponding settlement path. That settlement binds the fresh request
-while authenticating the original v4 authorization and target through the orphan/predecessor chain;
-only the final settlement-following checkpoint consumes the target.
+while authenticating the original v4 authorization and target through the orphan/predecessor chain.
+The settlement target comes only from the authenticated original v4 claim, never from the fresh
+command cutoff; only the final settlement-following checkpoint consumes the target.
 
 The direct plain-issue recovery-comment locator takes precedence and the coordinator considers only
 that candidate. Other wakes, including a pull-request-comment wake with explicit null recovery
@@ -877,17 +886,19 @@ complete accumulator, checkpoint, or effect. The classification adds no request 
 allocation, initiates no cursor recovery, and changes no 15-record bound, target consumption, or
 authority.
 
-Incomplete phase/fence claim v1 and legacy v3 cursor records remain read-only compatibility and
-cannot be resumed or migrated. The frozen pre-activation inventory is not limited to Issue #55's
+Legacy phase/fence claim v1 cursor records, whether incomplete or complete, and legacy incomplete
+v3 cursor records remain read-only compatibility and cannot be resumed or migrated. Every new
+cursor completion uses v4. The frozen pre-activation inventory is not limited to Issue #55's
 disposable probe manifest. The frozen maximum issue number comes from two stable repository
 observations, and
 the inventory classifies every canonical issue number from 1 through that maximum as an issue, pull
 request, or missing resource. It scans every issue's complete bounded 3-page history and retains the
 other classifications as negative evidence. Page 4, instability, or an unclassified number makes
-the inventory incomplete. Zero incomplete v1 and v3 cursor claims across that complete inventory is
-an exact activation precondition. Any discovery fails closed, blocks activation, retains all
-evidence, and requires a separately governed exact-target human reconciliation issue before any
-settlement; no boundary, summary, or cursor is inferred.
+the inventory incomplete. Zero v1 recovery-scan claims with a non-null recovery-scan identity,
+whether incomplete or complete, and zero v3 cursor claims across that complete inventory is an
+exact activation precondition. Any discovery fails closed, blocks activation, retains all evidence,
+and requires a separately governed exact-target human reconciliation issue before any settlement;
+no boundary, summary, or cursor is inferred.
 
 Before activation, every pre-amendment protected writer run loaded from an older `dev` SHA must be
 terminal. The Issue #55 activation operation then acquires and holds the existing repository-wide
@@ -895,8 +906,8 @@ terminal. The Issue #55 activation operation then acquires and holds the existin
 revalidation while holding that group, and retains it until the authenticated activation receipt is
 durable. Any queued or in-progress pre-amendment writer, inventory drift, or unavailable read blocks
 activation.
-Every writer admitted after the receipt loads the accepted activation commit and cannot emit an
-incomplete phase/fence claim v1 or v3.
+Every writer admitted after the receipt loads the accepted activation commit and cannot emit a v1
+or v3 cursor scan claim; every new cursor completion uses v4.
 
 For an overflow transition/read-back v2 candidate, the protected writer uses ADR-0011's final
 seven-step pre-verification topology. The locator read/prepare, upload, attestation, and

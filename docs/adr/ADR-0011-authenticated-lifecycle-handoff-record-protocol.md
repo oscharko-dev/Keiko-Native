@@ -454,11 +454,15 @@ Fixed fields, in order:
 29. `protected_dev_sha`: commit
 30. `recorded_at`: timestamp
 
-An historical incomplete `recovery` scan uses a non-null recovery-scan identity, positive page and
-comment counts, its non-null accumulated-suffix identity, a non-null cursor, `false`, and a null
-settlement identity. That shape is read-only compatibility: no new writer emits or resumes it. A
-final scan claim preserves the cumulative positive counts and accumulator, uses an explicit null
-cursor, sets completion to `true`, and keeps the settlement identity null. A forward
+Every phase/fence claim v1 `recovery` scan with a non-null recovery-scan identity is legacy cursor
+compatibility. An historical incomplete scan uses positive page and comment counts, its non-null
+accumulated-suffix identity, a non-null cursor, `false`, and a null settlement identity. An
+historical complete scan preserves the cumulative positive counts and accumulator, uses an
+explicit null cursor, sets completion to `true`, and keeps the settlement identity null. Both
+shapes are read-only: no new writer emits, resumes, settles, or checkpoints either one. A complete
+v1 scan lacks the authorization, target, live-member, and replay-shadow fields required by v4, so
+it has no automatic successor and cannot be interpreted as v4. Every new cursor completion uses
+phase/fence claim v4. A forward
 orphan settlement encoded before this amendment may use null, zero, zero, null, null, `false`, and a
 non-null `recovery_settlement_identity`; that phase/fence claim v1 selects the exact legacy
 recovery settlement v1 schema and remains read-only compatibility. No new writer emits that shape.
@@ -563,22 +567,23 @@ defined above. A
 larger, terminal, checkpointed, multi-generation, or otherwise invalid open suffix uses its already
 defined exact recovery path or fails closed with no v4 claim, checkpoint, record, or effect.
 
-Incomplete phase/fence claim v1 and legacy v3 cursor records remain read-only compatibility.
-Neither can
-be resumed or converted; they cannot be used to derive missing live-member, replay-shadow, or
-starting-boundary evidence. The frozen pre-activation inventory is not limited to Issue #55's
+Legacy phase/fence claim v1 cursor records, whether incomplete or complete, and legacy incomplete
+v3 cursor records remain read-only compatibility. None can be resumed or converted; they cannot be
+used to derive missing authorization, target, live-member, replay-shadow, or starting-boundary
+evidence. The frozen pre-activation inventory is not limited to Issue #55's
 disposable-probe manifest. The frozen maximum issue number comes from two stable repository
 observations, and the inventory classifies every canonical issue number from 1 through that maximum
 as an issue, pull request, or missing resource. It scans the complete bounded 3-page history of
 every issue; the pull-request and missing-resource classifications remain retained negative
 evidence. Page 4, unstable classification, or an unclassified number makes the inventory incomplete
-and blocks activation. Zero incomplete v1 and v3 cursor claims across that complete inventory is an
-exact activation precondition. Discovery of one blocks activation and requires separately governed,
+and blocks activation. Zero v1 recovery-scan claims with a non-null recovery-scan identity, whether
+incomplete or complete, and zero v3 cursor claims across that complete inventory is an exact
+activation precondition. Discovery of one blocks activation and requires separately governed,
 exact-target human reconciliation that retains the original evidence; the maintainer records the
 blocked issue and opens an accepted remediation issue before any settlement. There is no automatic
 migration, digest-only conversion, evidence deletion, or inferred boundary. Phase/fence claim v2
-remains exclusive to forward recovery settlement. Every v4 shape other than the exact complete
-settled claim above is malformed.
+remains exclusive to forward recovery settlement. Every new cursor completion uses v4, and every
+v4 shape other than the exact complete settled claim above is malformed.
 
 Before activation, every pre-amendment protected writer run loaded from an older `dev` SHA must be
 terminal. The Issue #55 activation operation then acquires and holds the existing repository-wide
@@ -586,8 +591,8 @@ terminal. The Issue #55 activation operation then acquires and holds the existin
 revalidation while holding that group, and retains it until the authenticated activation receipt is
 durable. Any queued or in-progress pre-amendment writer, inventory drift, or unavailable read blocks
 activation.
-Every writer admitted after the receipt loads the accepted activation commit and cannot emit an
-incomplete phase/fence claim v1 or v3.
+Every writer admitted after the receipt loads the accepted activation commit and cannot emit a v1
+or v3 cursor scan claim; every new cursor completion uses v4.
 
 For each issue, the unique serialization domain is exactly
 `issue-lifecycle-${decimal issue number}` with `queue: max` and no `cancel-in-progress` key. Every
@@ -864,9 +869,17 @@ intervene.
 Both cursor settlements prove the exact fixed skipped-attestation and orphan facts required by the
 closed version-2 reason above. Repeated interruption of either settlement or its recovery-owned
 checkpoint fails closed for human reconciliation rather than widening the 15-record bound.
-The fresh settlement command is encoded in the version-2 recovery settlement; the orphan v4 and
-its predecessor retain the original v4 authorization and target identities. An authenticated v4
-claim alone does not consume the cursor target. The target is consumed only when the direct
+For either settlement, the fresh command is authenticated normally and encoded in the version-2
+recovery settlement. The coordinator first authenticates exactly one interrupted v4 claim or its
+immediate checkpoint and that chain's original v4 authorization and target. It derives the
+settlement target only from the authenticated original v4
+`cursor_recovery_target_identity`, requires the fresh command to name that exact target, and never
+recomputes or replaces the target from the fresh command's cutoff. The fresh command-edge cursor is
+only its ingress-authentication boundary; it cannot replace the original command cutoff, scan
+identity, member list, or shadow summary bound by v4. Missing, ambiguous, or multiple interrupted
+chains fail closed. The orphan v4 and its predecessor retain the original v4 authorization and
+target identities. An authenticated v4 claim alone does not consume the cursor target. The target
+is consumed only when the direct
 immediate checkpoint or the settlement-following recovery checkpoint
 has its exact comment, anchor, and attestation fully authenticated. Until then, a command for that
 same target is not a replay; after consumption every reordered or duplicate command is a no-op.

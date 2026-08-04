@@ -187,7 +187,9 @@ The probe must prove that an authenticated v4 claim does not consume the cursor 
 fully authenticated direct checkpoint or the settlement-following recovery checkpoint consumes
 the target. An interruption admits a fresh command for the still-unconsumed target; the settlement
 binds that request while its orphan/predecessor proof retains the original v4 authorization and
-target.
+target. The probe must prove the settlement target comes only from the authenticated original v4
+claim, never from the fresh command cutoff; that cutoff is only the fresh command's
+ingress-authentication boundary.
 
 The activation probe must enforce a hard cap of 3 accumulator pages, three closed
 root-authentication branches, and two budget profiles. At
@@ -208,17 +210,18 @@ authenticated root must produce no complete accumulator, checkpoint, or
 effect. The classification adds no request outside that closed allocation, initiates no cursor
 recovery, and changes no 15-record bound, target consumption, or authority.
 
-The activation probe must treat incomplete phase/fence claim v1 and legacy v3 cursor records as
-read-only compatibility and prohibit resume or migration. The frozen pre-activation inventory is
+The activation probe must treat legacy phase/fence claim v1 cursor records, whether incomplete or
+complete, and legacy incomplete v3 cursor records as read-only compatibility and prohibit resume
+or migration. Every new cursor completion must use v4. The frozen pre-activation inventory is
 not limited to Issue #55's disposable-probe manifest. The frozen maximum issue number comes from two
 stable repository observations, and the inventory classifies every canonical issue number from 1
 through that maximum as an issue, pull request, or missing resource. It scans every issue's complete
 bounded 3-page history and retains the other classifications as negative evidence. Page 4,
-instability, or an unclassified number makes the inventory incomplete. Zero incomplete v1 and v3
-cursor claims across that complete inventory is an exact activation precondition. Any discovery
-must fail closed, block activation, retain all evidence, and require a separately governed
-exact-target human reconciliation issue before any settlement; no boundary, summary, or cursor may
-be inferred.
+instability, or an unclassified number makes the inventory incomplete. Zero v1 recovery-scan claims
+with a non-null recovery-scan identity, whether incomplete or complete, and zero v3 cursor claims
+across that complete inventory is an exact activation precondition. Any discovery must fail closed,
+block activation, retain all evidence, and require a separately governed exact-target human
+reconciliation issue before any settlement; no boundary, summary, or cursor may be inferred.
 
 Before activation, every pre-amendment protected writer run loaded from an older `dev` SHA must be
 terminal. The Issue #55 activation operation must then acquire and hold the existing repository-wide
@@ -227,7 +230,7 @@ revalidation while holding that group, and retain it until the authenticated act
 durable. Any queued or in-progress pre-amendment writer, inventory drift, or unavailable read must
 block activation.
 Every writer admitted after the receipt must load the accepted activation commit and be unable to
-emit an incomplete phase/fence claim v1 or v3.
+emit a v1 or v3 cursor scan claim; every new cursor completion must use v4.
 
 It must also prove superseded
 generations authenticate their frozen generation and closed partial producer set. An ordinary

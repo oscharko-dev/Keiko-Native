@@ -329,7 +329,9 @@ the direct immediate checkpoint or a
 settlement-following recovery checkpoint fully authenticates. If v4 or its checkpoint publication
 is interrupted, a fresh command for that still-unconsumed target authorizes only the matching
 settlement; the settlement binds the fresh request while retaining the original v4 authorization
-and target through the orphan/predecessor chain. Only the final checkpoint consumes the target.
+and target through the orphan/predecessor chain. It derives the settlement target only from the
+authenticated original v4 claim, never from the fresh command cutoff; that cutoff is only the fresh
+command's ingress-authentication boundary. Only the final checkpoint consumes the target.
 
 The hard cap is 3 accumulator pages. At most 6 comment-page requests cover two stable reads of each
 page in the one invocation. A unique-genesis or ordinary-v1 root permits at most fourteen
@@ -349,17 +351,19 @@ complete accumulator, checkpoint, or effect. The classification adds no request 
 allocation, initiates no cursor recovery, and changes no 15-record bound, target consumption, or
 authority.
 
-Incomplete phase/fence claim v1 and legacy v3 cursor records remain read-only compatibility and
-cannot be resumed or migrated. The frozen pre-activation inventory is not limited to Issue #55's
+Legacy phase/fence claim v1 cursor records, whether incomplete or complete, and legacy incomplete
+v3 cursor records remain read-only compatibility and cannot be resumed or migrated. Every new
+cursor completion uses v4. The frozen pre-activation inventory is not limited to Issue #55's
 disposable probe manifest. The frozen maximum issue number comes from two stable repository
 observations, and
 the inventory classifies every canonical issue number from 1 through that maximum as an issue, pull
 request, or missing resource. It scans every issue's complete bounded 3-page history and retains the
 other classifications as negative evidence. Page 4, instability, or an unclassified number makes
-the inventory incomplete. Zero incomplete v1 and v3 cursor claims across that complete inventory is
-an exact activation precondition. Any discovery fails closed, blocks activation, retains all
-evidence, and requires a separately governed exact-target human reconciliation issue before any
-settlement; no boundary, summary, or cursor is inferred.
+the inventory incomplete. Zero v1 recovery-scan claims with a non-null recovery-scan identity,
+whether incomplete or complete, and zero v3 cursor claims across that complete inventory is an
+exact activation precondition. Any discovery fails closed, blocks activation, retains all evidence,
+and requires a separately governed exact-target human reconciliation issue before any settlement;
+no boundary, summary, or cursor is inferred.
 
 Before activation, every pre-amendment protected writer run loaded from an older `dev` SHA must be
 terminal. The Issue #55 activation operation then acquires and holds the existing repository-wide
@@ -367,8 +371,8 @@ terminal. The Issue #55 activation operation then acquires and holds the existin
 revalidation while holding that group, and retains it until the authenticated activation receipt is
 durable. Any queued or in-progress pre-amendment writer, inventory drift, or unavailable read blocks
 activation.
-Every writer admitted after the receipt loads the accepted activation commit and cannot emit an
-incomplete phase/fence claim v1 or v3.
+Every writer admitted after the receipt loads the accepted activation commit and cannot emit a v1
+or v3 cursor scan claim; every new cursor completion uses v4.
 
 For overflow v2, the protected writer's final topology places locator read/prepare, upload,
 attestation, and download/verification at YAML ordinals 3 through 6, comment publication and anchor

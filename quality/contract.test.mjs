@@ -3030,11 +3030,19 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /phase\/fence claim v1[^.]{0,300}read-only[\s\S]{0,500}(?:cannot|must not)[^.]{0,220}(?:derive|interpret)[^.]{0,180}(?:summary|shadow)/iu,
+    /phase\/fence claim v1[^.]{0,300}(?:incomplete|complete)[\s\S]{0,500}read-only[\s\S]{0,700}(?:cannot|must not)[^.]{0,220}(?:derive|interpret)[^.]{0,180}(?:summary|shadow|v4)/iu,
   );
   assert.match(
     protocol,
-    /incomplete[^.]{0,160}(?:phase\/fence claim v1|v1)[^.]*(?:and|or)[^.]{0,160}(?:legacy v3|phase\/fence claim v3)[^.]{0,220}read-only[\s\S]{0,1800}zero[^.]{0,220}activation\s+precondition[\s\S]{0,700}separately governed[^.]{0,220}human reconciliation/iu,
+    /legacy phase\/fence claim v1 cursor records, whether incomplete or complete,[\s\S]{0,180}legacy incomplete\s+v3 cursor records remain read-only/iu,
+  );
+  assert.match(
+    protocol,
+    /zero v1 recovery-scan claims with a non-null recovery-scan identity,\s+whether\s+incomplete or complete, and zero v3 cursor claims[\s\S]{0,120}exact\s+activation precondition/iu,
+  );
+  assert.match(
+    protocol,
+    /discovery of one blocks activation[\s\S]{0,240}separately governed,[\s\S]{0,120}human reconciliation/iu,
   );
   for (const predicate of [
     "The only accepted v3 shape has phase `recovery`, `claim_outcome` `claimed`",
@@ -3075,7 +3083,23 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     );
     assert.match(
       projection,
+      /settlement\s+target[\s\S]{0,80}(?:(?:comes|derives)\s+)?only\s+from[\s\S]{0,120}authenticated\s+original\s+v4[\s\S]{0,180}never[\s\S]{0,120}fresh\s+command(?:'s)?\s+cutoff/iu,
+    );
+    assert.match(
+      projection,
       /(?:final|fully authenticated|full authentication)[^.]{0,180}checkpoint[^.]{0,180}consume/iu,
+    );
+    assert.match(
+      projection,
+      /phase\/fence claim v1[\s\S]{0,300}whether\s+incomplete\s+or\s+complete[\s\S]{0,300}read-only/iu,
+    );
+    assert.match(
+      projection,
+      /every new cursor completion[\s\S]{0,120}(?:uses|must use) v4/iu,
+    );
+    assert.match(
+      projection,
+      /zero\s+v1\s+recovery-scan\s+claims\s+with\s+a\s+non-null\s+recovery-scan\s+identity,\s+whether\s+incomplete\s+or\s+complete,\s+and\s+zero\s+v3\s+cursor\s+claims[\s\S]{0,160}(?:is\s+an\s+)?(?:exact\s+)?activation\s+precondition/iu,
     );
     assert.match(
       projection,

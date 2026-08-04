@@ -180,7 +180,9 @@ closed.
 The gate must prove that v4 alone does not consume the cursor target. Only the fully authenticated
 direct checkpoint or settlement-following recovery checkpoint consumes it. An interruption permits
 a fresh command for the still-unconsumed target; its settlement binds that fresh request while the
-orphan/predecessor proof retains the original v4 authorization and target.
+orphan/predecessor proof retains the original v4 authorization and target. The gate must prove the
+settlement target comes only from the authenticated original v4 claim, never from the fresh command
+cutoff; that cutoff is only the fresh command's ingress-authentication boundary.
 
 The gate must enforce a hard cap of 3 accumulator pages, three closed root-authentication branches,
 and two budget profiles. At most 6
@@ -201,14 +203,16 @@ authenticated root must produce no complete accumulator, checkpoint, or effect. 
 adds no request outside that closed allocation, initiates no cursor recovery, and changes no
 15-record bound, target consumption, or authority.
 
-The gate must treat incomplete phase/fence claim v1 and legacy v3 cursor records as read-only
-compatibility and prohibit resume or migration. The gate must prove the frozen pre-activation
+The gate must treat legacy phase/fence claim v1 cursor records, whether incomplete or complete, and
+legacy incomplete v3 cursor records as read-only compatibility and prohibit resume or migration.
+Every new cursor completion must use v4. The gate must prove the frozen pre-activation
 inventory is not limited to Issue #55's disposable-probe manifest. The frozen maximum issue number
 comes from two stable repository observations, and the inventory classifies every canonical issue
 number from 1 through that maximum as an issue, pull request, or missing resource. It scans every
 issue's complete bounded 3-page history and retains the other classifications as negative evidence.
-Page 4, instability, or an unclassified number makes the inventory incomplete. Zero incomplete v1
-and v3 cursor claims across that complete inventory is an exact activation precondition. Any
+Page 4, instability, or an unclassified number makes the inventory incomplete. Zero v1
+recovery-scan claims with a non-null recovery-scan identity, whether incomplete or complete, and
+zero v3 cursor claims across that complete inventory is an exact activation precondition. Any
 discovery must fail closed, block activation, retain all evidence, and require a separately governed
 exact-target human reconciliation issue before any settlement; no boundary, summary, or cursor may
 be inferred.
@@ -219,7 +223,8 @@ existing repository-wide `issue-lifecycle-provider-budget` serialization group, 
 complete-inventory revalidation while holding that group, and retain it until the authenticated
 activation receipt is durable. A queued or in-progress pre-amendment writer, inventory drift, or
 unavailable read must block activation. Every writer admitted after the receipt must load the
-accepted activation commit and be unable to emit an incomplete phase/fence claim v1 or v3.
+accepted activation commit and be unable to emit a v1 or v3 cursor scan claim; every new cursor
+completion must use v4.
 
 The gate must pin the overflow-v2 issue-lifecycle topology: locator read/prepare, upload,
 attestation, and download/verification at YAML ordinals 3 through 6, comment publication and anchor
