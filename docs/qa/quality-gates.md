@@ -80,9 +80,9 @@ verified failed protected writer run, stable zero-or-one-anchor/zero-attestation
 mapped exact-name and provider-visible-number attestation step whose conclusion is `skipped`, and a
 version-2 settlement claim authenticated through the closed historical recovery projection and
 chained from the last authenticated predecessor.
-The phase/fence parent encodes settlement schema version 2 before the settlement identity; version 1
-remains read-only zero-anchor compatibility and is selected only by a legacy settlement-bearing
-phase/fence v1 parent. The
+The phase/fence parent encodes the settlement identity first and then settlement schema version 2
+immediately after it; version 1 remains read-only zero-anchor compatibility and is selected only by
+a legacy settlement-bearing phase/fence v1 parent. The
 orphan never becomes a record or authority source.
 
 Generation-request, producer-result, ordinary phase/fence-claim, and ordinary transition/read-back
@@ -93,9 +93,10 @@ fail closed.
 Protected producers independently recompute the generation and evaluate only their owned predicate;
 they cannot choose lifecycle lane, target, activation, transition, or merge authority.
 
-At the record-type level, the exact recovery-settlement phase/fence and overflow checkpoint are the
-only schema-version exceptions: each uses version 2 of its existing type, never a fifth record type.
-The auxiliary
+At the record-type level, there are exactly three schema-version exceptions: the exact
+recovery-settlement phase/fence uses version 2 of its existing type, the overflow checkpoint uses
+version 2 of its existing type, and the exact cursor-recovery phase/fence claim uses version 3 of
+its existing type. None creates a fifth record type. The auxiliary
 recovery-settlement identity separately retains its accepted version-1 zero-anchor schema and uses
 an exact version-2 schema for every new settlement; parser dispatch is version-first and never
 reinterprets legacy bytes. The deterministic gate must prove the exact

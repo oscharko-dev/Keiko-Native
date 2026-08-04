@@ -1984,6 +1984,14 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
     /Phase\/fence claim v2[\s\S]{0,500}`schema_version`: uint `2`[\s\S]{0,1800}`recovery_settlement_schema_version`: uint `2`[\s\S]{0,1000}only[\s\S]{0,300}recovery settlement/iu,
   );
   assert.match(
+    gates,
+    /phase\/fence parent encodes the settlement identity first and then settlement schema version 2\s+immediately after it/iu,
+  );
+  assert.match(
+    gates,
+    /exactly three schema-version exceptions[\s\S]{0,300}recovery-settlement phase\/fence[\s\S]{0,180}version 2[\s\S]{0,180}overflow checkpoint[\s\S]{0,180}version 2[\s\S]{0,300}cursor-recovery phase\/fence claim[\s\S]{0,180}version 3[\s\S]{0,180}(?:None creates|never)[^.]{0,80}fifth record type/iu,
+  );
+  assert.match(
     adr,
     /Phase\/fence claim v1[\s\S]{0,5000}non-null[\s\S]{0,500}recovery_settlement_identity[\s\S]{0,500}(?:selects|means)[\s\S]{0,300}(?:legacy|version-1)[\s\S]{0,300}recovery settlement[\s\S]{0,500}read-only/iu,
   );
