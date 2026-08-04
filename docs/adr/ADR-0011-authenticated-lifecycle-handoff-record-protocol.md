@@ -520,7 +520,10 @@ page from the stable normal-load boundary through the authenticated root, and ma
 phase/fence claim v3 only when the complete authenticated live suffix contains one internally valid
 open generation with no terminal claim or checkpoint: one through 11 records after a unique-genesis
 or ordinary-v1 root, and one through 10 after an overflow-v2 root. It publishes no
-intermediate cursor or progress claim. The final claim and its immediate recovery-owned
+intermediate cursor or progress claim. Immediately before publishing the final claim, the
+coordinator obtains two equal current source observations that still match the frozen open
+generation and encodes the final observation identity in the claim. The final claim and its
+immediate recovery-owned
 `abandoned` transition/read-back checkpoint consume a closed two-record recovery reserve without
 crossing the 15-record bound. A root-only zero-live-record scan is the no-op defined above. A
 larger, terminal, checkpointed, multi-generation, or otherwise invalid open suffix uses its already
@@ -967,6 +970,19 @@ and checkpoint binding; then-current facts are availability evidence only. Any m
 non-immediate checkpoint, changed immutable binding, or unavailable read remains blocked and grants
 no successor or effect.
 
+The closed direct-cursor authentication projection applies only to an exact settled phase/fence
+claim v3 and its immediate recovery-owned version-1 `abandoned` checkpoint. The v3 claim
+authenticates the complete frozen open generation reconstructed from its authenticated root and
+live-member preimages, its authorized recovery request, and the final of the two equal current
+source observations obtained immediately before claim publication. Its immediate checkpoint binds
+that same frozen generation, request, exact v3 predecessor, source observation, and exact
+same-generation producer subset present before v3, including empty. Once the v3 claim's exact
+comment, anchor, and attestation authenticate, later current-fact drift does not stale the claim
+or its mandatory checkpoint, including drift before checkpoint publication. The final provider
+read must still prove every immutable v3 and checkpoint binding; then-current facts are availability
+evidence only. A missing immediate checkpoint, changed immutable binding, producer publication
+after v3, or unavailable read remains blocked and grants no successor or effect.
+
 Login, marker, author association, check name, details URL, event timing, or a copied comment cannot
 authenticate a record alone. A missing `performed_via_github_app`, wrong App, wrong workflow/ref,
 deleted run, missing or invalid attestation, changed identity, unavailable metadata, or
@@ -1211,12 +1227,14 @@ authenticated record. A page may add that assertion only after combining its fac
 invocation's authenticated cumulative in-memory summary and proving the result still has one body
 group and no more than four unique shadow IDs. The single serialized recovery invocation
 reconstructs and retains every ordinary irrelevant and provisional-shadow `recovery-suffix-member`
-preimage across its twice-stable pages. After reaching the root, the invocation fully authenticates
-the lower-ID byte-identical checkpoint and proves every summarized shadow ID is greater. Only then
-does the final v3 claim persist the complete bounded summary, exact accumulated identity, counts,
-page boundaries, and null cursor. If any replay, summary, or checkpoint fact differs, the
-provisional assertion and entire recovery fail closed without a complete accumulator, checkpoint,
-or effect.
+preimage across its twice-stable pages. After reaching the root, a checkpoint-rooted invocation
+fully authenticates the lower-ID byte-identical checkpoint and proves every summarized shadow ID is
+greater. A unique-genesis-rooted invocation instead requires a null replay-shadow digest and an
+empty shadow-ID list, then authenticates the complete genesis suffix directly; a provisional shadow
+on that path fails closed. Only then does the final v3 claim persist the complete bounded summary,
+exact accumulated identity, counts, page boundaries, and null cursor. If any replay, summary, root,
+or checkpoint fact differs, the provisional assertion and entire recovery fail closed without a
+complete accumulator, checkpoint, or effect.
 
 The single serialized recovery invocation scans only until the complete accumulator reaches its
 hard cap of 3 pages and remains effect-disabled. It publishes no intermediate cursor or progress
@@ -1259,13 +1277,15 @@ repository checks share that group.
 
 One normal stable pass is budgeted at no more than two comment-page requests, one exact-name
 artifact-list request, 32 calls for 16 artifact-download redirect chains, 16 subject-qualified
-attestation inventory requests whose responses contain the matching bundles, 32 run/job requests,
-and 26 current-provider-state requests. When the authenticated root is an overflow-v2 checkpoint,
-the pass also spends exactly six locator-verification requests: one locator-artifact inventory, one
-metadata read, the two-call archive redirect chain, one subject-qualified locator-attestation
-inventory, and one exact bound-job read. The maximum stable pass is therefore 115 requests. The
-mandatory second pass is at most 230 requests, and the existing 14 write/read-back operations bring
-the hard local request-counter ceiling to 244. Recovery mode has a separate 150-request ceiling and
+attestation inventory requests whose responses contain the matching bundles, 32 workflow-run and
+referenced-workflow-inventory requests, at most three exact producer-job requests, and 26
+current-provider-state requests. An ordinary-v1-root pass is therefore at most 112 requests. When
+the authenticated root is an overflow-v2 checkpoint, the pass also spends exactly six
+locator-verification requests: one locator-artifact inventory, one metadata read, the two-call
+archive redirect chain, one subject-qualified locator-attestation inventory, and one exact
+bound-job read. The maximum stable pass is therefore 118 requests. The mandatory second pass is at
+most 236 requests, and the existing 14 write/read-back operations bring the hard local
+request-counter ceiling to 250. Recovery mode has a separate 150-request ceiling and
 cannot perform a lifecycle/status/branch/merge effect. Neither mode relies on a racy
 `x-ratelimit-remaining` read for safety. Any core or secondary limit response, counter exhaustion,
 pagination overflow, lower observed limit, or unavailable response yields

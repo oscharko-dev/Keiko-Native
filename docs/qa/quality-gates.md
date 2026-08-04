@@ -152,9 +152,11 @@ entire accumulator. Their classification is provisional and grants no independen
 resumed step must validate the cumulative group and count before adding its page. A single
 serialized recovery invocation must keep the authenticated cumulative summary and every full
 `recovery-suffix-member` preimage, including ordinary irrelevant comments, in memory across its
-twice-stable pages. It must first fully authenticate the lower-ID overflow v2 checkpoint and the
-greater shadow-ID relationship. Only then may one phase/fence claim v3 persist the complete
-at-most-15 live record members, one shadow body digest, and exact shadow comment IDs. It must
+twice-stable pages. A checkpoint-rooted invocation must first fully authenticate the lower-ID
+overflow v2 checkpoint and the greater shadow-ID relationship. A unique-genesis-rooted invocation
+must instead require no provisional shadows, a null shadow digest, and an empty shadow-ID list, then
+authenticate the complete genesis suffix directly. Only then may one phase/fence claim v3 persist
+the complete at-most-15 live record members, shadow summary, and exact shadow comment IDs. It must
 publish no intermediate cursor or progress claim. The final claim and immediate checkpoint require
 one through 11 live records after a unique-genesis or ordinary-v1 root, or one through 10 after an
 overflow-v2 root, forming one internally valid open generation that begins with its authenticated
@@ -177,8 +179,8 @@ and at most three exact producer-job calls; the root's exact six locator-verific
 authentication calls. With the same 26 current-provider and 28 publication calls, that is a
 129-call core and 149 total calls. The already authenticated ingress authorization and target bytes
 are reused; no additional provider request is made. Both profiles remain under the hard 150-request
-ceiling. A fifth shadow, any mismatch or discontinuity, cursor exhaustion, page 4, or
-missing checkpoint must produce no complete accumulator, checkpoint, or effect. The classification
+ceiling. A fifth shadow, any mismatch or discontinuity, cursor exhaustion, page 4, or missing
+authenticated root must produce no complete accumulator, checkpoint, or effect. The classification
 adds no request outside that closed allocation, initiates no cursor recovery, and changes no
 15-record bound, target consumption, or authority.
 
@@ -256,6 +258,14 @@ wrong-target, missing/changed record, anchor, attestation, run, job, ref, SHA, p
 checkpoint, and provider-unavailable fixtures produce no record or effect. Overflow recovery remains
 inert before Issue #55, adds no principal or credential, and remains a human-only manual merge to
 `dev`.
+
+The gate must separately prove the direct-cursor projection. Immediately before v3 publication,
+two equal current source observations still match the frozen open generation and the claim encodes
+the final identity. The exact v3 claim and immediate checkpoint retain that frozen generation,
+authorized recovery request, observation, predecessor/member bindings, and same-generation producer
+subset. Later current-fact drift, including drift before checkpoint publication, cannot stale either
+null-effect record; an immutable mismatch, producer publication after v3, or unavailable final read
+remains blocked.
 
 Publication evidence uses the exact candidate commit's complete, non-truncated recursive Git tree
 and exact regular-file blob bytes, modes, object IDs, sizes, and SHA-256 digests. The pull-request
@@ -341,10 +351,11 @@ branch, pull-request, queue, or merge result. Issue #55 alone owns activation an
 proof; missing, stale, ambiguous, or wrong-producer record evidence cannot promote availability.
 The per-issue and repository-wide provider-budget groups use `queue: max`; a hard local request
 counter and fail-closed provider responses, not a racy remaining-quota read, protect the shared
-repository token boundary. Normal loading counts two calls for each archive redirect. An
-ordinary-v1-root stable pass is 109 requests; an overflow-v2 root adds exactly six locator
-authentication calls per pass, so the maximum pass is 115 requests, two passes are 230, and the
-existing 14 write/read-back calls close the hard ceiling at 244. Overflow recovery retains its
+repository token boundary. Normal loading counts two calls for each archive redirect and up to
+three exact producer-job reads. An ordinary-v1-root stable pass is 112 requests; an overflow-v2
+root adds exactly six locator authentication calls per pass, so the maximum pass is 118 requests,
+two passes are 236, and the existing 14 write/read-back calls close the hard ceiling at 250.
+Overflow recovery retains its
 separate hard-200 ceiling. Until the pinned actionlint release understands GitHub's newer
 `concurrency.queue` key, the actionlint job ignores only that exact unknown-key diagnostic; the
 repository contract independently requires `queue: max`, rejects `cancel-in-progress`, and keeps

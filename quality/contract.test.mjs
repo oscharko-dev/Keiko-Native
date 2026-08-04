@@ -2334,7 +2334,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   );
   assert.match(
     adr,
-    /normal stable pass[\s\S]{0,900}six[^.]{0,180}locator[^.]{0,180}requests[\s\S]{0,500}115\s+requests[\s\S]{0,300}230\s+requests[\s\S]{0,300}ceiling to 244/iu,
+    /normal stable pass[\s\S]{0,700}three[^.]{0,180}producer-job requests[\s\S]{0,300}112 requests[\s\S]{0,700}six[^.]{0,180}locator[^.]{0,180}requests[\s\S]{0,500}118\s+requests[\s\S]{0,300}236\s+requests[\s\S]{0,300}ceiling to 250/iu,
   );
   assert.match(
     adr,
@@ -2807,7 +2807,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /normal stable pass[\s\S]{0,900}six[^.]{0,180}locator[^.]{0,180}requests[\s\S]{0,500}115 requests[\s\S]{0,300}230[\s\S]{0,300}244/iu,
+    /normal stable pass[\s\S]{0,700}three[^.]{0,180}producer-job requests[\s\S]{0,300}112 requests[\s\S]{0,700}six[^.]{0,180}locator[^.]{0,180}requests[\s\S]{0,500}118 requests[\s\S]{0,300}236[\s\S]{0,300}250/iu,
   );
   assert.match(
     protocol,
@@ -2934,7 +2934,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     );
     assert.match(
       projection,
-      /single\s+serialized recovery invocation[\s\S]{0,700}(?:phase\/fence claim v3|schema-version-3 phase\/fence claim)[\s\S]{0,700}no intermediate[^.]{0,160}(?:progress|cursor)[^.]{0,120}claim/iu,
+      /single\s+serialized recovery invocation[\s\S]{0,1800}(?:phase\/fence claim v3|schema-version-3 phase\/fence claim)[\s\S]{0,900}no\s+intermediate[^.]{0,160}(?:progress|cursor)[^.]{0,120}claim/iu,
     );
     assert.match(
       projection,
@@ -3030,7 +3030,15 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     );
     assert.match(
       projection,
+      /unique-genesis-rooted invocation[\s\S]{0,300}(?:no provisional shadows|null[^.]{0,120}shadow)[\s\S]{0,300}empty shadow-ID list[\s\S]{0,300}authenticate[^.]{0,180}complete genesis suffix[^.]{0,180}directly/iu,
+    );
+    assert.match(
+      projection,
       /(?:direct[^.]{0,180}(?:cursor-v3|v3)[^.]{0,220}checkpoint|direct\s+recovery-owned `abandoned` checkpoint|third exception[\s\S]{0,240}cursor-recovery v3 claim)[\s\S]{0,600}authenticated\s+same-generation producer(?:-result)?\s+subset[^.]{0,180}(?:including empty|including the empty set)/iu,
+    );
+    assert.match(
+      projection,
+      /(?:direct v3|direct-cursor)[\s\S]{0,1200}(?:(?:the\s+)?two\s+equal\s+current\s+source\s+observations[\s\S]{0,500}frozen\s+open\s+generation|frozen\s+open\s+generation[\s\S]{0,500}(?:the\s+)?two\s+equal\s+current\s+source\s+observations)[\s\S]{0,1200}later\s+current-fact\s+(?:change|drift)[\s\S]{0,400}(?:cannot|does not)\s+stale/iu,
     );
     assert.match(
       projection,
@@ -3056,7 +3064,11 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   for (const projection of [protocol, lifecycle, gates, activation]) {
     assert.match(
       projection,
-      /(?:overflow-v2(?:-|\s)+root|authenticated root[^.]{0,180}overflow-v2 checkpoint)[\s\S]{0,500}(?:six|6)[^.]{0,180}locator[^.]{0,180}(?:requests|calls)[\s\S]{0,500}115[^.]{0,180}(?:requests|calls)[\s\S]{0,300}230[^.]{0,180}(?:requests|calls)[\s\S]{0,300}(?:ceiling[^.]{0,120}244|244[^.]{0,120}ceiling)/iu,
+      /(?:(?:three|3)[^.]{0,180}producer-job[^.]{0,180}(?:reads|requests)[\s\S]{0,300}112(?:-request|\s+requests)|112(?:-request|\s+requests)[\s\S]{0,300}(?:three|3)[^.]{0,180}producer-job[^.]{0,180}(?:reads|requests))/iu,
+    );
+    assert.match(
+      projection,
+      /(?:overflow-v2(?:-|\s)+root|authenticated root[^.]{0,180}overflow-v2 checkpoint)[\s\S]{0,500}(?:six|6)[^.]{0,180}locator[^.]{0,180}(?:requests|calls)[\s\S]{0,500}118[^.]{0,180}(?:requests|calls)[\s\S]{0,300}236[^.]{0,180}(?:requests|calls)[\s\S]{0,300}(?:ceiling[^.]{0,120}250|250[^.]{0,120}ceiling)/iu,
     );
   }
   assert.match(

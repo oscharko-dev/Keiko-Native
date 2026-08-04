@@ -759,6 +759,12 @@ under the same fence. The settlement and its immediate recovery-owned checkpoint
 closed historical recovery authentication projection: their generation and request stay bound to
 the frozen predecessor/orphan, the settlement records the final of two equal stable current source
 observations, and later current-fact drift cannot stale either authenticated null-effect record.
+Immediately before direct v3 publication, two equal current source observations still match the
+frozen open generation and the claim encodes the final identity. The v3 claim and immediate
+checkpoint use ADR-0011's closed direct-cursor authentication projection: both retain the frozen
+generation, authorized recovery request, exact observation, and immutable predecessor/member
+bindings, so later current-fact drift, including drift before checkpoint publication, cannot stale
+either null-effect record. Any immutable mismatch or unavailable final read remains blocked.
 
 An interrupted v2 publication does not consume its overflow target. After two stable passes prove
 that the prior writer job is terminal, its exact pre-comment locator artifact has a valid
@@ -809,10 +815,13 @@ replay shadows. One body group and four total apply across the entire accumulato
 classification is provisional and grants no independent standing. Every resumed step validates the
 cumulative group and count before adding its page. A single serialized recovery invocation keeps
 the authenticated cumulative summary and every full `recovery-suffix-member` preimage, including
-ordinary irrelevant comments, in memory across its twice-stable pages. It first fully authenticates
-the lower-ID overflow v2 checkpoint and the greater shadow-ID relationship. Only then may one
-phase/fence claim v3 persist the complete at-most-15 live record members, one shadow body digest,
-and exact shadow comment IDs. It publishes no intermediate cursor or progress claim. The final
+ordinary irrelevant comments, in memory across its twice-stable pages. A checkpoint-rooted
+invocation first fully authenticates the lower-ID overflow v2 checkpoint and the greater shadow-ID
+relationship. A unique-genesis-rooted invocation instead requires no provisional shadows, a null
+shadow digest, and an empty shadow-ID list, then authenticates the complete genesis suffix directly.
+Only then may one phase/fence claim v3 persist the complete at-most-15 live record members, shadow
+summary, and exact shadow comment IDs. It publishes no intermediate cursor or progress claim. The
+final
 claim and immediate checkpoint require one through 11 live records after a unique-genesis or
 ordinary-v1 root, or one through 10 after the overflow-v2 root, forming that exact open generation;
 zero live records are a no-op, and any larger or reserved open suffix uses its exact
@@ -829,7 +838,7 @@ the root's exact six locator-verification calls make 75 authentication calls. Wi
 current-provider and 28 publication calls, that is a 129-call core and 149 total calls. The already
 authenticated ingress authorization and target bytes are reused; no additional provider request is
 made. Both profiles remain under the hard 150-request ceiling. A fifth shadow, any mismatch or
-discontinuity, cursor exhaustion, page 4, or missing checkpoint produces no
+discontinuity, cursor exhaustion, page 4, or missing authenticated root produces no
 complete accumulator, checkpoint, or effect. The classification adds no request outside that closed
 allocation, initiates no cursor recovery, and changes no 15-record bound, target consumption, or
 authority.

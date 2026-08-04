@@ -158,10 +158,13 @@ replay shadows. One body group and four total apply across the entire accumulato
 classification is provisional and grants no independent standing. Every resumed step must validate
 the cumulative group and count before adding its page. A single serialized recovery invocation
 must keep the authenticated cumulative summary and every full `recovery-suffix-member` preimage,
-including ordinary irrelevant comments, in memory across its twice-stable pages. It must first fully
-authenticate the lower-ID overflow v2 checkpoint and the greater shadow-ID relationship. Only then
-may one phase/fence claim v3 persist the complete at-most-15 live record members, one shadow body
-digest, and exact shadow comment IDs. It must publish no intermediate cursor or progress claim. The
+including ordinary irrelevant comments, in memory across its twice-stable pages. A
+checkpoint-rooted invocation must first fully authenticate the lower-ID overflow v2 checkpoint and
+the greater shadow-ID relationship. A unique-genesis-rooted invocation must instead require no
+provisional shadows, a null shadow digest, and an empty shadow-ID list, then authenticate the
+complete genesis suffix directly. Only then may one phase/fence claim v3 persist the complete
+at-most-15 live record members, shadow summary, and exact shadow comment IDs. It must publish no
+intermediate cursor or progress claim. The
 final claim and immediate checkpoint require one through 11 live records after a unique-genesis or
 ordinary-v1 root, or one through 10 after an overflow-v2 root, forming one internally valid open
 generation that begins with its authenticated generation request and contains no terminal claim or
@@ -184,7 +187,7 @@ make 75 authentication calls. With the same 26 current-provider and 28 publicati
 129-call core and 149 total calls. The already authenticated ingress authorization and target bytes
 are reused; no additional provider request is made. Both profiles remain under the hard 150-request
 ceiling. A fifth shadow, any mismatch or discontinuity, cursor exhaustion, page 4, or missing
-checkpoint must produce no complete accumulator, checkpoint, or
+authenticated root must produce no complete accumulator, checkpoint, or
 effect. The classification adds no request outside that closed allocation, initiates no cursor
 recovery, and changes no 15-record bound, target consumption, or authority.
 
@@ -259,6 +262,12 @@ settlement and its immediate recovery checkpoint must authenticate their frozen 
 authorized recovery target against the historical predecessor/orphan, bind the settlement's
 twice-stable current source observation, and remain valid after later current-fact drift without
 granting an effect.
+Immediately before direct v3 publication, two equal current source observations must still match
+the frozen open generation and the claim must encode the final identity. The v3 claim and immediate
+checkpoint must retain that frozen generation, authorized recovery request, exact observation, and
+immutable predecessor/member bindings under ADR-0011's direct-cursor authentication projection.
+Later current-fact drift, including drift before checkpoint publication, cannot stale either
+null-effect record; an immutable mismatch or unavailable final read remains blocked.
 The overflow path adds no account, App, PAT, broker,
 database, hosted service, dependency, second credential, lifecycle authority, or merge authority.
 Issue #55 remains
@@ -277,10 +286,11 @@ and run. It proves exact per-issue anchors, checkpoint rollover, normal two-page
 effect-disabled cursor recovery with exact accumulator root, resume, page-order, count, and cursor
 discontinuity fixtures, empty-history bootstrap, every pre-checkpoint crash outcome, missing-suffix
 detection, strict full-body parsing, exact predecessor chains, one shared per-issue `queue: max`
-domain and fence, the repository-wide provider-budget group, the ordinary-v1-root 109-request pass,
-the overflow-v2-root's exact six locator-authentication calls that make each pass 115 requests, the
-mandatory two stable passes 230 requests, the existing 14 write/read-back calls, and the resulting
-hard 244-request ceiling, plus the separate overflow request-200 ceiling, stable
+domain and fence, the repository-wide provider-budget group, the ordinary-v1-root 112-request pass
+including up to three exact producer-job reads, the overflow-v2-root's exact six
+locator-authentication calls that make each pass 118 requests, the mandatory two stable passes 236
+requests, the existing 14 write/read-back calls, and the resulting hard 250-request ceiling, plus
+the separate overflow request-200 ceiling, stable
 double-reads, same-generation producer results, explicit crash recovery, and no retry after
 ambiguity. Deleted, edited, duplicated, conflicting, truncated, stale, wrong-generation,
 wrong-producer, rate-limited, or unavailable record evidence must fail closed.
