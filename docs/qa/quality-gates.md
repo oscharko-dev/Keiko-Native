@@ -93,10 +93,11 @@ fail closed.
 Protected producers independently recompute the generation and evaluate only their owned predicate;
 they cannot choose lifecycle lane, target, activation, transition, or merge authority.
 
-At the record-type level, there are exactly three schema-version exceptions: the exact
+At the record-type level, there are exactly four schema-version exceptions: the exact
 recovery-settlement phase/fence uses version 2 of its existing type, the overflow checkpoint uses
-version 2 of its existing type, and the exact cursor-recovery phase/fence claim uses version 3 of
-its existing type. None creates a fifth record type. The auxiliary
+version 2 of its existing type, the historical incomplete cursor phase/fence claim uses read-only
+version 3 of its existing type, and the exact complete cursor-recovery phase/fence claim uses
+version 4 of its existing type. None creates a fifth record type. The auxiliary
 recovery-settlement identity separately retains its accepted version-1 zero-anchor schema and uses
 an exact version-2 schema for every new settlement; parser dispatch is version-first and never
 reinterprets legacy bytes. The deterministic gate must prove the exact

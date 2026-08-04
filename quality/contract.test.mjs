@@ -1989,7 +1989,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   );
   assert.match(
     gates,
-    /exactly three schema-version exceptions[\s\S]{0,300}recovery-settlement phase\/fence[\s\S]{0,180}version 2[\s\S]{0,180}overflow checkpoint[\s\S]{0,180}version 2[\s\S]{0,300}cursor-recovery phase\/fence claim[\s\S]{0,180}version 3[\s\S]{0,180}(?:None creates|never)[^.]{0,80}fifth record type/iu,
+    /exactly four schema-version exceptions[\s\S]{0,300}recovery-settlement phase\/fence[\s\S]{0,180}version 2[\s\S]{0,180}overflow checkpoint[\s\S]{0,180}version 2[\s\S]{0,300}historical incomplete cursor phase\/fence claim[\s\S]{0,180}version 3[\s\S]{0,300}complete cursor-recovery phase\/fence claim[\s\S]{0,180}version 4[\s\S]{0,180}(?:None creates|never)[^.]{0,80}fifth record type/iu,
   );
   assert.match(
     adr,
@@ -2659,6 +2659,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     readFile(join(root, "docs/qa/repository-activation.md"), "utf8"),
   ]);
   const projections = [protocol, wake, lifecycle, gates, activation];
+  const protocolLf = protocol.replaceAll("\r\n", "\n");
 
   assert.match(
     wake,
@@ -3041,12 +3042,12 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     "a non-null accumulated-suffix identity, a non-null\ncursor",
     "`recovery_scan_complete` false, a null settlement identity",
   ])
-    assert.ok(protocol.includes(predicate), predicate);
+    assert.ok(protocolLf.includes(predicate), predicate);
   for (const predicate of [
     "It has no cursor authorization or target fields because\nthose bytes do not exist in schema v3.",
     "never interprets v3 bytes as v4",
   ])
-    assert.ok(protocol.includes(predicate), predicate);
+    assert.ok(protocolLf.includes(predicate), predicate);
   for (const projection of projections) {
     assert.match(
       projection,
