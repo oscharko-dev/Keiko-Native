@@ -703,8 +703,9 @@ requests, queues, merges, or repository settings.
 The exact overflow recovery authentication profile is the sole exception to the ordinary
 coordinator-record provider-run reads above. For the 16 historical base records and at most four
 historical interrupted candidate comment copies present before the current attempt, counting every
-byte-identical copy before grouping, it does not call the workflow-run endpoint and does not load the
-referenced-workflow inventory. Instead, each GitHub-native attestation must cryptographically bind
+byte-identical copy before grouping, it does not call the workflow-run endpoint and does not load
+the referenced-workflow inventory. Instead, each GitHub-native attestation must cryptographically
+bind
 the fixed issuer, repository, protected top-level caller and reusable writer paths, immutable
 `refs/heads/dev`, protected commit, run ID, run attempt, subject name, and digest through its
 verified SLSA/OIDC claims. One separate exact job read binds the encoded job ID to that same run and
