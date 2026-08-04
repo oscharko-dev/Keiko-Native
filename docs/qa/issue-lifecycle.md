@@ -204,9 +204,10 @@ unavailable evidence. An ambiguous effect is never retried; explicit authorized 
 the next attempt and binds the settled predecessor.
 
 Normal mode counts both provider calls in each of its 16 artifact-download redirect chains: one
-stable pass is 109 requests, two passes are 218, and the existing 14 write/read-back calls close the
-hard ceiling at 232. Overflow recovery retains its distinct hard-200 counter and closed historical
-authentication profile below.
+ordinary-v1-root stable pass is 109 requests. An overflow-v2 root adds exactly six locator
+authentication calls per pass, so the maximum pass is 115 requests, two passes are 230, and the
+existing 14 write/read-back calls close the hard ceiling at 244. Overflow recovery retains its
+distinct hard-200 counter and closed historical authentication profile below.
 
 Stable proof of zero relevant record comments and zero exact-name anchors selects empty-history
 bootstrap, not truncated-history recovery. The first request uses null predecessors and checkpoint
@@ -303,15 +304,20 @@ ordinary irrelevant comments, in memory across its twice-stable pages. It first 
 the lower-ID overflow v2 checkpoint and the greater shadow-ID relationship. Only then may one
 phase/fence claim v3 persist the complete at-most-15 live record members, one shadow body digest,
 and exact shadow comment IDs. It publishes no intermediate cursor or progress claim. The final claim
-and immediate checkpoint require at most 12 live records before publication; any larger or reserved
-open suffix uses its exact existing recovery path or fails closed.
+and immediate checkpoint require one through 11 live records forming one internally valid open
+generation that begins with its authenticated request and contains no terminal fence or checkpoint.
+The recovery-owned `abandoned` checkpoint carries exactly the authenticated same-generation
+producer subset already present before v3, including empty. A root-only zero-live-record scan is a
+no-op with no v3 claim, checkpoint, record, or effect; any larger or reserved open suffix uses its
+exact existing recovery path or fails closed.
 
 The hard cap is 3 accumulator pages. At most 6 comment-page requests cover two stable reads of each
-page in the one invocation; 130 record-chain, provider, publication, and read-back requests plus the
-fixed 14 ingress requests preserve the 150-request ceiling. The 130-call core is exactly 76
-authentication calls, 26 current-provider calls, and 28 calls for two complete record publication
-and read-back sequences. The 76 calls are one artifact list, 30 artifact-download redirect-chain
-calls, 15 subject-qualified attestation inventories, and 30 run/job calls for at most fifteen
+page in the one invocation; 128 record-chain, provider, publication, and read-back requests plus the
+fixed 14 ingress requests produce at most 148 calls under the 150-request ceiling. The 128-call core
+is exactly 74 authentication calls, 26 current-provider calls, and 28 calls for two complete record
+publication and read-back sequences. The 74 calls are one artifact list, 28 artifact-download
+redirect-chain calls, 14 subject-qualified attestation inventories, 28 workflow-run and
+referenced-workflow-inventory calls, and at most three exact producer-job calls for at most fourteen
 record/root/orphan authentication tuples. The already authenticated ingress authorization and
 target bytes are reused; no additional provider request is made. A fifth shadow, any mismatch or
 discontinuity, cursor exhaustion, page 4, or missing checkpoint produces no
@@ -358,7 +364,7 @@ source observation is its sole durable superseding witness. Once its exact ancho
 that null-effect checkpoint, a later fact change cannot stale the historical terminalization. The
 ordinary writer uses a three-record terminalization reserve: it rejects a nonterminal append at 12
 and places the terminal or superseded fence at record 13. The exact complete cursor-recovery v3
-claim defines `n` as the authenticated live non-checkpoint suffix cardinality from zero through 12.
+claim defines `n` as the authenticated live non-checkpoint suffix cardinality from one through 11.
 It is record `n + 1` and must be followed immediately by its checkpoint at record `n + 2`. An
 interrupted unanchored v3 instead uses its exact version-2 cursor-claim settlement at record
 `n + 1`, followed only by the recovery-owned checkpoint at record `n + 2`. A terminal
@@ -369,12 +375,15 @@ interrupted, its version-2 settlement occupies record 13 after the 12 authentica
 only the recovery-owned checkpoint may follow at record 14. An authenticated cursor-recovery v3 at
 record `n + 1` likewise permits an exact version-2 cursor-checkpoint settlement for its interrupted
 unanchored checkpoint at record `n + 2`, followed only by the recovery-owned checkpoint at record
-`n + 3`. At `n = 12`, the cursor paths consume records 13 through 15 without widening the loader.
+`n + 3`. At `n = 11`, the cursor paths consume at most records 12 through 14 without widening the
+loader.
 Each settlement is allowed only when
 the writer's anchor-attestation step's mapped name and provider-visible number were stably observed
 with conclusion `skipped`; attempted or unknown submission remains ambiguous. Each recovery-owned
-`abandoned` checkpoint carries the exact authenticated pre-fence producer subset, including empty;
-no other abandoned checkpoint may omit an expected producer. Both the settlement and immediate
+`abandoned` checkpoint after a v2 settlement carries the exact authenticated pre-fence producer
+subset, including empty. The direct cursor-v3 checkpoint carries the exact authenticated
+same-generation producer subset present before v3, including empty; no other abandoned checkpoint
+may omit an expected producer. Both a settlement and its immediate
 checkpoint retain the frozen generation and exact authorized recovery binding, use the
 settlement's stable current source observation, and remain valid across later current-fact drift.
 This makes a

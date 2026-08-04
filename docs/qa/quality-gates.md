@@ -155,16 +155,23 @@ twice-stable pages. It must first fully authenticate the lower-ID overflow v2 ch
 greater shadow-ID relationship. Only then may one phase/fence claim v3 persist the complete
 at-most-15 live record members, one shadow body digest, and exact shadow comment IDs. It must
 publish no intermediate cursor or progress claim. The final claim and immediate checkpoint require
-at most 12 live records before publication; any larger or reserved open suffix uses its exact
-existing recovery path or fails closed.
+one through 11 live records forming one internally valid open generation that begins with its
+authenticated generation request and contains no terminal claim or checkpoint. The direct
+recovery-owned `abandoned` checkpoint carries exactly the authenticated same-generation producer
+subset present before v3, including empty, retains every included result's original producer-owning
+fence, and permits no producer after v3. A root-only scan with zero live records authenticates the
+root and replay-shadow relation but is a no-op with no v3 claim, checkpoint, record, or effect. Any
+larger, reserved, or differently shaped open suffix uses its exact existing recovery path or fails
+closed.
 
 The gate must enforce a hard cap of 3 accumulator pages. At most 6 comment-page requests cover two
-stable reads of each page in the one invocation; 130 record-chain, provider, publication, and
-read-back requests plus the fixed 14 ingress requests preserve the 150-request ceiling. The
-130-call core is exactly 76 authentication calls, 26 current-provider calls, and 28 calls for two
-complete record publication and read-back sequences. The 76 calls are one artifact list, 30
-artifact-download redirect-chain calls, 15 subject-qualified attestation inventories, and 30
-run/job calls for at most fifteen record/root/orphan authentication tuples. The already
+stable reads of each page in the one invocation; 128 record-chain, provider, publication, and
+read-back requests plus the fixed 14 ingress requests produce at most 148 calls under the hard
+150-request ceiling. The 128-call core is exactly 74 authentication calls, 26 current-provider
+calls, and 28 calls for two complete record publication and read-back sequences. The 74 calls are
+one artifact list, 28 artifact-download redirect-chain calls, 14 subject-qualified attestation
+inventories, 28 workflow-run and referenced-workflow-inventory calls, and at most three exact
+producer-job calls for at most fourteen record/root/orphan authentication tuples. The already
 authenticated ingress authorization and target bytes are reused; no additional provider request is
 made. A fifth shadow, any mismatch or discontinuity, cursor exhaustion, page 4, or
 missing checkpoint must produce no complete accumulator, checkpoint, or effect. The classification
@@ -214,14 +221,19 @@ record 14, and after that settlement permits only the recovery-owned null-effect
 record 15. If fence publication is interrupted, the exact version-2 fence-orphan settlement is
 record 13 and only its recovery-owned checkpoint may follow at record 14. The exact complete
 cursor-recovery v3 claim defines `n` as the authenticated live non-checkpoint suffix cardinality
-from zero through 12. It is record `n + 1` and must be followed immediately by its checkpoint at
-record `n + 2`. An interrupted unanchored v3 instead uses its exact version-2 cursor-claim
+from one through 11 for one internally valid open generation that begins with its authenticated
+generation request and contains no terminal claim or checkpoint. It is record `n + 1` and must be
+followed immediately by its checkpoint at record `n + 2`. That direct recovery-owned `abandoned`
+checkpoint carries exactly the authenticated same-generation producer subset present before v3,
+including empty, and retains each result's original producer-owning fence; no producer may publish
+after v3. A root-only scan with `n = 0` is a no-op with no v3 claim, checkpoint, record, or effect.
+An interrupted unanchored v3 instead uses its exact version-2 cursor-claim
 settlement at record `n + 1`, followed only by the recovery-owned checkpoint at record `n + 2`.
 After an
 authenticated cursor-recovery v3 at record `n + 1`, an interrupted unanchored cursor-recovery
 checkpoint uses its exact version-2 cursor-checkpoint settlement at record `n + 2`, followed only by
-the recovery-owned checkpoint at record `n + 3`. At `n = 12`, the cursor paths consume records 13
-through 15 without widening the loader. The gate must prove that
+the recovery-owned checkpoint at record `n + 3`. At `n = 11`, the cursor paths consume at most
+records 12 through 14 without widening the loader. The gate must prove that
 each resulting recovery-owned `abandoned` checkpoint carries exactly the authenticated pre-fence
 producer subset, including empty, while every other abandoned checkpoint requires the complete
 expected set; that the parent phase/fence record's encoded version selects settlement v2; and that
@@ -323,8 +335,10 @@ branch, pull-request, queue, or merge result. Issue #55 alone owns activation an
 proof; missing, stale, ambiguous, or wrong-producer record evidence cannot promote availability.
 The per-issue and repository-wide provider-budget groups use `queue: max`; a hard local request
 counter and fail-closed provider responses, not a racy remaining-quota read, protect the shared
-repository token boundary. Normal loading counts two calls for each archive redirect, so its two
-109-request stable passes plus 14 write/read-back calls close at 232; overflow recovery retains its
+repository token boundary. Normal loading counts two calls for each archive redirect. An
+ordinary-v1-root stable pass is 109 requests; an overflow-v2 root adds exactly six locator
+authentication calls per pass, so the maximum pass is 115 requests, two passes are 230, and the
+existing 14 write/read-back calls close the hard ceiling at 244. Overflow recovery retains its
 separate hard-200 ceiling. Until the pinned actionlint release understands GitHub's newer
 `concurrency.queue` key, the actionlint job ignores only that exact unknown-key diagnostic; the
 repository contract independently requires `queue: max`, rejects `cancel-in-progress`, and keeps
