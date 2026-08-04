@@ -2967,7 +2967,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /v3 claim is authenticated at record 13[\s\S]{0,300}cursor-recovery\s+checkpoint[\s\S]{0,300}anchor\s+publication is interrupted[\s\S]{0,500}`cursor-checkpoint-anchor-publication-interrupted` settlement as record\s+14[\s\S]{0,500}record\s+15[^.]{0,220}checkpoint/iu,
+    /v3 claim is authenticated at record 13[\s\S]{0,300}cursor-recovery\s+checkpoint[\s\S]{0,300}anchor\s+publication is interrupted[\s\S]{0,500}`cursor-checkpoint-anchor-publication-interrupted` settlement[\s\S]{0,80}(?:as|becomes)\s+record\s+14[\s\S]{0,500}record\s+15[^.]{0,220}checkpoint/iu,
   );
   assert.match(
     protocol,

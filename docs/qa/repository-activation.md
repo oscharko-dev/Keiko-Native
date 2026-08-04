@@ -161,9 +161,9 @@ must keep the authenticated cumulative summary and every full `recovery-suffix-m
 including ordinary irrelevant comments, in memory across its twice-stable pages. It must first fully
 authenticate the lower-ID overflow v2 checkpoint and the greater shadow-ID relationship. Only then
 may one phase/fence claim v3 persist the complete at-most-15 live record members, one shadow body
-digest, and exact shadow comment IDs. It must publish no intermediate cursor or progress claim. The final claim and
-immediate checkpoint require at most 12 live records before publication; any larger or reserved
-open suffix uses its exact existing recovery path or fails closed.
+digest, and exact shadow comment IDs. It must publish no intermediate cursor or progress claim. The
+final claim and immediate checkpoint require at most 12 live records before publication; any larger
+or reserved open suffix uses its exact existing recovery path or fails closed.
 
 The activation probe must enforce a hard cap of 5 accumulator pages. At most 10 comment-page
 requests cover two stable reads of each page in the one invocation; 126
@@ -180,14 +180,14 @@ recovery, and changes no 15-record bound, target consumption, or authority.
 The activation probe must treat incomplete phase/fence claim v1 and v3 cursor records as read-only
 compatibility and prohibit resume or migration. The frozen pre-activation inventory is not limited
 to Issue #55's disposable-probe manifest. The frozen maximum issue number comes from two stable
-repository observations, and the inventory classifies every canonical issue number from 1 through that maximum
-as an issue, pull request, or missing resource. It scans every issue's complete bounded 5-page
-history and retains the other classifications as negative evidence. Page 6, instability, or an
-unclassified number makes the inventory incomplete. Zero incomplete v1 and v3 cursor claims across
-that complete inventory is an exact activation precondition. Any discovery must fail closed, block
-activation, retain all evidence, and require a separately governed exact-target human reconciliation
-issue before any settlement; no boundary, summary, or cursor may be inferred. It
-must also prove superseded
+repository observations, and the inventory classifies every canonical issue number from 1 through
+that maximum as an issue, pull request, or missing resource. It scans every issue's complete
+bounded 5-page history and retains the other classifications as negative evidence. Page 6,
+instability, or an unclassified number makes the inventory incomplete. Zero incomplete v1 and v3
+cursor claims across that complete inventory is an exact activation precondition. Any discovery
+must fail closed, block activation, retain all evidence, and require a separately governed
+exact-target human reconciliation issue before any settlement; no boundary, summary, or cursor may
+be inferred. It must also prove superseded
 generations authenticate their frozen generation and closed partial producer set. An ordinary
 superseded fence binds its first witness; the reserved-fence exception uses the final encoded
 read-back source observation as its sole durable witness and refreshes that projection under the
@@ -209,8 +209,8 @@ its identity, while a legacy settlement-bearing phase/fence v1 selects only sett
 recovery-owned `abandoned` checkpoint must carry the exact authenticated
 pre-fence producer subset, including empty, and no other abandoned checkpoint may omit an expected
 producer. Post-fence fact drift must use the same fence and a superseded checkpoint
-projection; all ordinary and cursor interrupted publication shapes must retain a forward path, and an ambiguous
-attestation submission must never retry. Every interrupted candidate must
+projection; all ordinary and cursor interrupted publication shapes must retain a forward path, and
+an ambiguous attestation submission must never retry. Every interrupted candidate must
 prove its exact pre-comment locator attestation, terminal writer job, locator-free record
 projection, deterministic ordering, and
 duplicate rejection; its fixed anchor-attestation publication step must have its mapped exact name,

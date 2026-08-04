@@ -511,17 +511,17 @@ Incomplete phase/fence claim v1 and v3 cursor records remain read-only compatibi
 be resumed or converted; they cannot be used to derive missing live-member, replay-shadow, or
 starting-boundary evidence. The frozen pre-activation inventory is not limited to Issue #55's
 disposable-probe manifest. The frozen maximum issue number comes from two stable repository
-observations, and the inventory classifies every canonical issue number from 1 through that maximum as an issue, pull
-request, or missing resource. It scans the complete bounded 5-page history of every issue; the
-pull-request and missing-resource classifications remain retained negative evidence. Page 6,
-unstable classification, or an unclassified number makes the inventory incomplete and blocks
-activation. Zero incomplete v1 and v3 cursor claims across that complete inventory is an exact
-activation precondition. Discovery of one blocks activation and requires separately governed,
+observations, and the inventory classifies every canonical issue number from 1 through that maximum
+as an issue, pull request, or missing resource. It scans the complete bounded 5-page history of
+every issue; the pull-request and missing-resource classifications remain retained negative
+evidence. Page 6, unstable classification, or an unclassified number makes the inventory incomplete
+and blocks activation. Zero incomplete v1 and v3 cursor claims across that complete inventory is an
+exact activation precondition. Discovery of one blocks activation and requires separately governed,
 exact-target human reconciliation that retains the original evidence; the maintainer records the
 blocked issue and opens an accepted remediation issue before any settlement. There is no automatic
-migration, digest-only conversion, evidence deletion, or inferred boundary. Phase/fence claim v2 remains
-exclusive to forward recovery settlement. Except for the read-only incomplete compatibility shape
-above, every other v3 phase, outcome, field order, cardinality, null combination, or use is
+migration, digest-only conversion, evidence deletion, or inferred boundary. Phase/fence claim v2
+remains exclusive to forward recovery settlement. Except for the read-only incomplete compatibility
+shape above, every other v3 phase, outcome, field order, cardinality, null combination, or use is
 malformed.
 
 For each issue, the unique serialization domain is exactly
@@ -776,8 +776,10 @@ no other record or effect may intervene.
 
 If the v3 claim is authenticated at record 13 and publication of its immediate cursor-recovery
 checkpoint comment succeeds but its anchor publication is interrupted, the authorized recovery
-appends the exact version-2 `cursor-checkpoint-anchor-publication-interrupted` settlement as record 14. The orphan checkpoint remains quarantine-only. Once that settlement is authenticated, record
-15 is the immediate recovery-owned null-effect checkpoint; no other record or effect may intervene.
+appends the exact version-2 `cursor-checkpoint-anchor-publication-interrupted` settlement. It becomes
+record 14. The orphan checkpoint remains quarantine-only. Once that settlement is authenticated,
+record 15 is the immediate recovery-owned null-effect checkpoint; no other record or effect may
+intervene.
 Both cursor settlements prove the exact fixed skipped-attestation and orphan facts required by the
 closed version-2 reason above. Repeated interruption of either settlement or its recovery-owned
 checkpoint fails closed for human reconciliation rather than widening the 15-record bound.
@@ -850,12 +852,12 @@ the authenticated cumulative summary and every full `recovery-suffix-member` pre
 ordinary irrelevant comments, in memory across its twice-stable pages. It first fully authenticates
 the lower-ID byte-identical overflow v2 checkpoint and the greater shadow-ID relationship. Only then
 may one phase/fence claim v3 persist the complete at-most-15 live record members, one shadow body
-digest, and exact shadow comment IDs. It publishes no intermediate cursor or progress claim. The final claim and
-immediate checkpoint require at most 12 live records before publication; any larger or reserved
-open suffix uses its exact existing recovery path or fails closed. The hard cap is 5 accumulator
-pages. At most 10 comment-page requests cover two stable reads of each page in the one invocation;
-126 record-chain, target, provider, publication, and read-back requests plus the fixed 14
-ingress requests preserve the 150-request ceiling. A fifth shadow, any mismatch or discontinuity,
+digest, and exact shadow comment IDs. It publishes no intermediate cursor or progress claim. The
+final claim and immediate checkpoint require at most 12 live records before publication; any larger
+or reserved open suffix uses its exact existing recovery path or fails closed. The hard cap is 5
+accumulator pages. At most 10 comment-page requests cover two stable reads of each page in the one
+invocation; 126 record-chain, target, provider, publication, and read-back requests plus the fixed
+14 ingress requests preserve the 150-request ceiling. A fifth shadow, any mismatch or discontinuity,
 cursor exhaustion, page 6, or failure to authenticate that checkpoint produces no complete
 accumulator, checkpoint, or effect. The classification initiates no recovery, changes no 15-record
 bound, target consumption, or authority, and adds no provider request outside that closed
@@ -1191,8 +1193,8 @@ artifact-list read, at most fourteen record/root/orphan authentication tuples, a
 recovery-target or orphan read; 26 calls to current provider state; and two complete 14-call
 claim/checkpoint publication and read-back sequences. The first allocation is exactly one
 artifact-list call, 28 artifact-download redirect-chain calls, 14 subject-qualified attestation
-inventory calls, 28 run/job calls, and one target-or-orphan call. Those 126 calls plus the 10 page calls and
-ADR-0012's fixed 14 ingress requests produce the unchanged
+inventory calls, 28 run/job calls, and one target-or-orphan call. Those 126 calls plus the 10 page
+calls and ADR-0012's fixed 14 ingress requests produce the unchanged
 150-request ceiling. The replay reconstructs every full member preimage, revalidates the compacted
 prefix or complete genesis suffix in predecessor order, and only then emits a fresh
 transition/read-back checkpoint. If the #55 live probe cannot prove this capped stable

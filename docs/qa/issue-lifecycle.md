@@ -302,9 +302,9 @@ the authenticated cumulative summary and every full `recovery-suffix-member` pre
 ordinary irrelevant comments, in memory across its twice-stable pages. It first fully authenticates
 the lower-ID overflow v2 checkpoint and the greater shadow-ID relationship. Only then may one
 phase/fence claim v3 persist the complete at-most-15 live record members, one shadow body digest,
-and exact shadow comment IDs. It publishes no intermediate cursor or progress claim. The final claim and immediate
-checkpoint require at most 12 live records before publication; any larger or reserved open suffix
-uses its exact existing recovery path or fails closed.
+and exact shadow comment IDs. It publishes no intermediate cursor or progress claim. The final claim
+and immediate checkpoint require at most 12 live records before publication; any larger or reserved
+open suffix uses its exact existing recovery path or fails closed.
 
 The hard cap is 5 accumulator pages. At most 10 comment-page requests cover two stable reads of
 each page in the one invocation; 126 record-chain, target, provider, publication,

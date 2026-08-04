@@ -153,10 +153,10 @@ serialized recovery invocation must keep the authenticated cumulative summary an
 `recovery-suffix-member` preimage, including ordinary irrelevant comments, in memory across its
 twice-stable pages. It must first fully authenticate the lower-ID overflow v2 checkpoint and the
 greater shadow-ID relationship. Only then may one phase/fence claim v3 persist the complete
-at-most-15 live record members, one shadow body digest, and exact shadow comment IDs. It must publish no intermediate cursor or
-progress claim. The final claim and immediate checkpoint require at most 12 live records before
-publication; any larger or reserved open suffix uses its exact existing recovery path or fails
-closed.
+at-most-15 live record members, one shadow body digest, and exact shadow comment IDs. It must
+publish no intermediate cursor or progress claim. The final claim and immediate checkpoint require
+at most 12 live records before publication; any larger or reserved open suffix uses its exact
+existing recovery path or fails closed.
 
 The gate must enforce a hard cap of 5 accumulator pages. At most 10 comment-page requests cover two
 stable reads of each page in the one invocation; 126 record-chain, target,
