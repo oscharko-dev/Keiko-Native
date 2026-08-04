@@ -729,7 +729,8 @@ ADR-0011's ordinary three-record reserve is also closed here. After 12 authentic
 unanchored reserved-fence comment may be settled only by an exact version-2 recovery phase/fence
 claim at record 13 and an immediate recovery-owned null-effect checkpoint at record 14. The exact
 complete cursor-recovery v3 sequence instead defines `n` as the authenticated live non-checkpoint
-suffix cardinality from one through 11. Its v3 claim is record `n + 1` and must be followed
+suffix cardinality from one through 11 after a unique-genesis or ordinary-v1 root, and from one
+through 10 after an overflow-v2 root. Its v3 claim is record `n + 1` and must be followed
 immediately by its authenticated checkpoint at record `n + 2`. An interrupted unanchored v3 claim
 instead uses its exact version-2 cursor-claim settlement at record `n + 1`, followed only by the
 recovery-owned checkpoint at record `n + 2`. After an
@@ -737,8 +738,9 @@ authenticated reserved fence at record 13, an unanchored checkpoint comment may 
 the corresponding version-2 claim at record 14 and immediate checkpoint at record 15. Likewise,
 after an authenticated cursor-recovery v3 at record `n + 1`, its interrupted unanchored
 cursor-recovery checkpoint uses the exact version-2 cursor-checkpoint settlement at record `n + 2`,
-followed only by the recovery-owned checkpoint at record `n + 3`. At `n = 11`, this consumes at most
-records 12 through 14 without widening the loader. A direct v3 checkpoint is recovery-owned,
+followed only by the recovery-owned checkpoint at record `n + 3`. At `n = 11` for a unique-genesis
+or ordinary-v1 root, this consumes at most records 12 through 14; an overflow-v2 root stops at
+`n = 10` and records 11 through 13. Neither widens the loader. A direct v3 checkpoint is recovery-owned,
 `abandoned`, null-effect, and carries exactly the authenticated same-generation producer subset
 already present before the v3 fence, including empty. The live suffix must begin with one
 authenticated generation request, contain one internally valid open generation, and contain no
@@ -811,19 +813,22 @@ ordinary irrelevant comments, in memory across its twice-stable pages. It first 
 the lower-ID overflow v2 checkpoint and the greater shadow-ID relationship. Only then may one
 phase/fence claim v3 persist the complete at-most-15 live record members, one shadow body digest,
 and exact shadow comment IDs. It publishes no intermediate cursor or progress claim. The final
-claim and immediate checkpoint require one through 11 live records forming that exact open
-generation; zero live records are a no-op, and any larger or reserved open suffix uses its exact
+claim and immediate checkpoint require one through 11 live records after a unique-genesis or
+ordinary-v1 root, or one through 10 after the overflow-v2 root, forming that exact open generation;
+zero live records are a no-op, and any larger or reserved open suffix uses its exact
 existing recovery path or fails closed.
 
 The hard cap is 3 accumulator pages. At most 6 comment-page requests cover two stable reads of each
-page in the one invocation; 128 record-chain, provider, publication, and read-back requests plus the
-fixed 14 ingress requests produce at most 148 calls under the 150-request ceiling. The 128-call core
-is exactly 74 authentication calls, 26 current-provider calls, and 28 calls for two complete record
-publication and read-back sequences. The 74 calls are one artifact list, 28 artifact-download
-redirect-chain calls, 14 subject-qualified attestation inventories, 28 workflow-run and
-referenced-workflow-inventory calls, and at most three exact producer-job calls for at most fourteen
-record/root/orphan authentication tuples. The already authenticated ingress authorization and
-target bytes are reused; no additional provider request is made. A fifth shadow, any mismatch or
+page in the one invocation. A unique-genesis or ordinary-v1 root permits at most fourteen
+record/root/orphan tuples and consumes 74 authentication, 26 current-provider, and 28 publication
+calls: a 128-call core and 148 total calls with pages and the fixed 14 ingress calls. An overflow-v2
+root permits at most thirteen tuples. Its base authentication uses one artifact list, 26
+artifact-download redirect-chain calls, 13 subject-qualified attestation inventories, 26
+workflow-run and referenced-workflow-inventory calls, and at most three exact producer-job calls;
+the root's exact six locator-verification calls make 75 authentication calls. With the same 26
+current-provider and 28 publication calls, that is a 129-call core and 149 total calls. The already
+authenticated ingress authorization and target bytes are reused; no additional provider request is
+made. Both profiles remain under the hard 150-request ceiling. A fifth shadow, any mismatch or
 discontinuity, cursor exhaustion, page 4, or missing checkpoint produces no
 complete accumulator, checkpoint, or effect. The classification adds no request outside that closed
 allocation, initiates no cursor recovery, and changes no 15-record bound, target consumption, or

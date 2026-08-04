@@ -2188,6 +2188,10 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   );
   assert.match(
     adr,
+    /more-than-100-page[\s\S]{0,180}cursor-recovery refusal before page 4/iu,
+  );
+  assert.match(
+    adr,
     /empty-history bootstrap[\s\S]{0,300}any issue comment of any author[\s\S]{0,180}reserved[\s\S]{0,80}keiko-native-lifecycle-[\s\S]{0,500}whether or not[\s\S]{0,300}valid/iu,
   );
   assert.match(
@@ -2938,7 +2942,39 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     );
     assert.match(
       projection,
-      /(?:at most|hard cap (?:is|of))\s+3[^.]{0,120}(?:accumulator|recovery)[^.]{0,100}pages?[\s\S]{0,600}6[^.]{0,120}comment-page\s+requests[\s\S]{0,500}128[^.]{0,180}(?:record-chain|recovery)[^.]*(?:requests|calls)[\s\S]{0,500}(?:148[^.]{0,120})?150-request ceiling/iu,
+      /(?:at most|hard cap (?:is|of))\s+3[^.]{0,120}(?:accumulator|recovery)[^.]{0,100}pages?[\s\S]{0,700}6[^.]{0,120}comment-page\s+requests/iu,
+    );
+    assert.match(
+      projection,
+      /(?:unique-genesis|ordinary-v1)[\s\S]{0,1200}fourteen[^.]{0,180}(?:tuple|record\/root\/orphan)/iu,
+    );
+    assert.match(
+      projection,
+      /(?:unique-genesis|ordinary-v1)[\s\S]{0,1200}74[^.]{0,180}authentication/iu,
+    );
+    assert.match(
+      projection,
+      /(?:unique-genesis|ordinary-v1)[\s\S]{0,1200}128[^.]{0,180}(?:core|calls)[\s\S]{0,500}148[^.]{0,180}(?:total|calls)/iu,
+    );
+    assert.match(
+      projection,
+      /overflow-v2[^.]{0,120}root[\s\S]{0,1200}thirteen[^.]{0,180}(?:tuple|record\/root\/orphan)/iu,
+    );
+    assert.match(
+      projection,
+      /overflow-v2[^.]{0,120}root[\s\S]{0,1800}(?:six|6)[^.]{0,180}locator[^.]{0,180}(?:requests|calls)/iu,
+    );
+    assert.match(
+      projection,
+      /overflow-v2[^.]{0,120}root[\s\S]{0,1800}75[^.]{0,180}authentication/iu,
+    );
+    assert.match(
+      projection,
+      /overflow-v2[^.]{0,120}root[\s\S]{0,1800}129[^.]{0,180}(?:core|calls)[\s\S]{0,600}149[^.]{0,180}(?:total|calls)/iu,
+    );
+    assert.match(
+      projection,
+      /Both(?: profiles)? remain under the (?:unchanged )?hard 150-request\s+ceiling/iu,
     );
     assert.match(
       projection,
@@ -2986,6 +3022,10 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     );
     assert.match(
       projection,
+      /(?:overflow-v2[^.]{0,120}root|after an overflow-v2 root)[\s\S]{0,300}(?:one through 10|1 through 10|n\s*=\s*10)/iu,
+    );
+    assert.match(
+      projection,
       /root-only[^.]{0,220}(?:zero(?:-|\s)+live(?:-|\s)+records?|n\s*=\s*0)[^.]{0,220}no-op[\s\S]{0,300}no v3 claim[^.]{0,180}checkpoint[^.]{0,180}record[^.]{0,180}effect/iu,
     );
     assert.match(
@@ -3004,10 +3044,6 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   assert.match(
     protocol,
     /v3 claim is authenticated[\s\S]{0,300}n\s*\+\s*1[\s\S]{0,300}cursor-recovery\s+checkpoint[\s\S]{0,300}anchor\s+publication is interrupted[\s\S]{0,500}`cursor-checkpoint-anchor-publication-interrupted` settlement[\s\S]{0,300}n\s*\+\s*2[\s\S]{0,500}n\s*\+\s*3[^.]{0,220}checkpoint/iu,
-  );
-  assert.match(
-    protocol,
-    /fourteen record\/root\/orphan authentication tuples[\s\S]{0,500}74[^.]{0,180}authentication[^.]{0,180}calls[\s\S]{0,500}(?:three|3)[^.]{0,180}producer[^.]{0,180}job[^.]{0,180}calls[\s\S]{0,500}26[^.]{0,180}current-provider[^.]{0,180}calls[\s\S]{0,500}28[^.]{0,180}publication[^.]{0,180}calls[\s\S]{0,500}128-call recovery core/iu,
   );
   assert.match(
     protocol,
