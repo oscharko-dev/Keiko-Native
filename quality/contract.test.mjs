@@ -1993,6 +1993,10 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   );
   assert.match(
     adr,
+    /recovery settlement v2[\s\S]{0,2200}`quarantine_reason:enum\(anchor-publication-interrupted,cursor-claim-anchor-publication-interrupted,cursor-checkpoint-anchor-publication-interrupted\)`/iu,
+  );
+  assert.match(
+    adr,
     /overflow transition\/read-back version-2[\s\S]{0,100}candidate necessarily binds this post-amendment topology/iu,
   );
   assert.match(
@@ -2172,7 +2176,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   assert.match(adr, /100 comments\s+per page and at most two pages/iu);
   assert.match(
     adr,
-    /single\s+serialized recovery invocation[\s\S]{0,320}hard cap of\s+25 pages/iu,
+    /single\s+serialized recovery invocation[\s\S]{0,320}hard cap of\s+5 pages/iu,
   );
   assert.match(
     adr,
@@ -2890,7 +2894,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     );
     assert.match(
       projection,
-      /classification is provisional[\s\S]{0,700}single\s+serialized recovery invocation[\s\S]{0,900}fully\s+authenticat(?:es?|ing)[^.]{0,180}lower-ID[^.]{0,180}checkpoint/iu,
+      /classification is provisional[\s\S]{0,700}single\s+serialized recovery invocation[\s\S]{0,900}fully\s+authenticates?[^.]{0,180}lower-ID[^.]{0,180}checkpoint[\s\S]{0,500}(?:then|before)[^.]{0,220}phase\/fence claim v3/iu,
     );
     assert.match(
       projection,
@@ -2910,7 +2914,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     );
     assert.match(
       projection,
-      /(?:at most|hard cap (?:is|of))\s+25[^.]{0,120}(?:accumulator|recovery)[^.]{0,100}pages?[\s\S]{0,600}50[^.]{0,120}comment-page\s+requests[\s\S]{0,500}86[^.]{0,180}(?:record-chain|recovery)[^.]*(?:requests|calls)[\s\S]{0,500}150-request ceiling/iu,
+      /(?:at most|hard cap (?:is|of))\s+5[^.]{0,120}(?:accumulator|recovery)[^.]{0,100}pages?[\s\S]{0,600}10[^.]{0,120}comment-page\s+requests[\s\S]{0,500}126[^.]{0,180}(?:record-chain|recovery)[^.]*(?:requests|calls)[\s\S]{0,500}150-request ceiling/iu,
     );
     assert.match(
       projection,
@@ -2941,7 +2945,29 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /incomplete[^.]{0,160}(?:phase\/fence claim v1|v1)[^.]*(?:and|or)[^.]{0,160}(?:phase\/fence claim v3|v3)[^.]{0,220}read-only[\s\S]{0,700}zero[^.]{0,220}activation\s+precondition[\s\S]{0,700}separately governed[^.]{0,220}human reconciliation/iu,
+    /incomplete[^.]{0,160}(?:phase\/fence claim v1|v1)[^.]*(?:and|or)[^.]{0,160}(?:phase\/fence claim v3|v3)[^.]{0,220}read-only[\s\S]{0,1800}zero[^.]{0,220}activation\s+precondition[\s\S]{0,700}separately governed[^.]{0,220}human reconciliation/iu,
+  );
+  assert.match(
+    protocol,
+    /historical incomplete v3 claim[\s\S]{0,500}phase `recovery`[\s\S]{0,300}`claim_outcome` `claimed`[\s\S]{0,500}non-null[^.]{0,120}(?:scan identity|recovery-scan identity)[\s\S]{0,300}positive[^.]{0,160}page and comment counts[\s\S]{0,300}non-null accumulated-suffix identity[\s\S]{0,300}non-null cursor[\s\S]{0,300}`recovery_scan_complete` false[\s\S]{0,300}null settlement identity/iu,
+  );
+  for (const projection of projections) {
+    assert.match(
+      projection,
+      /frozen\s+maximum\s+issue\s+number[\s\S]{0,500}every\s+(?:canonical\s+)?issue\s+number[^.]{0,160}(?:1\s+through|from\s+1)[^.]{0,160}maximum[\s\S]{0,700}(?:pull\s+request|missing\s+resource)[\s\S]{0,500}complete[^.]{0,160}inventory/iu,
+    );
+    assert.match(
+      projection,
+      /cursor-recovery[^.]{0,180}v3[^.]{0,220}(?:record 13|at record 13)[\s\S]{0,500}(?:immediate|only)[^.]{0,180}checkpoint[^.]{0,120}(?:record 14|at record 14)/iu,
+    );
+  }
+  assert.match(
+    protocol,
+    /publication of the final complete cursor-recovery v3 claim[\s\S]{0,300}anchor\s+publication is interrupted[\s\S]{0,700}`cursor-claim-anchor-publication-interrupted` settlement as record 13[\s\S]{0,500}record 14[^.]{0,220}checkpoint/iu,
+  );
+  assert.match(
+    protocol,
+    /v3 claim is authenticated at record 13[\s\S]{0,300}cursor-recovery\s+checkpoint[\s\S]{0,300}anchor\s+publication is interrupted[\s\S]{0,500}`cursor-checkpoint-anchor-publication-interrupted` settlement as record\s+14[\s\S]{0,500}record\s+15[^.]{0,220}checkpoint/iu,
   );
   assert.match(
     protocol,

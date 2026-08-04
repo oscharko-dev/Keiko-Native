@@ -182,9 +182,9 @@ The exact auxiliary v1 schemas are:
 
 The exact recovery-settlement version-2 schema is:
 
-| Identity               | Fixed fields, in order                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| recovery settlement v2 | `schema_version:uint=2`, `repository:string`, `issue_number:uint`, `authorized_request_identity:sha256`, `recovery_target_identity:sha256`, `orphan_comment_id:uint`, `orphan_comment_body_sha256:sha256`, `orphan_record_digest:sha256`, `orphan_author_login:enum(github-actions[bot])`, `orphan_author_id:uint=41898282`, `orphan_actor_type:enum(Bot)`, `orphan_app_id:uint=15368`, `orphan_workflow_path:protected-writer-path`, `orphan_workflow_run_id:uint`, `orphan_workflow_run_attempt:uint`, `orphan_workflow_job_id:uint`, `orphan_protected_dev_sha:commit`, `orphan_run_conclusion:enum(failure,cancelled,timed-out)`, `orphan_anchor_attestation_step_number:uint`, `orphan_anchor_attestation_step_name:protected-writer-attestation-step-name`, `orphan_anchor_attestation_step_conclusion:enum(skipped)`, `orphan_anchor_count:uint=0-or-1`, `orphan_anchor_artifact_id:uint-or-null`, `orphan_anchor_artifact_digest:sha256-or-null`, `orphan_attestation_count:uint=0`, `last_authenticated_comment_id:uint-or-null`, `last_authenticated_record_digest:sha256-or-null`, `quarantine_reason:enum(anchor-publication-interrupted)` |
+| Identity               | Fixed fields, in order                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| recovery settlement v2 | `schema_version:uint=2`, `repository:string`, `issue_number:uint`, `authorized_request_identity:sha256`, `recovery_target_identity:sha256`, `orphan_comment_id:uint`, `orphan_comment_body_sha256:sha256`, `orphan_record_digest:sha256`, `orphan_author_login:enum(github-actions[bot])`, `orphan_author_id:uint=41898282`, `orphan_actor_type:enum(Bot)`, `orphan_app_id:uint=15368`, `orphan_workflow_path:protected-writer-path`, `orphan_workflow_run_id:uint`, `orphan_workflow_run_attempt:uint`, `orphan_workflow_job_id:uint`, `orphan_protected_dev_sha:commit`, `orphan_run_conclusion:enum(failure,cancelled,timed-out)`, `orphan_anchor_attestation_step_number:uint`, `orphan_anchor_attestation_step_name:protected-writer-attestation-step-name`, `orphan_anchor_attestation_step_conclusion:enum(skipped)`, `orphan_anchor_count:uint=0-or-1`, `orphan_anchor_artifact_id:uint-or-null`, `orphan_anchor_artifact_digest:sha256-or-null`, `orphan_attestation_count:uint=0`, `last_authenticated_comment_id:uint-or-null`, `last_authenticated_record_digest:sha256-or-null`, `quarantine_reason:enum(anchor-publication-interrupted,cursor-claim-anchor-publication-interrupted,cursor-checkpoint-anchor-publication-interrupted)` |
 
 Version 1 remains byte-for-byte readable only as the accepted legacy zero-anchor schema above; no
 new writer emits it after this amendment. Every new forward orphan settlement uses version 2,
@@ -192,6 +192,17 @@ including a zero-anchor settlement, and dispatches on the encoded schema version
 later field. The anchor ID and digest are both null when count is zero and both non-null when count
 is one. A version-1 parser never accepts version-2 bytes, a version-2 parser never reinterprets a
 version-1 preimage, and neither form negotiates fields at runtime.
+
+The version-2 `quarantine_reason` is closed. `anchor-publication-interrupted` binds the existing
+ordinary reserved-fence or reserved-checkpoint orphan. `cursor-claim-anchor-publication-interrupted`
+binds only the exact final complete cursor-recovery phase/fence claim v3 comment intended for record
+13 after at most 12 authenticated live records. `cursor-checkpoint-anchor-publication-interrupted`
+binds only the exact immediate cursor-recovery checkpoint comment intended for record 14 after an
+authenticated v3 claim at record 13. Each cursor reason requires the same authorized maintainer
+request and exact recovery target, a failed, cancelled, or timed-out protected-writer job whose
+fixed anchor-attestation step is stably `skipped`, zero or one immutable un-attested anchor, zero
+attestations, and byte-identical orphan body, digest, predecessor, and target evidence. No other
+orphan, phase, outcome, sequence, or reason is accepted.
 
 `protected-writer-attestation-step-name` and its numeric companion form one closed mapping to the
 provider-visible GitHub job-step projection. The record-bound `orphan_protected_dev_sha` selects one
@@ -480,6 +491,12 @@ digest and a provisional `irrelevant` recovery-suffix-member classification unde
 Actions Bot/App, never-edited shape. Each list and digest is an authenticated complete summary,
 not a record, checkpoint member, target-consumption fact, or authority source.
 
+A historical incomplete v3 claim has phase `recovery`, `claim_outcome` `claimed`, a non-null
+recovery-scan identity, positive page and comment counts, a non-null accumulated-suffix identity, a
+non-null cursor, `recovery_scan_complete` false, a null settlement identity, and the exact bounded
+live-member and replay-shadow summary fields above. That is the sole incomplete v3 field and
+nullability shape recognized as read-only compatibility; no new writer emits or resumes it.
+
 A new v3 claim uses phase `recovery`, `claim_outcome` `settled`, the complete scan identity and
 cumulative counts, a null cursor, `recovery_scan_complete` true, and a null settlement identity. A
 single serialized recovery invocation holds the provider-budget and per-issue groups, scans every
@@ -492,12 +509,17 @@ fails closed with no v3 claim, checkpoint, record, or effect.
 
 Incomplete phase/fence claim v1 and v3 cursor records remain read-only compatibility. Neither can
 be resumed or converted; they cannot be used to derive missing live-member, replay-shadow, or
-starting-boundary evidence. Zero incomplete v1 and v3 cursor claims in the complete bounded
-25-page history of every issue in the frozen activation manifest is an exact activation
-precondition. Discovery of one blocks activation and requires separately governed, exact-target
-human reconciliation that retains the original evidence; the maintainer records the blocked issue
-and opens an accepted remediation issue before any settlement. There is no automatic migration,
-digest-only conversion, evidence deletion, or inferred boundary. Phase/fence claim v2 remains
+starting-boundary evidence. The frozen pre-activation inventory is not limited to Issue #55's
+disposable-probe manifest. The frozen maximum issue number comes from two stable repository
+observations, and the inventory classifies every canonical issue number from 1 through that maximum as an issue, pull
+request, or missing resource. It scans the complete bounded 5-page history of every issue; the
+pull-request and missing-resource classifications remain retained negative evidence. Page 6,
+unstable classification, or an unclassified number makes the inventory incomplete and blocks
+activation. Zero incomplete v1 and v3 cursor claims across that complete inventory is an exact
+activation precondition. Discovery of one blocks activation and requires separately governed,
+exact-target human reconciliation that retains the original evidence; the maintainer records the
+blocked issue and opens an accepted remediation issue before any settlement. There is no automatic
+migration, digest-only conversion, evidence deletion, or inferred boundary. Phase/fence claim v2 remains
 exclusive to forward recovery settlement. Except for the read-only incomplete compatibility shape
 above, every other v3 phase, outcome, field order, cardinality, null combination, or use is
 malformed.
@@ -683,18 +705,22 @@ The ordinary writer additionally enforces a three-record terminalization reserve
 that hard 15-record loader bound. At 12 non-checkpoint records after a genesis root or authenticated
 checkpoint, the only permitted next append is either the generation's terminal or superseded
 phase/fence claim, which becomes record 13, or the exact version-2 recovery phase/fence settlement
-for an unanchored reserved-fence orphan that was intended to become record 13. The sole additional
-append at 12 is the exact complete phase/fence claim v3 cursor-recovery claim above, which becomes
-record 13 and permits only its immediate transition/read-back checkpoint as record 14. From an
+for an unanchored reserved-fence orphan that was intended to become record 13. The cursor-recovery
+exceptions at 12 are the exact complete phase/fence claim v3, which becomes record 13, and the exact
+version-2 `cursor-claim-anchor-publication-interrupted` settlement for an unanchored copy of that
+v3 claim, which instead becomes record 13. An authenticated cursor-recovery v3 claim at record 13
+permits only its immediate transition/read-back checkpoint as record 14 or the exact version-2
+`cursor-checkpoint-anchor-publication-interrupted` settlement for an unanchored copy of that
+checkpoint as record 14 followed only by the recovery-owned checkpoint as record 15. From an
 authenticated reserved terminal fence at record 13, the writer may append only its immediate
 transition/read-back checkpoint, or one exact version-2 recovery phase/fence settlement for an
 interrupted checkpoint publication as record 14 followed immediately by the recovery-owned
-transition/read-back checkpoint as record 15. From a reserved-fence settlement at record 13, only
+transition/read-back checkpoint as record 15. From either reserved-fence or interrupted-v3
+settlement at record 13, only
 the recovery-owned null-effect checkpoint may follow as record 14. A nonterminal append at 12 other
-than the exact cursor-recovery exception, any other append after the reserved fence, fence
-settlement, or cursor-recovery claim at 13, any append other than that exact checkpoint after the
-checkpoint settlement at 14, or any other open 13- or 14-record shape stops with no record or
-effect. The
+than these exact cursor-recovery exceptions, any other append after the reserved fence, settlement,
+or cursor-recovery claim at 13, any append other than that exact checkpoint after a checkpoint
+settlement at 14, or any other open 13- or 14-record shape stops with no record or effect. The
 caller-held per-issue group spans the ordinary fence and checkpoint writes; a later explicit
 recovery holds the same group and binds the exact frozen generation, last authenticated predecessor,
 and orphan.
@@ -740,11 +766,28 @@ its first record that its closed maximum can reach this reserve. These rules pre
 execution from ever creating the prior-checkpoint-plus-16 shape that overflow recovery correctly
 rejects while preserving a forward path for one interrupted reserved checkpoint.
 
-Each recovery-owned `abandoned` checkpoint immediately following either exact version-2 settlement
+If publication of the final complete cursor-recovery v3 claim comment succeeds but its anchor
+publication is interrupted, the authorized recovery authenticates the already-established lower-ID
+root checkpoint and shadow relation, then appends the exact version-2
+`cursor-claim-anchor-publication-interrupted` settlement as record 13 after the at-most-12
+authenticated live records. The orphan v3 remains quarantine-only. Once the settlement is
+authenticated, record 14 is the immediate recovery-owned null-effect checkpoint described above;
+no other record or effect may intervene.
+
+If the v3 claim is authenticated at record 13 and publication of its immediate cursor-recovery
+checkpoint comment succeeds but its anchor publication is interrupted, the authorized recovery
+appends the exact version-2 `cursor-checkpoint-anchor-publication-interrupted` settlement as record 14. The orphan checkpoint remains quarantine-only. Once that settlement is authenticated, record
+15 is the immediate recovery-owned null-effect checkpoint; no other record or effect may intervene.
+Both cursor settlements prove the exact fixed skipped-attestation and orphan facts required by the
+closed version-2 reason above. Repeated interruption of either settlement or its recovery-owned
+checkpoint fails closed for human reconciliation rather than widening the 15-record bound.
+
+Each recovery-owned `abandoned` checkpoint immediately following any exact version-2 settlement in
+this reserve
 uses `producer_results` equal to the exact authenticated pre-fence subset for the frozen generation,
 including the empty set. Every included member retains the producer-owning phase-fence digest that
-precedes the interrupted reserved fence or checkpoint; recovery does not retarget a producer to its
-own settlement fence. This is the sole partial-cardinality exception for an `abandoned` outcome and
+precedes the interrupted reserved or cursor claim/checkpoint; recovery does not retarget a producer
+to its own settlement fence. This is the sole partial-cardinality exception for an `abandoned` outcome and
 requires that exact settlement as predecessor. No other `abandoned` transition/read-back may omit
 an expected producer, and no recovery checkpoint may add, replace, or rebind one.
 
@@ -804,16 +847,16 @@ replay shadows. One body group and four total apply across the entire accumulato
 classification is provisional and grants no independent standing. Every resumed step validates the
 cumulative group and count before adding its page. A single serialized recovery invocation keeps
 the authenticated cumulative summary and every full `recovery-suffix-member` preimage, including
-ordinary irrelevant comments, in memory across its twice-stable pages. Only after reaching the root
+ordinary irrelevant comments, in memory across its twice-stable pages. It first fully authenticates
+the lower-ID byte-identical overflow v2 checkpoint and the greater shadow-ID relationship. Only then
 may one phase/fence claim v3 persist the complete at-most-15 live record members, one shadow body
-digest, and exact shadow comment IDs before fully authenticating the lower-ID byte-identical
-overflow v2 checkpoint. It publishes no intermediate cursor or progress claim. The final claim and
+digest, and exact shadow comment IDs. It publishes no intermediate cursor or progress claim. The final claim and
 immediate checkpoint require at most 12 live records before publication; any larger or reserved
-open suffix uses its exact existing recovery path or fails closed. The hard cap is 25 accumulator
-pages. At most 50 comment-page requests cover two stable reads of each page in the one invocation;
-86 record-chain, target, provider, publication, and read-back requests plus the fixed 14
+open suffix uses its exact existing recovery path or fails closed. The hard cap is 5 accumulator
+pages. At most 10 comment-page requests cover two stable reads of each page in the one invocation;
+126 record-chain, target, provider, publication, and read-back requests plus the fixed 14
 ingress requests preserve the 150-request ceiling. A fifth shadow, any mismatch or discontinuity,
-cursor exhaustion, page 26, or failure to authenticate that checkpoint produces no complete
+cursor exhaustion, page 6, or failure to authenticate that checkpoint produces no complete
 accumulator, checkpoint, or effect. The classification initiates no recovery, changes no 15-record
 bound, target consumption, or authority, and adds no provider request outside that closed
 allocation.
@@ -1084,16 +1127,16 @@ settlement above.
 
 If two comment pages do not reach the checkpoint, the workflow performs no lifecycle or status
 effect and enters recovery mode only when the stable reads prove that relevant non-empty history
-continues beyond those pages. A recovery-phase claim records the provider's backward cursor, exact
-counts, accumulated-suffix identity, and recovery-scan identity. Every scanned timeline comment,
-including an irrelevant comment, contributes one `recovery-suffix-member`; members retain the exact
-stable GraphQL edge order returned for that backward page. Provider order is evidence of complete
-pagination, never lifecycle or predecessor authority. Recovery starts its accumulator at the first
-of the two normal-load pages, computes exactly one accumulator step per stably double-read page, and
-fails closed before page 26.
-The `checkpoint_sequence` is `0` on every incomplete step. On the complete step it remains `0` for
-the unique genesis root or becomes the exact sequence from the authenticated checkpoint that ended
-the scan. The recovery-scan identity uses that same value. The fresh transition/read-back
+continues beyond those pages. The single invocation retains the provider's backward cursor, exact
+counts, accumulated-suffix identity, and recovery-scan identity in memory; it publishes no
+intermediate claim. Every scanned timeline comment, including an irrelevant comment, contributes
+one `recovery-suffix-member`; members retain the exact stable GraphQL edge order returned for that
+backward page. Provider order is evidence of complete pagination, never lifecycle or predecessor
+authority. Recovery starts its accumulator at the first of the two normal-load pages, computes
+exactly one accumulator step per stably double-read page, and fails closed before page 6. The
+in-memory `checkpoint_sequence` is `0` on every incomplete step. On the complete step it remains `0`
+for the unique genesis root or becomes the exact sequence from the authenticated checkpoint that
+ended the scan. The recovery-scan identity uses that same value. The fresh transition/read-back
 checkpoint is sequence `1` after genesis or the authenticated prior checkpoint's sequence plus one.
 
 The recovery suffix accumulator update is exactly:
@@ -1127,25 +1170,29 @@ authenticated record. A page may add that assertion only after combining its fac
 invocation's authenticated cumulative in-memory summary and proving the result still has one body
 group and no more than four unique shadow IDs. The single serialized recovery invocation
 reconstructs and retains every ordinary irrelevant and provisional-shadow `recovery-suffix-member`
-preimage across its twice-stable pages. Only after reaching the root does the final v3 claim persist
-the complete bounded summary, exact accumulated identity, counts, page boundaries, and null cursor.
-The invocation then fully authenticates the lower-ID byte-identical checkpoint and proves every
-summarized shadow ID is greater. If any replay, summary, or checkpoint fact differs, the
+preimage across its twice-stable pages. After reaching the root, the invocation fully authenticates
+the lower-ID byte-identical checkpoint and proves every summarized shadow ID is greater. Only then
+does the final v3 claim persist the complete bounded summary, exact accumulated identity, counts,
+page boundaries, and null cursor. If any replay, summary, or checkpoint fact differs, the
 provisional assertion and entire recovery fail closed without a complete accumulator, checkpoint,
 or effect.
 
 The single serialized recovery invocation scans only until the complete accumulator reaches its
-hard cap of 25 pages and remains effect-disabled. It publishes no intermediate cursor or progress
+hard cap of 5 pages and remains effect-disabled. It publishes no intermediate cursor or progress
 claim. The final v3 claim's `recovery_scanned_page_count` equals the complete accumulator's
 `accumulator_step`, and its `recovery_scanned_comment_count` equals the complete accumulator's
 `cumulative_member_count`. A provider cursor that becomes null before an authenticated checkpoint
-or unique genesis is found proves truncation and emits no claim. Reaching page 26 before that root
+or unique genesis is found proves truncation and emits no claim. Reaching page 6 before that root
 is found is cursor exhaustion and likewise emits no claim. When the prior checkpoint or the unique
 null-predecessor genesis is found, the final phase/fence claim v3 sets `recovery_scan_complete` and
-the accumulator's `complete` to true. The invocation allows at most 50 comment-page requests: two
-requests stably read each of at most 25 pages. Those 50 requests plus 86
-record-chain, target, orphan, provider, claim/checkpoint-publication, and read-back requests consume
-the 136-request recovery core; ADR-0012's fixed 14 ingress requests produce the unchanged
+the accumulator's `complete` to true. The invocation allows at most 10 comment-page requests: two
+requests stably read each of at most 5 pages. The 126-call recovery core allocates 72 calls to one
+artifact-list read, at most fourteen record/root/orphan authentication tuples, and one exact
+recovery-target or orphan read; 26 calls to current provider state; and two complete 14-call
+claim/checkpoint publication and read-back sequences. The first allocation is exactly one
+artifact-list call, 28 artifact-download redirect-chain calls, 14 subject-qualified attestation
+inventory calls, 28 run/job calls, and one target-or-orphan call. Those 126 calls plus the 10 page calls and
+ADR-0012's fixed 14 ingress requests produce the unchanged
 150-request ceiling. The replay reconstructs every full member preimage, revalidates the compacted
 prefix or complete genesis suffix in predecessor order, and only then emits a fresh
 transition/read-back checkpoint. If the #55 live probe cannot prove this capped stable

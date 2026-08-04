@@ -727,12 +727,19 @@ writing, and lifecycle effects retain the complete provider run and referenced-w
 
 ADR-0011's ordinary three-record reserve is also closed here. After 12 authenticated records, an
 unanchored reserved-fence comment may be settled only by an exact version-2 recovery phase/fence
-claim at record 13 and an immediate recovery-owned null-effect checkpoint at record 14. After an
+claim at record 13 and an immediate recovery-owned null-effect checkpoint at record 14. The exact
+complete cursor-recovery v3 claim is the sole other claim permitted at record 13 and must be
+followed immediately by its authenticated checkpoint at record 14. An interrupted unanchored v3
+claim instead uses its exact version-2 cursor-claim settlement at record 13 followed only by the
+recovery-owned checkpoint at record 14. After an
 authenticated reserved fence at record 13, an unanchored checkpoint comment may be settled only by
-the corresponding version-2 claim at record 14 and immediate checkpoint at record 15. Both paths
+the corresponding version-2 claim at record 14 and immediate checkpoint at record 15. Likewise,
+after an authenticated cursor-recovery v3 at record 13, its interrupted unanchored cursor-recovery
+checkpoint uses the exact version-2 cursor-checkpoint settlement at record 14 followed only by the
+recovery-owned checkpoint at record 15. All settlement paths
 use the version-2 phase/fence marker and its encoded `recovery_settlement_schema_version=2`, so the
 parent record selects the settlement parser before downstream bytes are decoded. A historical
-settlement-bearing phase/fence v1 selects only the read-only settlement v1 schema. Both paths
+settlement-bearing phase/fence v1 selects only the read-only settlement v1 schema. All paths
 require a terminal failed/cancelled/timed-out writer job whose fixed attestation-publication step is
 proven in both reads by its exact protected-writer mapped name, provider-visible number, and
 `skipped` conclusion; an attempted or unknown submission remains blocked. Each resulting
@@ -793,27 +800,35 @@ replay shadows. One body group and four total apply across the entire accumulato
 classification is provisional and grants no independent standing. Every resumed step validates the
 cumulative group and count before adding its page. A single serialized recovery invocation keeps
 the authenticated cumulative summary and every full `recovery-suffix-member` preimage, including
-ordinary irrelevant comments, in memory across its twice-stable pages. Only after reaching the root
-may one phase/fence claim v3 persist the complete at-most-15 live record members, one shadow body
-digest, and exact shadow comment IDs before fully authenticating the lower-ID overflow v2
-checkpoint. It publishes no intermediate cursor or progress claim. The final claim and immediate
+ordinary irrelevant comments, in memory across its twice-stable pages. It first fully authenticates
+the lower-ID overflow v2 checkpoint and the greater shadow-ID relationship. Only then may one
+phase/fence claim v3 persist the complete at-most-15 live record members, one shadow body digest,
+and exact shadow comment IDs. It publishes no intermediate cursor or progress claim. The final claim and immediate
 checkpoint require at most 12 live records before publication; any larger or reserved open suffix
 uses its exact existing recovery path or fails closed.
 
-The hard cap is 25 accumulator pages. At most 50 comment-page requests cover two stable reads of
-each page in the one invocation; 86 record-chain, target, provider, publication,
-and read-back requests plus the fixed 14 ingress requests preserve the 150-request ceiling. A fifth
-shadow, any mismatch or discontinuity, cursor exhaustion, page 26, or missing checkpoint produces no
+The hard cap is 5 accumulator pages. At most 10 comment-page requests cover two stable reads of
+each page in the one invocation; 126 record-chain, target, provider, publication,
+and read-back requests plus the fixed 14 ingress requests preserve the 150-request ceiling. The
+126-call core is exactly 72 authentication and target calls, 26 current-provider calls, and 28
+calls for two complete record publication and read-back sequences. The 72 calls are one artifact
+list, 28 artifact-download redirect-chain calls, 14 subject-qualified attestation inventories, 28
+run/job calls, and one exact target-or-orphan read. A fifth shadow, any mismatch or discontinuity,
+cursor exhaustion, page 6, or missing checkpoint produces no
 complete accumulator, checkpoint, or effect. The classification adds no request outside that closed
 allocation, initiates no cursor recovery, and changes no 15-record bound, target consumption, or
 authority.
 
 Incomplete phase/fence claim v1 and v3 cursor records remain read-only compatibility and cannot be
-resumed or migrated. Zero incomplete v1 and v3 cursor claims in the complete bounded 25-page history
-of every issue in the frozen activation manifest is an exact activation precondition. Any discovery
-fails closed, blocks activation, retains all evidence, and requires a separately governed
-exact-target human reconciliation issue before any settlement; no boundary, summary, or cursor is
-inferred.
+resumed or migrated. The frozen pre-activation inventory is not limited to Issue #55's disposable
+probe manifest. The frozen maximum issue number comes from two stable repository observations, and
+the inventory classifies every canonical issue number from 1 through that maximum as an issue, pull
+request, or missing resource. It scans every issue's complete bounded 5-page history and retains the
+other classifications as negative evidence. Page 6, instability, or an unclassified number makes
+the inventory incomplete. Zero incomplete v1 and v3 cursor claims across that complete inventory is
+an exact activation precondition. Any discovery fails closed, blocks activation, retains all
+evidence, and requires a separately governed exact-target human reconciliation issue before any
+settlement; no boundary, summary, or cursor is inferred.
 
 For an overflow transition/read-back v2 candidate, the protected writer uses ADR-0011's final
 seven-step pre-verification topology. The locator read/prepare, upload, attestation, and

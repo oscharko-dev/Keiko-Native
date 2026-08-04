@@ -151,27 +151,36 @@ entire accumulator. Their classification is provisional and grants no independen
 resumed step must validate the cumulative group and count before adding its page. A single
 serialized recovery invocation must keep the authenticated cumulative summary and every full
 `recovery-suffix-member` preimage, including ordinary irrelevant comments, in memory across its
-twice-stable pages. Only after reaching the root may one phase/fence claim v3 persist the complete
-at-most-15 live record members, one shadow body digest, and exact shadow comment IDs before fully
-authenticating the lower-ID overflow v2 checkpoint. It must publish no intermediate cursor or
+twice-stable pages. It must first fully authenticate the lower-ID overflow v2 checkpoint and the
+greater shadow-ID relationship. Only then may one phase/fence claim v3 persist the complete
+at-most-15 live record members, one shadow body digest, and exact shadow comment IDs. It must publish no intermediate cursor or
 progress claim. The final claim and immediate checkpoint require at most 12 live records before
 publication; any larger or reserved open suffix uses its exact existing recovery path or fails
 closed.
 
-The gate must enforce a hard cap of 25 accumulator pages. At most 50 comment-page requests cover two
-stable reads of each page in the one invocation; 86 record-chain, target,
+The gate must enforce a hard cap of 5 accumulator pages. At most 10 comment-page requests cover two
+stable reads of each page in the one invocation; 126 record-chain, target,
 provider, publication, and read-back requests plus the fixed 14 ingress requests preserve the
-150-request ceiling. A fifth shadow, any mismatch or discontinuity, cursor exhaustion, page 26, or
+150-request ceiling. The 126-call core is exactly 72 authentication and target calls, 26
+current-provider calls, and 28 calls for two complete record publication and read-back sequences.
+The 72 calls are one artifact list, 28 artifact-download redirect-chain calls, 14 subject-qualified
+attestation inventories, 28 run/job calls, and one exact target-or-orphan read. A fifth shadow, any
+mismatch or discontinuity, cursor exhaustion, page 6, or
 missing checkpoint must produce no complete accumulator, checkpoint, or effect. The classification
 adds no request outside that closed allocation, initiates no cursor recovery, and changes no
 15-record bound, target consumption, or authority.
 
 The gate must treat incomplete phase/fence claim v1 and v3 cursor records as read-only
-compatibility and prohibit resume or migration. Zero incomplete v1 and v3 cursor claims in the
-complete bounded 25-page history of every issue in the frozen activation manifest is an exact
-activation precondition. Any discovery must fail closed, block activation, retain all evidence, and
-require a separately governed exact-target human reconciliation issue before any settlement; no
-boundary, summary, or cursor may be inferred.
+compatibility and prohibit resume or migration. The gate must prove the frozen pre-activation
+inventory is not limited to Issue #55's disposable-probe manifest. The frozen maximum issue number
+comes from two stable repository observations, and the inventory classifies every canonical issue
+number from 1 through that maximum as an issue, pull request, or missing resource. It scans every
+issue's complete bounded 5-page history and retains the other classifications as negative evidence.
+Page 6, instability, or an unclassified number makes the inventory incomplete. Zero incomplete v1
+and v3 cursor claims across that complete inventory is an exact activation precondition. Any
+discovery must fail closed, block activation, retain all evidence, and require a separately governed
+exact-target human reconciliation issue before any settlement; no boundary, summary, or cursor may
+be inferred.
 
 The gate must pin the overflow-v2 issue-lifecycle topology: locator read/prepare, upload,
 attestation, and download/verification at YAML ordinals 3 through 6, comment publication and anchor
@@ -194,15 +203,22 @@ reserve rejects a nonterminal append at 12, places the terminal fence at record 
 immediate checkpoint or the exact version-2 skipped-attestation checkpoint-orphan settlement at
 record 14, and after that settlement permits only the recovery-owned null-effect checkpoint at
 record 15. If fence publication is interrupted, the exact version-2 fence-orphan settlement is
-record 13 and only its recovery-owned checkpoint may follow at record 14. The gate must prove that
+record 13 and only its recovery-owned checkpoint may follow at record 14. The exact complete
+cursor-recovery v3 claim is the sole other claim permitted at record 13 and must be followed
+immediately by its checkpoint at record 14. An interrupted unanchored v3 instead uses its exact
+version-2 cursor-claim settlement at record 13 followed only by the recovery-owned checkpoint at
+record 14. After an authenticated cursor-recovery v3 at record 13, an interrupted unanchored
+cursor-recovery checkpoint uses its exact version-2 cursor-checkpoint settlement at record 14
+followed only by the recovery-owned checkpoint at record 15. The gate must prove that
 each resulting recovery-owned `abandoned` checkpoint carries exactly the authenticated pre-fence
 producer subset, including empty, while every other abandoned checkpoint requires the complete
 expected set; that the parent phase/fence record's encoded version selects settlement v2; and that
 the settlement and immediate checkpoint bind the frozen generation and authorized recovery target,
 encode one twice-stable current source observation, remain authenticated across later current-fact
 drift, and never rebind to a new current generation. It must also prove that post-fence fact drift
-uses the same reserved fence and superseded checkpoint projection, both interrupted publication
-shapes have a forward path, ambiguous attestation submission never retries, and checkpoint plus 16
+uses the same reserved fence and superseded checkpoint projection, all ordinary and cursor
+interrupted publication shapes have a forward path, ambiguous attestation submission never retries,
+and checkpoint plus 16
 is unreachable. A later fact change cannot stale an exactly attested
 null-effect checkpoint, which then terminalizes as a checkpoint before a successor generation.
 Hostile wrong-actor, edited-command,
