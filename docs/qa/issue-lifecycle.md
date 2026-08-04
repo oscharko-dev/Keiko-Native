@@ -297,28 +297,29 @@ at-most-four buffered shadows into ordinary effect-disabled cursor recovery as `
 recovery-suffix members. Both the initial/normal pages and every cursor-resumed page may discover
 replay shadows. One body group and four total apply across the entire accumulator. Their
 classification is provisional and grants no independent standing. Every resumed step validates the
-cumulative group and count before adding its page. Every new cursor progress or completion claim
-persists an authenticated cumulative summary. It uses phase/fence claim v3 and contains the
-at-most-15 live record members, one shadow body digest, and exact shadow comment IDs. A resumed scan
-continues at its exact cursor without rereading old pages until completion. Final completion
-performs one bounded reread of every prior accumulator page, combines it with the current
-twice-stable pages, and reconstructs every full `recovery-suffix-member` preimage, including ordinary irrelevant
-comments, before fully authenticating the lower-ID overflow v2 checkpoint.
+cumulative group and count before adding its page. A single serialized recovery invocation keeps
+the authenticated cumulative summary and every full `recovery-suffix-member` preimage, including
+ordinary irrelevant comments, in memory across its twice-stable pages. Only after reaching the root
+may one phase/fence claim v3 persist the complete at-most-15 live record members, one shadow body
+digest, and exact shadow comment IDs before fully authenticating the lower-ID overflow v2
+checkpoint. It publishes no intermediate cursor or progress claim. The final claim and immediate
+checkpoint require at most 12 live records before publication; any larger or reserved open suffix
+uses its exact existing recovery path or fails closed.
 
-The hard cap is 25 accumulator pages. At most 50 comment-page requests cover two reads of every new
-page plus one completion reread of every prior page; 86 record-chain, target, provider, publication,
+The hard cap is 25 accumulator pages. At most 50 comment-page requests cover two stable reads of
+each page in the one invocation; 86 record-chain, target, provider, publication,
 and read-back requests plus the fixed 14 ingress requests preserve the 150-request ceiling. A fifth
 shadow, any mismatch or discontinuity, cursor exhaustion, page 26, or missing checkpoint produces no
 complete accumulator, checkpoint, or effect. The classification adds no request outside that closed
 allocation, initiates no cursor recovery, and changes no 15-record bound, target consumption, or
 authority.
 
-Phase/fence claim v1 cursor progress remains read-only compatibility. Its sole first-resume
-migration authenticates the v1 evidence, requires at most 25 accumulated pages, rereads from the
-initial two-page normal boundary, and reproduces the exact stored page count, comment count, digest,
-and cursor while deriving the v3 summary. Only that exact replay may emit the first v3 successor;
-any mismatch, unavailable page, excess page, or budget exhaustion fails closed, blocks activation,
-and requires authorized human reconciliation.
+Incomplete phase/fence claim v1 and v3 cursor records remain read-only compatibility and cannot be
+resumed or migrated. Zero incomplete v1 and v3 cursor claims in the complete bounded 25-page history
+of every issue in the frozen activation manifest is an exact activation precondition. Any discovery
+fails closed, blocks activation, retains all evidence, and requires a separately governed
+exact-target human reconciliation issue before any settlement; no boundary, summary, or cursor is
+inferred.
 
 For overflow v2, the protected writer's final topology places locator read/prepare, upload,
 attestation, and download/verification at YAML ordinals 3 through 6, comment publication and anchor

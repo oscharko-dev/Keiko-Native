@@ -424,10 +424,11 @@ Fixed fields, in order:
 29. `protected_dev_sha`: commit
 30. `recorded_at`: timestamp
 
-An incomplete `recovery` scan uses a non-null recovery-scan identity, positive page and comment
-counts, its non-null accumulated-suffix identity, a non-null cursor, `false`, and a null settlement
-identity. Its final scan claim preserves the cumulative positive counts and accumulator, uses an
-explicit null cursor, sets completion to `true`, and keeps the settlement identity null. A forward
+An historical incomplete `recovery` scan uses a non-null recovery-scan identity, positive page and
+comment counts, its non-null accumulated-suffix identity, a non-null cursor, `false`, and a null
+settlement identity. That shape is read-only compatibility: no new writer emits or resumes it. A
+final scan claim preserves the cumulative positive counts and accumulator, uses an explicit null
+cursor, sets completion to `true`, and keeps the settlement identity null. A forward
 orphan settlement encoded before this amendment may use null, zero, zero, null, null, `false`, and a
 non-null `recovery_settlement_identity`; that phase/fence claim v1 selects the exact legacy
 recovery settlement v1 schema and remains read-only compatibility. No new writer emits that shape.
@@ -463,7 +464,7 @@ Marker:
 `<!-- keiko-native-lifecycle-phase-fence-claim:v3 -->`
 
 This is schema version `3` of the existing `phase-fence-claim` record type, not a fifth record type.
-It is used only for new cursor-progress and cursor-completion claims. Its fields are the complete
+It is used only for a new cursor-completion claim. Its fields are the complete
 Phase/fence claim v1 sequence with `schema_version`: uint `3` and exactly these three fields inserted
 immediately after `recovery_scan_complete`, in this order:
 
@@ -471,32 +472,35 @@ immediately after `recovery_scan_complete`, in this order:
 2. `replay_shadow_body_sha256`: SHA-256 or explicit null
 3. `replay_shadow_comment_ids`: sorted list of uint
 
-`recovery_live_record_members` is the complete authenticated live suffix discovered so far in
-predecessor order and contains at most 15 unique members. `replay_shadow_comment_ids` contains
-zero through four unique, strictly increasing numeric comment IDs. It is empty exactly when
+`recovery_live_record_members` is the complete authenticated live suffix discovered by the bounded
+scan in predecessor order and contains at most 15 unique members. `replay_shadow_comment_ids`
+contains zero through four unique, strictly increasing numeric comment IDs. It is empty exactly when
 `replay_shadow_body_sha256` is null; otherwise every listed comment has that one exact full-body
 digest and a provisional `irrelevant` recovery-suffix-member classification under the closed
-Actions Bot/App, never-edited shape. Each list and digest is an authenticated cumulative summary,
+Actions Bot/App, never-edited shape. Each list and digest is an authenticated complete summary,
 not a record, checkpoint member, target-consumption fact, or authority source.
 
-An incomplete v3 claim uses phase `recovery`, `claim_outcome` `claimed`, a non-null scan identity and
-cursor, positive cumulative page/comment counts, `recovery_scan_complete` false, and a null
-settlement identity. A final v3 claim uses phase `recovery`, `claim_outcome` `settled`, the final scan
-identity and cumulative counts, a null cursor, `recovery_scan_complete` true, and a null settlement
-identity. Every new cursor writer uses v3 from its first progress claim. Phase/fence claim v1 cursor
-progress remains read-only compatibility; its accumulated digest cannot be interpreted as or used to
-derive the missing live-member or replay-shadow summary.
+A new v3 claim uses phase `recovery`, `claim_outcome` `settled`, the complete scan identity and
+cumulative counts, a null cursor, `recovery_scan_complete` true, and a null settlement identity. A
+single serialized recovery invocation holds the provider-budget and per-issue groups, scans every
+page from the stable normal-load boundary through the authenticated root, and may publish the final
+phase/fence claim v3 only when the complete authenticated live suffix contains at most 12 records.
+It publishes no intermediate cursor or progress claim. The final claim and its immediate
+transition/read-back checkpoint consume a closed two-record recovery reserve without crossing the
+15-record bound. A larger or reserved open suffix uses its already defined exact recovery path or
+fails closed with no v3 claim, checkpoint, record, or effect.
 
-The sole first-resume migration authenticates that v1 claim and its complete record/anchor evidence,
-requires its stored page count to be at most 25, restarts at the initial two-page normal-load
-boundary, and rereads every accumulated page through the stored cursor. The replay must reproduce
-the exact stored page count, comment count, accumulated-suffix digest, and next cursor while
-deriving the complete live-member and replay-shadow summary. Only then may the first v3 writer emit
-a successor claim. More than 25 pages, any mismatch, cursor discontinuity, unavailable page, or
-request budget exhaustion fails closed, blocks activation or further automatic recovery, and
-requires authorized human reconciliation. There is no digest-only conversion. Phase/fence claim v2
-remains exclusive to forward recovery settlement. Every other v3 phase, outcome, field order,
-cardinality, null combination, migration, or use is malformed.
+Incomplete phase/fence claim v1 and v3 cursor records remain read-only compatibility. Neither can
+be resumed or converted; they cannot be used to derive missing live-member, replay-shadow, or
+starting-boundary evidence. Zero incomplete v1 and v3 cursor claims in the complete bounded
+25-page history of every issue in the frozen activation manifest is an exact activation
+precondition. Discovery of one blocks activation and requires separately governed, exact-target
+human reconciliation that retains the original evidence; the maintainer records the blocked issue
+and opens an accepted remediation issue before any settlement. There is no automatic migration,
+digest-only conversion, evidence deletion, or inferred boundary. Phase/fence claim v2 remains
+exclusive to forward recovery settlement. Except for the read-only incomplete compatibility shape
+above, every other v3 phase, outcome, field order, cardinality, null combination, or use is
+malformed.
 
 For each issue, the unique serialization domain is exactly
 `issue-lifecycle-${decimal issue number}` with `queue: max` and no `cancel-in-progress` key. Every
@@ -679,14 +683,18 @@ The ordinary writer additionally enforces a three-record terminalization reserve
 that hard 15-record loader bound. At 12 non-checkpoint records after a genesis root or authenticated
 checkpoint, the only permitted next append is either the generation's terminal or superseded
 phase/fence claim, which becomes record 13, or the exact version-2 recovery phase/fence settlement
-for an unanchored reserved-fence orphan that was intended to become record 13. From an authenticated
-reserved terminal fence at record 13, the writer may append only its immediate transition/read-back
-checkpoint, or one exact version-2 recovery phase/fence settlement for an interrupted checkpoint
-publication as record 14 followed immediately by the recovery-owned transition/read-back checkpoint
-as record 15. From a reserved-fence settlement at record 13, only the recovery-owned null-effect
-checkpoint may follow as record 14. A nonterminal append at 12, any other append after the reserved
-fence or fence settlement at 13, any append other than that exact checkpoint after the checkpoint
-settlement at 14, or any other open 13- or 14-record shape stops with no record or effect. The
+for an unanchored reserved-fence orphan that was intended to become record 13. The sole additional
+append at 12 is the exact complete phase/fence claim v3 cursor-recovery claim above, which becomes
+record 13 and permits only its immediate transition/read-back checkpoint as record 14. From an
+authenticated reserved terminal fence at record 13, the writer may append only its immediate
+transition/read-back checkpoint, or one exact version-2 recovery phase/fence settlement for an
+interrupted checkpoint publication as record 14 followed immediately by the recovery-owned
+transition/read-back checkpoint as record 15. From a reserved-fence settlement at record 13, only
+the recovery-owned null-effect checkpoint may follow as record 14. A nonterminal append at 12 other
+than the exact cursor-recovery exception, any other append after the reserved fence, fence
+settlement, or cursor-recovery claim at 13, any append other than that exact checkpoint after the
+checkpoint settlement at 14, or any other open 13- or 14-record shape stops with no record or
+effect. The
 caller-held per-issue group spans the ordinary fence and checkpoint writes; a later explicit
 recovery holds the same group and binds the exact frozen generation, last authenticated predecessor,
 and orphan.
@@ -794,19 +802,16 @@ at-most-four buffered shadows into ordinary effect-disabled cursor recovery as `
 recovery-suffix members. Both the initial/normal pages and every cursor-resumed page may discover
 replay shadows. One body group and four total apply across the entire accumulator. Their
 classification is provisional and grants no independent standing. Every resumed step validates the
-cumulative group and count before adding its page. Every new cursor progress or completion claim
-persists an authenticated cumulative summary. It uses phase/fence claim v3 and contains the
-at-most-15 live record members, one shadow body digest, and exact shadow comment IDs. A resumed scan
-authenticates that summary and continues at its exact cursor without rereading old pages until
-completion.
-
-Final completion performs one bounded reread of every prior accumulator page from the initial normal
-boundary through the stored cursor and combines those results with the current run's twice-stable
-pages. It reconstructs every full `recovery-suffix-member` preimage, including ordinary irrelevant
-comments, then fully authenticates the lower-ID byte-identical overflow v2 checkpoint and requires
-every summarized shadow ID to be greater. The hard cap is 25 accumulator pages. At most 50
-comment-page requests cover two reads of every new page plus one completion reread of every prior
-page; 86 record-chain, target, provider, publication, and read-back requests plus the fixed 14
+cumulative group and count before adding its page. A single serialized recovery invocation keeps
+the authenticated cumulative summary and every full `recovery-suffix-member` preimage, including
+ordinary irrelevant comments, in memory across its twice-stable pages. Only after reaching the root
+may one phase/fence claim v3 persist the complete at-most-15 live record members, one shadow body
+digest, and exact shadow comment IDs before fully authenticating the lower-ID byte-identical
+overflow v2 checkpoint. It publishes no intermediate cursor or progress claim. The final claim and
+immediate checkpoint require at most 12 live records before publication; any larger or reserved
+open suffix uses its exact existing recovery path or fails closed. The hard cap is 25 accumulator
+pages. At most 50 comment-page requests cover two stable reads of each page in the one invocation;
+86 record-chain, target, provider, publication, and read-back requests plus the fixed 14
 ingress requests preserve the 150-request ceiling. A fifth shadow, any mismatch or discontinuity,
 cursor exhaustion, page 26, or failure to authenticate that checkpoint produces no complete
 accumulator, checkpoint, or effect. The classification initiates no recovery, changes no 15-record
@@ -1103,50 +1108,42 @@ The recovery suffix accumulator update is exactly:
 | `next_provider_cursor`              | `exact non-null cursor`      | `exact cursor; null iff root found`                 |
 | `complete`                          | `false`                      | `false until root found; then true`                 |
 
-A resumed recovery run first authenticates the prior phase/fence claim v3 and its comment, artifact,
-attestation, protected writer run, and predecessor. It recomputes that claim's recovery-scan
-identity from the stored page count, comment count, accumulated-suffix digest, cursor, and
-completion flag; validates its cumulative live-record and replay-shadow summary; and resumes at
-exactly that cursor without rereading a completed provider page. Two stable reads of each next page
-must agree in edge order, comment IDs, exact body digests, classifications, authenticated record and
-anchor identities, predecessor pairs, and next cursor before the workflow computes the next
-accumulator step. Both the initial/normal pages and every cursor-resumed page may discover replay
-shadows. One body group and four total apply across the entire accumulator. A step, count, cursor,
-page boundary, classification, or order discontinuity; duplicate comment, record, or anchor;
-relevant unauthenticated comment outside the closed exception below; or unmatched relevant anchor
-blocks progress and emits no accumulator identity.
+A single recovery invocation starts from the same stable first normal-load page and keeps the
+accumulator, complete live-record set, replay-shadow group, full member preimages, and next cursor
+in memory while holding both serialization groups. Two stable reads of every page must agree in
+edge order, comment IDs, exact body digests, classifications, authenticated record and anchor
+identities, predecessor pairs, and next cursor before the workflow computes the next accumulator
+step. Both the initial/normal pages and every cursor-resumed page may discover replay shadows. One
+body group and four total apply across the entire accumulator. A step, count, cursor, page boundary,
+classification, or order discontinuity; duplicate comment, record, or anchor; relevant
+unauthenticated comment outside the closed exception below; or unmatched relevant anchor blocks
+the invocation and emits no claim, accumulator identity, checkpoint, record, or effect.
 
 The sole exception to immediate relevant-unauthenticated rejection is a comment classified as an
 `irrelevant` recovery-suffix member provisionally under the post-success replay-shadows rule above.
 That existing classification fixes all four record, anchor, and predecessor fields to null and is a
 closed assertion of the exact Actions Bot/App, never-edited, single-body-group shape; it is not an
-authenticated record. A page may add that assertion only after combining its facts with the prior
-phase/fence claim v3 authenticated cumulative summary and proving the result still has one body
-group and no more than four unique shadow IDs. Each new v3 claim persists the complete bounded
-summary. A resumed scan does not reread prior pages before it reaches completion. The final run then
-performs one bounded reread of every prior accumulator page from the initial normal boundary through
-the prior claim's stored cursor, reconstructs every ordinary irrelevant and provisional-shadow
-`recovery-suffix-member` preimage, combines them with its twice-stable new pages, and reproduces the
-exact accumulated identity, counts, page boundaries, and cursor. It then fully authenticates the
-lower-ID byte-identical checkpoint and proves every summarized shadow ID is greater. If any replay,
-summary, or checkpoint fact differs, the
+authenticated record. A page may add that assertion only after combining its facts with the
+invocation's authenticated cumulative in-memory summary and proving the result still has one body
+group and no more than four unique shadow IDs. The single serialized recovery invocation
+reconstructs and retains every ordinary irrelevant and provisional-shadow `recovery-suffix-member`
+preimage across its twice-stable pages. Only after reaching the root does the final v3 claim persist
+the complete bounded summary, exact accumulated identity, counts, page boundaries, and null cursor.
+The invocation then fully authenticates the lower-ID byte-identical checkpoint and proves every
+summarized shadow ID is greater. If any replay, summary, or checkpoint fact differs, the
 provisional assertion and entire recovery fail closed without a complete accumulator, checkpoint,
 or effect.
 
-The next serialized recovery run scans only until the complete accumulator reaches its hard cap of
-25 pages and remains effect-disabled. Each authenticated progress claim supersedes only the prior
-scan cursor and grants no authority. Its
-`recovery_scanned_page_count` equals the accumulator's `accumulator_step`, and its
-`recovery_scanned_comment_count` equals the accumulator's `cumulative_member_count`. A resumed
-claim's page count equals the prior authenticated claim's page count plus the number of new
-accumulator page steps, and its first new step is exactly the prior page count plus one. A provider
-cursor that becomes null before an authenticated checkpoint or unique genesis is found proves
-truncation and emits no progress claim. Reaching page 26 before that root is found is cursor
-exhaustion and likewise emits no progress claim. When the prior checkpoint or the unique
-null-predecessor genesis is found, the final phase/fence claim v3 sets `recovery_scan_complete` to true and the
-accumulator's `complete` to true. For each invocation, `2 * new_page_count +
-prior_accumulator_page_count` must be at most 50 before any page call: two requests stably read each
-new page, and one completion request rereads each prior page. Those 50 comment-page requests plus 86
+The single serialized recovery invocation scans only until the complete accumulator reaches its
+hard cap of 25 pages and remains effect-disabled. It publishes no intermediate cursor or progress
+claim. The final v3 claim's `recovery_scanned_page_count` equals the complete accumulator's
+`accumulator_step`, and its `recovery_scanned_comment_count` equals the complete accumulator's
+`cumulative_member_count`. A provider cursor that becomes null before an authenticated checkpoint
+or unique genesis is found proves truncation and emits no claim. Reaching page 26 before that root
+is found is cursor exhaustion and likewise emits no claim. When the prior checkpoint or the unique
+null-predecessor genesis is found, the final phase/fence claim v3 sets `recovery_scan_complete` and
+the accumulator's `complete` to true. The invocation allows at most 50 comment-page requests: two
+requests stably read each of at most 25 pages. Those 50 requests plus 86
 record-chain, target, orphan, provider, claim/checkpoint-publication, and read-back requests consume
 the 136-request recovery core; ADR-0012's fixed 14 ingress requests produce the unchanged
 150-request ceiling. The replay reconstructs every full member preimage, revalidates the compacted

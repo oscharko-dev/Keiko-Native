@@ -156,28 +156,30 @@ the same at-most-four buffered shadows into ordinary effect-disabled cursor reco
 recovery-suffix members. Both the initial/normal pages and every cursor-resumed page may discover
 replay shadows. One body group and four total apply across the entire accumulator. Their
 classification is provisional and grants no independent standing. Every resumed step must validate
-the cumulative group and count before adding its page. Every new cursor progress or completion claim
-must persist an authenticated cumulative summary. It uses phase/fence claim v3 and contains the
-at-most-15 live record members, one shadow body digest, and exact shadow comment IDs. A resumed scan
-must continue at its exact cursor without rereading old pages until completion. Final completion
-must perform one bounded reread of every prior accumulator page, combine it with the current
-twice-stable pages, and reconstruct every full `recovery-suffix-member` preimage, including ordinary irrelevant
-comments, before fully authenticating the lower-ID overflow v2 checkpoint.
+the cumulative group and count before adding its page. A single serialized recovery invocation
+must keep the authenticated cumulative summary and every full `recovery-suffix-member` preimage,
+including ordinary irrelevant comments, in memory across its twice-stable pages. Only after reaching
+the root may one phase/fence claim v3 persist the complete at-most-15 live record members, one
+shadow body digest, and exact shadow comment IDs before fully authenticating the lower-ID overflow
+v2 checkpoint. It must publish no intermediate cursor or progress claim. The final claim and
+immediate checkpoint require at most 12 live records before publication; any larger or reserved
+open suffix uses its exact existing recovery path or fails closed.
 
 The activation probe must enforce a hard cap of 25 accumulator pages. At most 50 comment-page
-requests cover two reads of every new page plus one completion reread of every prior page; 86
+requests cover two stable reads of each page in the one invocation; 86
 record-chain, target, provider, publication, and read-back requests plus the fixed 14 ingress
 requests preserve the 150-request ceiling. A fifth shadow, any mismatch or discontinuity, cursor
 exhaustion, page 26, or missing checkpoint must produce no complete accumulator, checkpoint, or
 effect. The classification adds no request outside that closed allocation, initiates no cursor
 recovery, and changes no 15-record bound, target consumption, or authority.
 
-The activation probe must treat phase/fence claim v1 cursor progress as read-only compatibility. Its
-sole first-resume migration must authenticate the v1 evidence, require at most 25 accumulated pages,
-reread from the initial two-page normal boundary, and reproduce the exact stored page count,
-comment count, digest, and cursor while deriving the v3 summary. Only that exact replay may emit the
-first v3 successor; any mismatch, unavailable page, excess page, or budget exhaustion must fail
-closed, block activation, and require authorized human reconciliation. It must also prove superseded
+The activation probe must treat incomplete phase/fence claim v1 and v3 cursor records as read-only
+compatibility and prohibit resume or migration. Zero incomplete v1 and v3 cursor claims in the
+complete bounded 25-page history of every issue in the frozen activation manifest is an exact
+activation precondition. Any discovery must fail closed, block activation, retain all evidence, and
+require a separately governed exact-target human reconciliation issue before any settlement; no
+boundary, summary, or cursor may be inferred. It
+must also prove superseded
 generations authenticate their frozen generation and closed partial producer set. An ordinary
 superseded fence binds its first witness; the reserved-fence exception uses the final encoded
 read-back source observation as its sole durable witness and refreshes that projection under the
