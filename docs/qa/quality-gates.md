@@ -139,16 +139,22 @@ shadows irrelevant with no additional provider requests; they are not records, p
 recovery candidates, target consumption, or authority. A fifth shadow, a body, actor, edit, or
 numeric-order mismatch or multiple groups fails closed. If the two normal pages prove that older
 relevant history continues, the loader must carry the same at-most-four buffered shadows into
-ordinary effect-disabled cursor recovery as `irrelevant` recovery-suffix members. Their
-classification is provisional and grants no independent standing: every resumed step must preserve
-the same single full-body digest group, exact comment IDs, actor/edit facts, and cumulative shadow
-count derived from the accumulator chain. Final completion must replay every accumulator page and
-fully authenticate the lower-ID byte-identical overflow v2 checkpoint before the classification or
-scan result has standing. A
-fifth shadow, any mismatch or discontinuity, cursor exhaustion, or failure to authenticate that
-checkpoint must produce no complete accumulator, checkpoint, or effect. The classification adds no
-additional provider requests beyond the existing bounded cursor scan, does not initiate cursor
-recovery, and does not change its page cap, the 15-record bound, target consumption, or authority.
+ordinary effect-disabled cursor recovery as `irrelevant` recovery-suffix members. Both the
+initial/normal pages and every cursor-resumed page may discover replay shadows. One body group and
+four total apply across the
+entire accumulator. Their classification is provisional and grants no independent standing. Every
+resumed step must validate the cumulative group and count before adding its page. Every new cursor
+progress or completion claim must persist an authenticated cumulative summary. It uses
+phase/fence claim v3 and contains the at-most-15 live record members, one shadow body digest, and
+exact shadow comment IDs. A resumed or final run must authenticate that summary and perform
+no provider reread of any prior page, keeping the scan within its 150-request ceiling. Final
+completion must fully
+authenticate the lower-ID byte-identical overflow v2 checkpoint and require every summarized shadow
+ID to be greater before the classification or scan result has standing. A fifth shadow, any mismatch
+or discontinuity, cursor exhaustion, or failure to authenticate that checkpoint must produce no
+complete accumulator, checkpoint, or effect. The classification adds no additional provider
+requests beyond the existing bounded cursor scan, does not initiate cursor recovery, and does not
+change its page cap, the 15-record bound, target consumption, or authority.
 The gate must pin the overflow-v2 issue-lifecycle topology: locator read/prepare, upload,
 attestation, and download/verification at YAML ordinals 3 through 6, comment publication and anchor
 upload at 7 and 8, and anchor attestation at ordinal 9/provider-visible step 10 for every lane. It

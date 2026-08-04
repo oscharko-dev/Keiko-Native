@@ -288,15 +288,20 @@ or multiple groups fails closed.
 
 If the two normal pages prove that older relevant history continues, the loader carries the same
 at-most-four buffered shadows into ordinary effect-disabled cursor recovery as `irrelevant`
-recovery-suffix members. Their classification is provisional and grants no independent standing:
-every resumed step preserves the same single full-body digest group, exact comment IDs, actor/edit
-facts, and derived cumulative shadow count. Final completion replays every accumulator page and
-fully authenticates the lower-ID byte-identical overflow v2 checkpoint before the classification
-or scan result has standing. A fifth shadow, any mismatch or discontinuity, cursor exhaustion, or
-failure to authenticate that checkpoint produces no complete accumulator, checkpoint, or effect. The
-classification adds no additional provider requests beyond the existing bounded cursor scan, does
-not initiate cursor recovery, and does not change its page cap, the 15-record bound, target
-consumption, or authority.
+recovery-suffix members. Both the initial/normal pages and every cursor-resumed page may discover
+replay shadows. One body group and four total apply across the entire accumulator. Their
+classification is provisional and grants no independent standing. Every resumed step validates the
+cumulative group and count before adding its page. Every new cursor progress or completion claim
+persists an authenticated cumulative summary. It uses phase/fence claim v3 and contains the
+at-most-15 live record members, one shadow body digest, and exact shadow comment IDs. A resumed or
+final run authenticates that summary and performs no provider reread of any prior page, keeping the
+scan within its 150-request ceiling. Final
+completion fully authenticates the lower-ID byte-identical overflow v2 checkpoint and requires every
+summarized shadow ID to be greater before the classification or scan result has standing. A fifth
+shadow, any mismatch or discontinuity, cursor exhaustion, or failure to authenticate that checkpoint
+produces no complete accumulator, checkpoint, or effect. The classification adds no additional
+provider requests beyond the existing bounded cursor scan, does not initiate cursor recovery, and
+does not change its page cap, the 15-record bound, target consumption, or authority.
 
 For overflow v2, the protected writer's final topology places locator read/prepare, upload,
 attestation, and download/verification at YAML ordinals 3 through 6, comment publication and anchor

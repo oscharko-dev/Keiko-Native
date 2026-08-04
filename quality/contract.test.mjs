@@ -1586,8 +1586,10 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   for (const [heading, fields] of Object.entries(expectedRecordFields)) {
     const headingIndex = recordHeadings.indexOf(heading);
     const nextHeading =
-      recordHeadings[headingIndex + 1] ??
-      "Overflow recovery transition/read-back v2";
+      heading === "Phase/fence claim v1"
+        ? "Phase/fence claim v2"
+        : (recordHeadings[headingIndex + 1] ??
+          "Overflow recovery transition/read-back v2");
     assert.deepEqual(recordFields(heading, nextHeading), fields, heading);
     assert.deepEqual(
       recordSchema(heading, nextHeading),
@@ -2890,6 +2892,14 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
       projection,
       /fifth\s+shadow[\s\S]{0,500}(?:cursor\s+exhaustion|exhausted\s+cursor)[\s\S]{0,500}(?:no\s+complete\s+accumulator|fails\s+closed)[\s\S]{0,700}(?:no\s+additional\s+provider\s+requests|does\s+not\s+add[^.]{0,120}requests)/iu,
     );
+    assert.match(
+      projection,
+      /(?:initial|normal)[^.]{0,120}page[\s\S]{0,500}cursor-resumed page[\s\S]{0,500}(?:discover|introduce)[^.]*(?:replay shadows|shadow)[\s\S]{0,600}one body group[\s\S]{0,400}four total[\s\S]{0,400}entire accumulator/iu,
+    );
+    assert.match(
+      projection,
+      /authenticated cumulative summary[\s\S]{0,500}(?:phase\/fence claim v3|schema-version-3 phase\/fence claim)[\s\S]{0,700}no provider reread[^.]{0,180}prior page[\s\S]{0,500}150-request ceiling/iu,
+    );
   }
   for (const projection of [protocol, wake, lifecycle, gates]) {
     assert.match(
@@ -2899,7 +2909,19 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   }
   assert.match(
     protocol,
-    /sole exception to immediate relevant-unauthenticated rejection[\s\S]{0,400}`irrelevant`\s+recovery-suffix member[\s\S]{0,500}all four[^.]{0,180}fields to null[\s\S]{0,500}not\s+an\s+authenticated\s+record[\s\S]{0,700}reread every prior page[\s\S]{0,500}fail closed/iu,
+    /sole exception to immediate relevant-unauthenticated rejection[\s\S]{0,400}`irrelevant`\s+recovery-suffix member[\s\S]{0,500}all four[^.]{0,180}fields to null[\s\S]{0,500}not\s+an\s+authenticated\s+record[\s\S]{0,900}cumulative summary[\s\S]{0,500}no provider reread[^.]{0,180}prior page[\s\S]{0,500}fail closed/iu,
+  );
+  assert.match(
+    protocol,
+    /Phase\/fence claim v3[\s\S]{0,700}`recovery_live_record_members`[\s\S]{0,500}`replay_shadow_body_sha256`[\s\S]{0,500}`replay_shadow_comment_ids`/iu,
+  );
+  assert.match(
+    protocol,
+    /`recovery_live_record_members`[^.]{0,240}at most 15[\s\S]{0,500}`replay_shadow_comment_ids`[^.]{0,240}(?:zero through four|0 through 4)[\s\S]{0,300}strictly increasing/iu,
+  );
+  assert.match(
+    protocol,
+    /phase\/fence claim v1[^.]{0,300}read-only[\s\S]{0,500}(?:cannot|must not)[^.]{0,200}(?:admit|classify)[^.]{0,120}replay shadow/iu,
   );
   assert.match(
     activation,
