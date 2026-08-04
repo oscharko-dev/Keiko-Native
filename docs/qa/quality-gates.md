@@ -160,51 +160,59 @@ checkpoint, requires a null shadow digest and empty shadow-ID list, and accepts 
 shadow. A unique-genesis-rooted invocation requires the same empty-shadow facts and authenticates
 the complete genesis suffix directly. Both cursor-interruption settlements must repeat the same
 root-specific proof. Only then may one phase/fence claim v4 persist its non-null
-`cursor_recovery_authorization_identity` and `cursor_recovery_target_identity`, complete at-most-15
-live record members, shadow summary, and exact shadow comment IDs. The gate must prove the first
-identity is the command-specific authenticated maintainer request and the second is its exact
-incomplete-scan target, neither inferred from the inherited generation request. The gate must prove
+`cursor_recovery_authorization_comment_id`, `cursor_recovery_authorization_identity`, and
+`cursor_recovery_target_identity`, complete at-most-15 live record members, shadow summary, and
+exact shadow comment IDs. The gate must prove the comment ID is the bounded locator for the
+command-specific authenticated maintainer request, the first identity is its canonical identity,
+and the second is its exact incomplete-scan target, none inferred from the inherited generation
+request. The gate must prove
 the target from the stable historical prefix ending strictly before the exact command comment ID;
 the command and later comments are excluded, and the existing stable direct-ingress reads reproduce
 the original boundary without another provider request. It must
 publish no intermediate cursor or progress claim. The final claim and immediate checkpoint require
-one through 11 live records after a unique-genesis or ordinary-v1 root, or one through 9 after an
-overflow-v2 root, forming one internally valid open generation that begins with its authenticated
+two through 10 live records including the unique-genesis request, one through 9 after an ordinary-v1
+root, or one through 8 after an overflow-v2 root, forming one internally valid open generation that
+begins with its authenticated
 generation request and contains no terminal claim or checkpoint. The direct
 recovery-owned `abandoned` checkpoint carries exactly the authenticated same-generation producer
 subset present before v4, including empty, retains every included result's original producer-owning
-fence, and permits no producer after v4. A root-only scan with zero live records authenticates the
-root and replay-shadow relation but is a no-op with no v4 claim, checkpoint, record, or effect. Any
-larger, reserved, or differently shaped open suffix uses its exact existing recovery path or fails
-closed.
+fence, and permits no producer after v4. A unique-genesis root alone or a checkpoint root with zero
+later live records authenticates the root and replay-shadow relation but is a no-op with no v4
+claim, checkpoint, record, or effect. Any larger, reserved, or differently shaped open suffix uses
+its exact existing recovery path or fails closed.
 The gate must prove that v4 alone does not consume the cursor target. Only the fully authenticated
 direct checkpoint or settlement-following recovery checkpoint consumes it. An interruption permits
-a fresh command for the still-unconsumed target; its settlement binds that fresh request while the
-orphan/predecessor proof retains the original v4 authorization and target. The gate must prove the
+a fresh command for the still-unconsumed target; its settlement binds that fresh request while
+treating the v4 authorization comment ID only as a locator, repeating six-request exact-comment
+authentication of the original command, and requiring the recomputed identity to equal v4 before
+the orphan/predecessor proof retains the original authorization and target. The gate must prove the
 settlement target comes only from the authenticated original v4 claim, never from the fresh command
 cutoff; that cutoff is only the fresh command's ingress-authentication boundary.
 
 The gate must enforce a hard cap of 3 accumulator pages, three closed root-authentication branches,
 and two budget profiles. At most 6
 comment-page requests cover two stable reads of each page in the one invocation. A unique-genesis
-or ordinary-v1 root permits at most fourteen record/root/orphan tuples. Its 74 authentication calls
-plus two independently reserved stable exact cursor-orphan writer-job/skipped-step reads, 26
-current-provider calls, and 28 publication calls form a 130-call core and 150 total calls with pages
-and the fixed 14 ingress calls. An overflow-v2 root admits at most nine live records and twelve
-tuples. Its base authentication uses one artifact list, 24 artifact-download redirect-chain calls,
-12 subject-qualified attestation inventories, 24 workflow-run and referenced-workflow-inventory
-calls, and at most three exact producer-job calls; the root's six locator-verification calls and two
-stable cursor-orphan writer-job reads make 72 authentication calls. With the same 26
-current-provider and 28 publication calls, that is a 126-call core and 146 total calls. The already
-authenticated ingress authorization and target bytes are reused; no additional provider request is
-made. Both profiles remain within the hard 150-request
+or ordinary-v1 root permits at most twelve record/root/orphan tuples. Its 64 base authentication
+calls plus two independently reserved stable exact cursor-orphan writer-job/skipped-step reads and
+six original-command reauthentication calls, 26 current-provider calls, and 28 publication calls
+form a 126-call core and 146 total calls with pages and the fixed 14 ingress calls. An overflow-v2
+root admits at most eight post-root live records and eleven tuples. Its base authentication uses one
+artifact list, 22 artifact-download redirect-chain calls, 11 subject-qualified attestation
+inventories, 22 workflow-run and referenced-workflow-inventory calls, and at most three exact
+producer-job calls; the root's six locator-verification calls, two stable cursor-orphan writer-job
+reads, and six original-command reauthentication calls make 73 authentication calls. With the same
+26 current-provider and 28 publication calls, that is a 127-call core and 147 total calls. The fresh
+ingress authorization bytes are reused, but the original command is independently reauthenticated
+from the v4 locator. Both profiles remain within the hard 150-request
 ceiling. A fifth shadow, any mismatch or discontinuity, cursor exhaustion, page 4, or missing
 authenticated root must produce no complete accumulator, checkpoint, or effect. The classification
 adds no request outside that closed allocation, initiates no cursor recovery, and changes no
 15-record bound, target consumption, or authority.
 
-The gate must treat legacy phase/fence claim v1 cursor records, whether incomplete or complete, and
-legacy incomplete v3 cursor records as read-only compatibility and prohibit resume or migration.
+The gate must require every legacy phase/fence claim v1 cursor record, whether incomplete or
+complete, to have phase `recovery` and `claim_outcome` exactly `claimed`; every other v1 cursor
+outcome is malformed. It must treat those accepted records and legacy incomplete v3 cursor records
+as read-only compatibility and prohibit resume or migration.
 Every new cursor completion must use v4. The gate must prove the frozen pre-activation
 inventory is not limited to Issue #55's disposable-probe manifest. The frozen maximum issue number
 comes from two stable repository observations, and the inventory classifies every canonical issue
@@ -249,21 +257,24 @@ record 14, and after that settlement permits only the recovery-owned null-effect
 record 15. If fence publication is interrupted, the exact version-2 fence-orphan settlement is
 record 13 and only its recovery-owned checkpoint may follow at record 14. The exact complete
 cursor-recovery v4 claim defines `n` as the authenticated live non-checkpoint suffix cardinality
-from one through 11 after a unique-genesis or ordinary-v1 root, and from one through 9 after an
-overflow-v2 root, for one internally valid open generation that begins with its authenticated
+from two through 10 including the unique-genesis generation request, from one through 9 after an
+ordinary-v1 root, or from one through 8 after an overflow-v2 root, for one internally valid open
+generation that begins with its authenticated
 generation request and contains no terminal claim or checkpoint. It is record `n + 1` and must be
 followed immediately by its checkpoint at record `n + 2`. That direct recovery-owned `abandoned`
 checkpoint carries exactly the authenticated same-generation producer subset present before v4,
 including empty, and retains each result's original producer-owning fence; no producer may publish
-after v4. A root-only scan with `n = 0` is a no-op with no v4 claim, checkpoint, record, or effect.
+after v4. A unique-genesis root alone (`n = 1`) or checkpoint root with no later live record
+(`n = 0`) is a no-op with no v4 claim, checkpoint, record, or effect.
 An interrupted unanchored v4 instead uses its exact version-2 cursor-claim
 settlement at record `n + 1`, followed only by the recovery-owned checkpoint at record `n + 2`.
 After an
 authenticated cursor-recovery v4 at record `n + 1`, an interrupted unanchored cursor-recovery
 checkpoint uses its exact version-2 cursor-checkpoint settlement at record `n + 2`, followed only by
-the recovery-owned checkpoint at record `n + 3`. At `n = 11` for a unique-genesis or ordinary-v1
-root, the cursor paths consume at most records 12 through 14; an overflow-v2 root stops at `n = 9`
-and records 10 through 12. Neither widens the loader. The gate must prove that
+the recovery-owned checkpoint at record `n + 3`. At the maxima, a unique-genesis path uses at most
+records 11 through 13, an ordinary-v1 path records 10 through 12, and an overflow-v2 path records 9
+through 11. Counting the unique genesis request in `n` is mandatory. Neither widens the loader. The
+gate must prove that
 each resulting recovery-owned `abandoned` checkpoint carries exactly the authenticated pre-fence
 producer subset, including empty, while every other abandoned checkpoint requires the complete
 expected set; that the parent phase/fence record's encoded version selects settlement v2; and that

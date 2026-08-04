@@ -197,8 +197,9 @@ version-1 preimage, and neither form negotiates fields at runtime.
 The version-2 `quarantine_reason` is closed. `anchor-publication-interrupted` binds the existing
 ordinary reserved-fence or reserved-checkpoint orphan. `cursor-claim-anchor-publication-interrupted`
 binds only the exact final complete cursor-recovery phase/fence claim v4 comment intended for record
-`n + 1`, where `n` is the authenticated live non-checkpoint suffix cardinality from one through 11
-after a unique-genesis or ordinary-v1 root, and from one through 9 after an overflow-v2 root.
+`n + 1`. Here and throughout the cursor reserve, `n` is the authenticated live non-checkpoint
+suffix cardinality: two through 10 including the unique-genesis generation request, one through 9
+after an ordinary-v1 checkpoint root, or one through 8 after an overflow-v2 checkpoint root.
 `cursor-checkpoint-anchor-publication-interrupted` binds only the exact immediate cursor-recovery
 checkpoint comment intended for record `n + 2` after an authenticated v4 claim at record `n + 1`.
 Each cursor reason requires a fresh authenticated maintainer request for the still-unconsumed exact
@@ -283,8 +284,9 @@ owning fence.
 The third exception is only the recovery-owned `abandoned` checkpoint immediately following one
 exact complete cursor-recovery v4 claim. The live suffix must contain one internally valid open
 generation, begin with its authenticated generation request, contain no terminal phase/fence claim
-or checkpoint, and contain from one through 11 authenticated records after a unique-genesis or
-ordinary-v1 root, or from one through 9 after an overflow-v2 root. The v4 claim binds that exact
+or checkpoint, and contain from two through 10 authenticated records including the unique-genesis
+generation request, from one through 9 after an ordinary-v1 root, or from one through 8 after an
+overflow-v2 root. The v4 claim binds that exact
 generation and the complete authenticated same-generation producer-result subset already present
 before it, including the empty set. The immediate checkpoint carries exactly that subset, retains
 each result's original producer-owning fence, fixes `transition_owner` to `recovery`, fixes
@@ -455,11 +457,13 @@ Fixed fields, in order:
 30. `recorded_at`: timestamp
 
 Every phase/fence claim v1 `recovery` scan with a non-null recovery-scan identity is legacy cursor
-compatibility. An historical incomplete scan uses positive page and comment counts, its non-null
-accumulated-suffix identity, a non-null cursor, `false`, and a null settlement identity. An
-historical complete scan preserves the cumulative positive counts and accumulator, uses an
-explicit null cursor, sets completion to `true`, and keeps the settlement identity null. Both
-shapes are read-only: no new writer emits, resumes, settles, or checkpoints either one. A complete
+compatibility and has `claim_outcome` exactly `claimed`. An historical incomplete scan uses positive
+page and comment counts, its non-null accumulated-suffix identity, a non-null cursor, `false`, and a
+null settlement identity. An historical complete scan preserves the cumulative positive counts and
+accumulator, uses an explicit null cursor, sets completion to `true`, and keeps the settlement
+identity null. Any other recovery-scan cursor outcome or cursor-field combination is malformed.
+Both accepted shapes are read-only: no new writer emits, resumes, settles, or checkpoints either
+one. A complete
 v1 scan lacks the authorization, target, live-member, and replay-shadow fields required by v4, so
 it has no automatic successor and cannot be interpreted as v4. Every new cursor completion uses
 phase/fence claim v4. A forward
@@ -521,14 +525,15 @@ Marker:
 
 This is schema version `4` of the existing `phase-fence-claim` record type, not a fifth record type.
 It is used only for a new cursor-completion claim. Its fields are the complete
-Phase/fence claim v1 sequence with `schema_version`: uint `4` and exactly these five fields inserted
+Phase/fence claim v1 sequence with `schema_version`: uint `4` and exactly these six fields inserted
 immediately after `recovery_scan_complete`, in this order:
 
-1. `cursor_recovery_authorization_identity`: SHA-256
-2. `cursor_recovery_target_identity`: SHA-256
-3. `recovery_live_record_members`: list of `checkpoint-member`
-4. `replay_shadow_body_sha256`: SHA-256 or explicit null
-5. `replay_shadow_comment_ids`: sorted list of uint
+1. `cursor_recovery_authorization_comment_id`: uint
+2. `cursor_recovery_authorization_identity`: SHA-256
+3. `cursor_recovery_target_identity`: SHA-256
+4. `recovery_live_record_members`: list of `checkpoint-member`
+5. `replay_shadow_body_sha256`: SHA-256 or explicit null
+6. `replay_shadow_comment_ids`: sorted list of uint
 
 `recovery_live_record_members` is the complete authenticated live suffix discovered by the bounded
 scan in predecessor order and contains at most 15 unique members. `replay_shadow_comment_ids`
@@ -540,7 +545,9 @@ not a record, checkpoint member, target-consumption fact, or authority source.
 
 A new v4 claim uses phase `recovery`, `claim_outcome` `settled`, the complete scan identity and
 cumulative counts, a null cursor, `recovery_scan_complete` true, and a null settlement identity. Its
-cursor authorization and target identities are both non-null. The target is exactly the incomplete
+cursor authorization comment ID, authorization identity, and target identity are all non-null. The
+comment ID is the exact authenticated direct-comment locator whose canonical authorization preimage
+produces the stored authorization identity. The target is exactly the incomplete
 recovery-scan identity computed from the stable two-page normal-load boundary that first proved
 older relevant history before the authorizing command comment. It has that boundary's non-null
 provider cursor and `complete` false. The exact authenticated command comment ID is an exclusive
@@ -549,12 +556,15 @@ before that ID, so the command itself and every later comment cannot change the 
 authorization is ADR-0012's exact command-specific authenticated direct-comment request whose
 `recovery_target_identity` equals that target. Both are canonical v4 record fields, so neither the
 generation's inherited `request_identity` nor an in-memory scan can substitute for the maintainer
-authority. A
+authority. A settlement treats the stored comment ID as an untrusted locator, repeats ADR-0012's
+exact six-request authentication of that original command, recomputes its authorization identity,
+and requires exact equality before accepting either the orphan v4 or its target. A
 single serialized recovery invocation holds the provider-budget and per-issue groups, scans every
 page from the stable normal-load boundary through the authenticated root, and may publish the final
 phase/fence claim v4 only when the complete authenticated live suffix contains one internally valid
-open generation with no terminal claim or checkpoint: one through 11 records after a unique-genesis
-or ordinary-v1 root, and one through 9 after an overflow-v2 root. It publishes no
+open generation with no terminal claim or checkpoint: two through 10 records including the
+unique-genesis request, one through 9 after an ordinary-v1 root, or one through 8 after an
+overflow-v2 root. It publishes no
 intermediate cursor or progress claim. Immediately before publishing the final claim, the
 coordinator obtains two equal current source observations that still match the frozen open
 generation and encodes the final observation identity in the claim. The final claim and its
@@ -562,10 +572,10 @@ immediate recovery-owned
 `abandoned` transition/read-back checkpoint consume a closed two-record recovery reserve without
 crossing the 15-record bound. The v4 claim does not consume its cursor target; only full
 authentication of that immediate checkpoint, whether published directly or after one of the two
-closed cursor-orphan settlements, consumes it. A root-only zero-live-record scan is the no-op
-defined above. A
-larger, terminal, checkpointed, multi-generation, or otherwise invalid open suffix uses its already
-defined exact recovery path or fails closed with no v4 claim, checkpoint, record, or effect.
+closed cursor-orphan settlements, consumes it. A unique-genesis root alone (`n = 1`) and a
+checkpoint root with no live record after it (`n = 0`) are both root-only no-ops. A larger,
+terminal, checkpointed, multi-generation, or otherwise invalid open suffix uses its already defined
+exact recovery path or fails closed with no v4 claim, checkpoint, record, or effect.
 
 Legacy phase/fence claim v1 cursor records, whether incomplete or complete, and legacy incomplete
 v3 cursor records remain read-only compatibility. None can be resumed or converted; they cannot be
@@ -780,17 +790,18 @@ reserved terminal fence at record 13, the writer may append only its immediate
 transition/read-back checkpoint, or one exact version-2 recovery phase/fence settlement for an
 interrupted checkpoint publication as record 14 followed immediately by the recovery-owned
 transition/read-back checkpoint as record 15. The exact cursor-recovery phase/fence claim v4 defines
-`n` as the authenticated live non-checkpoint suffix cardinality from one through 11 after a
-unique-genesis or ordinary-v1 root, and from one through 9 after an overflow-v2 root. It becomes
+`n` as the authenticated live non-checkpoint suffix cardinality: two through 10 including the
+unique-genesis generation request, one through 9 after an ordinary-v1 checkpoint root, or one
+through 8 after an overflow-v2 checkpoint root. It becomes
 record `n + 1`; an unanchored copy of that claim instead permits only the exact version-2
 `cursor-claim-anchor-publication-interrupted` settlement at record `n + 1`. Either authenticated
 record permits only its immediate recovery-owned transition/read-back checkpoint at record
 `n + 2`. An authenticated cursor-recovery v4 claim at record `n + 1` alternatively permits only the
 exact version-2 `cursor-checkpoint-anchor-publication-interrupted` settlement for an unanchored copy
 of that checkpoint at record `n + 2`, followed only by the recovery-owned checkpoint at record
-`n + 3`. At `n = 11` for a unique-genesis or ordinary-v1 root, these paths consume at most records
-12 through 14; an overflow-v2 root stops at `n = 9` and records 10 through 12. Neither widens the
-loader.
+`n + 3`. At the maxima, a unique-genesis path uses at most records 11 through 13, an ordinary-v1
+path records 10 through 12, and an overflow-v2 path records 9 through 11. Counting the unique
+genesis request in `n` is mandatory; no root-specific offset is inferred. Neither widens the loader.
 From an interrupted-v4 settlement at record `n + 1`, only the recovery-owned null-effect checkpoint
 may follow as record `n + 2`; from a reserved-fence settlement at record 13, only that checkpoint may
 follow as record 14. A nonterminal append at 12 other than the exact cursor-recovery checkpoint or
@@ -852,8 +863,9 @@ unique-genesis root likewise requires no provisional shadows, a null replay-shad
 empty shadow-ID list, then authenticates the complete genesis suffix directly. Only after that
 root-specific proof and exact v4 authorization/target binding may recovery append the version-2
 `cursor-claim-anchor-publication-interrupted` settlement at record `n + 1`, where `n` is the
-authenticated live non-checkpoint suffix cardinality from one through 11 after a unique-genesis or
-ordinary-v1 root, and from one through 9 after an overflow-v2 root. The orphan v4 remains
+authenticated live non-checkpoint suffix cardinality from two through 10 including the
+unique-genesis request, from one through 9 after an ordinary-v1 root, or from one through 8 after an
+overflow-v2 root. The orphan v4 remains
 quarantine-only. Once the settlement is authenticated, record `n + 2` is the immediate
 recovery-owned null-effect checkpoint described above; no other record or effect may intervene.
 
@@ -870,8 +882,12 @@ Both cursor settlements prove the exact fixed skipped-attestation and orphan fac
 closed version-2 reason above. Repeated interruption of either settlement or its recovery-owned
 checkpoint fails closed for human reconciliation rather than widening the 15-record bound.
 For either settlement, the fresh command is authenticated normally and encoded in the version-2
-recovery settlement. The coordinator first authenticates exactly one interrupted v4 claim or its
-immediate checkpoint and that chain's original v4 authorization and target. It derives the
+recovery settlement. The coordinator first selects exactly one interrupted v4 claim or its
+immediate checkpoint. It treats that v4's `cursor_recovery_authorization_comment_id` only as a
+locator, repeats the complete six-request exact-comment authentication for the original command,
+recomputes `cursor_recovery_authorization_identity`, and requires equality before authenticating the
+interrupted chain's original v4 authorization and target. Those six calls are separate from the
+fresh command ingress and explicitly reserved below. It derives the
 settlement target only from the authenticated original v4
 `cursor_recovery_target_identity`, requires the fresh command to name that exact target, and never
 recomputes or replaces the target from the fresh command's cutoff. The fresh command-edge cursor is
@@ -953,18 +969,21 @@ ordinary irrelevant comments, in memory across its twice-stable pages. It first 
 the root under the same three closed branches below: overflow-v2 checkpoint plus greater shadow-ID
 relation, ordinary-v1 checkpoint plus an empty shadow summary, or unique genesis plus an empty
 shadow summary and complete directly authenticated suffix. Only then may one phase/fence claim v4
-persist the exact cursor authorization and target, complete at-most-15 live record members, one
+persist the exact cursor authorization comment ID, authorization identity, and target, complete
+at-most-15 live record members, one
 shadow body digest, and exact shadow comment IDs. It publishes no intermediate cursor or progress
 claim. The
-final claim and immediate checkpoint require one through 11 live records after a unique-genesis or
-ordinary-v1 root, or one through 9 after the overflow-v2 root, forming the exact open generation
-above; zero live records are a no-op, and any larger or reserved open suffix uses its
+final claim and immediate checkpoint require two through 10 live records including the
+unique-genesis request, one through 9 after an ordinary-v1 root, or one through 8 after the
+overflow-v2 root, forming the exact open generation above. A unique-genesis root alone and a
+checkpoint root with zero later live records are no-ops; any larger or reserved open suffix uses its
 exact existing recovery path or fails closed. The hard cap is 3
 accumulator pages. At most 6 comment-page requests cover two stable reads of each page in the one
 invocation. Two independently reserved stable exact cursor-orphan writer-job reads are included:
-after reserving them, the unique-genesis/ordinary-v1-root profile uses a 130-call core and reaches
-at most 150 total calls. The overflow-v2-root profile limits the live suffix to nine, uses a
-126-call core, and reaches at most 146 total calls. Both remain within the hard 150-request ceiling.
+after reserving them and six separate original-command reauthentication calls, the
+unique-genesis/ordinary-v1-root profile uses a 126-call core and reaches at most 146 total calls.
+The overflow-v2-root profile limits the post-root live suffix to eight, uses a 127-call core, and
+reaches at most 147 total calls. Both remain within the hard 150-request ceiling.
 A fifth shadow, any mismatch or discontinuity,
 cursor exhaustion, page 4, or failure to authenticate that checkpoint produces no complete
 accumulator, checkpoint, or effect. The classification initiates no recovery, changes no 15-record
@@ -1331,24 +1350,23 @@ null-predecessor genesis is found, the final phase/fence claim v4 sets `recovery
 the accumulator's `complete` to true. The invocation allows at most 6 comment-page requests: two
 requests stably read each of at most 3 pages. Three closed root-authentication branches share two
 budget profiles and the hard ceiling. A
-unique-genesis or ordinary-v1 root permits at most fourteen record/root/orphan authentication
-tuples: one artifact-list call, 28 artifact-download redirect-chain calls, 14 subject-qualified
-attestation inventory calls, 28 workflow-run and referenced-workflow-inventory calls, and at most
-three exact producer-job calls consume 74 authentication calls. Two stable exact terminal
-writer-job reads are reserved independently for a cursor claim/checkpoint orphan. With 26
-current-provider calls and
-28 calls for two complete 14-call claim/checkpoint publication and read-back sequences, that core is
-130 calls.
-An overflow-v2 root instead permits at most twelve record/root/orphan authentication tuples. One
-artifact-list call, 24 artifact-download redirect-chain calls, 12 subject-qualified attestation
+unique-genesis or ordinary-v1 root permits at most twelve record/root/orphan authentication tuples:
+one artifact-list call, 24 artifact-download redirect-chain calls, 12 subject-qualified attestation
 inventory calls, 24 workflow-run and referenced-workflow-inventory calls, and at most three exact
-producer-job calls consume 64 calls; the root's exact six locator-verification calls and two
-independent stable cursor-orphan writer-job reads make 72 authentication calls. With the same 26
-current-provider and 28 publication calls, that core is 126 calls.
-The already authenticated ingress authorization and target bytes are reused; no additional
-provider request is made. The ordinary/genesis profile therefore uses 130 + 6 + 14 = 150 calls; the
-overflow-v2-root profile uses 126 + 6 + 14 = 146. Both remain within the unchanged hard 150-request
-ceiling. The replay
+producer-job calls consume 64 authentication calls. Two stable exact terminal writer-job reads are
+reserved independently for a cursor claim/checkpoint orphan, and six more calls repeat exact-comment
+authentication of the original v4 authorization. With 26 current-provider calls and 28 calls for
+two complete 14-call claim/checkpoint publication and read-back sequences, that core is 126 calls.
+An overflow-v2 root instead permits at most eleven record/root/orphan authentication tuples. One
+artifact-list call, 22 artifact-download redirect-chain calls, 11 subject-qualified attestation
+inventory calls, 22 workflow-run and referenced-workflow-inventory calls, and at most three exact
+producer-job calls consume 59 calls; the root's exact six locator-verification calls, two
+independent stable cursor-orphan writer-job reads, and six original-command reauthentication calls
+make 73 authentication calls. With the same 26 current-provider and 28 publication calls, that core
+is 127 calls. The fresh command's already authenticated ingress bytes are reused, but the original
+command is independently reauthenticated from the v4 comment-ID locator. The ordinary/genesis
+profile uses 126 + 6 + 14 = 146 calls. The overflow-v2-root profile uses 127 + 6 + 14 = 147. Both
+remain within the unchanged hard 150-request ceiling. The replay
 reconstructs every full
 member preimage, revalidates the compacted
 prefix or complete genesis suffix in predecessor order, and only then emits a fresh

@@ -2967,19 +2967,19 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     );
     assert.match(
       projection,
-      /(?:unique-genesis|ordinary-v1)[\s\S]{0,1200}fourteen[^.]{0,180}(?:tuple|record\/root\/orphan)/iu,
+      /(?:unique-genesis|ordinary-v1)[\s\S]{0,1200}twelve[^.]{0,180}(?:tuple|record\/root\/orphan)/iu,
     );
     assert.match(
       projection,
-      /(?:unique-genesis|ordinary-v1)[\s\S]{0,1200}74[^.]{0,180}authentication/iu,
+      /(?:unique-genesis|ordinary-v1)[\s\S]{0,1200}64[^.]{0,180}(?:base )?authentication/iu,
     );
     assert.match(
       projection,
-      /(?:unique-genesis|ordinary-v1)[\s\S]{0,1500}(?:two|2)[^.]{0,220}(?:cursor-orphan|orphan)[^.]{0,220}writer-job[\s\S]{0,700}130[^.]{0,180}(?:core|calls)[\s\S]{0,500}150[^.]{0,180}(?:total|calls)/iu,
+      /(?:unique-genesis|ordinary-v1)[\s\S]{0,1500}(?:two|2)[^.]{0,220}(?:cursor-orphan|orphan)[^.]{0,220}writer-job[\s\S]{0,400}(?:six|6)[^.]{0,220}original-command[^.]{0,180}reauthentication[\s\S]{0,700}126[^.]{0,180}(?:core|calls)[\s\S]{0,500}146[^.]{0,180}(?:total|calls)/iu,
     );
     assert.match(
       projection,
-      /overflow-v2[^.]{0,120}root[\s\S]{0,1200}(?:nine[^.]{0,180}live records[\s\S]{0,400})?twelve[^.]{0,180}(?:tuple|record\/root\/orphan)/iu,
+      /overflow-v2[^.]{0,120}root[\s\S]{0,1200}(?:eight[^.]{0,180}(?:post-root )?live records[\s\S]{0,400})?eleven[^.]{0,180}(?:tuple|record\/root\/orphan)/iu,
     );
     assert.match(
       projection,
@@ -2987,15 +2987,15 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     );
     assert.match(
       projection,
-      /overflow-v2[^.]{0,120}root[\s\S]{0,1800}72[^.]{0,180}authentication/iu,
+      /overflow-v2[^.]{0,120}root[\s\S]{0,1800}73[^.]{0,180}authentication/iu,
     );
     assert.match(
       projection,
-      /overflow-v2[^.]{0,120}root[\s\S]{0,1800}126[^.]{0,180}(?:core|calls)[\s\S]{0,600}146[^.]{0,180}(?:total|calls)/iu,
+      /overflow-v2[^.]{0,120}root[\s\S]{0,1800}127[^.]{0,180}(?:core|calls)[\s\S]{0,600}147[^.]{0,180}(?:total|calls)/iu,
     );
     assert.match(
       projection,
-      /Both(?: profiles)? remain (?:within|at or below) the (?:unchanged )?hard\s+150-request\s+ceiling/iu,
+      /Both(?: profiles)?\s+remain\s+(?:within|at or below)\s+the\s+(?:unchanged\s+)?hard\s+150-request\s+ceiling/iu,
     );
     assert.match(
       projection,
@@ -3014,7 +3014,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /Phase\/fence claim v4[\s\S]{0,700}`cursor_recovery_authorization_identity`[\s\S]{0,300}`cursor_recovery_target_identity`[\s\S]{0,500}`recovery_live_record_members`[\s\S]{0,500}`replay_shadow_body_sha256`[\s\S]{0,500}`replay_shadow_comment_ids`/iu,
+    /Phase\/fence claim v4[\s\S]{0,700}`cursor_recovery_authorization_comment_id`[\s\S]{0,300}`cursor_recovery_authorization_identity`[\s\S]{0,300}`cursor_recovery_target_identity`[\s\S]{0,500}`recovery_live_record_members`[\s\S]{0,500}`replay_shadow_body_sha256`[\s\S]{0,500}`replay_shadow_comment_ids`/iu,
   );
   assert.match(
     protocol,
@@ -3022,7 +3022,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /complete phase\/fence claim v4[\s\S]{0,500}schema version `4`[\s\S]{0,500}`schema_version`: uint `4`[\s\S]{0,500}exactly\s+these five fields/iu,
+    /complete phase\/fence claim v4[\s\S]{0,500}schema version `4`[\s\S]{0,500}`schema_version`: uint `4`[\s\S]{0,500}exactly\s+these six fields/iu,
   );
   assert.match(
     protocol,
@@ -3031,6 +3031,10 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   assert.match(
     protocol,
     /phase\/fence claim v1[^.]{0,300}(?:incomplete|complete)[\s\S]{0,500}read-only[\s\S]{0,700}(?:cannot|must not)[^.]{0,220}(?:derive|interpret)[^.]{0,180}(?:summary|shadow|v4)/iu,
+  );
+  assert.match(
+    protocol,
+    /phase\/fence claim v1 `recovery` scan[\s\S]{0,180}`claim_outcome` exactly `claimed`[\s\S]{0,600}any other recovery-scan cursor outcome[^.]{0,180}malformed/iu,
   );
   assert.match(
     protocol,
@@ -3059,7 +3063,11 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   for (const projection of projections) {
     assert.match(
       projection,
-      /cursor_recovery_authorization_identity[\s\S]{0,500}cursor_recovery_target_identity[\s\S]{0,4000}(?:(?:command-specific|authenticated maintainer|direct maintainer|direct-comment)[\s\S]{0,1600}(?:inherited|generation)[^.]{0,180}request|(?:inherited|generation)[^.]{0,180}request[\s\S]{0,1600}(?:command-specific|authenticated maintainer|direct maintainer|direct-comment))/iu,
+      /cursor_recovery_authorization_comment_id[\s\S]{0,500}cursor_recovery_authorization_identity[\s\S]{0,500}cursor_recovery_target_identity[\s\S]{0,4000}(?:(?:command-specific|authenticated maintainer|direct maintainer|direct-comment)[\s\S]{0,1600}(?:inherited|generation)[^.]{0,180}request|(?:inherited|generation)[^.]{0,180}request[\s\S]{0,1600}(?:command-specific|authenticated maintainer|direct maintainer|direct-comment))/iu,
+    );
+    assert.match(
+      projection,
+      /(?:authorization comment ID|authorization_comment_id)[\s\S]{0,4000}(?:untrusted|only as a locator|bounded locator)[\s\S]{0,1200}(?:six-request|six[^.]{0,120}calls)[^.]{0,240}(?:exact-comment|original command)[\s\S]{0,800}(?:recomput|require)[^.]{0,240}(?:identity|equality)/iu,
     );
     assert.match(
       projection,
@@ -3095,6 +3103,10 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     );
     assert.match(
       projection,
+      /phase\/fence claim v1[\s\S]{0,500}(?:whether\s+incomplete\s+or\s+complete|recovery[^.]{0,120}scan)[\s\S]{0,500}`claim_outcome`\s+(?:exactly\s+)?`claimed`[\s\S]{0,1200}(?:other|every other)[^.]{0,180}(?:outcome|combination)[^.]{0,120}malformed/iu,
+    );
+    assert.match(
+      projection,
       /every new cursor completion[\s\S]{0,120}(?:uses|must use) v4/iu,
     );
     assert.match(
@@ -3107,15 +3119,19 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     );
     assert.match(
       projection,
-      /cursor-recovery[^.]{0,180}v4[\s\S]{0,500}(?:one through 11|1 through 11|n[^.]{0,80}1[^.]{0,80}11)[\s\S]{0,500}(?:n\s*\+\s*1|record after)[\s\S]{0,500}(?:immediate|only)[^.]{0,180}checkpoint[^.]{0,160}(?:n\s*\+\s*2|next record)/iu,
+      /cursor-recovery[^.]{0,180}v4[\s\S]{0,700}(?:two through 10|2 through 10|n[^.]{0,80}2[^.]{0,80}10)[\s\S]{0,700}(?:n\s*\+\s*1|record after)[\s\S]{0,500}(?:immediate|only)[^.]{0,180}checkpoint[^.]{0,160}(?:n\s*\+\s*2|next record)/iu,
     );
     assert.match(
       projection,
-      /(?:overflow-v2[^.]{0,120}root|after an overflow-v2 root)[\s\S]{0,300}(?:one through 9|1 through 9|n\s*=\s*9)/iu,
+      /(?:(?:one through 8|1 through 8)[^.]{0,180}(?:after an )?overflow-v2[^.]{0,120}root|overflow-v2[^.]{0,120}root[\s\S]{0,300}n\s*=\s*8)/iu,
     );
     assert.match(
       projection,
-      /root-only[^.]{0,220}(?:zero(?:-|\s)+live(?:-|\s)+records?|n\s*=\s*0)[^.]{0,220}no-op[\s\S]{0,300}no v4 claim[^.]{0,180}checkpoint[^.]{0,180}record[^.]{0,180}effect/iu,
+      /(?:root-only[^.]{0,220}(?:zero(?:-|\s)+live(?:-|\s)+records?|n\s*=\s*0)|unique-genesis\s+root\s+alone|checkpoint\s+root[^.]{0,180}(?:no|zero)[^.]{0,120}live\s+record)[\s\S]{0,500}no-op[\s\S]{0,300}no v4 claim[^.]{0,180}checkpoint[^.]{0,180}record[^.]{0,180}effect/iu,
+    );
+    assert.match(
+      projection,
+      /(?:(?:including|counting)[^.]{0,180}(?:the )?(?:unique-genesis|unique genesis)[^.]{0,180}(?:generation request|genesis request)|(?:unique-genesis|unique genesis)[\s\S]{0,500}(?:including|counting)[^.]{0,180}(?:generation request|genesis request))[\s\S]{0,700}(?:n\s*\+\s*1|record `n \+ 1`)/iu,
     );
     assert.match(
       projection,
@@ -3158,11 +3174,11 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   }
   assert.match(
     protocol,
-    /authenticated ingress[^.]{0,220}(?:target|authorization)[^.]{0,220}(?:reused|reuse)[^.]{0,220}no\s+additional\s+provider\s+(?:request|call)/iu,
+    /fresh\s+command[^.]{0,220}(?:ingress|authorization)[^.]{0,220}(?:reused|reuse)[\s\S]{0,300}original\s+command[^.]{0,220}(?:independently|separate)[^.]{0,220}(?:reauthenticated|six)/iu,
   );
   assert.match(
     protocol,
-    /final[^.]{0,120}phase\/fence claim v4[^.]{0,300}live[^.]{0,180}(?:one through 11|at most 11)[^.]{0,120}records[\s\S]{0,500}immediate[^.]{0,180}checkpoint/iu,
+    /final[^.]{0,120}phase\/fence claim v4[^.]{0,300}(?:two through 10|unique-genesis request)[\s\S]{0,500}immediate[^.]{0,180}checkpoint/iu,
   );
   for (const projection of [protocol, lifecycle, gates, activation]) {
     assert.match(
