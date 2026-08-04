@@ -48,6 +48,7 @@ const CANCEL_TERM_GRACE: Duration = Duration::from_millis(500);
 // Preserve a bounded TERM/KILL window without starving macOS first-execution
 // validation after the verified runtime has been staged.
 const READINESS_CLEANUP_RESERVE: Duration = Duration::from_millis(300);
+const READINESS_MAX_TERM_GRACE: Duration = Duration::from_millis(100);
 const TURN_CLEANUP_RESERVE: Duration = Duration::from_secs(5);
 const CODEX_CONTAINMENT_ARGUMENTS: &[&str] = &[
     "-c",
@@ -1286,6 +1287,10 @@ fn readiness_protocol_deadline(deadline: Instant, protocol_started: Instant) -> 
     deadline.checked_sub(cleanup_reserve).unwrap_or(deadline)
 }
 
+fn readiness_term_grace(cleanup_remaining: Duration) -> Duration {
+    READINESS_MAX_TERM_GRACE.min(cleanup_remaining / 3)
+}
+
 fn write_json_line(writer: &mut impl Write, value: &Value) -> io::Result<()> {
     serde_json::to_writer(&mut *writer, value)?;
     writer.write_all(b"\n")?;
@@ -2003,7 +2008,14 @@ fn cleanup_after(
     active: &ActiveRuntime,
     deadline: Instant,
 ) -> ProtocolOutcome {
-    let cleaned = stop_process_group(&mut child, process_group, active, deadline);
+    let cleanup_remaining = deadline.saturating_duration_since(Instant::now());
+    let cleaned = stop_process_group_with_term_grace(
+        &mut child,
+        process_group,
+        active,
+        deadline,
+        Some(readiness_term_grace(cleanup_remaining)),
+    );
     ProtocolOutcome {
         state,
         quarantined_events,
@@ -4128,6 +4140,52 @@ while :; do /bin/sleep 1; done
             short_deadline.duration_since(short_protocol_deadline),
             Duration::from_millis(100)
         );
+        assert_eq!(
+            readiness_term_grace(READINESS_CLEANUP_RESERVE),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            readiness_term_grace(Duration::from_millis(100)),
+            Duration::from_nanos(33_333_333)
+        );
+    }
+
+    #[test]
+    fn readiness_cleanup_reaps_after_escalating_a_term_resistant_process() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("trap '' TERM; printf 'ready\\n'; while :; do :; done")
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("TERM-resistant readiness process");
+        let process_group = child.id() as i32;
+        let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+        let mut ready = String::new();
+        stdout.read_line(&mut ready).expect("readiness handshake");
+        assert_eq!(ready, "ready\n");
+
+        let active = ActiveRuntime::default();
+        *active.process_group.lock().expect("process-group state") = Some(process_group);
+        let outcome = cleanup_after(
+            child,
+            process_group,
+            RuntimeReadinessState::TimedOut,
+            0,
+            &active,
+            Instant::now() + READINESS_CLEANUP_RESERVE,
+        );
+
+        assert_eq!(outcome.state, RuntimeReadinessState::TimedOut);
+        assert!(outcome.cleaned);
+        assert_eq!(
+            *active.process_group.lock().expect("process-group state"),
+            None
+        );
+        assert!(!process_group_exists(process_group));
     }
 
     #[test]
