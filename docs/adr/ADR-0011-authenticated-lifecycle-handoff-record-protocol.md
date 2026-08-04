@@ -737,10 +737,20 @@ After authenticating the lower-ID checkpoint, normal reconstruction reproducibly
 comments as irrelevant replay shadows with no additional provider requests. They are not a record,
 compacted-prefix member, predecessor, recovery candidate, target consumption, or authority source;
 the authenticated checkpoint already consumed the target and supplies the durable classification
-root. A fifth shadow, a body, actor, edit, or numeric-order mismatch, two buffered body groups, or
-failure to reach and fully authenticate the matching checkpoint inside the stable normal window
-fails closed. The rule never scans beyond the normal window, changes the 15-record bound, grants
-overflow-recovery authority, or hides a non-identical lifecycle-marked comment.
+root. A fifth shadow, a body, actor, edit, or numeric-order mismatch, or two buffered body groups
+fails closed.
+
+If the two normal pages prove that older relevant history continues, the loader carries the same
+at-most-four buffered shadows into ordinary effect-disabled cursor recovery as `irrelevant`
+recovery-suffix members. Their classification is provisional and grants no independent standing:
+every resumed step preserves the same single full-body digest group, exact comment IDs, actor/edit
+facts, and derived cumulative shadow count. Final completion replays every accumulator page and
+fully authenticates the lower-ID byte-identical overflow v2 checkpoint before the classification
+or scan result has standing. A fifth shadow, any mismatch or discontinuity, cursor exhaustion, or
+failure to authenticate that checkpoint produces no complete accumulator, checkpoint, or effect. The
+classification adds no additional provider requests beyond the existing bounded cursor scan, does
+not initiate cursor recovery, and does not change its page cap, the 15-record bound, target
+consumption, or authority.
 
 ### Record authentication and chain reconstruction
 
@@ -1040,6 +1050,16 @@ identities, predecessor pairs, and next cursor before the workflow computes the 
 step. A step, count, cursor, page boundary, classification, or order discontinuity; duplicate
 comment, record, or anchor; relevant unauthenticated comment; or unmatched relevant anchor blocks
 progress and emits no accumulator identity.
+
+The sole exception to immediate relevant-unauthenticated rejection is a comment classified as an
+`irrelevant` recovery-suffix member provisionally under the post-success replay-shadows rule above.
+That existing classification fixes all four record, anchor, and predecessor fields to null and is a
+closed assertion of the exact Actions Bot/App, never-edited, single-body-group shape; it is not an
+authenticated record. A resumed run may carry that assertion only inside the authenticated
+accumulator chain, and the final complete run must reread every prior page and revalidate those
+constant actor/edit facts before authenticating the lower-ID byte-identical checkpoint. If it
+cannot, the provisional assertion and entire recovery fail closed without a complete accumulator,
+checkpoint, or effect.
 
 The next serialized recovery run scans at most 100 more pages and remains effect-disabled. Each
 authenticated progress claim supersedes only the prior scan cursor and grants no authority. Its

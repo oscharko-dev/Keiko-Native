@@ -779,9 +779,19 @@ Bot/App, and each comment is never edited. Once the lower-ID checkpoint is fully
 normal reconstruction reproducibly classifies the buffered comments as irrelevant replay shadows
 with no additional provider requests. They are not records, compacted-prefix members,
 predecessors, recovery candidates, target consumption, or authority. A fifth shadow, any body,
-actor, edit, or numeric-order mismatch, multiple buffered body groups, or failure to authenticate
-the matching checkpoint inside the stable normal window fails closed. This bounded filter does not
-scan farther, change the 15-record limit, or grant a standing overflow-recovery path.
+actor, edit, or numeric-order mismatch, or multiple buffered body groups fails closed.
+
+If the two normal pages prove that older relevant history continues, the loader carries the same
+at-most-four buffered shadows into ordinary effect-disabled cursor recovery as `irrelevant`
+recovery-suffix members. Their classification is provisional and grants no independent standing:
+every resumed step preserves the same single full-body digest group, exact comment IDs, actor/edit
+facts, and derived cumulative shadow count. Final completion replays every accumulator page and
+fully authenticates the lower-ID byte-identical overflow v2 checkpoint before the classification
+or scan result has standing. A fifth shadow, any mismatch or discontinuity, cursor exhaustion, or
+failure to authenticate that checkpoint produces no complete accumulator, checkpoint, or effect. The
+classification adds no additional provider requests beyond the existing bounded cursor scan, does
+not initiate cursor recovery, and does not change its page cap, the 15-record bound, target
+consumption, or authority.
 
 For an overflow transition/read-back v2 candidate, the protected writer uses ADR-0011's final
 seven-step pre-verification topology. The locator read/prepare, upload, attestation, and

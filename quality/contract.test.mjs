@@ -2878,6 +2878,18 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
       projection,
       /normal reconstruction[\s\S]{0,500}(?:classifies|marks)[\s\S]{0,200}(?:irrelevant|shadows)[\s\S]{0,500}no\s+additional\s+provider\s+requests[\s\S]{0,500}not\s+(?:a\s+record|records)[\s\S]{0,700}(?:fifth|mismatch)[\s\S]{0,400}fails\s+closed/iu,
     );
+    assert.match(
+      projection,
+      /older[^.]{0,120}history[^.]{0,120}continues[\s\S]{0,500}at-most-four[^.]{0,160}shadows[\s\S]{0,500}effect-disabled cursor recovery[\s\S]{0,500}`irrelevant`\s+recovery-suffix members/iu,
+    );
+    assert.match(
+      projection,
+      /classification is provisional[\s\S]{0,500}resumed step[\s\S]{0,500}final\s+completion[\s\S]{0,500}fully\s+authenticates?[^.]{0,180}lower-ID[^.]{0,180}checkpoint/iu,
+    );
+    assert.match(
+      projection,
+      /fifth\s+shadow[\s\S]{0,500}(?:cursor\s+exhaustion|exhausted\s+cursor)[\s\S]{0,500}(?:no\s+complete\s+accumulator|fails\s+closed)[\s\S]{0,700}(?:no\s+additional\s+provider\s+requests|does\s+not\s+add[^.]{0,120}requests)/iu,
+    );
   }
   for (const projection of [protocol, wake, lifecycle, gates]) {
     assert.match(
@@ -2885,6 +2897,10 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
       /overflow recovery[\s\S]{0,1200}(?:human-only|manual)[\s\S]{0,160}`dev`/iu,
     );
   }
+  assert.match(
+    protocol,
+    /sole exception to immediate relevant-unauthenticated rejection[\s\S]{0,400}`irrelevant`\s+recovery-suffix member[\s\S]{0,500}all four[^.]{0,180}fields to null[\s\S]{0,500}not\s+an\s+authenticated\s+record[\s\S]{0,700}reread every prior page[\s\S]{0,500}fail closed/iu,
+  );
   assert.match(
     activation,
     /overflow recovery[\s\S]{0,1200}Issue #55[\s\S]{0,240}disabled/iu,

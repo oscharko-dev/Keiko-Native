@@ -146,9 +146,20 @@ never-edited comments with a higher numeric `comment_id` than one fully authenti
 transition/read-back v2 checkpoint and byte-identical full bodies. After that lower-ID checkpoint
 authenticates, normal reconstruction reproducibly marks the shadows irrelevant with no additional
 provider requests; they are not records, predecessors, recovery candidates, target consumption, or
-authority. A fifth shadow, a body, actor, edit, or numeric-order mismatch, multiple groups, or a
-missing matching checkpoint fails closed without scanning beyond the normal window or changing the
-15-record limit. It must also prove superseded generations authenticate
+authority. A fifth shadow, a body, actor, edit, or numeric-order mismatch or multiple groups fails
+closed. If the two normal pages prove that older relevant history continues, the loader must carry
+the same at-most-four buffered shadows into ordinary effect-disabled cursor recovery as
+`irrelevant` recovery-suffix members. Their classification is provisional and grants no independent
+standing: every resumed step must preserve the same single full-body digest group, exact comment
+IDs, actor/edit facts, and cumulative shadow count derived from the accumulator chain. Final
+completion must replay every accumulator page and fully authenticate the lower-ID byte-identical
+overflow v2 checkpoint before the classification or scan result has standing. A fifth shadow, any
+mismatch or discontinuity, cursor
+exhaustion, or failure to authenticate that checkpoint must produce no complete accumulator,
+checkpoint, or effect. The classification adds no additional provider requests beyond the existing
+bounded cursor scan, does not initiate cursor recovery, and does not change its page cap, the
+15-record bound, target consumption, or authority. It must also prove superseded generations
+authenticate
 their frozen generation and closed partial producer set. An ordinary superseded fence binds its
 first witness; the reserved-fence exception uses the final encoded read-back source observation as
 its sole durable witness and refreshes that projection under the same fence before

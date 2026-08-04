@@ -284,7 +284,20 @@ come from the exact never-edited Actions Bot/App comment shape, and form one bod
 lower-ID checkpoint authenticates, normal reconstruction reproducibly classifies them irrelevant
 with no additional provider requests. They are not records, predecessors, recovery candidates,
 target consumption, or authority. A fifth shadow, any body, actor, edit, or numeric-order mismatch,
-multiple groups, or failure to authenticate that checkpoint in the normal window fails closed.
+or multiple groups fails closed.
+
+If the two normal pages prove that older relevant history continues, the loader carries the same
+at-most-four buffered shadows into ordinary effect-disabled cursor recovery as `irrelevant`
+recovery-suffix members. Their classification is provisional and grants no independent standing:
+every resumed step preserves the same single full-body digest group, exact comment IDs, actor/edit
+facts, and derived cumulative shadow count. Final completion replays every accumulator page and
+fully authenticates the lower-ID byte-identical overflow v2 checkpoint before the classification
+or scan result has standing. A fifth shadow, any mismatch or discontinuity, cursor exhaustion, or
+failure to authenticate that checkpoint produces no complete accumulator, checkpoint, or effect. The
+classification adds no additional provider requests beyond the existing bounded cursor scan, does
+not initiate cursor recovery, and does not change its page cap, the 15-record bound, target
+consumption, or authority.
+
 For overflow v2, the protected writer's final topology places locator read/prepare, upload,
 attestation, and download/verification at YAML ordinals 3 through 6, comment publication and anchor
 upload at 7 and 8, and `Attest exact lifecycle anchor identity` at ordinal 9/provider-visible step
