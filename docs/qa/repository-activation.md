@@ -140,8 +140,15 @@ historical cap only while it is the current publication and uses the separate 26
 budget. It becomes the authenticated record on success; if authentication is interrupted, it
 becomes a historical candidate on the next recovery, where a resulting fifth historical copy denies
 another attempt. Each historical copy's distinct comment-bound anchor and attestation tuple must be
-verified before it becomes irrelevant. It must
-also prove superseded generations authenticate
+verified before it becomes irrelevant. The activation matrix must prove the sole post-success
+replay shadows rule: the stable two-page normal loader buffers at most four exact Actions Bot/App,
+never-edited comments with a higher numeric `comment_id` than one fully authenticated overflow
+transition/read-back v2 checkpoint and byte-identical full bodies. After that lower-ID checkpoint
+authenticates, normal reconstruction reproducibly marks the shadows irrelevant with no additional
+provider requests; they are not records, predecessors, recovery candidates, target consumption, or
+authority. A fifth shadow, a body, actor, edit, or numeric-order mismatch, multiple groups, or a
+missing matching checkpoint fails closed without scanning beyond the normal window or changing the
+15-record limit. It must also prove superseded generations authenticate
 their frozen generation and closed partial producer set. An ordinary superseded fence binds its
 first witness; the reserved-fence exception uses the final encoded read-back source observation as
 its sole durable witness and refreshes that projection under the same fence before

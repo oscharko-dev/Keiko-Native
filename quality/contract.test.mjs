@@ -2866,6 +2866,18 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
       projection,
       /current attempt[\s\S]{0,200}single\s+prospective\s+checkpoint\s+comment[\s\S]{0,240}separate\s+26-request\s+publication\s+budget[\s\S]{0,300}interrupted[\s\S]{0,220}historical\s+candidate[\s\S]{0,220}next\s+recovery/iu,
     );
+    assert.match(
+      projection,
+      /post-success\s+replay\s+shadows[\s\S]{0,400}at\s+most four[\s\S]{0,400}higher numeric `comment_id`/iu,
+    );
+    assert.match(
+      projection,
+      /fully\s+authenticated\s+overflow\s+transition\/read-back\s+v2\s+checkpoint[\s\S]{0,300}byte-identical|byte-identical[\s\S]{0,300}fully\s+authenticated\s+overflow\s+transition\/read-back\s+v2\s+checkpoint/iu,
+    );
+    assert.match(
+      projection,
+      /normal reconstruction[\s\S]{0,500}(?:classifies|marks)[\s\S]{0,200}(?:irrelevant|shadows)[\s\S]{0,500}no\s+additional\s+provider\s+requests[\s\S]{0,500}not\s+(?:a\s+record|records)[\s\S]{0,700}(?:fifth|mismatch)[\s\S]{0,400}fails\s+closed/iu,
+    );
   }
   for (const projection of [protocol, wake, lifecycle, gates]) {
     assert.match(

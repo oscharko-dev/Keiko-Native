@@ -771,6 +771,18 @@ attempted, started, failed, cancelled, timed out, is missing, or is unknown, a t
 may later become visible; absence from two inventories is not proof of non-acceptance and the
 candidate remains ambiguous with no retry, quarantine, checkpoint, or effect.
 
+The sole post-success standing exception is the authenticated post-success replay shadows rule.
+The stable two-page normal loader may buffer at most four later lifecycle-marked comments with a
+higher numeric `comment_id` than a fully authenticated overflow transition/read-back v2 checkpoint
+only when their full bodies are byte-identical to that checkpoint, the author is the exact Actions
+Bot/App, and each comment is never edited. Once the lower-ID checkpoint is fully authenticated,
+normal reconstruction reproducibly classifies the buffered comments as irrelevant replay shadows
+with no additional provider requests. They are not records, compacted-prefix members,
+predecessors, recovery candidates, target consumption, or authority. A fifth shadow, any body,
+actor, edit, or numeric-order mismatch, multiple buffered body groups, or failure to authenticate
+the matching checkpoint inside the stable normal window fails closed. This bounded filter does not
+scan farther, change the 15-record limit, or grant a standing overflow-recovery path.
+
 For an overflow transition/read-back v2 candidate, the protected writer uses ADR-0011's final
 seven-step pre-verification topology. The locator read/prepare, upload, attestation, and
 download/verification steps occupy YAML ordinals 3 through 6; comment publication and anchor upload

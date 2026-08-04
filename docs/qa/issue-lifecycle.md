@@ -277,6 +277,14 @@ artifact-anchor file and equals its recomputed auxiliary identity, never a provi
 Authenticated members precede quarantined candidates, which sort by ascending comment ID and reject
 duplicates. An ambiguous candidate fails closed and produces no record or effect, and
 no retry is automatic.
+The sole standing post-success replay shadows rule lets the stable two-page normal loader buffer at
+most four lifecycle-marked comments with a higher numeric `comment_id` than one fully authenticated
+overflow transition/read-back v2 checkpoint only when they are byte-identical to that checkpoint,
+come from the exact never-edited Actions Bot/App comment shape, and form one body group. After the
+lower-ID checkpoint authenticates, normal reconstruction reproducibly classifies them irrelevant
+with no additional provider requests. They are not records, predecessors, recovery candidates,
+target consumption, or authority. A fifth shadow, any body, actor, edit, or numeric-order mismatch,
+multiple groups, or failure to authenticate that checkpoint in the normal window fails closed.
 For overflow v2, the protected writer's final topology places locator read/prepare, upload,
 attestation, and download/verification at YAML ordinals 3 through 6, comment publication and anchor
 upload at 7 and 8, and `Attest exact lifecycle anchor identity` at ordinal 9/provider-visible step

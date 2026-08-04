@@ -131,6 +131,14 @@ ordering, and no duplicate canonical identity while its optional post-comment an
 attestation and the fixed anchor-attestation publication step has its exact mapped name,
 provider-visible number, and conclusion `skipped`. An attempted, unknown,
 or ambiguously completed attestation step must deny retry even when both inventories are empty. The
+gate must also prove the sole post-success replay shadows rule: the stable two-page normal loader
+buffers at most four exact Actions Bot/App, never-edited comments with a higher numeric `comment_id`
+than one fully authenticated overflow transition/read-back v2 checkpoint and byte-identical full
+bodies. After that lower-ID checkpoint authenticates, normal reconstruction reproducibly marks the
+shadows irrelevant with no additional provider requests; they are not records, predecessors,
+recovery candidates, target consumption, or authority. A fifth shadow, a body, actor, edit, or
+numeric-order mismatch, multiple groups, or a missing matching checkpoint fails closed without
+scanning beyond the normal window or changing the 15-record limit. The
 gate must pin the overflow-v2 issue-lifecycle topology: locator read/prepare, upload, attestation,
 and download/verification at YAML ordinals 3 through 6, comment publication and anchor upload at 7
 and 8, and anchor attestation at ordinal 9/provider-visible step 10 for every lane. It must

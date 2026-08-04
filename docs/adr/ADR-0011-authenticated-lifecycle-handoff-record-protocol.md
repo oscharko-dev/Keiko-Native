@@ -728,7 +728,19 @@ effect. A fifth historical copy present before the current attempt, missing or i
 attestation, any anchor attestation,
 mismatched or multiple artifact, nonterminal job, unknown provenance, or conflicting body likewise
 fails closed. Existing evidence remains append-only and auditable. Subsequent wakes use the normal
-v1 protocol and 15-record bound; overflow recovery grants no standing exception.
+v1 protocol and 15-record bound. Its sole standing parsing exception is the authenticated
+post-success replay shadows rule. During the stable two-page normal load, reconstruction may buffer
+at most four later lifecycle-marked comments with a higher numeric `comment_id` than one fully
+authenticated overflow transition/read-back v2 checkpoint, whose full body is byte-identical to
+that checkpoint, whose author is the exact Actions Bot/App, and whose comment was never edited.
+After authenticating the lower-ID checkpoint, normal reconstruction reproducibly classifies those
+comments as irrelevant replay shadows with no additional provider requests. They are not a record,
+compacted-prefix member, predecessor, recovery candidate, target consumption, or authority source;
+the authenticated checkpoint already consumed the target and supplies the durable classification
+root. A fifth shadow, a body, actor, edit, or numeric-order mismatch, two buffered body groups, or
+failure to reach and fully authenticate the matching checkpoint inside the stable normal window
+fails closed. The rule never scans beyond the normal window, changes the 15-record bound, grants
+overflow-recovery authority, or hides a non-identical lifecycle-marked comment.
 
 ### Record authentication and chain reconstruction
 
