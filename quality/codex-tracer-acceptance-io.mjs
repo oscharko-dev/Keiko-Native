@@ -620,49 +620,51 @@ function launchPackagedApp(internal) {
   });
 }
 
-async function measureFirstVisibleP95(
+export async function measureFirstVisibleP95(
   internal,
   adapterBinary,
   cleanupDependencies,
+  dependencies = {},
 ) {
+  const authenticate =
+    dependencies.authenticate ?? authenticateOwnedProcessGroup;
+  const launch = dependencies.launch ?? launchPackagedApp;
+  const monotonicNow = dependencies.monotonicNow ?? (() => performance.now());
+  const observe = dependencies.observe ?? waitForTracerAccessibilityAction;
+  const terminate = dependencies.terminate ?? terminateOwnedProcess;
+  const waitForExit = dependencies.waitForExit ?? waitForProcessExit;
   const observations = [];
   for (
     let repetition = 0;
     repetition < acceptanceBudgetLimits.firstVisibleKeikoOverheadSamples;
     repetition += 1
   ) {
-    const startedAt = performance.now();
-    const child = launchPackagedApp(internal);
-    const ownership = await authenticateOwnedProcessGroup(
-      child,
-      cleanupDependencies,
-    );
+    const startedAt = monotonicNow();
+    const child = launch(internal);
+    const ownership = await authenticate(child, cleanupDependencies);
     try {
-      const visible = await waitForTracerAccessibilityAction({
+      const visible = await observe({
         action: "probe-start",
         binary: adapterBinary,
         pid: child.pid,
-        timeoutMs: 2_000,
+        timeoutMs: 5_000,
       });
       if (visible.status !== "passed")
         throw new Error("acceptance-first-visible-failed");
-      const elapsedMs = Math.round(performance.now() - startedAt);
+      const elapsedMs = Math.round(monotonicNow() - startedAt);
       if (!Number.isSafeInteger(elapsedMs) || elapsedMs < 0)
         throw new Error("acceptance-first-visible-measurement-invalid");
       observations.push(elapsedMs);
-      const quit = await waitForTracerAccessibilityAction({
+      const quit = await observe({
         action: "quit",
         binary: adapterBinary,
         pid: child.pid,
         timeoutMs: 5_000,
       });
-      if (
-        quit.status !== "passed" ||
-        !(await waitForProcessExit(child.pid, 5_000))
-      )
+      if (quit.status !== "passed" || !(await waitForExit(child.pid, 5_000)))
         throw new Error("acceptance-first-visible-cleanup-failed");
     } finally {
-      await terminateOwnedProcess(ownership, cleanupDependencies);
+      await terminate(ownership, cleanupDependencies);
     }
   }
   return percentile95(observations);

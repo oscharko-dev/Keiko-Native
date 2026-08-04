@@ -10,6 +10,7 @@ import {
   boundedScheduledLocators,
   directLifecycleWakeLocator,
   parseLifecycleWakeLocator,
+  validatedLifecycleWakeCommentId,
   validateLifecycleWakeSource,
 } from "./lifecycle-wake.mjs";
 import { pullRequestIssueNumber } from "./pr-contract.mjs";
@@ -36,9 +37,6 @@ const positive = (value) => {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 };
-const commentId = (eventName, event) =>
-  eventName === "issue_comment" ? String(event?.comment?.id ?? "") : "";
-
 function countedProvider(provider, limit) {
   let used = 0;
   return Object.freeze({
@@ -98,13 +96,18 @@ function directLocator(
   pullRequestNumber,
   event,
 ) {
+  const commentId = eventName === "issue_comment" ? event?.comment?.id : null;
   const locator = directLifecycleWakeLocator({
     action,
+    commentId,
     eventName,
     issueNumber,
     protectedDevSha: event.workflowSha,
     pullRequestNumber,
-    recoveryCommentId: commentId(eventName, event),
+    recoveryCommentId:
+      eventName === "issue_comment" && pullRequestNumber === null
+        ? String(commentId ?? "")
+        : "",
     repository: event?.repository?.full_name,
   });
   return [
@@ -138,6 +141,8 @@ function directPullRequestNumbers(eventName, event) {
 }
 
 async function resolvePullRequest(eventName, event, provider) {
+  if (eventName === "issue_comment")
+    validatedLifecycleWakeCommentId(event?.comment?.id);
   const numbers = directPullRequestNumbers(eventName, event);
   if (numbers.length !== 1) fail("exact-pull-request-required");
   const pullRequest = await stablePullRequest(provider, numbers[0]);

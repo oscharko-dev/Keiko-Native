@@ -6,8 +6,11 @@ const sha256Pattern = /^[0-9a-f]{64}$/u;
 const headPattern = /^[0-9a-f]{40}$/u;
 const foundationReadinessFingerprint =
   "da2459bd3becc6cbf651a24ef1b64d1b11a8ed642bfddc92923f0d6ed6dc8e5e";
+const packagedShellReadinessFingerprint =
+  "9ffd5d0ff53857f35ff47f470a4661fdd89ddcba8d08a2b92cf9c36a4afd446e";
 const expectedOutcomes = Object.freeze([
   "packaged-health-acknowledged",
+  "packaged-workspace-status-acknowledged",
   "normal-shutdown",
   "zero-owned-descendants",
   "package-policy",
@@ -96,6 +99,7 @@ function acceptanceEvidenceValid(evidence) {
       "boundedReasonCodes",
       "cargoLockSha256",
       "cleanupOwnedDescendants",
+      "foundationReadinessFingerprint",
       "npmLockSha256",
       "outcomes",
       "packageManifestSha256",
@@ -105,10 +109,13 @@ function acceptanceEvidenceValid(evidence) {
       "schema",
       "shutdownMs",
       "sourceRevision",
+      "workspaceAcknowledgementMs",
     ]) &&
-    evidence.schema === "keiko-native-packaged-shell-evidence/v1" &&
+    evidence.schema === "keiko-native-packaged-shell-evidence/v2" &&
     headPattern.test(evidence.sourceRevision) &&
-    evidence.readinessFingerprint === foundationReadinessFingerprint &&
+    evidence.readinessFingerprint === packagedShellReadinessFingerprint &&
+    evidence.foundationReadinessFingerprint ===
+      foundationReadinessFingerprint &&
     sha256Pattern.test(evidence.packageManifestSha256) &&
     sha256Pattern.test(evidence.cargoLockSha256) &&
     sha256Pattern.test(evidence.npmLockSha256) &&
@@ -117,10 +124,13 @@ function acceptanceEvidenceValid(evidence) {
     /^[a-z0-9._-]{1,80}$/iu.test(evidence.runner) &&
     exactValues(evidence.outcomes, expectedOutcomes) &&
     exactValues(evidence.boundedReasonCodes, expectedReasonCodes) &&
-    Number.isInteger(evidence.acknowledgementMs) &&
+    Number.isSafeInteger(evidence.acknowledgementMs) &&
     evidence.acknowledgementMs >= 0 &&
     evidence.acknowledgementMs <= 30_000 &&
-    Number.isInteger(evidence.shutdownMs) &&
+    Number.isSafeInteger(evidence.workspaceAcknowledgementMs) &&
+    evidence.workspaceAcknowledgementMs >= 0 &&
+    evidence.workspaceAcknowledgementMs <= evidence.acknowledgementMs &&
+    Number.isSafeInteger(evidence.shutdownMs) &&
     evidence.shutdownMs >= 0 &&
     evidence.shutdownMs <= 5_000 &&
     evidence.cleanupOwnedDescendants === 0 &&

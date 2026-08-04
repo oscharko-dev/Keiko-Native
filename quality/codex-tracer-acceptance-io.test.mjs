@@ -6,6 +6,7 @@ import {
   acceptanceEnvironmentFailures,
   canonicalRuntimeRoot,
   canonicalRuntimeResources,
+  measureFirstVisibleP95,
   observedSafeguards,
   packageArtifactFailures,
   physicalObservationFailures,
@@ -19,6 +20,38 @@ const runtimeSha256 =
   "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590";
 const promptSha256 =
   "e1a92579b1ca673135331829beb97792c1289a6bccdfe0303302256c546960f6";
+
+test("first-visible p95 permits one bounded cold-launch outlier", async () => {
+  let now = 0;
+  let launches = 0;
+  const observed = [];
+  const p95 = await measureFirstVisibleP95(
+    {},
+    "/bounded/adapter",
+    {},
+    {
+      authenticate: async ({ pid }) => ({ pid }),
+      launch: () => ({ pid: (launches += 1) }),
+      monotonicNow: () => now,
+      observe: async (request) => {
+        observed.push(request);
+        if (request.action === "probe-start")
+          now += request.pid === 1 ? 2_500 : 1_000;
+        return { prompted: false, reasonCode: null, status: "passed" };
+      },
+      terminate: async () => undefined,
+      waitForExit: async () => true,
+    },
+  );
+
+  assert.equal(p95, 1_000);
+  assert.equal(launches, 20);
+  assert.ok(
+    observed
+      .filter(({ action }) => action === "probe-start")
+      .every(({ timeoutMs }) => timeoutMs === 5_000),
+  );
+});
 
 test("crash recovery selects only one exact staged runtime owned by the app", () => {
   const appPid = 42;
