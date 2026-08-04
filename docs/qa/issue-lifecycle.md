@@ -257,11 +257,16 @@ A 17th record, request 201, replay, edit, unavailable fact, or any chain, anchor
 run/job/ref/SHA mismatch produces no record or lifecycle effect. Authenticated evidence is never
 edited, deleted, skipped, or reclassified. If v2 publication is interrupted before authentication,
 a fresh explicit maintainer command may retry the unconsumed target; the successful v2 checkpoint
-binds and quarantines incomplete publications only after enforcing a hard cap of four total
-candidate comment copies. Every byte-identical copy is authenticated before grouping and consumes
-one request-budget slot; a fifth copy fails closed with no record or effect. Its distinct
-comment-bound anchor and attestation tuple must be fully authenticated before any later copy becomes
-irrelevant. Each candidate must carry
+binds and quarantines incomplete publications only after enforcing a hard cap of four historical
+interrupted candidate comment copies present before the current attempt. Every byte-identical copy
+is authenticated before grouping and consumes one request-budget slot; a fifth historical copy
+fails closed with no record or effect. The current attempt's single prospective checkpoint comment
+is excluded from the historical cap only while it is the current publication and uses the separate
+26-request publication budget. It becomes the authenticated record on success; if authentication is
+interrupted, it becomes a historical candidate on the next recovery, where a resulting fifth
+historical copy denies another attempt. Each historical copy's distinct comment-bound anchor and
+attestation tuple must be fully authenticated before any later copy becomes irrelevant. Each
+candidate must carry
 its exact pre-comment locator artifact and valid locator attestation binding the protected writer
 run, terminal job, and locator-free candidate-record projection; its optional post-comment anchor
 must have no attestation, and the fixed anchor-attestation publication step must be proven

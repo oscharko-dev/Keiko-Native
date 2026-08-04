@@ -692,11 +692,17 @@ requires that exact settlement as predecessor. No other `abandoned` transition/r
 an expected producer, and no recovery checkpoint may add, replace, or rebind one.
 
 Successful publication and stable authentication of the v2 checkpoint compact the 16 records in
-the ordinary way and may also settle at most four strictly ordered quarantined overflow-publication
-members for that same unconsumed target. Overflow recovery has a hard cap of four total candidate
-comment copies. Every byte-identical copy is authenticated before grouping and consumes one
-request-budget slot; a fifth copy fails closed with no record or effect. Each candidate copy must be
-a complete exact v2 comment from the
+the ordinary way and may also settle at most four strictly ordered quarantined historical
+overflow-publication members for that same unconsumed target. Overflow recovery has a hard cap of
+four historical interrupted candidate comment copies present before the current attempt. Every
+byte-identical copy is authenticated before grouping and consumes one request-budget slot; a fifth
+historical copy fails closed with no record or effect. The current attempt's single prospective
+checkpoint comment is not input to either historical-candidate stable pass and is excluded from
+that cap only while it is the current publication; its creation, read-back, anchor, and
+authentication use the separate 26-request publication budget. On success it is the authenticated
+checkpoint record. If its authentication is interrupted, it becomes a historical candidate on the
+next recovery, where a resulting fifth historical copy denies another attempt. Each candidate copy
+must be a complete exact v2 comment from the
 Actions Bot/App and protected coordinator and bind the same target and base chain. Before creating
 that comment, the writer must have published the exact locator artifact and valid locator
 attestation identified in the body. The locator claim binds the protected coordinator path, ref,
@@ -718,7 +724,8 @@ anchor-attestation publication step's mapped name, provider-visible number, and 
 tuple authenticates the existing checkpoint instead. If that step was attempted, started, failed,
 cancelled, timed out, is missing, or has unknown status, absence from attestation inventories cannot
 prove non-acceptance: the candidate is ambiguous and permits no retry, quarantine, checkpoint, or
-effect. A fifth copy, missing or invalid locator attestation, any anchor attestation,
+effect. A fifth historical copy present before the current attempt, missing or invalid locator
+attestation, any anchor attestation,
 mismatched or multiple artifact, nonterminal job, unknown provenance, or conflicting body likewise
 fails closed. Existing evidence remains append-only and auditable. Subsequent wakes use the normal
 v1 protocol and 15-record bound; overflow recovery grants no standing exception.
@@ -1059,8 +1066,9 @@ use can reduce availability but cannot create authority or bypass stable rereads
 
 Overflow recovery uses a separate hard 200-request counter. It has one closed historical-record
 authentication profile that replaces ADR-0012's independent workflow-run GET and
-referenced-workflow inventory for the 16 base records and at most four total interrupted candidate
-comment copies, counting every byte-identical copy before grouping. The
+referenced-workflow inventory for the 16 base records and at most four historical interrupted
+candidate comment copies present before the current attempt, counting every byte-identical copy
+before grouping. The
 GitHub-native attestation's verified issuer and SLSA/OIDC claims must bind repository, protected
 caller and writer paths, immutable `dev` ref and commit, run ID, run attempt, and subject digest;
 for each record or interrupted candidate that carries `workflow_job_id`, a separate exact
@@ -1087,8 +1095,8 @@ and attempt. Where a record encodes a job, the matching exact writer-job read in
 to that attested run; a
 redundant workflow-run read and a separate provider bundle-download request are prohibited.
 
-The first-pass candidate addition is exactly 40 requests across four comment-copy slots: four
-candidate comment exact-ID rereads; four candidate-locator exact-name or run-scoped artifact
+The first-pass candidate addition is exactly 40 requests across four historical comment-copy slots:
+four candidate comment exact-ID rereads; four candidate-locator exact-name or run-scoped artifact
 inventories; four exact locator metadata rereads; eight calls for four locator download redirect
 chains; eight subject-qualified attestation inventories for four locator and four optional-anchor
 subjects; eight calls for four optional-anchor download redirect chains; and four exact terminal
@@ -1105,9 +1113,10 @@ be reused. Any changed, deleted, expired, ambiguous, or mismatched artifact fail
 36-request base ceiling repeats the two comment pages, base inventory, 16 attestation inventories,
 up to 16 applicable job reads, and current-source GraphQL read without another archive request. Its
 24-request candidate
-addition repeats the four exact-ID comment-copy slots, four locator inventories, four locator
-metadata reads, eight subject inventories, and four terminal-job reads. The second pass is exactly
-`36 + 24 = 60`.
+addition repeats the four exact-ID historical comment-copy slots, four locator inventories, four
+locator metadata reads, eight subject inventories, and four terminal-job reads. The second pass is
+exactly `36 + 24 = 60`. The current attempt's prospective checkpoint comment does not exist during
+these two passes and is covered only by the later 26-request publication budget.
 This asymmetric stable read proves current provider bindings twice while counting the 24 archive
 download redirects once rather than pretending each archive costs one request in both passes. The
 36-request second-pass base likewise contains up to 16 job reads only for base records that encode
@@ -1351,8 +1360,11 @@ malformed chain. It only terminalizes one explicitly authorized, fully authentic
 suffix as a null-effect v2 checkpoint. If an earlier v2 checkpoint comment was accepted but its
 post-publication authentication was interrupted, a fresh explicit maintainer command may retry the
 still-unconsumed target and the successful v2 compacted prefix quarantines incomplete publications
-only after a complete set capped at four total candidate comment copies has been authenticated; a
-fifth copy is denied. This is not automatic retry, and no ordinary settlement record is
+only after a complete set capped at four historical interrupted candidate comment copies has been
+authenticated; a fifth historical copy is denied. The current attempt's single prospective
+checkpoint comment uses the separate 26-request publication budget; it becomes the authenticated
+record on success or a historical candidate on the next recovery if authentication is interrupted.
+This is not automatic retry, and no ordinary settlement record is
 appended ahead of the checkpoint. The same four record types remain authoritative; version 2 of
 transition/read-back is not a fifth record type. Activation remains disabled until Issue #55, and
 every `dev` delivery remains a human-only manual merge.

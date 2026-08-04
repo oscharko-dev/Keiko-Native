@@ -2809,7 +2809,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /hard cap of four total\s+candidate\s+comment copies[\s\S]{0,100}Every byte-identical copy is authenticated[\s\S]{0,160}fifth copy fails closed with no record or\s+effect/iu,
+    /hard cap of\s+four\s+historical\s+interrupted\s+candidate\s+comment\s+copies[\s\S]{0,180}Every\s+byte-identical\s+copy\s+is authenticated[\s\S]{0,180}fifth\s+historical\s+copy\s+fails closed with no\s+record or\s+effect/iu,
   );
   assert.match(
     protocol,
@@ -2856,11 +2856,15 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   for (const projection of projections) {
     assert.match(
       projection,
-      /overflow recovery[\s\S]{0,900}(?:activation remains disabled|before Issue #55|no lifecycle[^.]{0,120}effect)/iu,
+      /overflow recovery[\s\S]{0,2000}(?:activation remains disabled|before Issue #55|no lifecycle[^.]{0,120}effect)/iu,
     );
     assert.match(
       projection,
-      /hard cap of four total\s+candidate\s+comment copies[\s\S]{0,100}Every byte-identical copy is authenticated[\s\S]{0,160}fifth copy fails closed with no record or\s+effect/iu,
+      /hard cap of\s+four\s+historical\s+interrupted\s+candidate\s+comment\s+copies[\s\S]{0,180}Every\s+byte-identical\s+copy\s+is authenticated[\s\S]{0,180}fifth\s+historical\s+copy\s+fails closed with no\s+record or\s+effect/iu,
+    );
+    assert.match(
+      projection,
+      /current attempt[\s\S]{0,200}single\s+prospective\s+checkpoint\s+comment[\s\S]{0,240}separate\s+26-request\s+publication\s+budget[\s\S]{0,300}interrupted[\s\S]{0,220}historical\s+candidate[\s\S]{0,220}next\s+recovery/iu,
     );
   }
   for (const projection of [protocol, wake, lifecycle, gates]) {

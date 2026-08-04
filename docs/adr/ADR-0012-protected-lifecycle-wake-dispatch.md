@@ -702,8 +702,8 @@ requests, queues, merges, or repository settings.
 
 The exact overflow recovery authentication profile is the sole exception to the ordinary
 coordinator-record provider-run reads above. For the 16 historical base records and at most four
-total interrupted candidate comment copies, counting every byte-identical copy before grouping, it
-does not call the workflow-run endpoint and does not load the
+historical interrupted candidate comment copies present before the current attempt, counting every
+byte-identical copy before grouping, it does not call the workflow-run endpoint and does not load the
 referenced-workflow inventory. Instead, each GitHub-native attestation must cryptographically bind
 the fixed issuer, repository, protected top-level caller and reusable writer paths, immutable
 `refs/heads/dev`, protected commit, run ID, run attempt, subject name, and digest through its
@@ -745,9 +745,14 @@ job plus the locator-free candidate-record projection, and its optional post-com
 attestation, and the prior writer's fixed anchor-attestation publication step is proven by its exact
 mapped name, provider-visible number, and `skipped` conclusion in both exact terminal-job reads, a
 fresh explicit maintainer command
-may authorize another attempt for the same target. Overflow recovery has a hard cap of four total
-candidate comment copies. Every byte-identical copy is authenticated before locator-pair grouping
-and consumes one request-budget slot; a fifth copy fails closed with no record or effect. The
+may authorize another attempt for the same target. Overflow recovery has a hard cap of four
+historical interrupted candidate comment copies present before the current attempt. Every
+byte-identical copy is authenticated before locator-pair grouping and consumes one request-budget
+slot; a fifth historical copy fails closed with no record or effect. The current attempt's single
+prospective checkpoint comment is excluded from the historical cap only while it is the current
+publication and uses the separate 26-request publication budget. It becomes the authenticated
+checkpoint record on success; if authentication is interrupted, it becomes a historical candidate
+on the next recovery, where a resulting fifth historical copy denies another attempt. Historical
 copies are ordered by ascending comment ID after the 16 predecessor-ordered authenticated members.
 The coordinator fully authenticates every copy's distinct comment-bound anchor and attestation
 tuple before treating a later copy as irrelevant, rejects every duplicate canonical member
@@ -790,10 +795,11 @@ The second stable pass consumes at most 60 requests. It reuses only the bounded 
 downloaded in pass one while independently rereading every comment, artifact identity and metadata,
 attestation subject, complete job/step projection, and current fact. Immutable artifact IDs and
 provider digests must remain exact; any expiry, deletion, change, or ambiguity fails closed. Its
-36-request base plus 24-request candidate addition contains no archive download. Every
+36-request base plus 24-request candidate addition contains no archive download. Every historical
 byte-identical copy consumes one of the four complete candidate slots in both passes. Subject
 responses contain their matching bundles and no separate bundle-download endpoint exists. A fifth
-copy fails closed and produces no record or effect.
+historical copy fails closed and produces no record or effect. The current prospective checkpoint
+comment is created only afterward under the separate 26-request publication budget.
 
 The exact direct-comment authentication consumes at most six requests. The remaining 26 requests
 are reserved for:
