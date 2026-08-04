@@ -101,7 +101,8 @@ The domain, algorithm `sha-256`, schema version, and record body are fixed field
 Generation-request, producer-result, ordinary phase/fence-claim, and ordinary
 transition/read-back records use schema version `1`. The exact forward recovery-settlement
 phase/fence claim and overflow transition/read-back below are the only record version-2 exceptions;
-the exact cursor-recovery phase/fence claim below is the sole record version-3 exception.
+the historical incomplete cursor claim below is the sole record version-3 exception, and the exact
+complete cursor-recovery phase/fence claim below is the sole record version-4 exception.
 The existing generation-input domain `keiko-native.lifecycle-input-generation` remains unchanged.
 Every producer and consumer independently parses the bytes, recomputes the digest, decodes both
 fixed-length values, and compares them in constant time. A caller-supplied digest is never trusted.
@@ -195,13 +196,15 @@ version-1 preimage, and neither form negotiates fields at runtime.
 
 The version-2 `quarantine_reason` is closed. `anchor-publication-interrupted` binds the existing
 ordinary reserved-fence or reserved-checkpoint orphan. `cursor-claim-anchor-publication-interrupted`
-binds only the exact final complete cursor-recovery phase/fence claim v3 comment intended for record
+binds only the exact final complete cursor-recovery phase/fence claim v4 comment intended for record
 `n + 1`, where `n` is the authenticated live non-checkpoint suffix cardinality from one through 11
 after a unique-genesis or ordinary-v1 root, and from one through 9 after an overflow-v2 root.
 `cursor-checkpoint-anchor-publication-interrupted` binds only the exact immediate cursor-recovery
-checkpoint comment intended for record `n + 2` after an authenticated v3 claim at record `n + 1`.
-Each cursor reason requires the same authorized maintainer
-request and exact recovery target, a failed, cancelled, or timed-out protected-writer job whose
+checkpoint comment intended for record `n + 2` after an authenticated v4 claim at record `n + 1`.
+Each cursor reason requires a fresh authenticated maintainer request for the still-unconsumed exact
+recovery target. The settlement's `authorized_request_identity` binds that fresh request, while its
+authenticated orphan/predecessor projection retains the original v4 cursor authorization and target
+identities. It also requires a failed, cancelled, or timed-out protected-writer job whose
 fixed anchor-attestation step is stably `skipped`, zero or one immutable un-attested anchor, zero
 attestations, and byte-identical orphan body, digest, predecessor, and target evidence. No other
 orphan, phase, outcome, sequence, or reason is accepted.
@@ -278,16 +281,16 @@ subset for that frozen generation, including the empty set, and retains each pro
 owning fence.
 
 The third exception is only the recovery-owned `abandoned` checkpoint immediately following one
-exact complete cursor-recovery v3 claim. The live suffix must contain one internally valid open
+exact complete cursor-recovery v4 claim. The live suffix must contain one internally valid open
 generation, begin with its authenticated generation request, contain no terminal phase/fence claim
 or checkpoint, and contain from one through 11 authenticated records after a unique-genesis or
-ordinary-v1 root, or from one through 9 after an overflow-v2 root. The v3 claim binds that exact
+ordinary-v1 root, or from one through 9 after an overflow-v2 root. The v4 claim binds that exact
 generation and the complete authenticated same-generation producer-result subset already present
 before it, including the empty set. The immediate checkpoint carries exactly that subset, retains
 each result's original producer-owning fence, fixes `transition_owner` to `recovery`, fixes
 `effect_identity` to null, and fixes `outcome` to `abandoned` and `reason_code` to
-`recovery-required`. No producer may publish after the v3 fence. A root-only scan with zero live
-records is a no-op: it authenticates the root and replay-shadow relation but emits no v3 claim,
+`recovery-required`. No producer may publish after the v4 fence. A root-only scan with zero live
+records is a no-op: it authenticates the root and replay-shadow relation but emits no v4 claim,
 checkpoint, record, or effect. Any other suffix shape fails closed. No other transition/read-back
 may omit an expected producer.
 
@@ -484,19 +487,41 @@ version 2. The loader dispatches on the parent record schema version before sele
 settlement schema. It never probes both settlement parsers or infers a version from downstream
 bytes.
 
-### Phase/fence claim v3
+### Legacy incomplete phase/fence claim v3
 
 Marker:
 
 `<!-- keiko-native-lifecycle-phase-fence-claim:v3 -->`
 
-This is schema version `3` of the existing `phase-fence-claim` record type, not a fifth record type.
+Schema version `3` is read-only compatibility for the pre-amendment incomplete cursor claim. Its
+fields are the complete Phase/fence claim v1 sequence with `schema_version`: uint `3` and exactly
+these three fields inserted immediately after `recovery_scan_complete`, in this order:
+
+1. `recovery_live_record_members`: list of `checkpoint-member`
+2. `replay_shadow_body_sha256`: SHA-256 or explicit null
+3. `replay_shadow_comment_ids`: sorted list of uint
+
+The only accepted v3 shape has phase `recovery`, `claim_outcome` `claimed`, a non-null recovery-scan
+identity, positive page and comment counts, a non-null accumulated-suffix identity, a non-null
+cursor, `recovery_scan_complete` false, a null settlement identity, and the exact bounded
+live-member and replay-shadow summary. It has no cursor authorization or target fields because
+those bytes do not exist in schema v3. No new writer emits, resumes, converts, or terminalizes v3.
+Every other v3 phase, outcome, field order, cardinality, null combination, or use is malformed; a
+parser dispatches on schema version before parsing fields and never interprets v3 bytes as v4.
+
+### Complete phase/fence claim v4
+
+Marker:
+
+`<!-- keiko-native-lifecycle-phase-fence-claim:v4 -->`
+
+This is schema version `4` of the existing `phase-fence-claim` record type, not a fifth record type.
 It is used only for a new cursor-completion claim. Its fields are the complete
-Phase/fence claim v1 sequence with `schema_version`: uint `3` and exactly these five fields inserted
+Phase/fence claim v1 sequence with `schema_version`: uint `4` and exactly these five fields inserted
 immediately after `recovery_scan_complete`, in this order:
 
-1. `cursor_recovery_authorization_identity`: SHA-256 or explicit null
-2. `cursor_recovery_target_identity`: SHA-256 or explicit null
+1. `cursor_recovery_authorization_identity`: SHA-256
+2. `cursor_recovery_target_identity`: SHA-256
 3. `recovery_live_record_members`: list of `checkpoint-member`
 4. `replay_shadow_body_sha256`: SHA-256 or explicit null
 5. `replay_shadow_comment_ids`: sorted list of uint
@@ -509,25 +534,21 @@ digest and a provisional `irrelevant` recovery-suffix-member classification unde
 Actions Bot/App, never-edited shape. Each list and digest is an authenticated complete summary,
 not a record, checkpoint member, target-consumption fact, or authority source.
 
-A historical incomplete v3 claim has phase `recovery`, `claim_outcome` `claimed`, a non-null
-recovery-scan identity, positive page and comment counts, a non-null accumulated-suffix identity, a
-non-null cursor, `recovery_scan_complete` false, a null settlement identity, and the exact bounded
-live-member and replay-shadow summary fields above. Its cursor authorization and target fields are
-both explicit null. That is the sole incomplete v3 field and
-nullability shape recognized as read-only compatibility; no new writer emits or resumes it.
-
-A new v3 claim uses phase `recovery`, `claim_outcome` `settled`, the complete scan identity and
+A new v4 claim uses phase `recovery`, `claim_outcome` `settled`, the complete scan identity and
 cumulative counts, a null cursor, `recovery_scan_complete` true, and a null settlement identity. Its
 cursor authorization and target identities are both non-null. The target is exactly the incomplete
 recovery-scan identity computed from the stable two-page normal-load boundary that first proved
-older relevant history; it has that boundary's non-null provider cursor and `complete` false. The
+older relevant history before the authorizing command comment. It has that boundary's non-null
+provider cursor and `complete` false. The exact authenticated command comment ID is an exclusive
+upper cutoff: the coordinator reconstructs the same stable historical prefix ending immediately
+before that ID, so the command itself and every later comment cannot change the target. The
 authorization is ADR-0012's exact command-specific authenticated direct-comment request whose
-`recovery_target_identity` equals that target. Both are canonical v3 record fields, so neither the
+`recovery_target_identity` equals that target. Both are canonical v4 record fields, so neither the
 generation's inherited `request_identity` nor an in-memory scan can substitute for the maintainer
 authority. A
 single serialized recovery invocation holds the provider-budget and per-issue groups, scans every
 page from the stable normal-load boundary through the authenticated root, and may publish the final
-phase/fence claim v3 only when the complete authenticated live suffix contains one internally valid
+phase/fence claim v4 only when the complete authenticated live suffix contains one internally valid
 open generation with no terminal claim or checkpoint: one through 11 records after a unique-genesis
 or ordinary-v1 root, and one through 9 after an overflow-v2 root. It publishes no
 intermediate cursor or progress claim. Immediately before publishing the final claim, the
@@ -535,11 +556,15 @@ coordinator obtains two equal current source observations that still match the f
 generation and encodes the final observation identity in the claim. The final claim and its
 immediate recovery-owned
 `abandoned` transition/read-back checkpoint consume a closed two-record recovery reserve without
-crossing the 15-record bound. A root-only zero-live-record scan is the no-op defined above. A
+crossing the 15-record bound. The v4 claim does not consume its cursor target; only full
+authentication of that immediate checkpoint, whether published directly or after one of the two
+closed cursor-orphan settlements, consumes it. A root-only zero-live-record scan is the no-op
+defined above. A
 larger, terminal, checkpointed, multi-generation, or otherwise invalid open suffix uses its already
-defined exact recovery path or fails closed with no v3 claim, checkpoint, record, or effect.
+defined exact recovery path or fails closed with no v4 claim, checkpoint, record, or effect.
 
-Incomplete phase/fence claim v1 and v3 cursor records remain read-only compatibility. Neither can
+Incomplete phase/fence claim v1 and legacy v3 cursor records remain read-only compatibility.
+Neither can
 be resumed or converted; they cannot be used to derive missing live-member, replay-shadow, or
 starting-boundary evidence. The frozen pre-activation inventory is not limited to Issue #55's
 disposable-probe manifest. The frozen maximum issue number comes from two stable repository
@@ -552,9 +577,8 @@ exact activation precondition. Discovery of one blocks activation and requires s
 exact-target human reconciliation that retains the original evidence; the maintainer records the
 blocked issue and opens an accepted remediation issue before any settlement. There is no automatic
 migration, digest-only conversion, evidence deletion, or inferred boundary. Phase/fence claim v2
-remains exclusive to forward recovery settlement. Except for the read-only incomplete compatibility
-shape above, every other v3 phase, outcome, field order, cardinality, null combination, or use is
-malformed.
+remains exclusive to forward recovery settlement. Every v4 shape other than the exact complete
+settled claim above is malformed.
 
 Before activation, every pre-amendment protected writer run loaded from an older `dev` SHA must be
 terminal. The Issue #55 activation operation then acquires and holds the existing repository-wide
@@ -750,19 +774,19 @@ for an unanchored reserved-fence orphan that was intended to become record 13. F
 reserved terminal fence at record 13, the writer may append only its immediate
 transition/read-back checkpoint, or one exact version-2 recovery phase/fence settlement for an
 interrupted checkpoint publication as record 14 followed immediately by the recovery-owned
-transition/read-back checkpoint as record 15. The exact cursor-recovery phase/fence claim v3 defines
+transition/read-back checkpoint as record 15. The exact cursor-recovery phase/fence claim v4 defines
 `n` as the authenticated live non-checkpoint suffix cardinality from one through 11 after a
 unique-genesis or ordinary-v1 root, and from one through 9 after an overflow-v2 root. It becomes
 record `n + 1`; an unanchored copy of that claim instead permits only the exact version-2
 `cursor-claim-anchor-publication-interrupted` settlement at record `n + 1`. Either authenticated
 record permits only its immediate recovery-owned transition/read-back checkpoint at record
-`n + 2`. An authenticated cursor-recovery v3 claim at record `n + 1` alternatively permits only the
+`n + 2`. An authenticated cursor-recovery v4 claim at record `n + 1` alternatively permits only the
 exact version-2 `cursor-checkpoint-anchor-publication-interrupted` settlement for an unanchored copy
 of that checkpoint at record `n + 2`, followed only by the recovery-owned checkpoint at record
 `n + 3`. At `n = 11` for a unique-genesis or ordinary-v1 root, these paths consume at most records
 12 through 14; an overflow-v2 root stops at `n = 9` and records 10 through 12. Neither widens the
 loader.
-From an interrupted-v3 settlement at record `n + 1`, only the recovery-owned null-effect checkpoint
+From an interrupted-v4 settlement at record `n + 1`, only the recovery-owned null-effect checkpoint
 may follow as record `n + 2`; from a reserved-fence settlement at record 13, only that checkpoint may
 follow as record 14. A nonterminal append at 12 other than the exact cursor-recovery checkpoint or
 checkpoint-settlement continuation, any other append after a reserved fence or settlement, any
@@ -813,24 +837,26 @@ its first record that its closed maximum can reach this reserve. These rules pre
 execution from ever creating the prior-checkpoint-plus-16 shape that overflow recovery correctly
 rejects while preserving a forward path for one interrupted reserved checkpoint.
 
-If publication of the final complete cursor-recovery v3 claim comment succeeds but its anchor
-publication is interrupted, the authorized recovery repeats the same closed root-type proof used by
+If publication of the final complete cursor-recovery v4 claim comment succeeds but its anchor
+publication is interrupted, a fresh authenticated command for the still-unconsumed cursor target
+authorizes settlement. The recovery repeats the same closed root-type proof used by
 normal cursor completion. An overflow-v2-checkpoint root requires the already-established lower-ID
 root checkpoint and greater replay-shadow-ID relation. An ordinary-v1-checkpoint root requires a
 fully authenticated v1 checkpoint, a null replay-shadow digest, and an empty shadow-ID list. A
 unique-genesis root likewise requires no provisional shadows, a null replay-shadow digest, and an
 empty shadow-ID list, then authenticates the complete genesis suffix directly. Only after that
-root-specific proof and exact v3 authorization/target binding may recovery append the version-2
+root-specific proof and exact v4 authorization/target binding may recovery append the version-2
 `cursor-claim-anchor-publication-interrupted` settlement at record `n + 1`, where `n` is the
 authenticated live non-checkpoint suffix cardinality from one through 11 after a unique-genesis or
-ordinary-v1 root, and from one through 9 after an overflow-v2 root. The orphan v3 remains
+ordinary-v1 root, and from one through 9 after an overflow-v2 root. The orphan v4 remains
 quarantine-only. Once the settlement is authenticated, record `n + 2` is the immediate
 recovery-owned null-effect checkpoint described above; no other record or effect may intervene.
 
-If the v3 claim is authenticated at record `n + 1` and publication of its immediate cursor-recovery
-checkpoint comment succeeds but its anchor publication is interrupted, the authorized recovery
+If the v4 claim is authenticated at record `n + 1` and publication of its immediate cursor-recovery
+checkpoint comment succeeds but its anchor publication is interrupted, the cursor target remains
+unconsumed. A fresh authenticated command for that target authorizes recovery, which
 repeats the same overflow-v2-checkpoint, ordinary-v1-checkpoint, or unique-genesis root proof and
-exact v3 authorization/target binding before appending the version-2
+exact v4 authorization/target binding before appending the version-2
 `cursor-checkpoint-anchor-publication-interrupted` settlement at record `n + 2`. The orphan
 checkpoint remains quarantine-only. Once that settlement is authenticated,
 record `n + 3` is the immediate recovery-owned null-effect checkpoint; no other record or effect may
@@ -838,6 +864,12 @@ intervene.
 Both cursor settlements prove the exact fixed skipped-attestation and orphan facts required by the
 closed version-2 reason above. Repeated interruption of either settlement or its recovery-owned
 checkpoint fails closed for human reconciliation rather than widening the 15-record bound.
+The fresh settlement command is encoded in the version-2 recovery settlement; the orphan v4 and
+its predecessor retain the original v4 authorization and target identities. An authenticated v4
+claim alone does not consume the cursor target. The target is consumed only when the direct
+immediate checkpoint or the settlement-following recovery checkpoint
+has its exact comment, anchor, and attestation fully authenticated. Until then, a command for that
+same target is not a replay; after consumption every reordered or duplicate command is a no-op.
 
 Each recovery-owned `abandoned` checkpoint immediately following any exact version-2 settlement in
 this reserve
@@ -907,7 +939,7 @@ the authenticated cumulative summary and every full `recovery-suffix-member` pre
 ordinary irrelevant comments, in memory across its twice-stable pages. It first fully authenticates
 the root under the same three closed branches below: overflow-v2 checkpoint plus greater shadow-ID
 relation, ordinary-v1 checkpoint plus an empty shadow summary, or unique genesis plus an empty
-shadow summary and complete directly authenticated suffix. Only then may one phase/fence claim v3
+shadow summary and complete directly authenticated suffix. Only then may one phase/fence claim v4
 persist the exact cursor authorization and target, complete at-most-15 live record members, one
 shadow body digest, and exact shadow comment IDs. It publishes no intermediate cursor or progress
 claim. The
@@ -992,19 +1024,19 @@ non-immediate checkpoint, changed immutable binding, or unavailable read remains
 no successor or effect.
 
 The closed direct-cursor authentication projection applies only to an exact settled phase/fence
-claim v3 and its immediate recovery-owned version-1 `abandoned` checkpoint. The v3 claim
+claim v4 and its immediate recovery-owned version-1 `abandoned` checkpoint. The v4 claim
 authenticates the complete frozen open generation reconstructed from its authenticated root and
 live-member preimages, its encoded `cursor_recovery_authorization_identity`, its encoded
 `cursor_recovery_target_identity`, and the final of the two equal current
 source observations obtained immediately before claim publication. Its immediate checkpoint binds
 that same frozen generation, the generation request, both cursor recovery identities through the
-exact v3 predecessor, source observation, and exact
-same-generation producer subset present before v3, including empty. Once the v3 claim's exact
+exact v4 predecessor, source observation, and exact
+same-generation producer subset present before v4, including empty. Once the v4 claim's exact
 comment, anchor, and attestation authenticate, later current-fact drift does not stale the claim
 or its mandatory checkpoint, including drift before checkpoint publication. The final provider
-read must still prove every immutable v3 and checkpoint binding; then-current facts are availability
+read must still prove every immutable v4 and checkpoint binding; then-current facts are availability
 evidence only. A missing immediate checkpoint, changed immutable binding, producer publication
-after v3, or unavailable read remains blocked and grants no successor or effect.
+after v4, or unavailable read remains blocked and grants no successor or effect.
 
 Login, marker, author association, check name, details URL, event timing, or a copied comment cannot
 authenticate a record alone. A missing `performed_via_github_app`, wrong App, wrong workflow/ref,
@@ -1209,11 +1241,19 @@ If two comment pages do not reach the checkpoint, the workflow performs no lifec
 effect. Stable reads that prove relevant non-empty history continues beyond those pages compute the
 effect-disabled cursor-recovery target as that boundary's incomplete recovery-scan identity and
 expose only its digest through the existing redacted recovery observation. Cursor-resumed recovery
-begins only after ADR-0012's exact direct maintainer command authenticates that target; an ordinary
-wake or the target digest alone cannot authorize it. The authorized single invocation retains the
-provider's backward cursor, exact
-counts, accumulated-suffix identity, and recovery-scan identity in memory; it publishes no
-intermediate claim. Every scanned timeline comment, including an irrelevant comment, contributes
+begins only after ADR-0012's exact direct maintainer command authenticates that target. The direct
+event's exact never-edited command comment ID is the exclusive upper cutoff. Two stable bounded
+reads reconstruct the newest historical prefix strictly before the command comment ID cutoff,
+containing only lower comment IDs, and must reproduce the same two-page member bytes, accumulated
+suffix, provider boundary, counts, and incomplete recovery-scan identity that produced the command
+digest. The command and all
+later comments are ingress, not members of that frozen prefix; an edit, deletion, missing
+boundary, unstable cursor, or any lower-ID history drift fails closed. The existing direct-ingress
+reads supply this cutoff proof and add no provider request. An ordinary wake or the target digest
+alone cannot authorize recovery. The authorized single invocation retains the provider's
+backward cursor, exact counts, accumulated-suffix identity, and recovery-scan identity in memory; it
+publishes no intermediate claim. Every scanned timeline comment, including an irrelevant comment,
+contributes
 one `recovery-suffix-member`; members retain the exact stable GraphQL edge order returned for that
 backward page. Provider order is evidence of complete pagination, never lifecycle or predecessor
 authority. Recovery starts its accumulator at the first of the two normal-load pages, computes
@@ -1261,7 +1301,7 @@ invocation fully authenticates the v1 checkpoint and requires a null replay-shad
 empty shadow-ID list; overflow locator or shadow evidence is neither required nor accepted. A
 unique-genesis-rooted invocation likewise requires a null replay-shadow digest and an empty
 shadow-ID list, then authenticates the complete genesis suffix directly. A provisional shadow on
-either non-overflow path fails closed. Only then does the final v3 claim persist its authorization
+either non-overflow path fails closed. Only then does the final v4 claim persist its authorization
 and target identities, the complete bounded summary, exact accumulated identity, counts, page
 boundaries, and null cursor. If any replay, summary, root,
 or checkpoint fact differs, the provisional assertion and entire recovery fail closed without a
@@ -1269,12 +1309,12 @@ complete accumulator, checkpoint, or effect.
 
 The single serialized recovery invocation scans only until the complete accumulator reaches its
 hard cap of 3 pages and remains effect-disabled. It publishes no intermediate cursor or progress
-claim. The final v3 claim's `recovery_scanned_page_count` equals the complete accumulator's
+claim. The final v4 claim's `recovery_scanned_page_count` equals the complete accumulator's
 `accumulator_step`, and its `recovery_scanned_comment_count` equals the complete accumulator's
 `cumulative_member_count`. A provider cursor that becomes null before an authenticated checkpoint
 or unique genesis is found proves truncation and emits no claim. Reaching page 4 before that root
 is found is cursor exhaustion and likewise emits no claim. When the prior checkpoint or the unique
-null-predecessor genesis is found, the final phase/fence claim v3 sets `recovery_scan_complete` and
+null-predecessor genesis is found, the final phase/fence claim v4 sets `recovery_scan_complete` and
 the accumulator's `complete` to true. The invocation allows at most 6 comment-page requests: two
 requests stably read each of at most 3 pages. Three closed root-authentication branches share two
 budget profiles and the hard ceiling. A

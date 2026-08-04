@@ -565,8 +565,11 @@ trailing whitespace, second line, omitted or alternate algorithm, uppercase hexa
 requested state, lane, conclusion, or free-form payload. The digest is either the exact ADR-0011
 orphan recovery-target identity or the exact incomplete recovery-scan identity computed from the
 stable two-page normal-load boundary that first proves older relevant history. The latter is the
-cursor-recovery target. The coordinator recomputes the one applicable target from the current
-authenticated history and never probes or accepts both interpretations for one command.
+cursor-recovery target. For that interpretation, the authenticated command comment ID is an
+exclusive upper cutoff: the coordinator recomputes the target from the stable historical prefix
+ending immediately before the command, excluding the command and every later comment. It
+recomputes the one applicable target and never probes or accepts both interpretations for one
+command.
 
 The implementation owns one protected repository allowlist constant shared by lifecycle recovery
 and the existing maintainer-bound governance guard. Its entries are exactly the two immutable
@@ -596,16 +599,21 @@ One complete authentication read is exactly three provider requests:
 
 1. REST `GET /repos/{owner}/{repo}/issues/comments/{comment_id}` by the numeric database ID obtains
    the comment's global GraphQL `node_id` and REST facts;
-2. one GraphQL `node(id: $node_id)` query requires an `IssueComment` whose database ID,
+2. one GraphQL request requires `node(id: $node_id)` to be an `IssueComment` whose database ID,
    repository, issue number, body, author, creation/update timestamps, and edit fields agree with
-   the REST response; and
+   the REST response, and in the same request loads that issue's bounded newest 100 comment edges;
+   exactly one edge must contain that node and supplies its opaque connection cursor; and
 3. one REST collaborator-permission request for the same stable author login verifies current
    `maintain` or `admin` permission.
 
 The coordinator repeats that complete three-request route independently, so exact-comment
 authentication consumes six requests. The second REST response must return the same global node
-ID, and both GraphQL nodes and permission results must agree. Missing or changed node identity,
-resource association, actor, permission, or field fails closed.
+ID, and both GraphQL nodes, command-edge cursors, bounded edge sequences, and permission results
+must agree. Cursor recovery starts its normal two-page snapshot with `before` equal to that stable
+command-edge cursor. The command and all later edges are therefore excluded without consuming a
+third ingress request. A command absent from either bounded newest-100 response, a changed cursor or
+edge sequence, or any missing or changed node identity, resource association, actor, permission, or
+field fails closed; a maintainer must post a fresh command for a freshly observed target.
 
 Fallback discovery, actor authorization, and exact-comment authentication reserve at most fourteen
 requests inside ADR-0011's existing 150-request recovery-mode counter: at most four GraphQL
@@ -635,19 +643,25 @@ unchanged.
 
 The coordinator recomputes that identity only after the stable reads and then independently
 reconstructs either the exact orphan comment/body/record digest and last authenticated predecessor,
-or the exact stable two-page cursor boundary and incomplete recovery-scan target, plus current
+or the exact stable two-page cursor boundary strictly before the authenticated command comment ID
+and its incomplete recovery-scan target, plus current
 authority and every ADR-0011 target input. The event payload, comment ID, timing, digest text, or
 scheduling order alone grants no authority.
 
 At most one authenticated recovery record may consume a recovery-target identity. An orphan request
 binds the derived identity through ADR-0011's existing version-1
-`authorized_request_identity` field. A cursor request binds it through phase/fence claim v3's
+`authorized_request_identity` field. A cursor request binds it through phase/fence claim v4's
 `cursor_recovery_authorization_identity` and binds the same target through
 `cursor_recovery_target_identity`. Duplicate or reordered commands
-serialize under the issue lock. The first valid recovery publication consumes the target: an orphan
-uses its settlement claim, cursor recovery uses its final authenticated v3 claim, and suffix
-overflow uses its version-2 transition/read-back checkpoint.
+serialize under the issue lock. The first applicable terminal recovery publication consumes the
+target: an orphan uses its settlement claim, cursor recovery uses its fully authenticated immediate
+checkpoint, and suffix overflow uses its version-2 transition/read-back checkpoint.
 Every command for an already consumed target is a replay no-op regardless of provider order.
+An authenticated v4 claim alone does not consume its cursor target. If v4 or its immediate
+checkpoint publication is interrupted, a fresh exact command for the still-unconsumed target may
+authorize only ADR-0011's corresponding settlement path. That settlement binds the fresh request
+while authenticating the original v4 authorization and target through the orphan/predecessor chain;
+only the final settlement-following checkpoint consumes the target.
 
 The direct plain-issue recovery-comment locator takes precedence and the coordinator considers only
 that candidate. Other wakes, including a pull-request-comment wake with explicit null recovery
@@ -735,24 +749,24 @@ writing, and lifecycle effects retain the complete provider run and referenced-w
 ADR-0011's ordinary three-record reserve is also closed here. After 12 authenticated records, an
 unanchored reserved-fence comment may be settled only by an exact version-2 recovery phase/fence
 claim at record 13 and an immediate recovery-owned null-effect checkpoint at record 14. The exact
-complete cursor-recovery v3 sequence instead defines `n` as the authenticated live non-checkpoint
+complete cursor-recovery v4 sequence instead defines `n` as the authenticated live non-checkpoint
 suffix cardinality from one through 11 after a unique-genesis or ordinary-v1 root, and from one
-through 9 after an overflow-v2 root. Its v3 claim is record `n + 1` and must be followed
-immediately by its authenticated checkpoint at record `n + 2`. An interrupted unanchored v3 claim
+through 9 after an overflow-v2 root. Its v4 claim is record `n + 1` and must be followed
+immediately by its authenticated checkpoint at record `n + 2`. An interrupted unanchored v4 claim
 instead uses its exact version-2 cursor-claim settlement at record `n + 1`, followed only by the
 recovery-owned checkpoint at record `n + 2`. After an
 authenticated reserved fence at record 13, an unanchored checkpoint comment may be settled only by
 the corresponding version-2 claim at record 14 and immediate checkpoint at record 15. Likewise,
-after an authenticated cursor-recovery v3 at record `n + 1`, its interrupted unanchored
+after an authenticated cursor-recovery v4 at record `n + 1`, its interrupted unanchored
 cursor-recovery checkpoint uses the exact version-2 cursor-checkpoint settlement at record `n + 2`,
 followed only by the recovery-owned checkpoint at record `n + 3`. At `n = 11` for a unique-genesis
 or ordinary-v1 root, this consumes at most records 12 through 14; an overflow-v2 root stops at
-`n = 9` and records 10 through 12. Neither widens the loader. A direct v3 checkpoint is recovery-owned,
+`n = 9` and records 10 through 12. Neither widens the loader. A direct v4 checkpoint is recovery-owned,
 `abandoned`, null-effect, and carries exactly the authenticated same-generation producer subset
-already present before the v3 fence, including empty. The live suffix must begin with one
+already present before the v4 fence, including empty. The live suffix must begin with one
 authenticated generation request, contain one internally valid open generation, and contain no
 terminal fence or checkpoint. A root-only zero-live-record scan authenticates the root and shadows
-but is a no-op with no v3 claim, checkpoint, record, or effect. All settlement paths
+but is a no-op with no v4 claim, checkpoint, record, or effect. All settlement paths
 use the version-2 phase/fence marker and its encoded `recovery_settlement_schema_version=2`, so the
 parent record selects the settlement parser before downstream bytes are decoded. A historical
 settlement-bearing phase/fence v1 selects only the read-only settlement v1 schema. All paths
@@ -766,10 +780,10 @@ under the same fence. The settlement and its immediate recovery-owned checkpoint
 closed historical recovery authentication projection: their generation and request stay bound to
 the frozen predecessor/orphan, the settlement records the final of two equal stable current source
 observations, and later current-fact drift cannot stale either authenticated null-effect record.
-Immediately before direct v3 publication, two equal current source observations still match the
+Immediately before direct v4 publication, two equal current source observations still match the
 frozen open generation and the claim encodes the final identity plus its exact non-null cursor
-authorization and target identities. The v3 claim and immediate
-checkpoint use ADR-0011's closed direct-cursor authentication projection: the v3 record's non-null
+authorization and target identities. The v4 claim and immediate
+checkpoint use ADR-0011's closed direct-cursor authentication projection: the v4 record's non-null
 cursor recovery authorization and target fields retain the command-specific authorized request and
 exact target independently of the frozen generation request, and both records retain the exact
 observation and immutable predecessor/member
@@ -831,13 +845,15 @@ and greater shadow-ID relationship. An ordinary-v1-checkpoint-rooted invocation 
 authenticates the v1 checkpoint, requires a null shadow digest and empty shadow-ID list, and accepts
 no provisional shadow. A unique-genesis-rooted invocation requires those same empty-shadow facts
 and directly authenticates the complete genesis suffix. Both cursor-interruption settlements must
-repeat the same root-specific proof. Only then may one phase/fence claim v3 persist its non-null
+repeat the same root-specific proof. Only then may one phase/fence claim v4 persist its non-null
 `cursor_recovery_authorization_identity` and `cursor_recovery_target_identity`, complete at-most-15
 live record members, shadow summary, and exact shadow comment IDs. The authorization is the exact
 authenticated direct maintainer command for that target; the target is the incomplete scan identity
-at the stable normal-load boundary. The inherited generation `request_identity` cannot substitute
-for either field. It publishes no intermediate cursor or progress claim. The
-final
+from the stable historical prefix ending strictly before that command's exact comment ID. The
+command and all later comments are excluded from the frozen recovery prefix; the two stable
+direct-ingress reads must reproduce the same preceding boundary without an added provider request.
+The inherited generation `request_identity` cannot substitute for either field. It publishes no
+intermediate cursor or progress claim. The final
 claim and immediate checkpoint require one through 11 live records after a unique-genesis or
 ordinary-v1 root, or one through 9 after the overflow-v2 root, forming that exact open generation;
 zero live records are a no-op, and any larger or reserved open suffix uses its exact
@@ -861,9 +877,10 @@ complete accumulator, checkpoint, or effect. The classification adds no request 
 allocation, initiates no cursor recovery, and changes no 15-record bound, target consumption, or
 authority.
 
-Incomplete phase/fence claim v1 and v3 cursor records remain read-only compatibility and cannot be
-resumed or migrated. The frozen pre-activation inventory is not limited to Issue #55's disposable
-probe manifest. The frozen maximum issue number comes from two stable repository observations, and
+Incomplete phase/fence claim v1 and legacy v3 cursor records remain read-only compatibility and
+cannot be resumed or migrated. The frozen pre-activation inventory is not limited to Issue #55's
+disposable probe manifest. The frozen maximum issue number comes from two stable repository
+observations, and
 the inventory classifies every canonical issue number from 1 through that maximum as an issue, pull
 request, or missing resource. It scans every issue's complete bounded 3-page history and retains the
 other classifications as negative evidence. Page 4, instability, or an unclassified number makes

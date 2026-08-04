@@ -2473,15 +2473,35 @@ test("pins the protected lifecycle recovery wake decision", async () => {
 
   assert.match(
     adr,
-    /REST `GET \/repos\/\{owner\}\/\{repo\}\/issues\/comments\/\{comment_id\}`[\s\S]{0,500}GraphQL `node\(id: \$node_id\)`[\s\S]{0,500}collaborator-permission/iu,
+    /REST `GET \/repos\/\{owner\}\/\{repo\}\/issues\/comments\/\{comment_id\}`[\s\S]{0,700}GraphQL request[^.]{0,180}`node\(id: \$node_id\)`[\s\S]{0,700}collaborator-permission/iu,
   );
   assert.match(
     adr,
-    /authentication consumes six requests[\s\S]{0,700}at most fourteen\s+requests[\s\S]{0,500}remaining 136 requests[\s\S]{0,500}151st total request/iu,
+    /GraphQL request[\s\S]{0,500}newest 100 comment edges[\s\S]{0,400}exactly one edge[^.]{0,220}opaque connection cursor/iu,
+  );
+  for (const predicate of [
+    "both GraphQL nodes, command-edge cursors, bounded edge sequences",
+    "`before` equal to that stable",
+    "command-edge cursor",
+  ])
+    assert.ok(adr.includes(predicate), predicate);
+  assert.ok(
+    adr.includes(
+      "The command and all later edges are therefore excluded without consuming a\nthird ingress request.",
+    ),
+    "command edge must freeze the pre-command snapshot without another request",
+  );
+  assert.ok(
+    adr.includes("authentication consumes six requests"),
+    "exact command authentication must remain six requests",
   );
   assert.match(
     adr,
-    /At most one authenticated recovery record may consume a recovery-target identity[\s\S]{0,1000}replay no-op/iu,
+    /at most fourteen\s+requests[\s\S]{0,500}remaining 136 requests[\s\S]{0,500}151st total request/iu,
+  );
+  assert.match(
+    adr,
+    /At most one authenticated recovery record may consume a recovery-target identity[\s\S]{0,1200}v4 claim alone does not consume[^.]{0,180}cursor target[\s\S]{0,900}fresh exact command[\s\S]{0,900}final settlement-following checkpoint consumes the target/iu,
   );
   assert.match(
     adr,
@@ -2715,7 +2735,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /The third exception is only the recovery-owned `abandoned` checkpoint[^.]{0,240}cursor-recovery v3 claim/iu,
+    /The third exception is only the recovery-owned `abandoned` checkpoint[^.]{0,240}cursor-recovery v4 claim/iu,
   );
   assert.match(
     protocol,
@@ -2934,7 +2954,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     );
     assert.match(
       projection,
-      /(?:phase\/fence\s+claim\s+v3|schema-version-3\s+phase\/fence\s+claim)[\s\S]{0,1800}no\s+intermediate[^.]{0,160}(?:progress|cursor)[^.]{0,120}claim/iu,
+      /(?:phase\/fence\s+claim\s+v4|schema-version-4\s+phase\/fence\s+claim)[\s\S]{0,1800}no\s+intermediate[^.]{0,160}(?:progress|cursor)[^.]{0,120}claim/iu,
     );
     assert.match(
       projection,
@@ -2993,7 +3013,15 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /Phase\/fence claim v3[\s\S]{0,700}`cursor_recovery_authorization_identity`[\s\S]{0,300}`cursor_recovery_target_identity`[\s\S]{0,500}`recovery_live_record_members`[\s\S]{0,500}`replay_shadow_body_sha256`[\s\S]{0,500}`replay_shadow_comment_ids`/iu,
+    /Phase\/fence claim v4[\s\S]{0,700}`cursor_recovery_authorization_identity`[\s\S]{0,300}`cursor_recovery_target_identity`[\s\S]{0,500}`recovery_live_record_members`[\s\S]{0,500}`replay_shadow_body_sha256`[\s\S]{0,500}`replay_shadow_comment_ids`/iu,
+  );
+  assert.match(
+    protocol,
+    /legacy incomplete phase\/fence claim v3[\s\S]{0,700}schema version `3`[\s\S]{0,700}exactly\s+these three fields[\s\S]{0,700}`recovery_live_record_members`[\s\S]{0,500}`replay_shadow_body_sha256`[\s\S]{0,500}`replay_shadow_comment_ids`[\s\S]{0,1500}no cursor authorization or target fields/iu,
+  );
+  assert.match(
+    protocol,
+    /complete phase\/fence claim v4[\s\S]{0,500}schema version `4`[\s\S]{0,500}`schema_version`: uint `4`[\s\S]{0,500}exactly\s+these five fields/iu,
   );
   assert.match(
     protocol,
@@ -3005,12 +3033,20 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /incomplete[^.]{0,160}(?:phase\/fence claim v1|v1)[^.]*(?:and|or)[^.]{0,160}(?:phase\/fence claim v3|v3)[^.]{0,220}read-only[\s\S]{0,1800}zero[^.]{0,220}activation\s+precondition[\s\S]{0,700}separately governed[^.]{0,220}human reconciliation/iu,
+    /incomplete[^.]{0,160}(?:phase\/fence claim v1|v1)[^.]*(?:and|or)[^.]{0,160}(?:legacy v3|phase\/fence claim v3)[^.]{0,220}read-only[\s\S]{0,1800}zero[^.]{0,220}activation\s+precondition[\s\S]{0,700}separately governed[^.]{0,220}human reconciliation/iu,
   );
-  assert.match(
-    protocol,
-    /historical incomplete v3 claim[\s\S]{0,500}phase `recovery`[\s\S]{0,300}`claim_outcome` `claimed`[\s\S]{0,700}non-null[^.]{0,120}(?:scan identity|recovery-scan identity)[\s\S]{0,300}positive[^.]{0,160}page and comment counts[\s\S]{0,300}non-null accumulated-suffix identity[\s\S]{0,300}non-null cursor[\s\S]{0,300}`recovery_scan_complete` false[\s\S]{0,300}null settlement identity[\s\S]{0,500}(?:authorization and target fields|cursor authorization and target)[^.]{0,180}explicit null/iu,
-  );
+  for (const predicate of [
+    "The only accepted v3 shape has phase `recovery`, `claim_outcome` `claimed`",
+    "a non-null recovery-scan\nidentity, positive page and comment counts",
+    "a non-null accumulated-suffix identity, a non-null\ncursor",
+    "`recovery_scan_complete` false, a null settlement identity",
+  ])
+    assert.ok(protocol.includes(predicate), predicate);
+  for (const predicate of [
+    "It has no cursor authorization or target fields because\nthose bytes do not exist in schema v3.",
+    "never interprets v3 bytes as v4",
+  ])
+    assert.ok(protocol.includes(predicate), predicate);
   for (const projection of projections) {
     assert.match(
       projection,
@@ -3018,11 +3054,35 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     );
     assert.match(
       projection,
+      /(?:historical prefix|prefix)[^.]{0,220}(?:strictly before|ending immediately before)[^.]{0,220}(?:command comment ID|command)/iu,
+    );
+    assert.match(
+      projection.replaceAll(/\s+/gu, " "),
+      /(?:command and (?:all )?later comments|command[^.]{0,180}later comments)[^.]{0,220}(?:excluded|not members)/iu,
+    );
+    assert.match(
+      projection,
+      /(?:no additional provider request|without (?:another|an added) provider request|add no provider request)/iu,
+    );
+    assert.match(
+      projection,
+      /v4[^.]{0,180}(?:does not consume|remains unconsumed|alone does not consume)[^.]{0,180}(?:cursor )?target/iu,
+    );
+    assert.match(
+      projection,
+      /(?:fresh|new)[^.]{0,180}command[^.]{0,240}(?:still-unconsumed|unconsumed)[^.]{0,180}(?:cursor )?target/iu,
+    );
+    assert.match(
+      projection,
+      /(?:final|fully authenticated|full authentication)[^.]{0,180}checkpoint[^.]{0,180}consume/iu,
+    );
+    assert.match(
+      projection,
       /frozen\s+maximum\s+issue\s+number[\s\S]{0,500}every\s+(?:canonical\s+)?issue\s+number[^.]{0,160}(?:1\s+through|from\s+1)[^.]{0,160}maximum[\s\S]{0,700}(?:pull\s+request|missing\s+resource)[\s\S]{0,500}complete[^.]{0,160}inventory/iu,
     );
     assert.match(
       projection,
-      /cursor-recovery[^.]{0,180}v3[\s\S]{0,500}(?:one through 11|1 through 11|n[^.]{0,80}1[^.]{0,80}11)[\s\S]{0,500}(?:n\s*\+\s*1|record after)[\s\S]{0,500}(?:immediate|only)[^.]{0,180}checkpoint[^.]{0,160}(?:n\s*\+\s*2|next record)/iu,
+      /cursor-recovery[^.]{0,180}v4[\s\S]{0,500}(?:one through 11|1 through 11|n[^.]{0,80}1[^.]{0,80}11)[\s\S]{0,500}(?:n\s*\+\s*1|record after)[\s\S]{0,500}(?:immediate|only)[^.]{0,180}checkpoint[^.]{0,160}(?:n\s*\+\s*2|next record)/iu,
     );
     assert.match(
       projection,
@@ -3030,7 +3090,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     );
     assert.match(
       projection,
-      /root-only[^.]{0,220}(?:zero(?:-|\s)+live(?:-|\s)+records?|n\s*=\s*0)[^.]{0,220}no-op[\s\S]{0,300}no v3 claim[^.]{0,180}checkpoint[^.]{0,180}record[^.]{0,180}effect/iu,
+      /root-only[^.]{0,220}(?:zero(?:-|\s)+live(?:-|\s)+records?|n\s*=\s*0)[^.]{0,220}no-op[\s\S]{0,300}no v4 claim[^.]{0,180}checkpoint[^.]{0,180}record[^.]{0,180}effect/iu,
     );
     assert.match(
       projection,
@@ -3046,11 +3106,11 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     );
     assert.match(
       projection,
-      /(?:direct[^.]{0,180}(?:cursor-v3|v3)[^.]{0,220}checkpoint|direct\s+recovery-owned `abandoned` checkpoint|third exception[\s\S]{0,240}cursor-recovery v3 claim)[\s\S]{0,600}authenticated\s+same-generation producer(?:-result)?\s+subset[^.]{0,180}(?:including empty|including the empty set)/iu,
+      /(?:direct[^.]{0,180}(?:cursor-v4|v4)[^.]{0,220}checkpoint|direct\s+recovery-owned `abandoned` checkpoint|third exception[\s\S]{0,240}cursor-recovery v4 claim)[\s\S]{0,600}authenticated\s+same-generation producer(?:-result)?\s+subset[^.]{0,180}(?:including empty|including the empty set)/iu,
     );
     assert.match(
       projection,
-      /(?:direct v3|direct-cursor)[\s\S]{0,1200}(?:(?:the\s+)?two\s+equal\s+current\s+source\s+observations[\s\S]{0,500}frozen\s+open\s+generation|frozen\s+open\s+generation[\s\S]{0,500}(?:the\s+)?two\s+equal\s+current\s+source\s+observations)[\s\S]{0,1200}later\s+current-fact\s+(?:change|drift)[\s\S]{0,400}(?:cannot|does not)\s+stale/iu,
+      /(?:direct v4|direct-cursor)[\s\S]{0,1200}(?:(?:the\s+)?two\s+equal\s+current\s+source\s+observations[\s\S]{0,500}frozen\s+open\s+generation|frozen\s+open\s+generation[\s\S]{0,500}(?:the\s+)?two\s+equal\s+current\s+source\s+observations)[\s\S]{0,1200}later\s+current-fact\s+(?:change|drift)[\s\S]{0,400}(?:cannot|does not)\s+stale/iu,
     );
     assert.match(
       projection,
@@ -3059,11 +3119,11 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   }
   assert.match(
     protocol,
-    /publication of the final complete cursor-recovery v3 claim[\s\S]{0,300}anchor\s+publication is interrupted[\s\S]{0,900}overflow-v2-checkpoint[\s\S]{0,500}ordinary-v1-checkpoint[\s\S]{0,500}unique-genesis[\s\S]{0,700}`cursor-claim-anchor-publication-interrupted` settlement[\s\S]{0,300}n\s*\+\s*1[\s\S]{0,500}n\s*\+\s*2[^.]{0,220}checkpoint/iu,
+    /publication of the final complete cursor-recovery v4 claim[\s\S]{0,300}anchor\s+publication is interrupted[\s\S]{0,900}overflow-v2-checkpoint[\s\S]{0,500}ordinary-v1-checkpoint[\s\S]{0,500}unique-genesis[\s\S]{0,700}`cursor-claim-anchor-publication-interrupted` settlement[\s\S]{0,300}n\s*\+\s*1[\s\S]{0,500}n\s*\+\s*2[^.]{0,220}checkpoint/iu,
   );
   assert.match(
     protocol,
-    /v3 claim is authenticated[\s\S]{0,300}n\s*\+\s*1[\s\S]{0,300}cursor-recovery\s+checkpoint[\s\S]{0,300}anchor\s+publication is interrupted[\s\S]{0,700}(?:same|repeats?)[^.]{0,300}(?:root|overflow-v2-checkpoint)[\s\S]{0,700}`cursor-checkpoint-anchor-publication-interrupted` settlement[\s\S]{0,300}n\s*\+\s*2[\s\S]{0,500}n\s*\+\s*3[^.]{0,220}checkpoint/iu,
+    /v4 claim is authenticated[\s\S]{0,300}n\s*\+\s*1[\s\S]{0,300}cursor-recovery\s+checkpoint[\s\S]{0,300}anchor\s+publication is interrupted[\s\S]{0,700}(?:same|repeats?)[^.]{0,300}(?:root|overflow-v2-checkpoint)[\s\S]{0,700}`cursor-checkpoint-anchor-publication-interrupted` settlement[\s\S]{0,300}n\s*\+\s*2[\s\S]{0,500}n\s*\+\s*3[^.]{0,220}checkpoint/iu,
   );
   for (const projection of projections) {
     assert.match(
@@ -3077,7 +3137,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /final[^.]{0,120}phase\/fence claim v3[^.]{0,300}live[^.]{0,180}(?:one through 11|at most 11)[^.]{0,120}records[\s\S]{0,500}immediate[^.]{0,180}checkpoint/iu,
+    /final[^.]{0,120}phase\/fence claim v4[^.]{0,300}live[^.]{0,180}(?:one through 11|at most 11)[^.]{0,120}records[\s\S]{0,500}immediate[^.]{0,180}checkpoint/iu,
   );
   for (const projection of [protocol, lifecycle, gates, activation]) {
     assert.match(

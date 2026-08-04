@@ -307,20 +307,29 @@ shadow-ID relationship. An ordinary-v1-checkpoint-rooted invocation authenticate
 checkpoint, requires a null shadow digest and empty shadow-ID list, and accepts no provisional
 shadow. A unique-genesis-rooted invocation requires the same empty-shadow facts and authenticates
 the complete genesis suffix directly. Both cursor-interruption settlements repeat the same
-root-specific proof. Only then may one phase/fence claim v3 persist its non-null
+root-specific proof. Only then may one phase/fence claim v4 persist its non-null
 `cursor_recovery_authorization_identity` and `cursor_recovery_target_identity`, complete at-most-15
 live record members, shadow summary, and exact shadow comment IDs. The first identity binds the
 command-specific authorized maintainer request, and the second binds its exact incomplete-scan
-target independently of the inherited generation request. It publishes no intermediate cursor or
+target independently of the inherited generation request. That target is reconstructed from the
+stable historical prefix ending strictly before the authenticated command comment ID; the command
+and later comments are excluded, and the direct-ingress stable reads must reproduce the original
+boundary without another provider request. It publishes no intermediate cursor or
 progress claim. The
 final claim
 and immediate checkpoint require one through 11 live records after a unique-genesis or ordinary-v1
 root, or one through 9 after an overflow-v2 root, forming one internally valid open generation that
 begins with its authenticated request and contains no terminal fence or checkpoint.
 The recovery-owned `abandoned` checkpoint carries exactly the authenticated same-generation
-producer subset already present before v3, including empty. A root-only zero-live-record scan is a
-no-op with no v3 claim, checkpoint, record, or effect; any larger or reserved open suffix uses its
+producer subset already present before v4, including empty. A root-only zero-live-record scan is a
+no-op with no v4 claim, checkpoint, record, or effect; any larger or reserved open suffix uses its
 exact existing recovery path or fails closed.
+An authenticated v4 claim alone does not consume the cursor target. It remains unconsumed until
+the direct immediate checkpoint or a
+settlement-following recovery checkpoint fully authenticates. If v4 or its checkpoint publication
+is interrupted, a fresh command for that still-unconsumed target authorizes only the matching
+settlement; the settlement binds the fresh request while retaining the original v4 authorization
+and target through the orphan/predecessor chain. Only the final checkpoint consumes the target.
 
 The hard cap is 3 accumulator pages. At most 6 comment-page requests cover two stable reads of each
 page in the one invocation. A unique-genesis or ordinary-v1 root permits at most fourteen
@@ -340,9 +349,10 @@ complete accumulator, checkpoint, or effect. The classification adds no request 
 allocation, initiates no cursor recovery, and changes no 15-record bound, target consumption, or
 authority.
 
-Incomplete phase/fence claim v1 and v3 cursor records remain read-only compatibility and cannot be
-resumed or migrated. The frozen pre-activation inventory is not limited to Issue #55's disposable
-probe manifest. The frozen maximum issue number comes from two stable repository observations, and
+Incomplete phase/fence claim v1 and legacy v3 cursor records remain read-only compatibility and
+cannot be resumed or migrated. The frozen pre-activation inventory is not limited to Issue #55's
+disposable probe manifest. The frozen maximum issue number comes from two stable repository
+observations, and
 the inventory classifies every canonical issue number from 1 through that maximum as an issue, pull
 request, or missing resource. It scans every issue's complete bounded 3-page history and retains the
 other classifications as negative evidence. Page 4, instability, or an unclassified number makes
@@ -378,27 +388,27 @@ that closed supersession predecessor; no second fence is appended, and the final
 source observation is its sole durable superseding witness. Once its exact anchor attests
 that null-effect checkpoint, a later fact change cannot stale the historical terminalization. The
 ordinary writer uses a three-record terminalization reserve: it rejects a nonterminal append at 12
-and places the terminal or superseded fence at record 13. The exact complete cursor-recovery v3
+and places the terminal or superseded fence at record 13. The exact complete cursor-recovery v4
 claim defines `n` as the authenticated live non-checkpoint suffix cardinality from one through 11
 after a unique-genesis or ordinary-v1 root, and from one through 9 after an overflow-v2 root.
 It is record `n + 1` and must be followed immediately by its checkpoint at record `n + 2`. An
-interrupted unanchored v3 instead uses its exact version-2 cursor-claim settlement at record
+interrupted unanchored v4 instead uses its exact version-2 cursor-claim settlement at record
 `n + 1`, followed only by the recovery-owned checkpoint at record `n + 2`. A terminal
 fence permits either its immediate checkpoint
 or an exact version-2 interrupted-checkpoint settlement at record 14 followed only by the
 recovery-owned null-effect checkpoint at record 15. If the reserved fence publication itself is
 interrupted, its version-2 settlement occupies record 13 after the 12 authenticated records and
-only the recovery-owned checkpoint may follow at record 14. An authenticated cursor-recovery v3 at
+only the recovery-owned checkpoint may follow at record 14. An authenticated cursor-recovery v4 at
 record `n + 1` likewise permits an exact version-2 cursor-checkpoint settlement for its interrupted
 unanchored checkpoint at record `n + 2`, followed only by the recovery-owned checkpoint at record
 `n + 3`. At `n = 11` for a unique-genesis or ordinary-v1 root, the cursor paths consume at most
 records 12 through 14; an overflow-v2 root stops at `n = 9` and records 10 through 12. Neither
 widens the loader.
-Immediately before direct v3 publication, two equal current source observations must still match
+Immediately before direct v4 publication, two equal current source observations must still match
 the frozen open generation; the claim encodes the final observation identity plus its exact
 command-specific cursor authorization and target identities. Its immediate checkpoint binds that
-same frozen generation, both cursor identities through the v3 predecessor, observation, and exact
-same-generation producer subset. Once the exact v3 comment, anchor, and attestation authenticate,
+same frozen generation, both cursor identities through the v4 predecessor, observation, and exact
+same-generation producer subset. Once the exact v4 comment, anchor, and attestation authenticate,
 later current-fact drift, including drift before checkpoint publication, cannot stale either
 null-effect record; every immutable binding must still verify and then-current facts are
 availability evidence only.
@@ -406,8 +416,8 @@ Each settlement is allowed only when
 the writer's anchor-attestation step's mapped name and provider-visible number were stably observed
 with conclusion `skipped`; attempted or unknown submission remains ambiguous. Each recovery-owned
 `abandoned` checkpoint after a v2 settlement carries the exact authenticated pre-fence producer
-subset, including empty. The direct cursor-v3 checkpoint carries the exact authenticated
-same-generation producer subset present before v3, including empty; no other abandoned checkpoint
+subset, including empty. The direct cursor-v4 checkpoint carries the exact authenticated
+same-generation producer subset present before v4, including empty; no other abandoned checkpoint
 may omit an expected producer. Both a settlement and its immediate checkpoint retain the frozen
 generation and exact authorized recovery binding, use the settlement's stable current source
 observation, and remain valid across later current-fact drift.

@@ -158,21 +158,28 @@ shadow-ID relationship. An ordinary-v1-checkpoint-rooted invocation authenticate
 checkpoint, requires a null shadow digest and empty shadow-ID list, and accepts no provisional
 shadow. A unique-genesis-rooted invocation requires the same empty-shadow facts and authenticates
 the complete genesis suffix directly. Both cursor-interruption settlements must repeat the same
-root-specific proof. Only then may one phase/fence claim v3 persist its non-null
+root-specific proof. Only then may one phase/fence claim v4 persist its non-null
 `cursor_recovery_authorization_identity` and `cursor_recovery_target_identity`, complete at-most-15
 live record members, shadow summary, and exact shadow comment IDs. The gate must prove the first
 identity is the command-specific authenticated maintainer request and the second is its exact
-incomplete-scan target, neither inferred from the inherited generation request. It must
+incomplete-scan target, neither inferred from the inherited generation request. The gate must prove
+the target from the stable historical prefix ending strictly before the exact command comment ID;
+the command and later comments are excluded, and the existing stable direct-ingress reads reproduce
+the original boundary without another provider request. It must
 publish no intermediate cursor or progress claim. The final claim and immediate checkpoint require
 one through 11 live records after a unique-genesis or ordinary-v1 root, or one through 9 after an
 overflow-v2 root, forming one internally valid open generation that begins with its authenticated
 generation request and contains no terminal claim or checkpoint. The direct
 recovery-owned `abandoned` checkpoint carries exactly the authenticated same-generation producer
-subset present before v3, including empty, retains every included result's original producer-owning
-fence, and permits no producer after v3. A root-only scan with zero live records authenticates the
-root and replay-shadow relation but is a no-op with no v3 claim, checkpoint, record, or effect. Any
+subset present before v4, including empty, retains every included result's original producer-owning
+fence, and permits no producer after v4. A root-only scan with zero live records authenticates the
+root and replay-shadow relation but is a no-op with no v4 claim, checkpoint, record, or effect. Any
 larger, reserved, or differently shaped open suffix uses its exact existing recovery path or fails
 closed.
+The gate must prove that v4 alone does not consume the cursor target. Only the fully authenticated
+direct checkpoint or settlement-following recovery checkpoint consumes it. An interruption permits
+a fresh command for the still-unconsumed target; its settlement binds that fresh request while the
+orphan/predecessor proof retains the original v4 authorization and target.
 
 The gate must enforce a hard cap of 3 accumulator pages, three closed root-authentication branches,
 and two budget profiles. At most 6
@@ -193,7 +200,7 @@ authenticated root must produce no complete accumulator, checkpoint, or effect. 
 adds no request outside that closed allocation, initiates no cursor recovery, and changes no
 15-record bound, target consumption, or authority.
 
-The gate must treat incomplete phase/fence claim v1 and v3 cursor records as read-only
+The gate must treat incomplete phase/fence claim v1 and legacy v3 cursor records as read-only
 compatibility and prohibit resume or migration. The gate must prove the frozen pre-activation
 inventory is not limited to Issue #55's disposable-probe manifest. The frozen maximum issue number
 comes from two stable repository observations, and the inventory classifies every canonical issue
@@ -235,18 +242,18 @@ immediate checkpoint or the exact version-2 skipped-attestation checkpoint-orpha
 record 14, and after that settlement permits only the recovery-owned null-effect checkpoint at
 record 15. If fence publication is interrupted, the exact version-2 fence-orphan settlement is
 record 13 and only its recovery-owned checkpoint may follow at record 14. The exact complete
-cursor-recovery v3 claim defines `n` as the authenticated live non-checkpoint suffix cardinality
+cursor-recovery v4 claim defines `n` as the authenticated live non-checkpoint suffix cardinality
 from one through 11 after a unique-genesis or ordinary-v1 root, and from one through 9 after an
 overflow-v2 root, for one internally valid open generation that begins with its authenticated
 generation request and contains no terminal claim or checkpoint. It is record `n + 1` and must be
 followed immediately by its checkpoint at record `n + 2`. That direct recovery-owned `abandoned`
-checkpoint carries exactly the authenticated same-generation producer subset present before v3,
+checkpoint carries exactly the authenticated same-generation producer subset present before v4,
 including empty, and retains each result's original producer-owning fence; no producer may publish
-after v3. A root-only scan with `n = 0` is a no-op with no v3 claim, checkpoint, record, or effect.
-An interrupted unanchored v3 instead uses its exact version-2 cursor-claim
+after v4. A root-only scan with `n = 0` is a no-op with no v4 claim, checkpoint, record, or effect.
+An interrupted unanchored v4 instead uses its exact version-2 cursor-claim
 settlement at record `n + 1`, followed only by the recovery-owned checkpoint at record `n + 2`.
 After an
-authenticated cursor-recovery v3 at record `n + 1`, an interrupted unanchored cursor-recovery
+authenticated cursor-recovery v4 at record `n + 1`, an interrupted unanchored cursor-recovery
 checkpoint uses its exact version-2 cursor-checkpoint settlement at record `n + 2`, followed only by
 the recovery-owned checkpoint at record `n + 3`. At `n = 11` for a unique-genesis or ordinary-v1
 root, the cursor paths consume at most records 12 through 14; an overflow-v2 root stops at `n = 9`
@@ -268,14 +275,14 @@ checkpoint, and provider-unavailable fixtures produce no record or effect. Overf
 inert before Issue #55, adds no principal or credential, and remains a human-only manual merge to
 `dev`.
 
-The gate must separately prove the direct-cursor projection. Immediately before v3 publication,
+The gate must separately prove the direct-cursor projection. Immediately before v4 publication,
 two equal current source observations still match the frozen open generation and the claim encodes
-the final identity. The exact v3 claim encodes the command-specific cursor recovery authorization
+the final identity. The exact v4 claim encodes the command-specific cursor recovery authorization
 and target identities independently of the inherited generation request; it and the immediate
 checkpoint retain that frozen generation, observation, predecessor/member bindings, and
 same-generation producer subset. Later current-fact drift, including drift before checkpoint
 publication, cannot stale either null-effect record; an immutable mismatch, producer publication
-after v3, or unavailable final read remains blocked.
+after v4, or unavailable final read remains blocked.
 
 Publication evidence uses the exact candidate commit's complete, non-truncated recursive Git tree
 and exact regular-file blob bytes, modes, object IDs, sizes, and SHA-256 digests. The pull-request
