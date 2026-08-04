@@ -196,7 +196,7 @@ function semanticMappingKey(source) {
 
 function occurrences(source, value) {
   const positions = [];
-  for (let index = source.indexOf(value); index >= 0; ) {
+  for (let index = source.indexOf(value); index >= 0;) {
     positions.push(index);
     index = source.indexOf(value, index + value.length);
   }

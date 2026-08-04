@@ -207,7 +207,7 @@ const issueLifecycleMarkers = [
   "node quality/lifecycle-coordinator-action.mjs",
   "node quality/lifecycle-record-writer.mjs prepare",
   "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-  "actions/attest@a1948c3f048ba23858d222213b7c278aabede763",
+  "actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d",
   "node quality/lifecycle-record-writer.mjs verify",
   "uses: ./.github/workflows/pr-contract.yml",
   "uses: ./.github/workflows/contract-publication.yml",
@@ -1895,8 +1895,8 @@ function inertControlWorkflowFailures(
         .map(actionReference)
         .filter((reference) => reference !== undefined),
       [
-        "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-        "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
+        "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
       ],
       "action set",
     ],
@@ -2017,15 +2017,15 @@ function contractPublicationWorkflowFailures(workflow) {
   if (
     JSON.stringify(actions) !==
     JSON.stringify([
-      "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
-      "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
+      "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+      "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+      "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+      "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
       "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-      "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
+      "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+      "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
       "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-      "actions/attest@a1948c3f048ba23858d222213b7c278aabede763",
+      "actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d",
     ])
   )
     failures.push(

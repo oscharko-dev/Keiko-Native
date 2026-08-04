@@ -431,7 +431,7 @@ test("workflow writer transport is pinned and activation remains disabled", asyn
   );
   assert.match(
     workflow,
-    /actions\/attest@a1948c3f048ba23858d222213b7c278aabede763/u,
+    /actions\/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d/u,
   );
   assert.doesNotMatch(
     workflow,
