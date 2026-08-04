@@ -2172,7 +2172,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   assert.match(adr, /100 comments\s+per page and at most two pages/iu);
   assert.match(
     adr,
-    /next serialized recovery run[\s\S]{0,200}scans at most 100 more pages/iu,
+    /next serialized recovery run[\s\S]{0,240}hard cap of\s+25 pages/iu,
   );
   assert.match(
     adr,
@@ -2886,11 +2886,11 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     );
     assert.match(
       projection,
-      /classification is provisional[\s\S]{0,500}resumed step[\s\S]{0,500}final\s+completion[\s\S]{0,500}fully\s+authenticates?[^.]{0,180}lower-ID[^.]{0,180}checkpoint/iu,
+      /classification is provisional[\s\S]{0,500}resumed step[\s\S]{0,500}final\s+completion[\s\S]{0,500}fully\s+authenticat(?:es?|ing)[^.]{0,180}lower-ID[^.]{0,180}checkpoint/iu,
     );
     assert.match(
       projection,
-      /fifth\s+shadow[\s\S]{0,500}(?:cursor\s+exhaustion|exhausted\s+cursor)[\s\S]{0,500}(?:no\s+complete\s+accumulator|fails\s+closed)[\s\S]{0,700}(?:no\s+additional\s+provider\s+requests|does\s+not\s+add[^.]{0,120}requests)/iu,
+      /fifth\s+shadow[\s\S]{0,500}(?:cursor\s+exhaustion|exhausted\s+cursor)[\s\S]{0,500}(?:no\s+complete\s+accumulator|fails\s+closed)[\s\S]{0,700}(?:no\s+additional\s+provider\s+requests|(?:adds|does\s+not\s+add)[^.]{0,180}(?:request|closed allocation))/iu,
     );
     assert.match(
       projection,
@@ -2898,7 +2898,19 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     );
     assert.match(
       projection,
-      /authenticated cumulative summary[\s\S]{0,500}(?:phase\/fence claim v3|schema-version-3 phase\/fence claim)[\s\S]{0,700}no provider reread[^.]{0,180}prior page[\s\S]{0,500}150-request ceiling/iu,
+      /authenticated cumulative summary[\s\S]{0,500}(?:phase\/fence claim v3|schema-version-3 phase\/fence claim)[\s\S]{0,900}(?:bounded|at most one)[^.]{0,180}reread[^.]{0,180}(?:every|each)[^.]{0,120}prior[^.]{0,120}page/iu,
+    );
+    assert.match(
+      projection,
+      /reconstructs?[^.]{0,180}(?:full|complete)[^.]{0,120}(?:recovery-suffix-member|member preimage)[^.]{0,180}(?:ordinary irrelevant|irrelevant ordinary)/iu,
+    );
+    assert.match(
+      projection,
+      /(?:at most|hard cap (?:is|of))\s+25[^.]{0,120}(?:accumulator|recovery)[^.]{0,100}pages?[\s\S]{0,600}50[^.]{0,120}comment-page\s+requests[\s\S]{0,500}86[^.]{0,180}(?:record-chain|recovery)[^.]*(?:requests|calls)[\s\S]{0,500}150-request ceiling/iu,
+    );
+    assert.match(
+      projection,
+      /overflow[^.]{0,180}(?:target|base)[\s\S]{0,500}(?:all|exact)\s+16[^.]{0,180}base[^.]{0,120}record[^.]{0,180}(?:stable )?two-page[^.]{0,120}window[\s\S]{0,500}(?:outside|missing|not present)[^.]{0,200}(?:fails closed|unsupported|no recovery)/iu,
     );
   }
   for (const projection of [protocol, wake, lifecycle, gates]) {
@@ -2909,7 +2921,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   }
   assert.match(
     protocol,
-    /sole exception to immediate relevant-unauthenticated rejection[\s\S]{0,400}`irrelevant`\s+recovery-suffix member[\s\S]{0,500}all four[^.]{0,180}fields to null[\s\S]{0,500}not\s+an\s+authenticated\s+record[\s\S]{0,900}cumulative summary[\s\S]{0,500}no provider reread[^.]{0,180}prior page[\s\S]{0,500}fail closed/iu,
+    /sole exception to immediate relevant-unauthenticated rejection[\s\S]{0,400}`irrelevant`\s+recovery-suffix member[\s\S]{0,500}all four[^.]{0,180}fields to null[\s\S]{0,500}not\s+an\s+authenticated\s+record[\s\S]{0,900}cumulative summary[\s\S]{0,700}(?:bounded|at most one)[^.]{0,180}reread[^.]{0,180}prior[^.]{0,120}page[\s\S]{0,800}fail closed/iu,
   );
   assert.match(
     protocol,
@@ -2921,7 +2933,11 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /phase\/fence claim v1[^.]{0,300}read-only[\s\S]{0,500}(?:cannot|must not)[^.]{0,200}(?:admit|classify)[^.]{0,120}replay shadow/iu,
+    /phase\/fence claim v1[^.]{0,300}read-only[\s\S]{0,500}(?:cannot|must not)[^.]{0,220}(?:derive|interpret)[^.]{0,180}(?:summary|shadow)/iu,
+  );
+  assert.match(
+    protocol,
+    /sole first-resume migration[\s\S]{0,500}at most 25[\s\S]{0,500}initial two-page normal-load\s+boundary[\s\S]{0,500}rereads every accumulated page[\s\S]{0,700}exact stored page count[^.]{0,180}comment count[^.]{0,180}digest[^.]{0,180}cursor[\s\S]{0,500}first v3 writer[\s\S]{0,500}more than 25 pages[\s\S]{0,500}human reconciliation/iu,
   );
   assert.match(
     activation,

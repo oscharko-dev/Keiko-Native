@@ -131,8 +131,13 @@ ordering, and no duplicate canonical identity while its optional post-comment an
 attestation and the fixed anchor-attestation publication step has its exact mapped name,
 provider-visible number, and conclusion `skipped`. An attempted, unknown,
 or ambiguously completed attestation step must deny retry even when both inventories are empty. The
-gate must also prove the sole post-success replay shadows rule: the stable two-page normal loader
-buffers at most four exact Actions Bot/App, never-edited comments with a higher numeric `comment_id`
+gate must prove the overflow target is supported only when all 16 base record comments are present
+in the same stable two-page first-pass window. A base record outside or missing from that window is
+unsupported and must fail closed with no recovery, record, or effect; anchors must not widen the
+window or authorize exact-ID fetches.
+
+The gate must also prove the sole post-success replay shadows rule: the stable two-page normal
+loader buffers at most four exact Actions Bot/App, never-edited comments with a higher numeric `comment_id`
 than one fully authenticated overflow transition/read-back v2 checkpoint and byte-identical full
 bodies. After that lower-ID checkpoint authenticates, normal reconstruction reproducibly marks the
 shadows irrelevant with no additional provider requests; they are not records, predecessors,
@@ -146,15 +151,27 @@ entire accumulator. Their classification is provisional and grants no independen
 resumed step must validate the cumulative group and count before adding its page. Every new cursor
 progress or completion claim must persist an authenticated cumulative summary. It uses
 phase/fence claim v3 and contains the at-most-15 live record members, one shadow body digest, and
-exact shadow comment IDs. A resumed or final run must authenticate that summary and perform
-no provider reread of any prior page, keeping the scan within its 150-request ceiling. Final
-completion must fully
-authenticate the lower-ID byte-identical overflow v2 checkpoint and require every summarized shadow
-ID to be greater before the classification or scan result has standing. A fifth shadow, any mismatch
-or discontinuity, cursor exhaustion, or failure to authenticate that checkpoint must produce no
-complete accumulator, checkpoint, or effect. The classification adds no additional provider
-requests beyond the existing bounded cursor scan, does not initiate cursor recovery, and does not
-change its page cap, the 15-record bound, target consumption, or authority.
+exact shadow comment IDs. A resumed scan must continue at its exact cursor without rereading old
+pages until completion. Final completion must perform one bounded reread of every prior accumulator
+page, combine it with the current twice-stable pages, and reconstruct every full
+`recovery-suffix-member` preimage, including ordinary irrelevant comments, before fully
+authenticating the lower-ID overflow v2 checkpoint.
+
+The gate must enforce a hard cap of 25 accumulator pages. At most 50 comment-page requests cover two
+reads of every new page plus one completion reread of every prior page; 86 record-chain, target,
+provider, publication, and read-back requests plus the fixed 14 ingress requests preserve the
+150-request ceiling. A fifth shadow, any mismatch or discontinuity, cursor exhaustion, page 26, or
+missing checkpoint must produce no complete accumulator, checkpoint, or effect. The classification
+adds no request outside that closed allocation, initiates no cursor recovery, and changes no
+15-record bound, target consumption, or authority.
+
+The gate must treat phase/fence claim v1 cursor progress as read-only compatibility. Its sole
+first-resume migration must authenticate the v1 evidence, require at most 25 accumulated pages,
+reread from the initial two-page normal boundary, and reproduce the exact stored page count,
+comment count, digest, and cursor while deriving the v3 summary. Only that exact replay may emit the
+first v3 successor; any mismatch, unavailable page, excess page, or budget exhaustion must fail
+closed, block activation, and require authorized human reconciliation.
+
 The gate must pin the overflow-v2 issue-lifecycle topology: locator read/prepare, upload,
 attestation, and download/verification at YAML ordinals 3 through 6, comment publication and anchor
 upload at 7 and 8, and anchor attestation at ordinal 9/provider-visible step 10 for every lane. It

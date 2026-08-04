@@ -140,7 +140,11 @@ historical cap only while it is the current publication and uses the separate 26
 budget. It becomes the authenticated record on success; if authentication is interrupted, it
 becomes a historical candidate on the next recovery, where a resulting fifth historical copy denies
 another attempt. Each historical copy's distinct comment-bound anchor and attestation tuple must be
-verified before it becomes irrelevant. The activation matrix must prove the sole post-success
+verified before it becomes irrelevant. The activation matrix must prove the overflow target is
+supported only when all 16 base record comments are present in the same stable
+two-page first-pass window. A base record outside or missing from that window is unsupported and
+must fail closed with no recovery, record, or effect; anchors must not widen the window or authorize
+exact-ID fetches. The activation matrix must prove the sole post-success
 replay shadows rule: the stable two-page normal loader buffers at most four exact Actions Bot/App,
 never-edited comments with a higher numeric `comment_id` than one fully authenticated overflow
 transition/read-back v2 checkpoint and byte-identical full bodies. After that lower-ID checkpoint
@@ -154,21 +158,30 @@ replay shadows. One body group and four total apply across the entire accumulato
 classification is provisional and grants no independent standing. Every resumed step must validate
 the cumulative group and count before adding its page. Every new cursor progress or completion claim
 must persist an authenticated cumulative summary. It uses phase/fence claim v3 and contains the
-at-most-15 live record members, one shadow body digest, and exact shadow comment IDs. A resumed or
-final run must authenticate that summary and perform no provider reread of any prior page, keeping
-the scan within its 150-request ceiling. Final completion must fully authenticate the lower-ID
-byte-identical overflow v2 checkpoint and require every summarized shadow ID to be greater before
-the classification or scan result has standing. A fifth shadow, any mismatch or discontinuity,
-cursor exhaustion, or failure to authenticate that checkpoint must produce no complete accumulator,
-checkpoint, or effect.
-The classification adds no additional provider requests beyond the existing bounded cursor scan,
-does not initiate cursor recovery, and does not change its page cap, the 15-record bound, target
-consumption, or authority. It must also prove superseded generations
-authenticate
-their frozen generation and closed partial producer set. An ordinary superseded fence binds its
-first witness; the reserved-fence exception uses the final encoded read-back source observation as
-its sole durable witness and refreshes that projection under the same fence before
-terminalizing ahead of a successor with owner `invalidation`, null effect, outcome `superseded`, and
+at-most-15 live record members, one shadow body digest, and exact shadow comment IDs. A resumed scan
+must continue at its exact cursor without rereading old pages until completion. Final completion
+must perform one bounded reread of every prior accumulator page, combine it with the current
+twice-stable pages, and reconstruct every full `recovery-suffix-member` preimage, including ordinary irrelevant
+comments, before fully authenticating the lower-ID overflow v2 checkpoint.
+
+The activation probe must enforce a hard cap of 25 accumulator pages. At most 50 comment-page
+requests cover two reads of every new page plus one completion reread of every prior page; 86
+record-chain, target, provider, publication, and read-back requests plus the fixed 14 ingress
+requests preserve the 150-request ceiling. A fifth shadow, any mismatch or discontinuity, cursor
+exhaustion, page 26, or missing checkpoint must produce no complete accumulator, checkpoint, or
+effect. The classification adds no request outside that closed allocation, initiates no cursor
+recovery, and changes no 15-record bound, target consumption, or authority.
+
+The activation probe must treat phase/fence claim v1 cursor progress as read-only compatibility. Its
+sole first-resume migration must authenticate the v1 evidence, require at most 25 accumulated pages,
+reread from the initial two-page normal boundary, and reproduce the exact stored page count,
+comment count, digest, and cursor while deriving the v3 summary. Only that exact replay may emit the
+first v3 successor; any mismatch, unavailable page, excess page, or budget exhaustion must fail
+closed, block activation, and require authorized human reconciliation. It must also prove superseded
+generations authenticate their frozen generation and closed partial producer set. An ordinary
+superseded fence binds its first witness; the reserved-fence exception uses the final encoded
+read-back source observation as its sole durable witness and refreshes that projection under the
+same fence before terminalizing ahead of a successor with owner `invalidation`, null effect, outcome `superseded`, and
 reason `superseded`; a post-anchor fact change cannot stale that exactly attested null-effect
 checkpoint. The writer must use a three-record terminalization reserve: reject a nonterminal append
 at 12, place the terminal fence at record 13, permit its immediate checkpoint or exact version-2

@@ -690,6 +690,11 @@ live-permission authentication, the same protected two-principal allowlist const
 exact command-body digest distinguishes the two grammars. One target may be consumed at most once,
 and a reordered duplicate is a no-op.
 
+The overflow target is supported only when all 16 base record comments are present in the same
+stable two-page first-pass window. A base record outside or missing from that window is unsupported
+and fails closed with no recovery, record, or effect; anchors do not widen the window or authorize
+exact-ID fetches.
+
 After authentication, the coordinator performs two complete stable reads of all 16 records and
 their anchors, attestations, attested protected-run identities, applicable exact jobs, refs, SHAs,
 predecessor chain, null genesis root, and current equal lifecycle observation. A producer result
@@ -788,15 +793,26 @@ replay shadows. One body group and four total apply across the entire accumulato
 classification is provisional and grants no independent standing. Every resumed step validates the
 cumulative group and count before adding its page. Every new cursor progress or completion claim
 persists an authenticated cumulative summary. It uses phase/fence claim v3 and contains the
-at-most-15 live record members, one shadow body digest, and exact shadow comment IDs. A resumed or
-final run authenticates that summary and performs no provider reread of any prior page, keeping the
-scan within its 150-request ceiling. Final
-completion fully authenticates the lower-ID byte-identical overflow v2 checkpoint and requires every
-summarized shadow ID to be greater before the classification or scan result has standing. A fifth
-shadow, any mismatch or discontinuity, cursor exhaustion, or failure to authenticate that checkpoint
-produces no complete accumulator, checkpoint, or effect. The classification adds no additional
-provider requests beyond the existing bounded cursor scan, does not initiate cursor recovery, and
-does not change its page cap, the 15-record bound, target consumption, or authority.
+at-most-15 live record members, one shadow body digest, and exact shadow comment IDs. A resumed scan
+continues at its exact cursor without rereading old pages until completion. Final completion
+performs one bounded reread of every prior accumulator page, combines it with the current
+twice-stable pages, and reconstructs every full `recovery-suffix-member` preimage, including ordinary irrelevant
+comments, before fully authenticating the lower-ID overflow v2 checkpoint.
+
+The hard cap is 25 accumulator pages. At most 50 comment-page requests cover two reads of every new
+page plus one completion reread of every prior page; 86 record-chain, target, provider, publication,
+and read-back requests plus the fixed 14 ingress requests preserve the 150-request ceiling. A fifth
+shadow, any mismatch or discontinuity, cursor exhaustion, page 26, or missing checkpoint produces no
+complete accumulator, checkpoint, or effect. The classification adds no request outside that closed
+allocation, initiates no cursor recovery, and changes no 15-record bound, target consumption, or
+authority.
+
+Phase/fence claim v1 cursor progress remains read-only compatibility. Its sole first-resume
+migration authenticates the v1 evidence, requires at most 25 accumulated pages, rereads from the
+initial two-page normal boundary, and reproduces the exact stored page count, comment count, digest,
+and cursor while deriving the v3 summary. Only that exact replay may emit the first v3 successor;
+any mismatch, unavailable page, excess page, or budget exhaustion fails closed, blocks activation,
+and requires authorized human reconciliation.
 
 For an overflow transition/read-back v2 candidate, the protected writer uses ADR-0011's final
 seven-step pre-verification topology. The locator read/prepare, upload, attestation, and
