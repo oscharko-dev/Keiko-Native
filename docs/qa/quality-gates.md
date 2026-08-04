@@ -75,17 +75,236 @@ association, context name, details URL, or event timing alone is never sufficien
 
 Sequence-one bootstrap proves the exact compacted-prefix domain, schema, null prior-checkpoint
 identity, and complete ordered genesis member list. Forward orphan settlement requires a
-request-bound recovery-target digest, exact recovery-settlement schema, independently verified
-failed protected writer run, two stable zero-anchor/zero-attestation reads, and a normally
-authenticated settlement claim chained from the last authenticated predecessor. The orphan never
-becomes a record or authority source.
+request-bound recovery-target digest, version-first recovery-settlement parsing, an independently
+verified failed protected writer run, stable zero-or-one-anchor/zero-attestation reads with a
+mapped exact-name and provider-visible-number attestation step whose conclusion is `skipped`, and a
+version-2 settlement claim authenticated through the closed historical recovery projection and
+chained from the last authenticated predecessor.
+The phase/fence parent encodes the settlement identity first and then settlement schema version 2
+immediately after it; version 1 remains read-only zero-anchor compatibility and is selected only by
+a legacy settlement-bearing phase/fence v1 parent. The
+orphan never becomes a record or authority source.
 
-Generation-request, producer-result, phase/fence-claim, and transition/read-back records use strict
-version-1 canonical bytes and domain-separated SHA-256 digests. The loader performs full-body
-parsing, bounded complete pagination, and stable double-reads. Deletion, edits, forks, cycles, gaps,
-conflicts, truncation, wrong producer/generation/fence, or unavailable evidence fail closed.
+Generation-request, producer-result, ordinary phase/fence-claim, and ordinary transition/read-back
+records use strict version-1 canonical bytes and domain-separated SHA-256 digests. The loader
+performs full-body parsing, bounded complete pagination, and stable double-reads. Deletion, edits,
+forks, cycles, gaps, conflicts, truncation, wrong producer/generation/fence, or unavailable evidence
+fail closed.
 Protected producers independently recompute the generation and evaluate only their owned predicate;
 they cannot choose lifecycle lane, target, activation, transition, or merge authority.
+
+At the record-type level, there are exactly four schema-version exceptions: the exact
+recovery-settlement phase/fence uses version 2 of its existing type, the overflow checkpoint uses
+version 2 of its existing type, the historical incomplete cursor phase/fence claim uses read-only
+version 3 of its existing type, and the exact complete cursor-recovery phase/fence claim uses
+version 4 of its existing type. None creates a fifth record type. The auxiliary
+recovery-settlement identity separately retains its accepted version-1 zero-anchor schema and uses
+an exact version-2 schema for every new settlement; parser dispatch is version-first and never
+reinterprets legacy bytes. The deterministic gate must prove the exact
+direct plain-issue command and authorization identity, exact target over 16 authenticated records,
+normal rejection at record 16, overflow rejection at record 17, rejection of checkpoint plus 16,
+the exact 108 + 60 + 6 + 26 request-200 success arithmetic, request-201 denial, stable double-read,
+replay no-op, append-only evidence, null effect, and exact checkpoint read-back through the actual
+provider's subject-qualified attestation requests. Each returned response carries its bundles; no
+invented bulk or bundle-download endpoint is permitted. Every archive must count both the
+authenticated artifact request and redirect response. The 108-request first pass downloads at most
+24 archives into bounded canonical-byte buffers; the 60-request second pass reuses only those
+immutable bytes while independently rereading every comment, artifact identity/metadata,
+attestation, full job/step projection, and current fact. It must
+prove that this effect-disabled exact-target profile replaces independent workflow-run and
+referenced-workflow-inventory requests only with verified protected caller/writer attestation
+claims plus an exact bound job and complete step projection only where the record encodes a job.
+Successful coordinator records instead require a unique artifact-anchor attestation binding the
+exact caller, reusable writer, record, run, attempt, and SHA. Ordinary authentication retains the
+provider run and inventory reads. It must
+prove a hard cap of four historical interrupted candidate comment copies present before the current
+attempt. Every byte-identical copy is authenticated before grouping and consumes one request-budget
+slot; a fifth historical copy fails closed with no record or effect. The current attempt's single
+prospective checkpoint comment is excluded from the historical cap only while it is the current
+publication and uses the separate 26-request publication budget. It becomes the authenticated record
+on success; if authentication is interrupted, it becomes a historical candidate on the next
+recovery, where a resulting fifth historical copy denies another attempt. Each historical copy's
+distinct comment-bound anchor and attestation tuple must be verified before it may become
+irrelevant, and the
+target remains unconsumed until full authentication. It must also prove every interrupted candidate
+has one valid pre-comment locator attestation for the protected writer
+run and terminal job, an exact locator-free candidate-record projection, deterministic member
+ordering, and no duplicate canonical identity while its optional post-comment anchor has no
+attestation and the fixed anchor-attestation publication step has its exact mapped name,
+provider-visible number, and conclusion `skipped`. An attempted, unknown,
+or ambiguously completed attestation step must deny retry even when both inventories are empty. The
+gate must prove the overflow target is supported only when all 16 base record comments are present
+in the same stable two-page first-pass window. A base record outside or missing from that window is
+unsupported and must fail closed with no recovery, record, or effect; anchors must not widen the
+window or authorize exact-ID fetches.
+
+The gate must also prove the sole post-success replay shadows rule: the stable two-page normal
+loader buffers at most four exact Actions Bot/App, never-edited comments with a higher numeric `comment_id`
+than one fully authenticated overflow transition/read-back v2 checkpoint and byte-identical full
+bodies. After that lower-ID checkpoint authenticates, normal reconstruction reproducibly marks the
+shadows irrelevant with no additional provider requests; they are not records, predecessors,
+recovery candidates, target consumption, or authority. A fifth shadow, a body, actor, edit, or
+numeric-order mismatch or multiple groups fails closed. If the two normal pages prove that older
+relevant history continues, the loader must carry the same at-most-four buffered shadows into
+ordinary effect-disabled cursor recovery as `irrelevant` recovery-suffix members. Both the
+initial/normal pages and every cursor-resumed page may discover replay shadows. One body group and
+four total apply across the
+entire accumulator. Their classification is provisional and grants no independent standing. Every
+resumed step must validate the cumulative group and count before adding its page. A single
+serialized recovery invocation must keep the authenticated cumulative summary and every full
+`recovery-suffix-member` preimage, including ordinary irrelevant comments, in memory across its
+twice-stable pages. The gate must distinguish three root branches. An
+overflow-v2-checkpoint-rooted invocation authenticates the lower-ID v2 checkpoint and greater
+shadow-ID relationship. An ordinary-v1-checkpoint-rooted invocation authenticates the v1
+checkpoint, requires a null shadow digest and empty shadow-ID list, and accepts no provisional
+shadow. A unique-genesis-rooted invocation requires the same empty-shadow facts and authenticates
+the complete genesis suffix directly. Both cursor-interruption settlements must repeat the same
+root-specific proof. Only then may one phase/fence claim v4 persist its non-null
+`cursor_recovery_authorization_comment_id`, `cursor_recovery_authorization_identity`, and
+`cursor_recovery_target_identity`, complete at-most-15 live record members, shadow summary, and
+exact shadow comment IDs. The gate must prove the comment ID is the bounded locator for the
+command-specific authenticated maintainer request, the first identity is its canonical identity,
+and the second is its exact incomplete-scan target, none inferred from the inherited generation
+request. The gate must prove
+the target from the stable historical prefix ending strictly before the exact command comment ID;
+the command and later comments are excluded, and the existing stable direct-ingress reads reproduce
+the original boundary without another provider request. It must
+publish no intermediate cursor or progress claim. The final claim and immediate checkpoint require
+one through 10 live records including the unique-genesis request, one through 9 after an ordinary-v1
+root, or one through 8 after an overflow-v2 root, forming one internally valid open generation that
+begins with its authenticated
+generation request and contains no terminal claim or checkpoint. The direct
+recovery-owned `abandoned` checkpoint carries exactly the authenticated same-generation producer
+subset present before v4, including empty, retains every included result's original producer-owning
+fence, and permits no producer after v4. A unique-genesis root alone is an admitted one-record open
+generation and is terminalized through v4 and its checkpoint. A checkpoint root with zero later
+live records authenticates the root and replay-shadow relation but remains a no-op with no v4 claim,
+checkpoint, record, or effect. Any larger, reserved, or differently shaped open suffix uses its
+exact existing recovery path or fails closed.
+The gate must prove that v4 alone does not consume the cursor target. Only the fully authenticated
+direct checkpoint or settlement-following recovery checkpoint consumes it. An interruption permits
+a fresh command for the still-unconsumed target; its settlement binds that fresh request while
+treating the v4 authorization comment ID only as a locator, repeating historical-v4 six-request
+exact-comment authentication of the original command, and requiring the recomputed identity to
+equal v4 before the orphan/predecessor proof retains the original authorization and target. That
+route must repeat REST-by-ID, GraphQL node/resource, and current-permission reads without requiring
+a newest-100 edge or recovering the original command-edge cursor, and it cannot authenticate fresh
+ingress or derive a target. The gate must prove the
+settlement target comes only from the authenticated original v4 claim, never from the fresh command
+cutoff; that cutoff is only the fresh command's ingress-authentication boundary.
+
+The gate must enforce a hard cap of 3 accumulator pages, three closed root-authentication branches,
+and two budget profiles. At most 6
+comment-page requests cover two stable reads of each page in the one invocation. A unique-genesis
+or ordinary-v1 root permits at most twelve record/root/orphan tuples. Its 64 base authentication
+calls plus two independently reserved stable exact cursor-orphan writer-job/skipped-step reads and
+six original-command reauthentication calls, 26 current-provider calls, and 28 publication calls
+form a 126-call core and 146 total calls with pages and the fixed 14 ingress calls. An overflow-v2
+root admits at most eight post-root live records and eleven tuples. Its base authentication uses one
+artifact list, 22 artifact-download redirect-chain calls, 11 subject-qualified attestation
+inventories, 22 workflow-run and referenced-workflow-inventory calls, and at most three exact
+producer-job calls; the root's six locator-verification calls, two stable cursor-orphan writer-job
+reads, and six original-command reauthentication calls make 73 authentication calls. With the same
+26 current-provider and 28 publication calls, that is a 127-call core and 147 total calls. The fresh
+ingress authorization bytes are reused, but the original command is independently reauthenticated
+from the v4 locator. Both profiles remain within the hard 150-request
+ceiling. A fifth shadow, any mismatch or discontinuity, cursor exhaustion, page 4, or missing
+authenticated root must produce no complete accumulator, checkpoint, or effect. The classification
+adds no request outside that closed allocation, initiates no cursor recovery, and changes no
+15-record bound, target consumption, or authority.
+
+The gate must require every legacy phase/fence claim v1 cursor record, whether incomplete or
+complete, to have phase `recovery` and `claim_outcome` exactly `claimed`; every other v1 cursor
+outcome is malformed. It must treat those accepted records and legacy incomplete v3 cursor records
+as read-only compatibility and prohibit resume or migration.
+Every new cursor completion must use v4. The gate must prove the frozen pre-activation
+inventory is not limited to Issue #55's disposable-probe manifest. The frozen maximum issue number
+comes from two stable repository observations, and the inventory classifies every canonical issue
+number from 1 through that maximum as an issue, pull request, or missing resource. It scans every
+issue's complete bounded 3-page history and retains the other classifications as negative evidence.
+Page 4, instability, or an unclassified number makes the inventory incomplete. Zero v1
+recovery-scan claims with a non-null recovery-scan identity, whether incomplete or complete, and
+zero v3 cursor claims across that complete inventory is an exact activation precondition. Any
+discovery must fail closed, block activation, retain all evidence, and require a separately governed
+exact-target human reconciliation issue before any settlement; no boundary, summary, or cursor may
+be inferred.
+
+Before activation, the gate must prove every pre-amendment protected writer run loaded from an
+older `dev` SHA is terminal. The Issue #55 activation operation must then acquire and hold the
+existing repository-wide `issue-lifecycle-provider-budget` serialization group, perform one final
+complete-inventory revalidation while holding that group, and retain it until the authenticated
+activation receipt is durable. A queued or in-progress pre-amendment writer, inventory drift, or
+unavailable read must block activation. Every writer admitted after the receipt must load the
+accepted activation commit and be unable to emit a v1 or v3 cursor scan claim; every new cursor
+completion must use v4.
+
+The gate must pin the overflow-v2 issue-lifecycle topology: locator read/prepare, upload,
+attestation, and download/verification at YAML ordinals 3 through 6, comment publication and anchor
+upload at 7 and 8, and anchor attestation at ordinal 9/provider-visible step 10 for every lane. It
+must
+separately retain the historical topology's ordinal-5/provider-step-6 mapping and select exactly one
+closed mapping from the record-bound protected commit and loaded ordered writer topology, never from
+record schema alone or by probing. The 26-request publication matrix must download and reproduce the
+locator before comment creation and download and reproduce the final anchor before success. The
+locator-attestation digest must be the
+canonical auxiliary identity over normalized verified claims, never a hash of provider bundle
+serialization. A non-null optional-anchor digest
+must hash the downloaded sole canonical artifact-anchor file, equal its auxiliary identity, and
+never hash the provider archive. Every ordinary superseded fence authenticates its frozen
+generation, the exact partial producer subset already present, and its first superseding witness.
+For the reserved-fence exception, the final stable encoded read-back source observation is the sole
+durable superseding witness under that same fence. Its ordinary v1 checkpoint fixes owner `invalidation`, outcome
+`superseded`, reason `superseded`, and null effect. The normal writer's three-record terminalization
+reserve rejects a nonterminal append at 12, places the terminal fence at record 13, permits its
+immediate checkpoint or the exact version-2 skipped-attestation checkpoint-orphan settlement at
+record 14, and after that settlement permits only the recovery-owned null-effect checkpoint at
+record 15. If fence publication is interrupted, the exact version-2 fence-orphan settlement is
+record 13 and only its recovery-owned checkpoint may follow at record 14. The exact complete
+cursor-recovery v4 claim defines `n` as the authenticated live non-checkpoint suffix cardinality
+from one through 10 including the unique-genesis generation request, from one through 9 after an
+ordinary-v1 root, or from one through 8 after an overflow-v2 root, for one internally valid open
+generation that begins with its authenticated
+generation request and contains no terminal claim or checkpoint. It is record `n + 1` and must be
+followed immediately by its checkpoint at record `n + 2`. That direct recovery-owned `abandoned`
+checkpoint carries exactly the authenticated same-generation producer subset present before v4,
+including empty, and retains each result's original producer-owning fence; no producer may publish
+after v4. A unique-genesis root alone (`n = 1`) is an admitted one-record open generation and is
+terminalized through v4 and its checkpoint. A checkpoint root with no later live record (`n = 0`)
+remains a no-op with no v4 claim, checkpoint, record, or effect.
+An interrupted unanchored v4 instead uses its exact version-2 cursor-claim
+settlement at record `n + 1`, followed only by the recovery-owned checkpoint at record `n + 2`.
+After an
+authenticated cursor-recovery v4 at record `n + 1`, an interrupted unanchored cursor-recovery
+checkpoint uses its exact version-2 cursor-checkpoint settlement at record `n + 2`, followed only by
+the recovery-owned checkpoint at record `n + 3`. At the maxima, a unique-genesis path uses at most
+records 11 through 13, an ordinary-v1 path records 10 through 12, and an overflow-v2 path records 9
+through 11. Counting the unique genesis request in `n` is mandatory. Neither widens the loader. The
+gate must prove that
+each resulting recovery-owned `abandoned` checkpoint carries exactly the authenticated pre-fence
+producer subset, including empty, while every other abandoned checkpoint requires the complete
+expected set; that the parent phase/fence record's encoded version selects settlement v2; and that
+the settlement and immediate checkpoint bind the frozen generation and authorized recovery target,
+encode one twice-stable current source observation, remain authenticated across later current-fact
+drift, and never rebind to a new current generation. It must also prove that post-fence fact drift
+uses the same reserved fence and superseded checkpoint projection, all ordinary and cursor
+interrupted publication shapes have a forward path, ambiguous attestation submission never retries,
+and checkpoint plus 16
+is unreachable. A later fact change cannot stale an exactly attested
+null-effect checkpoint, which then terminalizes as a checkpoint before a successor generation.
+Hostile wrong-actor, edited-command,
+wrong-target, missing/changed record, anchor, attestation, run, job, ref, SHA, predecessor,
+checkpoint, and provider-unavailable fixtures produce no record or effect. Overflow recovery remains
+inert before Issue #55, adds no principal or credential, and remains a human-only manual merge to
+`dev`.
+
+The gate must separately prove the direct-cursor projection. Immediately before v4 publication,
+two equal current source observations still match the frozen open generation and the claim encodes
+the final identity. The exact v4 claim encodes the command-specific cursor recovery authorization
+and target identities independently of the inherited generation request; it and the immediate
+checkpoint retain that frozen generation, observation, predecessor/member bindings, and
+same-generation producer subset. Later current-fact drift, including drift before checkpoint
+publication, cannot stale either null-effect record; an immutable mismatch, producer publication
+after v4, or unavailable final read remains blocked.
 
 Publication evidence uses the exact candidate commit's complete, non-truncated recursive Git tree
 and exact regular-file blob bytes, modes, object IDs, sizes, and SHA-256 digests. The pull-request
@@ -171,7 +390,12 @@ branch, pull-request, queue, or merge result. Issue #55 alone owns activation an
 proof; missing, stale, ambiguous, or wrong-producer record evidence cannot promote availability.
 The per-issue and repository-wide provider-budget groups use `queue: max`; a hard local request
 counter and fail-closed provider responses, not a racy remaining-quota read, protect the shared
-repository token boundary. Until the pinned actionlint release understands GitHub's newer
+repository token boundary. Normal loading counts two calls for each archive redirect and up to
+three exact producer-job reads. An ordinary-v1-root stable pass is 112 requests; an overflow-v2
+root adds exactly six locator authentication calls per pass, so the maximum pass is 118 requests,
+two passes are 236, and the existing 14 write/read-back calls close the hard ceiling at 250.
+Overflow recovery retains its
+separate hard-200 ceiling. Until the pinned actionlint release understands GitHub's newer
 `concurrency.queue` key, the actionlint job ignores only that exact unknown-key diagnostic; the
 repository contract independently requires `queue: max`, rejects `cancel-in-progress`, and keeps
 all other actionlint diagnostics active.

@@ -8,8 +8,17 @@ only when an authorized maintainer manually merges its pull request to `dev`.
 This record narrowly amends ADR-0011's coordinator and producer authentication, invocation,
 recovery, and serialization topology. It adds one ADR-0012-owned auxiliary identity for the
 existing recovery-settlement `authorized_request_identity` field. It does not change ADR-0011's
-version-1 record schemas, any existing auxiliary identity schema, producer identities, coordinator
-ownership, lifecycle state graph, activation boundary, or the human-only `dev` merge rule.
+version-1 record schemas, auxiliary identity schemas, producer identities, coordinator ownership,
+lifecycle state graph, activation boundary, or human-only `dev` merge rule in its original #131
+scope.
+
+Decision issue #170 adds a second exact command grammar for authenticated suffix-overflow recovery.
+It reuses the same protected direct-comment route, authorization identity, allowlist, coordinator,
+and four record types. Its existing-identity amendments are ADR-0011's closed version-2
+compacted-prefix projection for bounded failed-publication quarantine and the version-2
+recovery-settlement auxiliary identity; the accepted version-1 settlement remains read-only. It
+adds no workflow, permission, principal, credential, or automatic `dev` authority, and becomes
+accepted only through a human-only manual merge to `dev`.
 
 ## Context
 
@@ -553,8 +562,14 @@ That forward-recovery entry point is an issue comment whose Unicode-NFC body is 
 
 The braces describe the fixed-width digest slot and are not literal bytes. There is no leading or
 trailing whitespace, second line, omitted or alternate algorithm, uppercase hexadecimal, reason,
-requested state, lane, conclusion, or free-form payload. The digest is the exact ADR-0011
-recovery-target identity.
+requested state, lane, conclusion, or free-form payload. The digest is either the exact ADR-0011
+orphan recovery-target identity or the exact incomplete recovery-scan identity computed from the
+stable two-page normal-load boundary that first proves older relevant history. The latter is the
+cursor-recovery target. For that interpretation, the authenticated command comment ID is an
+exclusive upper cutoff: the coordinator recomputes the target from the stable historical prefix
+ending immediately before the command, excluding the command and every later comment. It
+recomputes the one applicable target and never probes or accepts both interpretations for one
+command.
 
 The implementation owns one protected repository allowlist constant shared by lifecycle recovery
 and the existing maintainer-bound governance guard. Its entries are exactly the two immutable
@@ -584,16 +599,34 @@ One complete authentication read is exactly three provider requests:
 
 1. REST `GET /repos/{owner}/{repo}/issues/comments/{comment_id}` by the numeric database ID obtains
    the comment's global GraphQL `node_id` and REST facts;
-2. one GraphQL `node(id: $node_id)` query requires an `IssueComment` whose database ID,
+2. one GraphQL request requires `node(id: $node_id)` to be an `IssueComment` whose database ID,
    repository, issue number, body, author, creation/update timestamps, and edit fields agree with
-   the REST response; and
+   the REST response, and in the same request loads that issue's bounded newest 100 comment edges;
+   exactly one edge must contain that node and supplies its opaque connection cursor; and
 3. one REST collaborator-permission request for the same stable author login verifies current
    `maintain` or `admin` permission.
 
 The coordinator repeats that complete three-request route independently, so exact-comment
 authentication consumes six requests. The second REST response must return the same global node
-ID, and both GraphQL nodes and permission results must agree. Missing or changed node identity,
-resource association, actor, permission, or field fails closed.
+ID, and both GraphQL nodes, command-edge cursors, bounded edge sequences, and permission results
+must agree. Cursor recovery starts its normal two-page snapshot with `before` equal to that stable
+command-edge cursor. The command and all later edges are therefore excluded without consuming a
+third ingress request. A command absent from either bounded newest-100 response, a changed cursor or
+edge sequence, or any missing or changed node identity, resource association, actor, permission, or
+field fails closed; a maintainer must post a fresh command for a freshly observed target.
+
+Historical-v4 original-command reauthentication is a separate closed six-request route used only
+after one interrupted phase/fence claim v4 or its immediate checkpoint has been selected. Each of
+its two agreeing three-request reads uses REST by the persisted numeric comment ID, GraphQL
+`node(id: $node_id)` to prove the exact `IssueComment` facts and repository/issue association, and
+the collaborator-permission request. It deliberately does not load the issue's newest 100 comment
+edges, require an edge match, or recover the original command-edge cursor. That cursor is no longer
+an input: the authenticated v4 has already bound the original incomplete-scan target, member list,
+and shadow summary. The route recomputes only the canonical authorized-request identity and
+requires equality with v4. It cannot authenticate a fresh ingress command, derive or replace a
+target, create a new v4 claim, or authorize any path except the two closed interrupted-v4
+settlements. A missing, changed, deleted, edited, mismatched, unauthorized, or multiply selected
+resource fails closed.
 
 Fallback discovery, actor authorization, and exact-comment authentication reserve at most fourteen
 requests inside ADR-0011's existing 150-request recovery-mode counter: at most four GraphQL
@@ -621,16 +654,41 @@ order, are `digest_domain:enum(keiko-native.lifecycle-recovery-authorized-reques
 one top-level ADR-0004 canonical `record` node. All existing domain-to-schema mappings remain
 unchanged.
 
-The coordinator recomputes that identity only after the stable reads and then independently
-reconstructs the exact orphan comment/body/record digest, last authenticated predecessor, current
-authority, and recovery target required by ADR-0011. The event payload, comment ID, timing, digest
-text, or scheduling order alone grants no authority.
+The coordinator recomputes that identity only after the stable reads. Authenticated record topology
+selects exactly one closed target-derivation branch without probing. An orphan request reconstructs
+the exact orphan comment/body/record digest and last authenticated predecessor. An initial cursor
+completion reconstructs the exact stable two-page cursor boundary strictly before the authenticated
+command comment ID and its incomplete recovery-scan target. A cursor settlement first selects
+exactly one interrupted v4 claim or its immediate checkpoint, treats its persisted
+`cursor_recovery_authorization_comment_id` only as an untrusted locator, repeats this section's
+historical-v4 six-request exact-comment authentication for the original command, and requires the
+recomputed authorization identity to equal the v4 field. Only then does it authenticate the
+original v4 authorization/target chain and derive its target from that authenticated original v4
+`cursor_recovery_target_identity`. It requires the fresh command to name the same target and
+recomputes the fresh authorized-request identity with that value. The fresh command-edge cutoff is
+only its exact-comment ingress boundary; it never recomputes or replaces the original target,
+original command cutoff, scan identity, member list, or shadow summary. Missing, ambiguous, or
+multiple interrupted chains fail closed. Every branch also proves current authority and every
+ADR-0011 target input. The event payload, comment ID, timing, digest text, or scheduling order alone
+grants no authority.
 
-At most one authenticated recovery record may consume a recovery-target identity. The new request
+At most one authenticated recovery record may consume a recovery-target identity. An orphan request
 binds the derived identity through ADR-0011's existing version-1
-`authorized_request_identity` field; no record schema changes. Duplicate or reordered commands
-serialize under the issue lock. The first valid settlement consumes the target, and every command
-for an already consumed target is a replay no-op regardless of provider order.
+`authorized_request_identity` field. A cursor request binds the exact original command locator
+through phase/fence claim v4's `cursor_recovery_authorization_comment_id`, binds its identity through
+`cursor_recovery_authorization_identity`, and binds the same target through
+`cursor_recovery_target_identity`. Duplicate or reordered commands
+serialize under the issue lock. The first applicable terminal recovery publication consumes the
+target: an orphan uses its settlement claim, cursor recovery uses its fully authenticated immediate
+checkpoint, and suffix overflow uses its version-2 transition/read-back checkpoint.
+Every command for an already consumed target is a replay no-op regardless of provider order.
+An authenticated v4 claim alone does not consume its cursor target. If v4 or its immediate
+checkpoint publication is interrupted, a fresh exact command for the still-unconsumed target may
+authorize only ADR-0011's corresponding settlement path. That settlement binds the fresh request
+while independently reauthenticating the original command locator and authenticating its v4
+authorization and target through the orphan/predecessor chain.
+The settlement target comes only from the authenticated original v4 claim, never from the fresh
+command cutoff; only the final settlement-following checkpoint consumes the target.
 
 The direct plain-issue recovery-comment locator takes precedence and the coordinator considers only
 that candidate. Other wakes, including a pull-request-comment wake with explicit null recovery
@@ -655,12 +713,304 @@ fresh never-edited command. A changed or deleted comment, wrong actor or permiss
 malformed command, target mismatch, already consumed target, more than one attempted candidate, or
 any other ADR-0011 recovery-precondition failure produces no record or effect.
 
+### Bounded authenticated suffix-overflow recovery
+
+The second recovery entry point is a direct plain-issue `issue_comment` whose Unicode-NFC body is
+exactly one line:
+
+```text
+/keiko-native lifecycle-overflow-recovery v1 target=sha256:{64 lowercase hexadecimal characters}
+```
+
+The braces describe the fixed-width digest slot and are not literal bytes. The digest is the exact
+ADR-0011 overflow-recovery-target identity. No fallback scan, scheduled discovery, pull-request
+comment, alternate algorithm, uppercase hexadecimal, whitespace, second line, reason, lifecycle
+state, branch, pull request, generation, or free-form payload is permitted.
+
+The direct plain-issue `issue_comment` route accepts exactly 16 authenticated non-checkpoint records
+from the unique null-predecessor genesis root and no prior checkpoint. A 17th record, a prior
+checkpoint plus 16 records, wrong count, wrong endpoint pair, edited or replayed command, or any
+record, anchor, attestation, run, job, ref, SHA, or predecessor mismatch produces no record or
+effect. It uses the existing direct-event six-request stable comment and
+live-permission authentication, the same protected two-principal allowlist constant, and the same
+`keiko-native.lifecycle-recovery-authorized-request` identity. For this command that identity's
+`recovery_target_identity` field contains the overflow target rather than an orphan target; the
+exact command-body digest distinguishes the two grammars. One target may be consumed at most once,
+and a reordered duplicate is a no-op.
+
+The overflow target is supported only when all 16 base record comments are present in the same
+stable two-page first-pass window. A base record outside or missing from that window is unsupported
+and fails closed with no recovery, record, or effect; anchors do not widen the window or authorize
+exact-ID fetches.
+
+After authentication, the coordinator performs two complete stable reads of all 16 records and
+their anchors, attestations, attested protected-run identities, applicable exact jobs, refs, SHAs,
+predecessor chain, null genesis root, and current equal lifecycle observation. A producer result
+that encodes a job requires that exact job read; a successful coordinator record instead requires
+its unique artifact-anchor attestation correlation. It recomputes the target and then
+appends only ADR-0011's overflow recovery transition/read-back v2 checkpoint. That record binds the
+authorized request and overflow target identities, carries the exact authenticated pre-fence
+producer subset, has a null effect, and cannot alter lifecycle state, labels, branches, pull
+requests, queues, merges, or repository settings.
+
+The exact overflow recovery authentication profile is the sole exception to the ordinary
+coordinator-record provider-run reads above. For the 16 historical base records and at most four
+historical interrupted candidate comment copies present before the current attempt, counting every
+byte-identical copy before grouping, it does not call the workflow-run endpoint and does not load
+the referenced-workflow inventory. Instead, each GitHub-native attestation must cryptographically
+bind
+the fixed issuer, repository, protected top-level caller and reusable writer paths, immutable
+`refs/heads/dev`, protected commit, run ID, run attempt, subject name, and digest through its
+verified SLSA/OIDC claims. One separate exact job read binds the encoded job ID to that same run and
+loads its complete fixed step projection for every producer record or interrupted candidate that
+actually carries `workflow_job_id`. A successful coordinator base record carries no such field:
+its unique attestation subject binds the artifact-anchor identity, comment, record digest, writer
+path, run, attempt, and protected SHA, while `workflow_ref`/`workflow_sha` bind the fixed caller and
+`job_workflow_ref`/`job_workflow_sha` bind the reusable writer; no numeric job is invented. The
+closed protected workflow graph is still checked locally. A missing claim, an absent applicable
+job, mutable ref, different run, path, commit, or subject, or any attestation/job/record
+disagreement fails closed. This substitution exists only inside the
+effect-disabled, exact-target, hard-200 overflow recovery; ordinary record authentication,
+writing, and lifecycle effects retain the complete provider run and referenced-workflow inventory.
+
+ADR-0011's ordinary three-record reserve is also closed here. After 12 authenticated records, an
+unanchored reserved-fence comment may be settled only by an exact version-2 recovery phase/fence
+claim at record 13 and an immediate recovery-owned null-effect checkpoint at record 14. The exact
+complete cursor-recovery v4 sequence instead defines `n` as the authenticated live non-checkpoint
+suffix cardinality from one through 10 including the unique-genesis generation request, from one
+through 9 after an ordinary-v1 checkpoint root, or from one through 8 after an overflow-v2
+checkpoint root. Its v4 claim is record `n + 1` and must be followed
+immediately by its authenticated checkpoint at record `n + 2`. An interrupted unanchored v4 claim
+instead uses its exact version-2 cursor-claim settlement at record `n + 1`, followed only by the
+recovery-owned checkpoint at record `n + 2`. After an
+authenticated reserved fence at record 13, an unanchored checkpoint comment may be settled only by
+the corresponding version-2 claim at record 14 and immediate checkpoint at record 15. Likewise,
+after an authenticated cursor-recovery v4 at record `n + 1`, its interrupted unanchored
+cursor-recovery checkpoint uses the exact version-2 cursor-checkpoint settlement at record `n + 2`,
+followed only by the recovery-owned checkpoint at record `n + 3`. At the maxima, a unique-genesis
+path uses at most records 11 through 13, an ordinary-v1 path records 10 through 12, and an
+overflow-v2 path records 9 through 11. Counting the genesis request in `n` is mandatory. Neither
+widens the loader. A direct v4 checkpoint is recovery-owned,
+`abandoned`, null-effect, and carries exactly the authenticated same-generation producer subset
+already present before the v4 fence, including empty. The live suffix must begin with one
+authenticated generation request, contain one internally valid open generation, and contain no
+terminal fence or checkpoint. A unique-genesis root alone (`n = 1`) is an admitted one-record open
+generation and is terminalized through v4 and its checkpoint. A checkpoint root with no later live
+record (`n = 0`) authenticates the root and shadows but remains a no-op with no v4 claim,
+checkpoint, record, or effect. All settlement paths
+use the version-2 phase/fence marker and its encoded `recovery_settlement_schema_version=2`, so the
+parent record selects the settlement parser before downstream bytes are decoded. A historical
+settlement-bearing phase/fence v1 selects only the read-only settlement v1 schema. All paths
+require a terminal failed/cancelled/timed-out writer job whose fixed attestation-publication step is
+proven in both reads by its exact protected-writer mapped name, provider-visible number, and
+`skipped` conclusion; an attempted or unknown submission remains blocked. Each resulting
+recovery-owned `abandoned` checkpoint carries the exact authenticated pre-fence producer subset,
+including empty, and no other abandoned checkpoint may omit an expected producer. Post-fence fact
+drift uses the final encoded read-back source observation as the sole durable superseding witness
+under the same fence. The settlement and its immediate recovery-owned checkpoint use ADR-0011's
+closed historical recovery authentication projection: their generation and request stay bound to
+the frozen predecessor/orphan, the settlement records the final of two equal stable current source
+observations, and later current-fact drift cannot stale either authenticated null-effect record.
+Immediately before direct v4 publication, two equal current source observations still match the
+frozen open generation and the claim encodes the final identity plus its exact non-null cursor
+authorization and target identities. The v4 claim and immediate
+checkpoint use ADR-0011's closed direct-cursor authentication projection: the v4 record's non-null
+cursor recovery authorization and target fields retain the command-specific authorized request and
+exact target independently of the frozen generation request, and both records retain the exact
+observation and immutable predecessor/member
+bindings, so later current-fact drift, including drift before checkpoint publication, cannot stale
+either null-effect record. Any immutable mismatch or unavailable final read remains blocked.
+
+An interrupted v2 publication does not consume its overflow target. After two stable passes prove
+that the prior writer job is terminal, its exact pre-comment locator artifact has a valid
+GitHub-native attestation binding the protected coordinator path, ref, commit, run, attempt, and
+job plus the locator-free candidate-record projection, and its optional post-comment anchor has no
+attestation, and the prior writer's fixed anchor-attestation publication step is proven by its exact
+mapped name, provider-visible number, and `skipped` conclusion in both exact terminal-job reads, a
+fresh explicit maintainer command
+may authorize another attempt for the same target. Overflow recovery has a hard cap of four
+historical interrupted candidate comment copies present before the current attempt. Every
+byte-identical copy is authenticated before locator-pair grouping and consumes one request-budget
+slot; a fifth historical copy fails closed with no record or effect. The current attempt's single
+prospective checkpoint comment is excluded from the historical cap only while it is the current
+publication and uses the separate 26-request publication budget. It becomes the authenticated
+checkpoint record on success; if authentication is interrupted, it becomes a historical candidate
+on the next recovery, where a resulting fifth historical copy denies another attempt. Historical
+copies are ordered by ascending comment ID after the 16 predecessor-ordered authenticated members.
+The coordinator fully authenticates every copy's distinct comment-bound anchor and attestation
+tuple before treating a later copy as irrelevant, rejects every duplicate canonical member
+identity, binds the selected
+closed quarantine evidence in the successful v2 compacted-prefix, and appends no ordinary
+orphan-settlement record after the 16-record base chain. The retry must arrive as a fresh direct
+`issue_comment` event; the terminal
+authorization paired with an interrupted candidate is ineligible for fallback selection and cannot
+starve it.
+Until the new checkpoint is fully authenticated, the target remains unconsumed. An existing fully
+authenticated candidate makes the command a replay no-op; a conflicting, still-running,
+unknown-provenance, or attested candidate fails closed. Reordered simultaneous commands remain
+no-ops, and there is no scheduled or automatic publication retry. If the attestation step was
+attempted, started, failed, cancelled, timed out, is missing, or is unknown, a timed-out submission
+may later become visible; absence from two inventories is not proof of non-acceptance and the
+candidate remains ambiguous with no retry, quarantine, checkpoint, or effect.
+
+The sole post-success standing exception is the authenticated post-success replay shadows rule.
+The stable two-page normal loader may buffer at most four later lifecycle-marked comments with a
+higher numeric `comment_id` than a fully authenticated overflow transition/read-back v2 checkpoint
+only when their full bodies are byte-identical to that checkpoint, the author is the exact Actions
+Bot/App, and each comment is never edited. Once the lower-ID checkpoint is fully authenticated,
+normal reconstruction reproducibly classifies the buffered comments as irrelevant replay shadows
+with no additional provider requests. They are not records, compacted-prefix members,
+predecessors, recovery candidates, target consumption, or authority. A fifth shadow, any body,
+actor, edit, or numeric-order mismatch, or multiple buffered body groups fails closed.
+
+If the two normal pages prove that older relevant history continues, the loader carries the same
+at-most-four buffered shadows into ordinary effect-disabled cursor recovery as `irrelevant`
+recovery-suffix members. Both the initial/normal pages and every cursor-resumed page may discover
+replay shadows. One body group and four total apply across the entire accumulator. Their
+classification is provisional and grants no independent standing. Every resumed step validates the
+cumulative group and count before adding its page. A single serialized recovery invocation keeps
+the authenticated cumulative summary and every full `recovery-suffix-member` preimage, including
+ordinary irrelevant comments, in memory across its twice-stable pages. Three closed root branches
+apply. An overflow-v2-checkpoint-rooted invocation fully authenticates the lower-ID v2 checkpoint
+and greater shadow-ID relationship. An ordinary-v1-checkpoint-rooted invocation fully
+authenticates the v1 checkpoint, requires a null shadow digest and empty shadow-ID list, and accepts
+no provisional shadow. A unique-genesis-rooted invocation requires those same empty-shadow facts
+and directly authenticates the complete genesis suffix. Both cursor-interruption settlements must
+repeat the same root-specific proof. Only then may one phase/fence claim v4 persist its non-null
+`cursor_recovery_authorization_comment_id`, `cursor_recovery_authorization_identity`, and
+`cursor_recovery_target_identity`, complete at-most-15
+live record members, shadow summary, and exact shadow comment IDs. The authorization is the exact
+authenticated direct maintainer command for that target; the target is the incomplete scan identity
+from the stable historical prefix ending strictly before that command's exact comment ID. The
+command and all later comments are excluded from the frozen recovery prefix; the two stable
+direct-ingress reads must reproduce the same preceding boundary without an added provider request.
+The inherited generation `request_identity` cannot substitute for either field. It publishes no
+intermediate cursor or progress claim. The final
+claim and immediate checkpoint require one through 10 live records including the unique-genesis
+request, one through 9 after an ordinary-v1 root, or one through 8 after the overflow-v2 root,
+forming that exact open generation. A unique-genesis root alone is an admitted one-record open
+generation and is terminalized; a checkpoint root with zero later live records remains a no-op. Any
+larger or reserved open suffix uses its exact existing recovery path or fails closed.
+
+The hard cap is 3 accumulator pages. At most 6 comment-page requests cover two stable reads of each
+page in the one invocation. A unique-genesis or ordinary-v1 root permits at most twelve
+record/root/orphan tuples. Its 64 base authentication calls plus two independently reserved stable
+exact cursor-orphan writer-job/skipped-step reads and six original-command reauthentication calls,
+26 current-provider calls, and 28 publication calls form a 126-call core and 146 total calls with
+pages and the fixed 14 ingress calls. An overflow-v2 root admits at most eight post-root live
+records and eleven tuples. Its base authentication uses one artifact list, 22 artifact-download
+redirect-chain calls, 11 subject-qualified attestation inventories, 22 workflow-run and
+referenced-workflow-inventory calls, and at most three exact producer-job calls; the root's six
+locator-verification calls, two stable cursor-orphan writer-job reads, and six original-command
+reauthentication calls make 73 authentication calls. With the same 26 current-provider and 28
+publication calls, that is a 127-call core and 147 total calls. The fresh ingress authorization
+bytes are reused, but the original command is independently reauthenticated from the v4 locator.
+Both profiles remain within the hard
+150-request ceiling. A fifth shadow, any mismatch or
+discontinuity, cursor exhaustion, page 4, or missing authenticated root produces no
+complete accumulator, checkpoint, or effect. The classification adds no request outside that closed
+allocation, initiates no cursor recovery, and changes no 15-record bound, target consumption, or
+authority.
+
+Legacy phase/fence claim v1 cursor records, whether incomplete or complete, have phase `recovery`
+and `claim_outcome` exactly `claimed`; every other v1 cursor outcome is malformed. Those records and
+legacy incomplete v3 cursor records remain read-only compatibility and cannot be resumed or
+migrated. Every new
+cursor completion uses v4. The frozen pre-activation inventory is not limited to Issue #55's
+disposable probe manifest. The frozen maximum issue number comes from two stable repository
+observations, and
+the inventory classifies every canonical issue number from 1 through that maximum as an issue, pull
+request, or missing resource. It scans every issue's complete bounded 3-page history and retains the
+other classifications as negative evidence. Page 4, instability, or an unclassified number makes
+the inventory incomplete. Zero v1 recovery-scan claims with a non-null recovery-scan identity,
+whether incomplete or complete, and zero v3 cursor claims across that complete inventory is an
+exact activation precondition. Any discovery fails closed, blocks activation, retains all evidence,
+and requires a separately governed exact-target human reconciliation issue before any settlement;
+no boundary, summary, or cursor is inferred.
+
+Before activation, every pre-amendment protected writer run loaded from an older `dev` SHA must be
+terminal. The Issue #55 activation operation then acquires and holds the existing repository-wide
+`issue-lifecycle-provider-budget` serialization group, performs one final complete-inventory
+revalidation while holding that group, and retains it until the authenticated activation receipt is
+durable. Any queued or in-progress pre-amendment writer, inventory drift, or unavailable read blocks
+activation.
+Every writer admitted after the receipt loads the accepted activation commit and cannot emit a v1
+or v3 cursor scan claim; every new cursor completion uses v4.
+
+For an overflow transition/read-back v2 candidate, the protected writer uses ADR-0011's final
+seven-step pre-verification topology. The locator read/prepare, upload, attestation, and
+download/verification steps occupy YAML ordinals 3 through 6; comment publication and anchor upload
+are ordinals 7 and 8; `Attest exact lifecycle anchor identity` is ordinal 9 and provider-visible
+step 10 for every lane because the four conditional locator slots remain present when skipped. A
+historical writer without those slots uses anchor ordinal 5/provider-visible step 6. The exact
+`orphan_protected_dev_sha` and loaded ordered writer topology select one closed mapping; record
+schema alone does not. A recovery verifier never treats overflow locator attestation step 6 as proof
+that anchor attestation step 10 was skipped.
+
+Every provider request is counted against a separate hard ceiling of 200. Each archive download is
+two calls because GitHub redirects the authenticated artifact `/zip` request to the archive. The
+first recovery pass consumes at most 108 requests: a 68-request base counts 32 calls for 16
+base-anchor redirect chains, and a 40-request candidate addition counts four complete comment-copy
+slots, including eight calls for four locator redirect chains plus eight for four optional-anchor
+redirect chains. The other calls are the two comment pages; base and candidate artifact
+inventories/metadata; 24 subject-qualified attestation inventories; up to 20 exact job reads only
+for base records and candidate copies that encode a job; four candidate exact-ID rereads; and the
+current-source GraphQL read specified by ADR-0011. Successful
+coordinator records reduce the actual total below the ceiling.
+
+The second stable pass consumes at most 60 requests. It reuses only the bounded canonical bytes
+downloaded in pass one while independently rereading every comment, artifact identity and metadata,
+attestation subject, complete job/step projection, and current fact. Immutable artifact IDs and
+provider digests must remain exact; any expiry, deletion, change, or ambiguity fails closed. Its
+36-request base plus 24-request candidate addition contains no archive download. Every historical
+byte-identical copy consumes one of the four complete candidate slots in both passes. Subject
+responses contain their matching bundles and no separate bundle-download endpoint exists. A fifth
+historical copy fails closed and produces no record or effect. The current prospective checkpoint
+comment is created only afterward under the separate 26-request publication budget.
+
+The exact direct-comment authentication consumes at most six requests. The remaining 26 requests
+are reserved for:
+
+- at most three locator upload/finalization calls;
+- at most three locator-attestation publication calls;
+- six locator-verification requests: one protected writer-job read before locator construction,
+  artifact inventory and exact metadata reads, the locator archive's two-call download redirect,
+  and the locator-subject attestation inventory;
+- two comment create/read-back calls;
+- at most three anchor upload/finalization calls;
+- at most three anchor-attestation publication calls; and
+- six final verification calls: exact comment and anchor metadata reads, the anchor archive's
+  two-call download redirect, its attestation inventory, and one current-source GraphQL read.
+
+These maxima are exactly `3 + 3 + 6 + 2 + 3 + 3 + 6 = 26`. The first recovery pass at 108,
+second pass at 60, authentication at six, and publication at 26 form the closed worst-case ceiling
+`108 + 60 + 6 + 26 = 200`; inapplicable base-record job reads are omitted rather than padded.
+
+Request 201 produces no record or effect. The implementation gate rejects a provider composition
+that cannot prove the 26-request publication maximum; a runtime 27th publication request is denied
+and any already-created comment remains subject to the bounded interrupted-publication path. No
+unused allowance from normal operation or orphan recovery is transferred, and no provider response
+or rate-limit estimate can raise the ceiling.
+
+Overflow recovery remains effect-disabled before Issue #55 and cannot enter ordinary orphan
+settlement, cursor recovery, normal lifecycle mutation, or automatic retry. Its bounded
+failed-publication quarantine is part of the one successful v2 checkpoint and grants no authority.
+It is implemented only by the existing protected caller and coordinator. No account, App, PAT,
+broker, database, hosted service, dependency, or second credential is added. Activation remains
+disabled, and any implementation pull request to `dev` stops for a human-only manual merge.
+
 ### Inert rollout
 
 Before issue #55's signed activation, the caller and reusable coordinator remain inert. They may
-produce only the guarded-off sanitized observations expressly authorized by issue #51. They perform
-no lifecycle, label, status, content, branch, pull-request, queue, merge, or repository-setting
-effect.
+produce only the guarded-off sanitized observations expressly authorized by issue #51 and the one
+effect-disabled overflow artifact expressly authorized by the separate defect issue required by
+decision issue #170: the exact null-effect version-2 transition/read-back checkpoint over issue
+#52's authenticated 16-record genesis suffix. That defect must itself be accepted and ready, must
+name issue #52 and the exact recovery target in its Execution Authority, and may publish the command
+only after its implementation and complete hostile complement are green. It cannot emit an ordinary
+lifecycle record or recover any other issue. Both paths perform no lifecycle, label, status, branch,
+pull-request, queue, merge, or repository-setting effect; the checkpoint comment is the sole
+expressly authorized pre-activation content effect beyond issue #51's guarded-off observations.
 
 Issue #51 must prove the exact source closure, zero Actions-write permission, locator rejection
 matrix, provider-budget-only resolver serialization, caller-held lock duration, nested producer
@@ -678,6 +1028,13 @@ prove the PR-comment routing correction while activation remains disabled. That 
 must preserve the existing locator schema, protected topology, permission ceilings, stable PR
 double read, exact accepted-issue mapping, plain-issue recovery authentication, and every
 activation-disabled zero-effect guarantee.
+
+Decision issue #170 owns only the suffix-overflow ADR amendment. After a human-only manual merge to
+`dev`, a separate defect issue owns its implementation and the exact issue #52 recovery. That defect
+must freeze the direct-command locator, version-2 transition/read-back schema, exact-16 and
+request-200 complements, hostile fixtures, mandatory supersession terminalization, and live
+effect-disabled evidence before any recovery command is posted. Issue #55 remains the sole
+activation owner.
 
 ## Alternatives
 
