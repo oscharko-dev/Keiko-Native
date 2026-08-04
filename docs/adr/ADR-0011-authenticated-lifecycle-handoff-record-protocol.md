@@ -196,9 +196,10 @@ version-1 preimage, and neither form negotiates fields at runtime.
 The version-2 `quarantine_reason` is closed. `anchor-publication-interrupted` binds the existing
 ordinary reserved-fence or reserved-checkpoint orphan. `cursor-claim-anchor-publication-interrupted`
 binds only the exact final complete cursor-recovery phase/fence claim v3 comment intended for record
-13 after at most 12 authenticated live records. `cursor-checkpoint-anchor-publication-interrupted`
-binds only the exact immediate cursor-recovery checkpoint comment intended for record 14 after an
-authenticated v3 claim at record 13. Each cursor reason requires the same authorized maintainer
+`n + 1`, where `n` is the authenticated live non-checkpoint suffix cardinality from zero through 12.
+`cursor-checkpoint-anchor-publication-interrupted` binds only the exact immediate cursor-recovery
+checkpoint comment intended for record `n + 2` after an authenticated v3 claim at record `n + 1`.
+Each cursor reason requires the same authorized maintainer
 request and exact recovery target, a failed, cancelled, or timed-out protected-writer job whose
 fixed anchor-attestation step is stably `skipped`, zero or one immutable un-attested anchor, zero
 attestations, and byte-identical orphan body, digest, predecessor, and target evidence. No other
@@ -512,9 +513,9 @@ be resumed or converted; they cannot be used to derive missing live-member, repl
 starting-boundary evidence. The frozen pre-activation inventory is not limited to Issue #55's
 disposable-probe manifest. The frozen maximum issue number comes from two stable repository
 observations, and the inventory classifies every canonical issue number from 1 through that maximum
-as an issue, pull request, or missing resource. It scans the complete bounded 5-page history of
+as an issue, pull request, or missing resource. It scans the complete bounded 3-page history of
 every issue; the pull-request and missing-resource classifications remain retained negative
-evidence. Page 6, unstable classification, or an unclassified number makes the inventory incomplete
+evidence. Page 4, unstable classification, or an unclassified number makes the inventory incomplete
 and blocks activation. Zero incomplete v1 and v3 cursor claims across that complete inventory is an
 exact activation precondition. Discovery of one blocks activation and requires separately governed,
 exact-target human reconciliation that retains the original evidence; the maintainer records the
@@ -523,6 +524,15 @@ migration, digest-only conversion, evidence deletion, or inferred boundary. Phas
 remains exclusive to forward recovery settlement. Except for the read-only incomplete compatibility
 shape above, every other v3 phase, outcome, field order, cardinality, null combination, or use is
 malformed.
+
+Before activation, every pre-amendment protected writer run loaded from an older `dev` SHA must be
+terminal. The Issue #55 activation operation then acquires and holds the existing repository-wide
+`issue-lifecycle-provider-budget` serialization group, performs one final complete-inventory
+revalidation while holding that group, and retains it until the authenticated activation receipt is
+durable. Any queued or in-progress pre-amendment writer, inventory drift, or unavailable read blocks
+activation.
+Every writer admitted after the receipt loads the accepted activation commit and cannot emit an
+incomplete phase/fence claim v1 or v3.
 
 For each issue, the unique serialization domain is exactly
 `issue-lifecycle-${decimal issue number}` with `queue: max` and no `cancel-in-progress` key. Every
@@ -705,17 +715,20 @@ The ordinary writer additionally enforces a three-record terminalization reserve
 that hard 15-record loader bound. At 12 non-checkpoint records after a genesis root or authenticated
 checkpoint, the only permitted next append is either the generation's terminal or superseded
 phase/fence claim, which becomes record 13, or the exact version-2 recovery phase/fence settlement
-for an unanchored reserved-fence orphan that was intended to become record 13. The cursor-recovery
-exceptions at 12 are the exact complete phase/fence claim v3, which becomes record 13, and the exact
-version-2 `cursor-claim-anchor-publication-interrupted` settlement for an unanchored copy of that
-v3 claim, which instead becomes record 13. An authenticated cursor-recovery v3 claim at record 13
-permits only its immediate transition/read-back checkpoint as record 14 or the exact version-2
-`cursor-checkpoint-anchor-publication-interrupted` settlement for an unanchored copy of that
-checkpoint as record 14 followed only by the recovery-owned checkpoint as record 15. From an
-authenticated reserved terminal fence at record 13, the writer may append only its immediate
+for an unanchored reserved-fence orphan that was intended to become record 13. From an authenticated
+reserved terminal fence at record 13, the writer may append only its immediate
 transition/read-back checkpoint, or one exact version-2 recovery phase/fence settlement for an
 interrupted checkpoint publication as record 14 followed immediately by the recovery-owned
-transition/read-back checkpoint as record 15. From either reserved-fence or interrupted-v3
+transition/read-back checkpoint as record 15. The exact cursor-recovery phase/fence claim v3 defines
+`n` as the authenticated live non-checkpoint suffix cardinality from zero through 12. It becomes
+record `n + 1`; an unanchored copy of that claim instead permits only the exact version-2
+`cursor-claim-anchor-publication-interrupted` settlement at record `n + 1`. Either authenticated
+record permits only its immediate recovery-owned transition/read-back checkpoint at record
+`n + 2`. An authenticated cursor-recovery v3 claim at record `n + 1` alternatively permits only the
+exact version-2 `cursor-checkpoint-anchor-publication-interrupted` settlement for an unanchored copy
+of that checkpoint at record `n + 2`, followed only by the recovery-owned checkpoint at record
+`n + 3`. At `n = 12`, these paths consume records 13 through 15 without widening the loader. From
+either reserved-fence or interrupted-v3
 settlement at record 13, only
 the recovery-owned null-effect checkpoint may follow as record 14. A nonterminal append at 12 other
 than these exact cursor-recovery exceptions, any other append after the reserved fence, settlement,
@@ -769,16 +782,16 @@ rejects while preserving a forward path for one interrupted reserved checkpoint.
 If publication of the final complete cursor-recovery v3 claim comment succeeds but its anchor
 publication is interrupted, the authorized recovery authenticates the already-established lower-ID
 root checkpoint and shadow relation, then appends the exact version-2
-`cursor-claim-anchor-publication-interrupted` settlement as record 13 after the at-most-12
-authenticated live records. The orphan v3 remains quarantine-only. Once the settlement is
-authenticated, record 14 is the immediate recovery-owned null-effect checkpoint described above;
-no other record or effect may intervene.
+`cursor-claim-anchor-publication-interrupted` settlement at record `n + 1`, where `n` is the
+authenticated live non-checkpoint suffix cardinality from zero through 12. The orphan v3 remains
+quarantine-only. Once the settlement is authenticated, record `n + 2` is the immediate
+recovery-owned null-effect checkpoint described above; no other record or effect may intervene.
 
-If the v3 claim is authenticated at record 13 and publication of its immediate cursor-recovery
+If the v3 claim is authenticated at record `n + 1` and publication of its immediate cursor-recovery
 checkpoint comment succeeds but its anchor publication is interrupted, the authorized recovery
-appends the exact version-2 `cursor-checkpoint-anchor-publication-interrupted` settlement. It becomes
-record 14. The orphan checkpoint remains quarantine-only. Once that settlement is authenticated,
-record 15 is the immediate recovery-owned null-effect checkpoint; no other record or effect may
+appends the exact version-2 `cursor-checkpoint-anchor-publication-interrupted` settlement at record
+`n + 2`. The orphan checkpoint remains quarantine-only. Once that settlement is authenticated,
+record `n + 3` is the immediate recovery-owned null-effect checkpoint; no other record or effect may
 intervene.
 Both cursor settlements prove the exact fixed skipped-attestation and orphan facts required by the
 closed version-2 reason above. Repeated interruption of either settlement or its recovery-owned
@@ -854,11 +867,11 @@ the lower-ID byte-identical overflow v2 checkpoint and the greater shadow-ID rel
 may one phase/fence claim v3 persist the complete at-most-15 live record members, one shadow body
 digest, and exact shadow comment IDs. It publishes no intermediate cursor or progress claim. The
 final claim and immediate checkpoint require at most 12 live records before publication; any larger
-or reserved open suffix uses its exact existing recovery path or fails closed. The hard cap is 5
-accumulator pages. At most 10 comment-page requests cover two stable reads of each page in the one
-invocation; 126 record-chain, target, provider, publication, and read-back requests plus the fixed
-14 ingress requests preserve the 150-request ceiling. A fifth shadow, any mismatch or discontinuity,
-cursor exhaustion, page 6, or failure to authenticate that checkpoint produces no complete
+or reserved open suffix uses its exact existing recovery path or fails closed. The hard cap is 3
+accumulator pages. At most 6 comment-page requests cover two stable reads of each page in the one
+invocation; 130 record-chain, provider, publication, and read-back requests plus the fixed 14
+ingress requests preserve the 150-request ceiling. A fifth shadow, any mismatch or discontinuity,
+cursor exhaustion, page 4, or failure to authenticate that checkpoint produces no complete
 accumulator, checkpoint, or effect. The classification initiates no recovery, changes no 15-record
 bound, target consumption, or authority, and adds no provider request outside that closed
 allocation.
@@ -1135,7 +1148,7 @@ intermediate claim. Every scanned timeline comment, including an irrelevant comm
 one `recovery-suffix-member`; members retain the exact stable GraphQL edge order returned for that
 backward page. Provider order is evidence of complete pagination, never lifecycle or predecessor
 authority. Recovery starts its accumulator at the first of the two normal-load pages, computes
-exactly one accumulator step per stably double-read page, and fails closed before page 6. The
+exactly one accumulator step per stably double-read page, and fails closed before page 4. The
 in-memory `checkpoint_sequence` is `0` on every incomplete step. On the complete step it remains `0`
 for the unique genesis root or becomes the exact sequence from the authenticated checkpoint that
 ended the scan. The recovery-scan identity uses that same value. The fresh transition/read-back
@@ -1180,22 +1193,25 @@ provisional assertion and entire recovery fail closed without a complete accumul
 or effect.
 
 The single serialized recovery invocation scans only until the complete accumulator reaches its
-hard cap of 5 pages and remains effect-disabled. It publishes no intermediate cursor or progress
+hard cap of 3 pages and remains effect-disabled. It publishes no intermediate cursor or progress
 claim. The final v3 claim's `recovery_scanned_page_count` equals the complete accumulator's
 `accumulator_step`, and its `recovery_scanned_comment_count` equals the complete accumulator's
 `cumulative_member_count`. A provider cursor that becomes null before an authenticated checkpoint
-or unique genesis is found proves truncation and emits no claim. Reaching page 6 before that root
+or unique genesis is found proves truncation and emits no claim. Reaching page 4 before that root
 is found is cursor exhaustion and likewise emits no claim. When the prior checkpoint or the unique
 null-predecessor genesis is found, the final phase/fence claim v3 sets `recovery_scan_complete` and
-the accumulator's `complete` to true. The invocation allows at most 10 comment-page requests: two
-requests stably read each of at most 5 pages. The 126-call recovery core allocates 72 calls to one
-artifact-list read, at most fourteen record/root/orphan authentication tuples, and one exact
-recovery-target or orphan read; 26 calls to current provider state; and two complete 14-call
-claim/checkpoint publication and read-back sequences. The first allocation is exactly one
-artifact-list call, 28 artifact-download redirect-chain calls, 14 subject-qualified attestation
-inventory calls, 28 run/job calls, and one target-or-orphan call. Those 126 calls plus the 10 page
-calls and ADR-0012's fixed 14 ingress requests produce the unchanged
-150-request ceiling. The replay reconstructs every full member preimage, revalidates the compacted
+the accumulator's `complete` to true. The invocation allows at most 6 comment-page requests: two
+requests stably read each of at most 3 pages. Fifteen record/root/orphan authentication tuples
+require 76 authentication calls; 26 current-provider calls and 28 publication calls complete the
+130-call recovery core. That core allocates 76 authentication
+calls to one artifact-list read and at most fifteen record/root/orphan authentication tuples; 26
+calls to current provider state; and 28 calls for two complete 14-call claim/checkpoint publication
+and read-back sequences. The 76-call allocation is exactly one artifact-list call, 30
+artifact-download redirect-chain calls, 15 subject-qualified attestation inventory calls, and 30
+run/job calls. The already authenticated ingress authorization and target bytes are reused;
+no additional provider request is made. Those 130 calls plus the 6 page calls and ADR-0012's fixed
+14 ingress requests produce the unchanged 150-request ceiling. The replay reconstructs every full
+member preimage, revalidates the compacted
 prefix or complete genesis suffix in predecessor order, and only then emits a fresh
 transition/read-back checkpoint. If the #55 live probe cannot prove this capped stable
 backward-cursor replay, cursor recovery remains unavailable and the protocol cannot activate.

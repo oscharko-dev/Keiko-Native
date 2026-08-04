@@ -165,15 +165,17 @@ digest, and exact shadow comment IDs. It must publish no intermediate cursor or 
 final claim and immediate checkpoint require at most 12 live records before publication; any larger
 or reserved open suffix uses its exact existing recovery path or fails closed.
 
-The activation probe must enforce a hard cap of 5 accumulator pages. At most 10 comment-page
-requests cover two stable reads of each page in the one invocation; 126
-record-chain, target, provider, publication, and read-back requests plus the fixed 14 ingress
-requests preserve the 150-request ceiling. The 126-call core is exactly 72 authentication and
-target calls, 26 current-provider calls, and 28 calls for two complete record publication and
-read-back sequences. The 72 calls are one artifact list, 28 artifact-download redirect-chain
-calls, 14 subject-qualified attestation inventories, 28 run/job calls, and one exact
-target-or-orphan read. A fifth shadow, any mismatch or discontinuity, cursor
-exhaustion, page 6, or missing checkpoint must produce no complete accumulator, checkpoint, or
+The activation probe must enforce a hard cap of 3 accumulator pages. At most 6 comment-page
+requests cover two stable reads of each page in the one invocation; 130 record-chain, provider,
+publication, and read-back requests plus the fixed 14 ingress requests
+preserve the 150-request ceiling. The 130-call core is exactly 76 authentication calls, 26
+current-provider calls, and 28
+calls for two complete record publication and read-back sequences. The 76 calls are one artifact
+list, 30 artifact-download redirect-chain calls, 15 subject-qualified attestation inventories, and
+30 run/job calls for at most fifteen record/root/orphan authentication tuples. The already
+authenticated ingress authorization and target bytes are reused; no additional provider request is
+made. A fifth shadow, any mismatch or discontinuity, cursor exhaustion, page 4, or missing
+checkpoint must produce no complete accumulator, checkpoint, or
 effect. The classification adds no request outside that closed allocation, initiates no cursor
 recovery, and changes no 15-record bound, target consumption, or authority.
 
@@ -182,12 +184,23 @@ compatibility and prohibit resume or migration. The frozen pre-activation invent
 to Issue #55's disposable-probe manifest. The frozen maximum issue number comes from two stable
 repository observations, and the inventory classifies every canonical issue number from 1 through
 that maximum as an issue, pull request, or missing resource. It scans every issue's complete
-bounded 5-page history and retains the other classifications as negative evidence. Page 6,
+bounded 3-page history and retains the other classifications as negative evidence. Page 4,
 instability, or an unclassified number makes the inventory incomplete. Zero incomplete v1 and v3
 cursor claims across that complete inventory is an exact activation precondition. Any discovery
 must fail closed, block activation, retain all evidence, and require a separately governed
 exact-target human reconciliation issue before any settlement; no boundary, summary, or cursor may
-be inferred. It must also prove superseded
+be inferred.
+
+Before activation, every pre-amendment protected writer run loaded from an older `dev` SHA must be
+terminal. The Issue #55 activation operation must then acquire and hold the existing repository-wide
+`issue-lifecycle-provider-budget` serialization group, perform one final complete-inventory
+revalidation while holding that group, and retain it until the authenticated activation receipt is
+durable. Any queued or in-progress pre-amendment writer, inventory drift, or unavailable read must
+block activation.
+Every writer admitted after the receipt must load the accepted activation commit and be unable to
+emit an incomplete phase/fence claim v1 or v3.
+
+It must also prove superseded
 generations authenticate their frozen generation and closed partial producer set. An ordinary
 superseded fence binds its first witness; the reserved-fence exception uses the final encoded
 read-back source observation as its sole durable witness and refreshes that projection under the
@@ -197,13 +210,15 @@ checkpoint. The writer must use a three-record terminalization reserve: reject a
 at 12, place the terminal fence at record 13, permit its immediate checkpoint or exact version-2
 skipped-attestation checkpoint-orphan settlement at record 14, and then permit only the
 recovery-owned null-effect checkpoint at record 15. An interrupted fence instead uses its exact
-version-2 settlement at record 13 and checkpoint at record 14. The exact complete cursor-recovery
-v3 claim is the sole other claim permitted at record 13 and must be followed immediately by its
-checkpoint at record 14. An interrupted unanchored v3 instead uses its exact version-2 cursor-claim
-settlement at record 13 followed only by the recovery-owned checkpoint at record 14. After an
-authenticated cursor-recovery v3 at record 13, an interrupted unanchored cursor-recovery checkpoint
-uses its exact version-2 cursor-checkpoint settlement at record 14 followed only by the
-recovery-owned checkpoint at record 15. Version 1 remains read-only
+version-2 settlement at record 13 and checkpoint at record 14. The exact complete cursor-recovery v3
+claim defines `n` as the authenticated live non-checkpoint suffix cardinality from zero through 12.
+It is record `n + 1` and must be followed immediately by its checkpoint at record `n + 2`. An
+interrupted unanchored v3 instead uses its exact version-2 cursor-claim settlement at record
+`n + 1`, followed only by the recovery-owned checkpoint at record `n + 2`. After an authenticated
+cursor-recovery v3 at record `n + 1`, an interrupted unanchored cursor-recovery checkpoint uses its
+exact version-2 cursor-checkpoint settlement at record `n + 2`, followed only by the recovery-owned
+checkpoint at record `n + 3`. At `n = 12`, the cursor paths consume records 13 through 15 without
+widening the loader. Version 1 remains read-only
 zero-anchor compatibility; the parent phase/fence record encodes settlement schema version 2 before
 its identity, while a legacy settlement-bearing phase/fence v1 selects only settlement v1. Each
 recovery-owned `abandoned` checkpoint must carry the exact authenticated
