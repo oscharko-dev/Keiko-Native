@@ -4157,7 +4157,9 @@ while :; do /bin/sleep 1; done
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut child = Command::new("/bin/sh")
             .arg("-c")
-            .arg("trap '' TERM; printf 'ready\\n'; while :; do :; done")
+            .arg(
+                "trap '' TERM; /bin/sh -c \"trap '' TERM; while :; do :; done\" & printf 'ready\\n'; wait",
+            )
             .process_group(0)
             .stdout(Stdio::piped())
             .spawn()
