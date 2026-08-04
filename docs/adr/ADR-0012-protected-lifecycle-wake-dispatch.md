@@ -615,6 +615,19 @@ third ingress request. A command absent from either bounded newest-100 response,
 edge sequence, or any missing or changed node identity, resource association, actor, permission, or
 field fails closed; a maintainer must post a fresh command for a freshly observed target.
 
+Historical-v4 original-command reauthentication is a separate closed six-request route used only
+after one interrupted phase/fence claim v4 or its immediate checkpoint has been selected. Each of
+its two agreeing three-request reads uses REST by the persisted numeric comment ID, GraphQL
+`node(id: $node_id)` to prove the exact `IssueComment` facts and repository/issue association, and
+the collaborator-permission request. It deliberately does not load the issue's newest 100 comment
+edges, require an edge match, or recover the original command-edge cursor. That cursor is no longer
+an input: the authenticated v4 has already bound the original incomplete-scan target, member list,
+and shadow summary. The route recomputes only the canonical authorized-request identity and
+requires equality with v4. It cannot authenticate a fresh ingress command, derive or replace a
+target, create a new v4 claim, or authorize any path except the two closed interrupted-v4
+settlements. A missing, changed, deleted, edited, mismatched, unauthorized, or multiply selected
+resource fails closed.
+
 Fallback discovery, actor authorization, and exact-comment authentication reserve at most fourteen
 requests inside ADR-0011's existing 150-request recovery-mode counter: at most four GraphQL
 requests for two complete stable reads of the two-page normal fallback window, at most four
@@ -648,9 +661,9 @@ completion reconstructs the exact stable two-page cursor boundary strictly befor
 command comment ID and its incomplete recovery-scan target. A cursor settlement first selects
 exactly one interrupted v4 claim or its immediate checkpoint, treats its persisted
 `cursor_recovery_authorization_comment_id` only as an untrusted locator, repeats this section's
-six-request exact-comment authentication for the original command, and requires the recomputed
-authorization identity to equal the v4 field. Only then does it authenticate the original v4
-authorization/target chain and derive its target from that authenticated original v4
+historical-v4 six-request exact-comment authentication for the original command, and requires the
+recomputed authorization identity to equal the v4 field. Only then does it authenticate the
+original v4 authorization/target chain and derive its target from that authenticated original v4
 `cursor_recovery_target_identity`. It requires the fresh command to name the same target and
 recomputes the fresh authorized-request identity with that value. The fresh command-edge cutoff is
 only its exact-comment ingress boundary; it never recomputes or replaces the original target,
@@ -764,7 +777,7 @@ ADR-0011's ordinary three-record reserve is also closed here. After 12 authentic
 unanchored reserved-fence comment may be settled only by an exact version-2 recovery phase/fence
 claim at record 13 and an immediate recovery-owned null-effect checkpoint at record 14. The exact
 complete cursor-recovery v4 sequence instead defines `n` as the authenticated live non-checkpoint
-suffix cardinality from two through 10 including the unique-genesis generation request, from one
+suffix cardinality from one through 10 including the unique-genesis generation request, from one
 through 9 after an ordinary-v1 checkpoint root, or from one through 8 after an overflow-v2
 checkpoint root. Its v4 claim is record `n + 1` and must be followed
 immediately by its authenticated checkpoint at record `n + 2`. An interrupted unanchored v4 claim
@@ -781,8 +794,9 @@ widens the loader. A direct v4 checkpoint is recovery-owned,
 `abandoned`, null-effect, and carries exactly the authenticated same-generation producer subset
 already present before the v4 fence, including empty. The live suffix must begin with one
 authenticated generation request, contain one internally valid open generation, and contain no
-terminal fence or checkpoint. A unique-genesis root alone (`n = 1`) or checkpoint root with no
-later live record (`n = 0`) authenticates the root and shadows but is a no-op with no v4 claim,
+terminal fence or checkpoint. A unique-genesis root alone (`n = 1`) is an admitted one-record open
+generation and is terminalized through v4 and its checkpoint. A checkpoint root with no later live
+record (`n = 0`) authenticates the root and shadows but remains a no-op with no v4 claim,
 checkpoint, record, or effect. All settlement paths
 use the version-2 phase/fence marker and its encoded `recovery_settlement_schema_version=2`, so the
 parent record selects the settlement parser before downstream bytes are decoded. A historical
@@ -872,11 +886,11 @@ command and all later comments are excluded from the frozen recovery prefix; the
 direct-ingress reads must reproduce the same preceding boundary without an added provider request.
 The inherited generation `request_identity` cannot substitute for either field. It publishes no
 intermediate cursor or progress claim. The final
-claim and immediate checkpoint require two through 10 live records including the unique-genesis
+claim and immediate checkpoint require one through 10 live records including the unique-genesis
 request, one through 9 after an ordinary-v1 root, or one through 8 after the overflow-v2 root,
-forming that exact open generation. A unique-genesis root alone and a checkpoint root with zero
-later live records are no-ops; any larger or reserved open suffix uses its exact
-existing recovery path or fails closed.
+forming that exact open generation. A unique-genesis root alone is an admitted one-record open
+generation and is terminalized; a checkpoint root with zero later live records remains a no-op. Any
+larger or reserved open suffix uses its exact existing recovery path or fails closed.
 
 The hard cap is 3 accumulator pages. At most 6 comment-page requests cover two stable reads of each
 page in the one invocation. A unique-genesis or ordinary-v1 root permits at most twelve

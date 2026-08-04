@@ -170,22 +170,26 @@ the target from the stable historical prefix ending strictly before the exact co
 the command and later comments are excluded, and the existing stable direct-ingress reads reproduce
 the original boundary without another provider request. It must
 publish no intermediate cursor or progress claim. The final claim and immediate checkpoint require
-two through 10 live records including the unique-genesis request, one through 9 after an ordinary-v1
+one through 10 live records including the unique-genesis request, one through 9 after an ordinary-v1
 root, or one through 8 after an overflow-v2 root, forming one internally valid open generation that
 begins with its authenticated
 generation request and contains no terminal claim or checkpoint. The direct
 recovery-owned `abandoned` checkpoint carries exactly the authenticated same-generation producer
 subset present before v4, including empty, retains every included result's original producer-owning
-fence, and permits no producer after v4. A unique-genesis root alone or a checkpoint root with zero
-later live records authenticates the root and replay-shadow relation but is a no-op with no v4
-claim, checkpoint, record, or effect. Any larger, reserved, or differently shaped open suffix uses
-its exact existing recovery path or fails closed.
+fence, and permits no producer after v4. A unique-genesis root alone is an admitted one-record open
+generation and is terminalized through v4 and its checkpoint. A checkpoint root with zero later
+live records authenticates the root and replay-shadow relation but remains a no-op with no v4 claim,
+checkpoint, record, or effect. Any larger, reserved, or differently shaped open suffix uses its
+exact existing recovery path or fails closed.
 The gate must prove that v4 alone does not consume the cursor target. Only the fully authenticated
 direct checkpoint or settlement-following recovery checkpoint consumes it. An interruption permits
 a fresh command for the still-unconsumed target; its settlement binds that fresh request while
-treating the v4 authorization comment ID only as a locator, repeating six-request exact-comment
-authentication of the original command, and requiring the recomputed identity to equal v4 before
-the orphan/predecessor proof retains the original authorization and target. The gate must prove the
+treating the v4 authorization comment ID only as a locator, repeating historical-v4 six-request
+exact-comment authentication of the original command, and requiring the recomputed identity to
+equal v4 before the orphan/predecessor proof retains the original authorization and target. That
+route must repeat REST-by-ID, GraphQL node/resource, and current-permission reads without requiring
+a newest-100 edge or recovering the original command-edge cursor, and it cannot authenticate fresh
+ingress or derive a target. The gate must prove the
 settlement target comes only from the authenticated original v4 claim, never from the fresh command
 cutoff; that cutoff is only the fresh command's ingress-authentication boundary.
 
@@ -257,15 +261,16 @@ record 14, and after that settlement permits only the recovery-owned null-effect
 record 15. If fence publication is interrupted, the exact version-2 fence-orphan settlement is
 record 13 and only its recovery-owned checkpoint may follow at record 14. The exact complete
 cursor-recovery v4 claim defines `n` as the authenticated live non-checkpoint suffix cardinality
-from two through 10 including the unique-genesis generation request, from one through 9 after an
+from one through 10 including the unique-genesis generation request, from one through 9 after an
 ordinary-v1 root, or from one through 8 after an overflow-v2 root, for one internally valid open
 generation that begins with its authenticated
 generation request and contains no terminal claim or checkpoint. It is record `n + 1` and must be
 followed immediately by its checkpoint at record `n + 2`. That direct recovery-owned `abandoned`
 checkpoint carries exactly the authenticated same-generation producer subset present before v4,
 including empty, and retains each result's original producer-owning fence; no producer may publish
-after v4. A unique-genesis root alone (`n = 1`) or checkpoint root with no later live record
-(`n = 0`) is a no-op with no v4 claim, checkpoint, record, or effect.
+after v4. A unique-genesis root alone (`n = 1`) is an admitted one-record open generation and is
+terminalized through v4 and its checkpoint. A checkpoint root with no later live record (`n = 0`)
+remains a no-op with no v4 claim, checkpoint, record, or effect.
 An interrupted unanchored v4 instead uses its exact version-2 cursor-claim
 settlement at record `n + 1`, followed only by the recovery-owned checkpoint at record `n + 2`.
 After an

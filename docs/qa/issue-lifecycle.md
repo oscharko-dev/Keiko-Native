@@ -319,22 +319,26 @@ and later comments are excluded, and the direct-ingress stable reads must reprod
 boundary without another provider request. It publishes no intermediate cursor or
 progress claim. The
 final claim
-and immediate checkpoint require two through 10 live records including the unique-genesis request,
+and immediate checkpoint require one through 10 live records including the unique-genesis request,
 one through 9 after an ordinary-v1 root, or one through 8 after an overflow-v2 root, forming one
 internally valid open generation that
 begins with its authenticated request and contains no terminal fence or checkpoint.
 The recovery-owned `abandoned` checkpoint carries exactly the authenticated same-generation
-producer subset already present before v4, including empty. A unique-genesis root alone and a
-checkpoint root with no later live record are no-ops with no v4 claim, checkpoint, record, or
-effect; any larger or reserved open suffix uses its exact existing recovery path or fails closed.
+producer subset already present before v4, including empty. A unique-genesis root alone is an
+admitted one-record open generation and is terminalized through v4 and its checkpoint. A checkpoint
+root with no later live record remains a no-op with no v4 claim, checkpoint, record, or effect; any
+larger or reserved open suffix uses its exact existing recovery path or fails closed.
 An authenticated v4 claim alone does not consume the cursor target. It remains unconsumed until
 the direct immediate checkpoint or a
 settlement-following recovery checkpoint fully authenticates. If v4 or its checkpoint publication
 is interrupted, a fresh command for that still-unconsumed target authorizes only the matching
 settlement; the settlement binds the fresh request while treating the v4 authorization comment ID
-only as a locator, repeating six-request exact-comment authentication of the original command, and
-requiring its recomputed identity to equal v4 before accepting the original authorization and target
-through the orphan/predecessor chain. It derives the settlement target only from the
+only as a locator, repeating historical-v4 six-request exact-comment authentication of the original
+command, and requiring its recomputed identity to equal v4 before accepting the original
+authorization and target through the orphan/predecessor chain. That route repeats REST-by-ID,
+GraphQL node/resource, and current-permission reads without requiring a newest-100 edge or
+recovering the original command-edge cursor. It cannot authenticate fresh ingress or derive a
+target. It derives the settlement target only from the
 authenticated original v4 claim, never from the fresh command cutoff; that cutoff is only the fresh
 command's ingress-authentication boundary. Only the final checkpoint consumes the target.
 
@@ -402,7 +406,7 @@ source observation is its sole durable superseding witness. Once its exact ancho
 that null-effect checkpoint, a later fact change cannot stale the historical terminalization. The
 ordinary writer uses a three-record terminalization reserve: it rejects a nonterminal append at 12
 and places the terminal or superseded fence at record 13. The exact complete cursor-recovery v4
-claim defines `n` as the authenticated live non-checkpoint suffix cardinality from two through 10
+claim defines `n` as the authenticated live non-checkpoint suffix cardinality from one through 10
 including the unique-genesis generation request, from one through 9 after an ordinary-v1 root, or
 from one through 8 after an overflow-v2 root.
 It is record `n + 1` and must be followed immediately by its checkpoint at record `n + 2`. An

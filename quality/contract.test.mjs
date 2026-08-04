@@ -3071,6 +3071,10 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     );
     assert.match(
       projection,
+      /historical-v4[\s\S]{0,500}(?:REST-by-ID|REST[^.]{0,120}(?:comment|numeric ID))[\s\S]{0,500}GraphQL[^.]{0,180}(?:node|resource)[\s\S]{0,500}(?:permission|collaborator)[\s\S]{0,900}(?:without (?:requiring|loading)|does not (?:load|require))[^.]{0,220}(?:newest-100|newest 100|edge)[\s\S]{0,500}(?:cannot|does not)[^.]{0,220}(?:fresh ingress|fresh command|derive a target)/iu,
+    );
+    assert.match(
+      projection,
       /(?:historical prefix|prefix)[^.]{0,220}(?:strictly before|ending immediately before)[^.]{0,220}(?:command comment ID|command)/iu,
     );
     assert.match(
@@ -3119,7 +3123,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     );
     assert.match(
       projection,
-      /cursor-recovery[^.]{0,180}v4[\s\S]{0,700}(?:two through 10|2 through 10|n[^.]{0,80}2[^.]{0,80}10)[\s\S]{0,700}(?:n\s*\+\s*1|record after)[\s\S]{0,500}(?:immediate|only)[^.]{0,180}checkpoint[^.]{0,160}(?:n\s*\+\s*2|next record)/iu,
+      /cursor-recovery[^.]{0,180}v4[\s\S]{0,700}(?:one through 10|1 through 10|n[^.]{0,80}1[^.]{0,80}10)[\s\S]{0,700}(?:n\s*\+\s*1|record after)[\s\S]{0,500}(?:immediate|only)[^.]{0,180}checkpoint[^.]{0,160}(?:n\s*\+\s*2|next record)/iu,
     );
     assert.match(
       projection,
@@ -3127,7 +3131,11 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
     );
     assert.match(
       projection,
-      /(?:root-only[^.]{0,220}(?:zero(?:-|\s)+live(?:-|\s)+records?|n\s*=\s*0)|unique-genesis\s+root\s+alone|checkpoint\s+root[^.]{0,180}(?:no|zero)[^.]{0,120}live\s+record)[\s\S]{0,500}no-op[\s\S]{0,300}no v4 claim[^.]{0,180}checkpoint[^.]{0,180}record[^.]{0,180}effect/iu,
+      /(?:root-only[^.]{0,220}(?:zero(?:-|\s)+live(?:-|\s)+records?|n\s*=\s*0)|checkpoint\s+root[^.]{0,180}(?:no|zero)[^.]{0,120}live\s+record)[\s\S]{0,500}no-op[\s\S]{0,300}no v4 claim[^.]{0,180}checkpoint[^.]{0,180}record[^.]{0,180}effect/iu,
+    );
+    assert.match(
+      projection,
+      /unique-genesis\s+root\s+alone[^.]{0,220}(?:n\s*=\s*1|one-record)[^.]{0,220}(?:admitted|terminaliz)[\s\S]{0,300}(?:v4|checkpoint)/iu,
     );
     assert.match(
       projection,
@@ -3178,7 +3186,7 @@ test("pins bounded authenticated lifecycle suffix-overflow recovery", async () =
   );
   assert.match(
     protocol,
-    /final[^.]{0,120}phase\/fence claim v4[^.]{0,300}(?:two through 10|unique-genesis request)[\s\S]{0,500}immediate[^.]{0,180}checkpoint/iu,
+    /final[^.]{0,120}phase\/fence claim v4[^.]{0,300}(?:one through 10|unique-genesis request)[\s\S]{0,500}immediate[^.]{0,180}checkpoint/iu,
   );
   for (const projection of [protocol, lifecycle, gates, activation]) {
     assert.match(
