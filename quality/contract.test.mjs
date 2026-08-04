@@ -1081,7 +1081,7 @@ Provider protection excludes every agent identity from the \`dev\` update allowl
       `projection ${index} omitted protected-branch mutation verbs`,
     );
     const retryMutation = document.replace(
-      /no\s+retr(?:y|ies)/giu,
+      /(?:no|never)\s+retr(?:y|ies)/giu,
       "retries are allowed",
     );
     assert.notEqual(retryMutation, document);
@@ -1586,8 +1586,10 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   for (const [heading, fields] of Object.entries(expectedRecordFields)) {
     const headingIndex = recordHeadings.indexOf(heading);
     const nextHeading =
-      recordHeadings[headingIndex + 1] ??
-      "Record authentication and chain reconstruction";
+      heading === "Phase/fence claim v1"
+        ? "Phase/fence claim v2"
+        : (recordHeadings[headingIndex + 1] ??
+          "Overflow recovery transition/read-back v2");
     assert.deepEqual(recordFields(heading, nextHeading), fields, heading);
     assert.deepEqual(
       recordSchema(heading, nextHeading),
@@ -1648,6 +1650,12 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       "keiko-native.lifecycle-recovery-suffix-identity",
     "recovery scan identity": "keiko-native.lifecycle-recovery-scan-identity",
     "recovery target": "keiko-native.lifecycle-recovery-target-identity",
+    "overflow recovery target":
+      "keiko-native.lifecycle-overflow-recovery-target-identity",
+    "overflow publication locator":
+      "keiko-native.lifecycle-overflow-publication-locator",
+    "overflow locator attestation":
+      "keiko-native.lifecycle-overflow-locator-attestation-identity",
     "recovery settlement":
       "keiko-native.lifecycle-recovery-settlement-identity",
     "artifact anchor": "keiko-native.lifecycle-artifact-anchor",
@@ -1865,6 +1873,48 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       "last_authenticated_comment_id:uint-or-null",
       "last_authenticated_record_digest:sha256-or-null",
     ],
+    "overflow recovery target": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "prior_checkpoint_comment_id:null",
+      "prior_checkpoint_record_digest:null",
+      "first_record_comment_id:uint",
+      "first_record_digest:sha256",
+      "chain_tip_comment_id:uint",
+      "chain_tip_record_digest:sha256",
+      "non_checkpoint_record_count:uint=16",
+      "next_checkpoint_sequence:uint=1",
+    ],
+    "overflow publication locator": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "overflow_recovery_authorization_identity:sha256",
+      "overflow_recovery_target_identity:sha256",
+      "candidate_record_projection_digest:sha256",
+      "workflow_path:coordinator-path",
+      "workflow_run_id:uint",
+      "workflow_run_attempt:uint",
+      "workflow_job_id:uint",
+      "protected_dev_sha:commit",
+    ],
+    "overflow locator attestation": [
+      "schema_version:uint=1",
+      "repository:string",
+      "issue_number:uint",
+      "overflow_recovery_target_identity:sha256",
+      "overflow_publication_locator_identity:sha256",
+      "subject_name:string",
+      "subject_digest:sha256",
+      "issuer:enum(https://token.actions.githubusercontent.com)",
+      "workflow_path:coordinator-path",
+      "workflow_ref:enum(refs/heads/dev)",
+      "protected_dev_sha:commit",
+      "workflow_run_id:uint",
+      "workflow_run_attempt:uint",
+      "workflow_job_id:uint",
+    ],
     "recovery settlement": [
       "schema_version:uint=1",
       "repository:string",
@@ -1906,7 +1956,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
     ],
   };
   const auxiliarySection = adr.match(
-    /The exact auxiliary v1 schemas are:\n\n([\s\S]+?)\n\n`requested-lifecycle-state`/u,
+    /The exact auxiliary v1 schemas are:\n\n([\s\S]+?)\n\nThe exact recovery-settlement version-2 schema is:/u,
   );
   assert.ok(auxiliarySection, "auxiliary v1 schema table");
   const actualAuxiliarySchemas = Object.fromEntries(
@@ -1923,6 +1973,79 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       ]),
   );
   assert.deepEqual(actualAuxiliarySchemas, expectedAuxiliarySchemas);
+  assert.match(adr, /The exact recovery-settlement version-2 schema is:/u);
+  assert.match(adr, /\| recovery settlement v2\s+\| `schema_version:uint=2`/iu);
+  assert.match(
+    adr,
+    /`orphan_workflow_job_id:uint`[\s\S]{0,500}`orphan_anchor_attestation_step_number:uint`[\s\S]{0,500}`orphan_anchor_attestation_step_name:protected-writer-attestation-step-name`[\s\S]{0,500}`orphan_anchor_attestation_step_conclusion:enum\(skipped\)`[\s\S]{0,500}`orphan_anchor_count:uint=0-or-1`/iu,
+  );
+  assert.match(
+    adr,
+    /Phase\/fence claim v2[\s\S]{0,500}`schema_version`: uint `2`[\s\S]{0,1800}`recovery_settlement_schema_version`: uint `2`[\s\S]{0,1000}only[\s\S]{0,300}recovery settlement/iu,
+  );
+  assert.match(
+    gates,
+    /phase\/fence parent encodes the settlement identity first and then settlement schema version 2\s+immediately after it/iu,
+  );
+  assert.match(
+    gates,
+    /exactly four schema-version exceptions[\s\S]{0,300}recovery-settlement phase\/fence[\s\S]{0,180}version 2[\s\S]{0,180}overflow checkpoint[\s\S]{0,180}version 2[\s\S]{0,300}historical incomplete cursor phase\/fence claim[\s\S]{0,180}version 3[\s\S]{0,300}complete cursor-recovery phase\/fence claim[\s\S]{0,180}version 4[\s\S]{0,180}(?:None creates|never)[^.]{0,80}fifth record type/iu,
+  );
+  assert.match(
+    adr,
+    /Phase\/fence claim v1[\s\S]{0,5000}non-null[\s\S]{0,500}recovery_settlement_identity[\s\S]{0,500}(?:selects|means)[\s\S]{0,300}(?:legacy|version-1)[\s\S]{0,300}recovery settlement[\s\S]{0,500}read-only/iu,
+  );
+  assert.match(
+    adr,
+    /recovery settlement v2[\s\S]{0,1000}`orphan_anchor_attestation_step_number:uint`[\s\S]{0,500}`orphan_anchor_attestation_step_name:protected-writer-attestation-step-name`/iu,
+  );
+  assert.match(
+    adr,
+    /recovery settlement v2[\s\S]{0,2200}`quarantine_reason:enum\(anchor-publication-interrupted,cursor-claim-anchor-publication-interrupted,cursor-checkpoint-anchor-publication-interrupted\)`/iu,
+  );
+  assert.match(
+    adr,
+    /overflow transition\/read-back version-2[\s\S]{0,100}candidate necessarily binds this post-amendment topology/iu,
+  );
+  assert.match(
+    adr,
+    /pr-contract\.yml[\s\S]{0,300}Attest exact producer anchor identity[\s\S]{0,300}provider-visible step number `7`/iu,
+  );
+  assert.match(
+    adr,
+    /same exact name and numbers apply to[\s\S]{0,100}contract-publication\.yml/iu,
+  );
+  assert.match(
+    adr,
+    /record-bound `orphan_protected_dev_sha`[\s\S]{0,500}exact closed writer topology[\s\S]{0,500}record schema alone never selects/iu,
+  );
+  assert.match(
+    adr,
+    /four overflow-only steps remain present[\s\S]{0,300}`skipped`[\s\S]{0,500}Every record written by this topology[\s\S]{0,300}provider-visible number `10`/iu,
+  );
+  for (const [stepName, ordinal, providerNumber] of [
+    ["Read current writer job and prepare exact overflow locator", 3, 4],
+    ["Upload immutable overflow locator", 4, 5],
+    ["Attest exact overflow locator identity", 5, 6],
+    ["Download and verify exact overflow locator", 6, 7],
+    ["Publish and read back the canonical comment", 7, 8],
+    ["Upload immutable per-issue anchor", 8, 9],
+    ["Attest exact lifecycle anchor identity", 9, 10],
+  ]) {
+    assert.match(
+      adr,
+      new RegExp(
+        "\\| `" +
+          stepName +
+          "`\\s+\\|\\s+" +
+          ordinal +
+          " \\|\\s+" +
+          providerNumber +
+          " \\|",
+        "u",
+      ),
+    );
+  }
 
   const requestedStateDefinition = adr.match(
     /`requested-lifecycle-state` is exactly ([\s\S]+?); it excludes `no-lifecycle`\./u,
@@ -2015,11 +2138,11 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   ]);
   assert.match(
     adr,
-    /first publishes the canonical comment[\s\S]{0,300}provider-assigned comment ID[\s\S]{0,300}`comment_body_sha256`[\s\S]{0,500}artifact-anchor schema/iu,
+    /(?:first|then) publishes the canonical comment[\s\S]{0,300}provider-assigned comment ID[\s\S]{0,300}`comment_body_sha256`[\s\S]{0,500}artifact-anchor schema/iu,
   );
   assert.match(
     adr,
-    /final\s+comment, artifact, attestation, run, and job reread[\s\S]{0,250}complete binding is stable/iu,
+    /final six-request[\s\S]{0,300}exact comment[\s\S]{0,300}anchor archive[\s\S]{0,300}attestation inventory[\s\S]{0,300}current-source[\s\S]{0,500}complete binding is stable/iu,
   );
   const permissionSet = adr.match(
     /The exact writer permission set is ([\s\S]+?); every other permission/u,
@@ -2043,7 +2166,10 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
     [...claimSet[1].matchAll(/`([^`]+)`/gu)].map((match) => match[1]),
     [
       "repository",
+      "workflow_ref",
+      "workflow_sha",
       "job_workflow_ref",
+      "job_workflow_sha",
       "ref",
       "sha",
       "run_id",
@@ -2058,7 +2184,11 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   assert.match(adr, /100 comments\s+per page and at most two pages/iu);
   assert.match(
     adr,
-    /next serialized recovery run[\s\S]{0,200}scans at most 100 more pages/iu,
+    /single\s+serialized recovery invocation[\s\S]{0,320}hard cap of\s+3 pages/iu,
+  );
+  assert.match(
+    adr,
+    /more-than-100-page[\s\S]{0,180}cursor-recovery refusal before page 4/iu,
   );
   assert.match(
     adr,
@@ -2094,7 +2224,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
     /crash before the first checkpoint[\s\S]{0,700}authenticated genesis suffix[\s\S]{0,500}publication[\s\S]{0,40}interrupted[\s\S]{0,300}explicit authorized recovery/iu,
   );
   const forwardSettlementSection = adr.match(
-    /The forward orphan-settlement record is exactly:\n\n([\s\S]+?)\n\nThe orphan body/u,
+    /The forward orphan-settlement record is exactly:\n\n([\s\S]+?)\n\nNew settlements/u,
   );
   assert.ok(forwardSettlementSection, "forward orphan-settlement matrix");
   assert.deepEqual(
@@ -2115,14 +2245,15 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
       ["recovery_scan_complete", "false"],
       [
         "recovery_settlement_identity",
-        "sha-256 of exact recovery-settlement preimage",
+        "sha-256 of exact version-2 recovery-settlement preimage",
       ],
+      ["recovery_settlement_schema_version", "2"],
       ["predecessor", "last authenticated record or null root"],
       ["orphan_authority", "quarantined-only"],
     ],
   );
   const recoveryAccumulatorSection = adr.match(
-    /The recovery suffix accumulator update is exactly:\n\n([\s\S]+?)\n\nA resumed recovery run/u,
+    /The recovery suffix accumulator update is exactly:\n\n([\s\S]+?)\n\nA single recovery invocation/u,
   );
   assert.ok(
     recoveryAccumulatorSection,
@@ -2174,7 +2305,11 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   );
   assert.match(
     adr,
-    /`recovery_scanned_page_count` equals the accumulator's `accumulator_step`[\s\S]{0,120}`recovery_scanned_comment_count` equals the accumulator's `cumulative_member_count`[\s\S]{0,260}first new step is exactly the prior page count plus one/iu,
+    /publishes no intermediate[^.]{0,120}(?:progress|cursor)[^.]{0,120}claim/iu,
+  );
+  assert.match(
+    adr,
+    /`recovery_scanned_page_count` equals the complete accumulator's[\s\S]{0,80}`accumulator_step`[\s\S]{0,160}`recovery_scanned_comment_count` equals the complete accumulator's[\s\S]{0,80}`cumulative_member_count`/iu,
   );
   assert.match(adr, /missing predecessor[\s\S]{0,160}fork[\s\S]{0,80}cycle/iu);
   assert.match(
@@ -2199,7 +2334,7 @@ test("pins the authenticated lifecycle handoff record decision", async () => {
   );
   assert.match(
     adr,
-    /normal stable pass[\s\S]{0,500}93\s+requests[\s\S]{0,180}186\s+requests[\s\S]{0,180}ceiling to 200/iu,
+    /normal stable pass[\s\S]{0,700}three[^.]{0,180}producer-job requests[\s\S]{0,300}112 requests[\s\S]{0,700}six[^.]{0,180}locator[^.]{0,180}requests[\s\S]{0,500}118\s+requests[\s\S]{0,300}236\s+requests[\s\S]{0,300}ceiling to 250/iu,
   );
   assert.match(
     adr,
@@ -2338,15 +2473,35 @@ test("pins the protected lifecycle recovery wake decision", async () => {
 
   assert.match(
     adr,
-    /REST `GET \/repos\/\{owner\}\/\{repo\}\/issues\/comments\/\{comment_id\}`[\s\S]{0,500}GraphQL `node\(id: \$node_id\)`[\s\S]{0,500}collaborator-permission/iu,
+    /REST `GET \/repos\/\{owner\}\/\{repo\}\/issues\/comments\/\{comment_id\}`[\s\S]{0,700}GraphQL request[^.]{0,180}`node\(id: \$node_id\)`[\s\S]{0,700}collaborator-permission/iu,
   );
   assert.match(
     adr,
-    /authentication consumes six requests[\s\S]{0,700}at most fourteen\s+requests[\s\S]{0,500}remaining 136 requests[\s\S]{0,500}151st total request/iu,
+    /GraphQL request[\s\S]{0,500}newest 100 comment edges[\s\S]{0,400}exactly one edge[^.]{0,220}opaque connection cursor/iu,
+  );
+  for (const predicate of [
+    "both GraphQL nodes, command-edge cursors, bounded edge sequences",
+    "`before` equal to that stable",
+    "command-edge cursor",
+  ])
+    assert.ok(adr.includes(predicate), predicate);
+  assert.ok(
+    adr.includes(
+      "The command and all later edges are therefore excluded without consuming a\nthird ingress request.",
+    ),
+    "command edge must freeze the pre-command snapshot without another request",
+  );
+  assert.ok(
+    adr.includes("authentication consumes six requests"),
+    "exact command authentication must remain six requests",
   );
   assert.match(
     adr,
-    /At most one authenticated recovery record may consume a recovery-target identity[\s\S]{0,400}replay no-op/iu,
+    /at most fourteen\s+requests[\s\S]{0,500}remaining 136 requests[\s\S]{0,500}151st total request/iu,
+  );
+  assert.match(
+    adr,
+    /At most one authenticated recovery record may consume a recovery-target identity[\s\S]{0,1200}v4 claim alone does not consume[^.]{0,180}cursor target[\s\S]{0,900}fresh exact command[\s\S]{0,900}final settlement-following checkpoint consumes the target/iu,
   );
   assert.match(
     adr,
@@ -2482,6 +2637,582 @@ test("pins the protected lifecycle recovery wake decision", async () => {
       "author_type:enum(User)",
       "recovery_target_identity:sha256",
     ],
+  );
+});
+
+test("pins bounded authenticated lifecycle suffix-overflow recovery", async () => {
+  const root = join(import.meta.dirname, "..");
+  const [protocol, wake, lifecycle, gates, activation] = await Promise.all([
+    readFile(
+      join(
+        root,
+        "docs/adr/ADR-0011-authenticated-lifecycle-handoff-record-protocol.md",
+      ),
+      "utf8",
+    ),
+    readFile(
+      join(root, "docs/adr/ADR-0012-protected-lifecycle-wake-dispatch.md"),
+      "utf8",
+    ),
+    readFile(join(root, "docs/qa/issue-lifecycle.md"), "utf8"),
+    readFile(join(root, "docs/qa/quality-gates.md"), "utf8"),
+    readFile(join(root, "docs/qa/repository-activation.md"), "utf8"),
+  ]);
+  const projections = [protocol, wake, lifecycle, gates, activation];
+  const protocolLf = protocol.replaceAll("\r\n", "\n");
+
+  assert.match(
+    wake,
+    /\/keiko-native lifecycle-overflow-recovery v1 target=sha256:\{64 lowercase hexadecimal characters\}/u,
+  );
+  assert.match(
+    wake,
+    /direct plain-issue `issue_comment`[\s\S]{0,500}exactly 16 authenticated non-checkpoint records[\s\S]{0,500}17th record[\s\S]{0,320}no record or\s+effect/iu,
+  );
+  assert.match(wake, /request 201[\s\S]{0,160}no record or\s+effect/iu);
+  assert.match(
+    wake,
+    /prior\s+checkpoint plus 16 records[\s\S]{0,300}no record or\s+effect/iu,
+  );
+  assert.match(
+    protocol,
+    /keiko-native-lifecycle-transition-read-back:v2[\s\S]{0,800}record_type[\s\S]{0,80}transition-read-back[\s\S]{0,300}schema_version[\s\S]{0,80}2/iu,
+  );
+  assert.match(
+    protocol,
+    /overflow_recovery_authorization_identity[\s\S]{0,300}overflow_recovery_target_identity/iu,
+  );
+  assert.match(
+    protocol,
+    /these four fields inserted[\s\S]{0,300}overflow_publication_locator_identity[\s\S]{0,200}overflow_publication_locator_artifact_id/iu,
+  );
+  assert.match(
+    protocol,
+    /overflow recovery target[\s\S]{0,160}keiko-native\.lifecycle-overflow-recovery-target-identity/iu,
+  );
+  assert.match(
+    protocol,
+    /normal operation[\s\S]{0,180}at most 15 non-checkpoint[\s\S]{0,500}exactly 16[\s\S]{0,500}checkpoint/iu,
+  );
+  assert.match(
+    protocol,
+    /three-record terminalization reserve[\s\S]{0,500}12 non-checkpoint records[\s\S]{0,500}(?:terminal|superseded)[\s\S]{0,500}13[\s\S]{0,600}(?:orphan settlement|settlement)[\s\S]{0,400}14[\s\S]{0,500}checkpoint[\s\S]{0,500}15/iu,
+  );
+  assert.match(
+    protocol,
+    /reserved fence comment[\s\S]{0,300}anchor publication[\s\S]{0,500}settlement as record 13[\s\S]{0,900}record 14[\s\S]{0,300}`transition_owner` `recovery`/iu,
+  );
+  assert.match(
+    protocol,
+    /facts drift after the reserved terminal fence[\s\S]{0,300}does not append a second[\s\S]{0,500}same\s+fence[\s\S]{0,500}`outcome` `superseded`/iu,
+  );
+  assert.match(
+    protocol,
+    /reserved checkpoint comment[\s\S]{0,300}anchor publication[\s\S]{0,500}settlement as record 14[\s\S]{0,900}record 15[\s\S]{0,300}`transition_owner` `recovery`/iu,
+  );
+  assert.match(
+    protocol,
+    /superseded[\s\S]{0,320}terminal transition\/read-back checkpoint[\s\S]{0,320}successor generation/iu,
+  );
+  assert.match(
+    protocol,
+    /reserved terminal fence[\s\S]{0,1000}final encoded read-back source\s+observation[\s\S]{0,300}sole durable superseding witness/iu,
+  );
+  assert.match(
+    protocol,
+    /Further pre-comment changes[\s\S]{0,200}same fence/iu,
+  );
+  assert.match(
+    protocol,
+    /terminal superseded transition\/read-back\s+checkpoint[\s\S]{0,600}exact sorted subset[\s\S]{0,300}including the empty set/iu,
+  );
+  assert.match(
+    protocol,
+    /There are exactly three closed cardinality exceptions/iu,
+  );
+  assert.match(
+    protocol,
+    /The second exception is only the recovery-owned `abandoned` checkpoint/iu,
+  );
+  assert.match(
+    protocol,
+    /The third exception is only the recovery-owned `abandoned` checkpoint[^.]{0,240}cursor-recovery v4 claim/iu,
+  );
+  assert.match(
+    protocol,
+    /The third exception[\s\S]{0,1000}same-generation producer-result subset[\s\S]{0,500}including the empty set/iu,
+  );
+  assert.match(
+    protocol,
+    /The third exception[\s\S]{0,2600}No other transition\/read-back\s+may omit an expected producer/iu,
+  );
+  assert.match(
+    protocol,
+    /terminal superseded transition\/read-back\s+checkpoint[\s\S]{0,900}phase_fence_digest[\s\S]{0,500}producer-owning fence[\s\S]{0,500}precedes the superseded fence/iu,
+  );
+  assert.match(
+    protocol,
+    /superseded terminal checkpoint[\s\S]{0,700}transition_owner[\s\S]{0,120}`invalidation`[\s\S]{0,300}outcome[\s\S]{0,120}`superseded`[\s\S]{0,300}reason_code[\s\S]{0,120}`superseded`/iu,
+  );
+  assert.match(
+    protocol,
+    /overflow-recovery path[\s\S]{0,500}producer_results[\s\S]{0,500}exact[\s\S]{0,300}pre-fence subset/iu,
+  );
+  assert.match(
+    protocol,
+    /recovery-owned[\s\S]{0,500}abandoned[\s\S]{0,500}producer_results[\s\S]{0,500}exact authenticated pre-fence subset[\s\S]{0,300}including the empty set[\s\S]{0,800}No other[\s\S]{0,300}abandoned[\s\S]{0,300}omit\s+an expected producer/iu,
+  );
+  assert.match(
+    protocol,
+    /closed historical recovery authentication projection[\s\S]{0,500}phase\/fence\s+claim v2[\s\S]{0,300}immediate recovery-owned[\s\S]{0,200}`abandoned` checkpoint/iu,
+  );
+  assert.match(
+    protocol,
+    /settlement authenticates[\s\S]{0,500}frozen generation[\s\S]{0,500}authorized recovery request[\s\S]{0,900}two equal stable current source observations/iu,
+  );
+  assert.match(
+    protocol,
+    /immediate recovery-owned `abandoned` checkpoint[\s\S]{0,1000}later current-fact change does not stale/iu,
+  );
+  assert.match(
+    protocol,
+    /first recovery\s+pass ceiling of 108 requests[\s\S]{0,160}second-pass ceiling of 60[\s\S]{0,160}six-request authentication[\s\S]{0,160}26-request\s+publication[\s\S]{0,200}200/iu,
+  );
+  assert.match(
+    wake,
+    /interrupted v2 publication[\s\S]{0,800}fresh\s+explicit[\s\S]{0,500}hard cap of four/iu,
+  );
+  assert.match(
+    protocol,
+    /quarantined overflow-publication member[\s\S]{0,1000}not\s+an\s+authenticated\s+lifecycle\s+record[\s\S]{0,500}cannot\s+become\s+a\s+predecessor/iu,
+  );
+  assert.match(
+    protocol,
+    /For overflow v2 only[\s\S]{0,700}overflow-publication-locator identity[\s\S]{0,500}one immutable artifact[\s\S]{0,2600}six\s+locator-verification requests[\s\S]{0,1200}locator pair in the v2 body/iu,
+  );
+  assert.match(
+    protocol,
+    /Before creating[\s\S]{0,80}comment[\s\S]{0,300}locator artifact[\s\S]{0,120}valid locator\s+attestation/iu,
+  );
+  assert.match(
+    protocol,
+    /locator claim binds the protected coordinator path[\s\S]{0,300}one exact job read[\s\S]{0,300}terminal[\s\S]{0,100}conclusion/iu,
+  );
+  assert.match(
+    protocol,
+    /first-pass base[\s\S]{0,200}68[\s\S]{0,500}32 calls for 16 base-anchor download redirect chains[\s\S]{0,300}16 per-subject[\s\S]{0,100}attestation inventories/iu,
+  );
+  assert.match(
+    protocol,
+    /up to 16 exact writer-job reads[\s\S]{0,500}only[\s\S]{0,300}(?:record|candidate)[\s\S]{0,300}(?:carries|encodes)[\s\S]{0,200}workflow_job_id/iu,
+  );
+  assert.match(
+    protocol,
+    /successful coordinator[\s\S]{0,500}unique[\s\S]{0,500}artifact-anchor identity[\s\S]{0,700}workflow_ref[\s\S]{0,300}job_workflow_ref[\s\S]{0,500}no exact writer-job read/iu,
+  );
+  assert.match(
+    wake,
+    /overflow recovery authentication profile[\s\S]{0,700}does not call[\s\S]{0,200}workflow-run[\s\S]{0,500}referenced-workflow inventory[\s\S]{0,800}attestation[\s\S]{0,500}exact job/iu,
+  );
+  assert.match(
+    protocol,
+    /first-pass candidate addition[\s\S]{0,200}40[\s\S]{0,1200}68 \+ 40 = 108/iu,
+  );
+  assert.match(
+    protocol,
+    /second pass[\s\S]{0,300}reuses[\s\S]{0,300}cached canonical[\s\S]{0,700}36[\s\S]{0,500}24[\s\S]{0,200}60/iu,
+  );
+  assert.match(
+    protocol,
+    /Every GitHub artifact archive download[\s\S]{0,300}exactly two provider requests/iu,
+  );
+  assert.match(
+    protocol,
+    /normal stable pass[\s\S]{0,700}three[^.]{0,180}producer-job requests[\s\S]{0,300}112 requests[\s\S]{0,700}six[^.]{0,180}locator[^.]{0,180}requests[\s\S]{0,500}118 requests[\s\S]{0,300}236[\s\S]{0,300}250/iu,
+  );
+  assert.match(
+    protocol,
+    /downloads at most 24[\s\S]{0,300}cached canonical file bytes[\s\S]{0,500}second pass/iu,
+  );
+  assert.match(
+    protocol,
+    /member_kind:enum\(authenticated-record,quarantined-overflow-publication\)[\s\S]{0,1800}overflow_publication_locator_artifact_id:uint[\s\S]{0,500}anchor_artifact_id:uint-or-null[\s\S]{0,300}anchor_attestation_count:uint=0[\s\S]{0,500}both null or\s+both non-null/iu,
+  );
+  assert.match(
+    protocol,
+    /keiko-lifecycle-overflow-locator-v1-issue-\{decimal-issue\}-run-\{decimal-run-id\}-attempt-\{decimal-run-attempt\}[\s\S]{0,500}keiko-native\/lifecycle-overflow-locator\/v1\/[\s\S]{0,500}sha256:\{overflow-publication-locator-identity\}/iu,
+  );
+  assert.match(
+    protocol,
+    /overflow locator attestation[\s\S]{0,300}keiko-native\.lifecycle-overflow-locator-attestation-identity/iu,
+  );
+  assert.match(
+    protocol,
+    /overflow_publication_locator_attestation_digest[\s\S]{0,800}provider\s+bundle bytes[\s\S]{0,300}not hashed/iu,
+  );
+  assert.match(
+    protocol,
+    /anchor_artifact_digest[\s\S]{0,500}SHA-256[\s\S]{0,500}sole canonical file[\s\S]{0,500}artifact-anchor identity[\s\S]{0,500}(?:archive|provider)[\s\S]{0,300}not hashed/iu,
+  );
+  assert.match(
+    protocol,
+    /post-anchor fact change[\s\S]{0,300}reversion to the frozen[\s\S]{0,500}availability evidence only[\s\S]{0,500}authenticates the existing\s+checkpoint/iu,
+  );
+  assert.match(
+    protocol,
+    /locator's `candidate_record_projection_digest`[\s\S]{0,800}omitting exactly[\s\S]{0,500}locator[\s\S]{0,500}recomputes[\s\S]{0,500}exact match/iu,
+  );
+  assert.match(
+    protocol,
+    /overflow compacted-prefix list has one total order[\s\S]{0,300}16 members[\s\S]{0,300}predecessor order[\s\S]{0,300}quarantined[\s\S]{0,300}ascending numeric `comment_id`[\s\S]{0,300}duplicate/iu,
+  );
+  assert.match(
+    protocol,
+    /hard cap of\s+four\s+historical\s+interrupted\s+candidate\s+comment\s+copies[\s\S]{0,180}Every\s+byte-identical\s+copy\s+is authenticated[\s\S]{0,180}fifth\s+historical\s+copy\s+fails closed with no\s+record or\s+effect/iu,
+  );
+  assert.match(
+    protocol,
+    /fully authenticates every byte-identical copy[\s\S]{0,200}distinct comment-bound anchor and attestation tuple/iu,
+  );
+  assert.match(
+    protocol,
+    /Exactly one fully authenticated[\s\S]{0,200}authenticates the existing checkpoint[\s\S]{0,300}two such tuples are ambiguous/iu,
+  );
+  assert.match(
+    protocol,
+    /no\s+fully authenticated tuple[\s\S]{0,200}lowest numeric `comment_id`[\s\S]{0,300}later fully checked copies are irrelevant only after consuming their candidate slots/iu,
+  );
+  assert.match(
+    protocol,
+    /remaining 26 requests[\s\S]{0,300}three locator upload\/finalization calls[\s\S]{0,200}three\s+locator-attestation publication calls[\s\S]{0,200}six locator-verification requests/iu,
+  );
+  assert.match(
+    protocol,
+    /six locator-verification requests[\s\S]{0,500}locator archive's[\s\S]{0,100}two-request download redirect chain/iu,
+  );
+  assert.match(
+    protocol,
+    /protected writer-job read[\s\S]{0,500}before[\s\S]{0,300}(?:encod|construct)[\s\S]{0,300}overflow-publication-locator identity/iu,
+  );
+  assert.match(
+    protocol,
+    /Six[\s\S]{0,100}locator-verification requests[\s\S]{0,500}download redirect chain/iu,
+  );
+  assert.match(
+    protocol,
+    /pre-locator read\s+is one of these six, not an added request/iu,
+  );
+  assert.match(protocol, /3 \+ 3 \+ 6 \+ 2 \+ 3 \+ 3 \+ 6 = 26/iu);
+  assert.match(
+    protocol,
+    /anchor-attestation publication step[\s\S]{0,500}`skipped`[\s\S]{0,500}(?:attempted|started|unknown)[\s\S]{0,500}ambiguous[\s\S]{0,500}no (?:retry|quarantine|checkpoint)/iu,
+  );
+  assert.match(
+    protocol,
+    /same four record types[\s\S]{0,220}not a fifth record type/iu,
+  );
+
+  for (const projection of projections) {
+    assert.match(
+      projection,
+      /overflow recovery[\s\S]{0,2000}(?:activation remains disabled|before Issue #55|no lifecycle[^.]{0,120}effect)/iu,
+    );
+    assert.match(
+      projection,
+      /hard cap of\s+four\s+historical\s+interrupted\s+candidate\s+comment\s+copies[\s\S]{0,180}Every\s+byte-identical\s+copy\s+is authenticated[\s\S]{0,180}fifth\s+historical\s+copy\s+fails closed with no\s+record or\s+effect/iu,
+    );
+    assert.match(
+      projection,
+      /current attempt[\s\S]{0,200}single\s+prospective\s+checkpoint\s+comment[\s\S]{0,240}separate\s+26-request\s+publication\s+budget[\s\S]{0,300}interrupted[\s\S]{0,220}historical\s+candidate[\s\S]{0,220}next\s+recovery/iu,
+    );
+    assert.match(
+      projection,
+      /post-success\s+replay\s+shadows[\s\S]{0,400}at\s+most four[\s\S]{0,400}higher numeric `comment_id`/iu,
+    );
+    assert.match(
+      projection,
+      /fully\s+authenticated\s+overflow\s+transition\/read-back\s+v2\s+checkpoint[\s\S]{0,300}byte-identical|byte-identical[\s\S]{0,300}fully\s+authenticated\s+overflow\s+transition\/read-back\s+v2\s+checkpoint/iu,
+    );
+    assert.match(
+      projection,
+      /normal reconstruction[\s\S]{0,500}(?:classifies|marks)[\s\S]{0,200}(?:irrelevant|shadows)[\s\S]{0,500}no\s+additional\s+provider\s+requests[\s\S]{0,500}not\s+(?:a\s+record|records)[\s\S]{0,700}(?:fifth|mismatch)[\s\S]{0,400}fails\s+closed/iu,
+    );
+    assert.match(
+      projection,
+      /older[^.]{0,120}history[^.]{0,120}continues[\s\S]{0,500}at-most-four[^.]{0,160}shadows[\s\S]{0,500}effect-disabled cursor recovery[\s\S]{0,500}`irrelevant`\s+recovery-suffix members/iu,
+    );
+    assert.match(
+      projection,
+      /classification is provisional[\s\S]{0,1000}single\s+serialized recovery invocation/iu,
+    );
+    assert.match(
+      projection,
+      /fifth\s+shadow[\s\S]{0,500}(?:cursor\s+exhaustion|exhausted\s+cursor)[\s\S]{0,500}(?:no\s+complete\s+accumulator|fails\s+closed)[\s\S]{0,700}(?:no\s+additional\s+provider\s+requests|(?:adds|does\s+not\s+add)[^.]{0,180}(?:request|closed allocation))/iu,
+    );
+    assert.match(
+      projection,
+      /(?:initial|normal)[^.]{0,120}page[\s\S]{0,500}cursor-resumed page[\s\S]{0,500}(?:discover|introduce)[^.]*(?:replay shadows|shadow)[\s\S]{0,600}one body group[\s\S]{0,400}four total[\s\S]{0,400}entire accumulator/iu,
+    );
+    assert.match(
+      projection,
+      /(?:phase\/fence\s+claim\s+v4|schema-version-4\s+phase\/fence\s+claim)[\s\S]{0,1800}no\s+intermediate[^.]{0,160}(?:progress|cursor)[^.]{0,120}claim/iu,
+    );
+    assert.match(
+      projection,
+      /(?:reconstructs?|keeps?)[^.]{0,180}(?:full|complete)[^.]{0,120}(?:recovery-suffix-member|member preimage)[^.]{0,180}(?:ordinary irrelevant|irrelevant ordinary)/iu,
+    );
+    assert.match(
+      projection,
+      /(?:at most|hard cap (?:is|of))\s+3[^.]{0,120}(?:accumulator|recovery)[^.]{0,100}pages?[\s\S]{0,700}6[^.]{0,120}comment-page\s+requests/iu,
+    );
+    assert.match(
+      projection,
+      /(?:unique-genesis|ordinary-v1)[\s\S]{0,1200}twelve[^.]{0,180}(?:tuple|record\/root\/orphan)/iu,
+    );
+    assert.match(
+      projection,
+      /(?:unique-genesis|ordinary-v1)[\s\S]{0,1200}64[^.]{0,180}(?:base )?authentication/iu,
+    );
+    assert.match(
+      projection,
+      /(?:unique-genesis|ordinary-v1)[\s\S]{0,1500}(?:two|2)[^.]{0,220}(?:cursor-orphan|orphan)[^.]{0,220}writer-job[\s\S]{0,400}(?:six|6)[^.]{0,220}original-command[^.]{0,180}reauthentication[\s\S]{0,700}126[^.]{0,180}(?:core|calls)[\s\S]{0,500}146[^.]{0,180}(?:total|calls)/iu,
+    );
+    assert.match(
+      projection,
+      /overflow-v2[^.]{0,120}root[\s\S]{0,1200}(?:eight[^.]{0,180}(?:post-root )?live records[\s\S]{0,400})?eleven[^.]{0,180}(?:tuple|record\/root\/orphan)/iu,
+    );
+    assert.match(
+      projection,
+      /overflow-v2[^.]{0,120}root[\s\S]{0,1800}(?:six|6)[^.]{0,180}locator[^.]{0,180}(?:requests|calls)/iu,
+    );
+    assert.match(
+      projection,
+      /overflow-v2[^.]{0,120}root[\s\S]{0,1800}73[^.]{0,180}authentication/iu,
+    );
+    assert.match(
+      projection,
+      /overflow-v2[^.]{0,120}root[\s\S]{0,1800}127[^.]{0,180}(?:core|calls)[\s\S]{0,600}147[^.]{0,180}(?:total|calls)/iu,
+    );
+    assert.match(
+      projection,
+      /Both(?: profiles)?\s+remain\s+(?:within|at or below)\s+the\s+(?:unchanged\s+)?hard\s+150-request\s+ceiling/iu,
+    );
+    assert.match(
+      projection,
+      /overflow[^.]{0,180}(?:target|base)[\s\S]{0,500}(?:all|exact)\s+16[^.]{0,180}base[^.]{0,120}record[^.]{0,180}(?:stable )?two-page[^.]{0,120}window[\s\S]{0,500}(?:outside|missing|not present)[^.]{0,200}(?:fails closed|unsupported|no recovery)/iu,
+    );
+  }
+  for (const projection of [protocol, wake, lifecycle, gates]) {
+    assert.match(
+      projection,
+      /overflow recovery[\s\S]{0,1200}(?:human-only|manual)[\s\S]{0,160}`dev`/iu,
+    );
+  }
+  assert.match(
+    protocol,
+    /sole exception to immediate relevant-unauthenticated rejection[\s\S]{0,400}`irrelevant`\s+recovery-suffix member[\s\S]{0,500}all four[^.]{0,180}fields to null[\s\S]{0,500}not\s+an\s+authenticated\s+record[\s\S]{0,900}single\s+serialized recovery invocation[\s\S]{0,2500}fail closed/iu,
+  );
+  assert.match(
+    protocol,
+    /Phase\/fence claim v4[\s\S]{0,700}`cursor_recovery_authorization_comment_id`[\s\S]{0,300}`cursor_recovery_authorization_identity`[\s\S]{0,300}`cursor_recovery_target_identity`[\s\S]{0,500}`recovery_live_record_members`[\s\S]{0,500}`replay_shadow_body_sha256`[\s\S]{0,500}`replay_shadow_comment_ids`/iu,
+  );
+  assert.match(
+    protocol,
+    /legacy incomplete phase\/fence claim v3[\s\S]{0,700}schema version `3`[\s\S]{0,700}exactly\s+these three fields[\s\S]{0,700}`recovery_live_record_members`[\s\S]{0,500}`replay_shadow_body_sha256`[\s\S]{0,500}`replay_shadow_comment_ids`[\s\S]{0,1500}no cursor authorization or target fields/iu,
+  );
+  assert.match(
+    protocol,
+    /complete phase\/fence claim v4[\s\S]{0,500}schema version `4`[\s\S]{0,500}`schema_version`: uint `4`[\s\S]{0,500}exactly\s+these six fields/iu,
+  );
+  assert.match(
+    protocol,
+    /`recovery_live_record_members`[^.]{0,240}at most 15[\s\S]{0,500}`replay_shadow_comment_ids`[^.]{0,240}(?:zero through four|0 through 4)[\s\S]{0,300}strictly increasing/iu,
+  );
+  assert.match(
+    protocol,
+    /phase\/fence claim v1[^.]{0,300}(?:incomplete|complete)[\s\S]{0,500}read-only[\s\S]{0,700}(?:cannot|must not)[^.]{0,220}(?:derive|interpret)[^.]{0,180}(?:summary|shadow|v4)/iu,
+  );
+  assert.match(
+    protocol,
+    /phase\/fence claim v1 `recovery` scan[\s\S]{0,180}`claim_outcome` exactly `claimed`[\s\S]{0,600}any other recovery-scan cursor outcome[^.]{0,180}malformed/iu,
+  );
+  assert.match(
+    protocol,
+    /legacy phase\/fence claim v1 cursor records, whether incomplete or complete,[\s\S]{0,180}legacy incomplete\s+v3 cursor records remain read-only/iu,
+  );
+  assert.match(
+    protocol,
+    /zero v1 recovery-scan claims with a non-null recovery-scan identity,\s+whether\s+incomplete or complete, and zero v3 cursor claims[\s\S]{0,120}exact\s+activation precondition/iu,
+  );
+  assert.match(
+    protocol,
+    /discovery of one blocks activation[\s\S]{0,240}separately governed,[\s\S]{0,120}human reconciliation/iu,
+  );
+  for (const predicate of [
+    "The only accepted v3 shape has phase `recovery`, `claim_outcome` `claimed`",
+    "a non-null recovery-scan\nidentity, positive page and comment counts",
+    "a non-null accumulated-suffix identity, a non-null\ncursor",
+    "`recovery_scan_complete` false, a null settlement identity",
+  ])
+    assert.ok(protocolLf.includes(predicate), predicate);
+  for (const predicate of [
+    "It has no cursor authorization or target fields because\nthose bytes do not exist in schema v3.",
+    "never interprets v3 bytes as v4",
+  ])
+    assert.ok(protocolLf.includes(predicate), predicate);
+  for (const projection of projections) {
+    assert.match(
+      projection,
+      /cursor_recovery_authorization_comment_id[\s\S]{0,500}cursor_recovery_authorization_identity[\s\S]{0,500}cursor_recovery_target_identity[\s\S]{0,4000}(?:(?:command-specific|authenticated maintainer|direct maintainer|direct-comment)[\s\S]{0,1600}(?:inherited|generation)[^.]{0,180}request|(?:inherited|generation)[^.]{0,180}request[\s\S]{0,1600}(?:command-specific|authenticated maintainer|direct maintainer|direct-comment))/iu,
+    );
+    assert.match(
+      projection,
+      /(?:authorization comment ID|authorization_comment_id)[\s\S]{0,4000}(?:untrusted|only as a locator|bounded locator)[\s\S]{0,1200}(?:six-request|six[^.]{0,120}calls)[^.]{0,240}(?:exact-comment|original command)[\s\S]{0,800}(?:recomput|require)[^.]{0,240}(?:identity|equality)/iu,
+    );
+    assert.match(
+      projection,
+      /historical-v4[\s\S]{0,500}(?:REST-by-ID|REST[^.]{0,120}(?:comment|numeric ID))[\s\S]{0,500}GraphQL[^.]{0,180}(?:node|resource)[\s\S]{0,500}(?:permission|collaborator)[\s\S]{0,900}(?:without (?:requiring|loading)|does not (?:load|require))[^.]{0,220}(?:newest-100|newest 100|edge)[\s\S]{0,500}(?:cannot|does not)[^.]{0,220}(?:fresh ingress|fresh command|derive a target)/iu,
+    );
+    assert.match(
+      projection,
+      /(?:historical prefix|prefix)[^.]{0,220}(?:strictly before|ending immediately before)[^.]{0,220}(?:command comment ID|command)/iu,
+    );
+    assert.match(
+      projection.replaceAll(/\s+/gu, " "),
+      /(?:command and (?:all )?later comments|command[^.]{0,180}later comments)[^.]{0,220}(?:excluded|not members)/iu,
+    );
+    assert.match(
+      projection,
+      /(?:no additional provider request|without (?:another|an added) provider request|add no provider request)/iu,
+    );
+    assert.match(
+      projection,
+      /v4[^.]{0,180}(?:does not consume|remains unconsumed|alone does not consume)[^.]{0,180}(?:cursor )?target/iu,
+    );
+    assert.match(
+      projection,
+      /(?:fresh|new)[^.]{0,180}command[^.]{0,240}(?:still-unconsumed|unconsumed)[^.]{0,180}(?:cursor )?target/iu,
+    );
+    assert.match(
+      projection,
+      /settlement\s+target[\s\S]{0,80}(?:(?:comes|derives)\s+)?only\s+from[\s\S]{0,120}authenticated\s+original\s+v4[\s\S]{0,180}never[\s\S]{0,120}fresh\s+command(?:'s)?\s+cutoff/iu,
+    );
+    assert.match(
+      projection,
+      /(?:final|fully authenticated|full authentication)[^.]{0,180}checkpoint[^.]{0,180}consume/iu,
+    );
+    assert.match(
+      projection,
+      /phase\/fence claim v1[\s\S]{0,300}whether\s+incomplete\s+or\s+complete[\s\S]{0,300}read-only/iu,
+    );
+    assert.match(
+      projection,
+      /phase\/fence claim v1[\s\S]{0,500}(?:whether\s+incomplete\s+or\s+complete|recovery[^.]{0,120}scan)[\s\S]{0,500}`claim_outcome`\s+(?:exactly\s+)?`claimed`[\s\S]{0,1200}(?:other|every other)[^.]{0,180}(?:outcome|combination)[^.]{0,120}malformed/iu,
+    );
+    assert.match(
+      projection,
+      /every new cursor completion[\s\S]{0,120}(?:uses|must use) v4/iu,
+    );
+    assert.match(
+      projection,
+      /zero\s+v1\s+recovery-scan\s+claims\s+with\s+a\s+non-null\s+recovery-scan\s+identity,\s+whether\s+incomplete\s+or\s+complete,\s+and\s+zero\s+v3\s+cursor\s+claims[\s\S]{0,160}(?:is\s+an\s+)?(?:exact\s+)?activation\s+precondition/iu,
+    );
+    assert.match(
+      projection,
+      /frozen\s+maximum\s+issue\s+number[\s\S]{0,500}every\s+(?:canonical\s+)?issue\s+number[^.]{0,160}(?:1\s+through|from\s+1)[^.]{0,160}maximum[\s\S]{0,700}(?:pull\s+request|missing\s+resource)[\s\S]{0,500}complete[^.]{0,160}inventory/iu,
+    );
+    assert.match(
+      projection,
+      /cursor-recovery[^.]{0,180}v4[\s\S]{0,700}(?:one through 10|1 through 10|n[^.]{0,80}1[^.]{0,80}10)[\s\S]{0,700}(?:n\s*\+\s*1|record after)[\s\S]{0,500}(?:immediate|only)[^.]{0,180}checkpoint[^.]{0,160}(?:n\s*\+\s*2|next record)/iu,
+    );
+    assert.match(
+      projection,
+      /(?:(?:one through 8|1 through 8)[^.]{0,180}(?:after an )?overflow-v2[^.]{0,120}root|overflow-v2[^.]{0,120}root[\s\S]{0,300}n\s*=\s*8)/iu,
+    );
+    assert.match(
+      projection,
+      /(?:root-only[^.]{0,220}(?:zero(?:-|\s)+live(?:-|\s)+records?|n\s*=\s*0)|checkpoint\s+root[^.]{0,180}(?:no|zero)[^.]{0,120}live\s+record)[\s\S]{0,500}no-op[\s\S]{0,300}no v4 claim[^.]{0,180}checkpoint[^.]{0,180}record[^.]{0,180}effect/iu,
+    );
+    assert.match(
+      projection,
+      /unique-genesis\s+root\s+alone[^.]{0,220}(?:n\s*=\s*1|one-record)[^.]{0,220}(?:admitted|terminaliz)[\s\S]{0,300}(?:v4|checkpoint)/iu,
+    );
+    assert.match(
+      projection,
+      /(?:(?:including|counting)[^.]{0,180}(?:the )?(?:unique-genesis|unique genesis)[^.]{0,180}(?:generation request|genesis request)|(?:unique-genesis|unique genesis)[\s\S]{0,500}(?:including|counting)[^.]{0,180}(?:generation request|genesis request))[\s\S]{0,700}(?:n\s*\+\s*1|record `n \+ 1`)/iu,
+    );
+    assert.match(
+      projection,
+      /unique-genesis-rooted\s+invocation[\s\S]{0,800}(?:no provisional shadows|null[^.]{0,180}shadow|empty-shadow)[\s\S]{0,800}(?:empty\s+shadow-ID\s+list[\s\S]{0,500})?(?:(?:authenticate|prove)[^.]{0,240}(?:complete\s+)?genesis\s+suffix[^.]{0,180}directly|directly[^.]{0,120}(?:authenticate|prove)[^.]{0,240}(?:complete\s+)?genesis\s+suffix)/iu,
+    );
+    assert.match(
+      projection,
+      /ordinary-v1-checkpoint-rooted\s+invocation[\s\S]{0,300}authenticate[^.]{0,180}(?:v1|ordinary)[^.]{0,180}checkpoint[\s\S]{0,300}null[^.]{0,120}shadow[\s\S]{0,300}empty\s+shadow-ID\s+list/iu,
+    );
+    assert.match(
+      projection,
+      /overflow-v2-checkpoint-rooted\s+invocation[\s\S]{0,300}authenticate[^.]{0,180}(?:v2|overflow)[^.]{0,180}checkpoint[\s\S]{0,400}(?:(?:greater|higher)[^.]{0,180}shadow-ID|shadow\s*ID[^.]{0,180}(?:greater|higher))/iu,
+    );
+    assert.match(
+      projection,
+      /(?:direct[^.]{0,180}(?:cursor-v4|v4)[^.]{0,220}checkpoint|direct\s+recovery-owned `abandoned` checkpoint|third exception[\s\S]{0,240}cursor-recovery v4 claim)[\s\S]{0,600}authenticated\s+same-generation producer(?:-result)?\s+subset[^.]{0,180}(?:including empty|including the empty set)/iu,
+    );
+    assert.match(
+      projection,
+      /(?:direct v4|direct-cursor)[\s\S]{0,1200}(?:(?:the\s+)?two\s+equal\s+current\s+source\s+observations[\s\S]{0,500}frozen\s+open\s+generation|frozen\s+open\s+generation[\s\S]{0,500}(?:the\s+)?two\s+equal\s+current\s+source\s+observations)[\s\S]{0,1200}later\s+current-fact\s+(?:change|drift)[\s\S]{0,400}(?:cannot|does not)\s+stale/iu,
+    );
+    assert.match(
+      projection,
+      /pre-amendment[^.]{0,180}writer[^.]{0,180}terminal[\s\S]{0,700}(?:global|repository-wide)[^.]{0,180}(?:serialization|concurrency) group[\s\S]{0,700}(?:revalidat|final)[^.]{0,180}complete[^.]{0,180}inventory[\s\S]{0,700}(?:activation receipt|activation decision)/iu,
+    );
+  }
+  assert.match(
+    protocol,
+    /publication of the final complete cursor-recovery v4 claim[\s\S]{0,300}anchor\s+publication is interrupted[\s\S]{0,900}overflow-v2-checkpoint[\s\S]{0,500}ordinary-v1-checkpoint[\s\S]{0,500}unique-genesis[\s\S]{0,700}`cursor-claim-anchor-publication-interrupted` settlement[\s\S]{0,300}n\s*\+\s*1[\s\S]{0,500}n\s*\+\s*2[^.]{0,220}checkpoint/iu,
+  );
+  assert.match(
+    protocol,
+    /v4 claim is authenticated[\s\S]{0,300}n\s*\+\s*1[\s\S]{0,300}cursor-recovery\s+checkpoint[\s\S]{0,300}anchor\s+publication is interrupted[\s\S]{0,700}(?:same|repeats?)[^.]{0,300}(?:root|overflow-v2-checkpoint)[\s\S]{0,700}`cursor-checkpoint-anchor-publication-interrupted` settlement[\s\S]{0,300}n\s*\+\s*2[\s\S]{0,500}n\s*\+\s*3[^.]{0,220}checkpoint/iu,
+  );
+  for (const projection of projections) {
+    assert.match(
+      projection,
+      /(?:two|2)[^.]{0,180}(?:stable exact|independently reserved)[^.]{0,500}(?:(?:cursor(?: claim\/checkpoint)? orphan|cursor-orphan)[^.]{0,220}writer-job[^.]{0,120}(?:reads|calls)|writer-job[^.]{0,120}(?:reads|calls)[^.]{0,220}(?:cursor(?: claim\/checkpoint)? orphan|cursor-orphan))/iu,
+    );
+  }
+  assert.match(
+    protocol,
+    /fresh\s+command[^.]{0,220}(?:ingress|authorization)[^.]{0,220}(?:reused|reuse)[\s\S]{0,300}original\s+command[^.]{0,220}(?:independently|separate)[^.]{0,220}(?:reauthenticated|six)/iu,
+  );
+  assert.match(
+    protocol,
+    /final[^.]{0,120}phase\/fence claim v4[^.]{0,300}(?:one through 10|unique-genesis request)[\s\S]{0,500}immediate[^.]{0,180}checkpoint/iu,
+  );
+  for (const projection of [protocol, lifecycle, gates, activation]) {
+    assert.match(
+      projection,
+      /(?:(?:three|3)[^.]{0,180}producer-job[^.]{0,180}(?:reads|requests)[\s\S]{0,300}112(?:-request|\s+requests)|112(?:-request|\s+requests)[\s\S]{0,300}(?:three|3)[^.]{0,180}producer-job[^.]{0,180}(?:reads|requests))/iu,
+    );
+    assert.match(
+      projection,
+      /(?:overflow-v2(?:-|\s)+root|authenticated root[^.]{0,180}overflow-v2 checkpoint)[\s\S]{0,500}(?:six|6)[^.]{0,180}locator[^.]{0,180}(?:requests|calls)[\s\S]{0,500}118[^.]{0,180}(?:requests|calls)[\s\S]{0,300}236[^.]{0,180}(?:requests|calls)[\s\S]{0,300}(?:ceiling[^.]{0,120}250|250[^.]{0,120}ceiling)/iu,
+    );
+  }
+  assert.match(
+    activation,
+    /overflow recovery[\s\S]{0,1200}Issue #55[\s\S]{0,240}disabled/iu,
+  );
+  assert.match(
+    protocol,
+    /Issue #170[\s\S]{0,400}separate defect issue[\s\S]{0,400}implementation/iu,
+  );
+  assert.match(
+    wake,
+    /Before issue #55[\s\S]{0,700}separate defect issue[\s\S]{0,700}exact[\s\S]{0,300}null-effect[\s\S]{0,300}version-2 transition\/read-back checkpoint[\s\S]{0,600}issue #52/iu,
+  );
+  assert.doesNotMatch(
+    projections.join("\n"),
+    /overflow recovery[\s\S]{0,300}(?:new account|new App|new PAT|new broker|new database|new hosted service)/iu,
   );
 });
 

@@ -9,6 +9,11 @@ This record completes ADR-0004's protected exact-head handoff persistence and pr
 does not amend ADR-0009's guarded child-to-epic merge effect, ADR-0010's staged activation, or the
 human-only `dev` boundary.
 
+Decision issue #170 amends this record with Option A: exact authenticated suffix-overflow recovery
+and mandatory supersession terminalization. That amendment becomes accepted only through a manual
+human merge to `dev`. It preserves normal operation's 15-record bound, the same four record types,
+the disabled activation state, and the human-only `dev` boundary.
+
 ## Context
 
 ADR-0004 defines one canonical nine-state lifecycle, a two-phase exact-head handoff, canonical
@@ -50,8 +55,11 @@ authority, lifecycle authority, merge authority, or a substitute for repository-
 The coordinator remains the sole owner of lane, requested target, activation, lifecycle
 reconciliation, and handoff outcome. Producers evaluate only their named predicate and cannot
 select or widen those decisions. Before issue #55's signed activation, the complete protocol is
-inert: it may emit only sanitized planned, denied, failed, or unavailable observations and performs
-no lifecycle, status, branch, pull-request, queue, or merge mutation.
+inert: ordinary generations may emit only sanitized planned, denied, failed, or unavailable
+observations. The sole additional content effect is the separately accepted defect's exact
+null-effect overflow-v2 checkpoint for issue #52 defined by this amendment and ADR-0012; it carries
+no lifecycle authority. Neither path performs a lifecycle, status, branch, pull-request, queue, or
+merge mutation.
 
 ### Canonical record envelope
 
@@ -89,7 +97,12 @@ Each record digest is SHA-256 of its exact canonical record bytes with a distinc
 - `keiko-native.lifecycle-record.phase-fence-claim`
 - `keiko-native.lifecycle-record.transition-read-back`
 
-The domain, schema version `1`, algorithm `sha-256`, and record body are fixed fields in the record.
+The domain, algorithm `sha-256`, schema version, and record body are fixed fields in the record.
+Generation-request, producer-result, ordinary phase/fence-claim, and ordinary
+transition/read-back records use schema version `1`. The exact forward recovery-settlement
+phase/fence claim and overflow transition/read-back below are the only record version-2 exceptions;
+the historical incomplete cursor claim below is the sole record version-3 exception, and the exact
+complete cursor-recovery phase/fence claim below is the sole record version-4 exception.
 The existing generation-input domain `keiko-native.lifecycle-input-generation` remains unchanged.
 Every producer and consumer independently parses the bytes, recomputes the digest, decodes both
 fixed-length values, and compares them in constant time. A caller-supplied digest is never trusted.
@@ -125,38 +138,110 @@ Every auxiliary identity is also SHA-256 over ADR-0004 canonical bytes with one 
 - recovery suffix accumulator: `keiko-native.lifecycle-recovery-suffix-identity`
 - recovery scan identity: `keiko-native.lifecycle-recovery-scan-identity`
 - recovery target: `keiko-native.lifecycle-recovery-target-identity`
+- overflow recovery target: `keiko-native.lifecycle-overflow-recovery-target-identity`
+- overflow publication locator: `keiko-native.lifecycle-overflow-publication-locator`
+- overflow locator attestation: `keiko-native.lifecycle-overflow-locator-attestation-identity`
 - recovery settlement: `keiko-native.lifecycle-recovery-settlement-identity`
 - artifact anchor: `keiko-native.lifecycle-artifact-anchor`
 
 That list is the exact one-to-one domain-to-schema mapping: the label before each colon is the
 identity-schema row below, and the literal after it is that row's sole permitted domain. For every
-auxiliary identity, the SHA-256 preimage is one top-level ADR-0004 `record` node whose fields are
-exactly, in order: `digest_domain` as an `enum` containing that row's mapped literal;
-`schema_version` as `uint` `1`; `digest_algorithm` as `enum` `sha-256`; then every remaining field
-in that row's table schema after its leading `schema_version`, with the exact names and types shown.
-Thus the table's leading `schema_version` occupies the second preimage field and is not encoded
-twice. There is no wrapper, implicit type, omitted field, alternate domain, or raw domain prefix.
+ordinary auxiliary identity, the SHA-256 preimage is one top-level ADR-0004 `record` node whose
+fields are exactly, in order: `digest_domain` as an `enum` containing that row's mapped literal;
+`schema_version` as `uint` `1`; `digest_algorithm` as `enum` `sha-256`; then every
+remaining field in that row's table schema after its leading `schema_version`, with the exact names
+and types shown. Two auxiliary version-2 exceptions are closed below: the compacted-prefix
+projection carried by the overflow transition/read-back v2 and the post-amendment recovery
+settlement. Each retains its existing fixed domain and changes meaning only through its encoded
+`schema_version`. Thus a table's leading `schema_version` occupies the second preimage field and is
+not encoded twice. There is no wrapper, implicit type, omitted field, alternate domain, or raw
+domain prefix.
 
 The exact auxiliary v1 schemas are:
 
-| Identity                    | Fixed fields, in order                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| request identity            | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `pull_request_number:uint-or-null`, `exact_head_sha:commit-or-null`, `exact_target:string-or-null`, `generation_identity:sha256`, `attempt:uint`, `request_payload_digest:sha256`, `expected_producers:set<producer>`, `predecessor_comment_id:uint-or-null`, `predecessor_record_digest:sha256-or-null`                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| request payload             | `schema_version:uint=1`, `request_kind:enum(event-reconciliation,planner-request,pause-request,recovery-request,scheduled-reconciliation)`, `requested_state:requested-lifecycle-state-or-null`, `request_owner:enum(planner,assignment,pull-request,handoff,closure,reopen,invalidation,recovery,schedule)`, `recovery_target_identity:sha256-or-null`, `reason_code:closed-reason-code`                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| source observation          | `schema_version:uint=1`, `generation_bytes_sha256:sha256`, `observed_state:lifecycle-observation`, `issue_updated_at:timestamp`, `readiness_identity:sha256-or-null`, `assignment_identity:sha256`, `pr_topology_identity:sha256`, `reviews_identity:sha256`, `conversations_identity:sha256`, `checks_identity:sha256`, `evidence_identity:sha256`, `activation_identity:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| fence identity              | `schema_version:uint=1`, `generation_identity:sha256`, `attempt:uint`, `phase:phase-enum`, `fence_sequence:uint`, `owner_workflow_path:coordinator-path`, `owner_run_id:uint`, `owner_run_attempt:uint`, `source_observation_identity:sha256`, `predecessor_comment_id:uint-or-null`, `predecessor_record_digest:sha256-or-null`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| result identity             | `schema_version:uint=1`, `expected_producer:producer`, `producer_contract_version:uint`, `generation_identity:sha256`, `attempt:uint`, `phase_fence_digest:sha256`, `workflow_path:producer-path`, `workflow_id:uint`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `workflow_job_id:uint`, `provider_observation_identity:sha256`, `conclusion:producer-conclusion`, `reason_code:closed-reason-code`                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| provider observation        | `schema_version:uint=1`, `expected_producer:producer`, `generation_identity:sha256`, `exact_head_sha:commit-or-null`, `phase_fence_digest:sha256`, `provider_result_id:uint`, `provider_result_name:closed-producer-result-name`, `provider_result_conclusion:producer-conclusion`, `provider_result_sha:commit-or-null`, `producer_payload_digest:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| effect identity             | `schema_version:uint=1`, `generation_identity:sha256`, `attempt:uint`, `phase_fence_digest:sha256`, `source_state:lifecycle-observation`, `desired_state:lifecycle-observation`, `transition_owner:transition-owner`, `mutation:enum(no-effect,set-lifecycle,remove-lifecycle)`, `source_observation_identity:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| read-back identity          | `schema_version:uint=1`, `generation_identity:sha256`, `attempt:uint`, `phase_fence_digest:sha256`, `effect_identity:sha256-or-null`, `observed_state:lifecycle-observation`, `issue_updated_at:timestamp`, `source_observation_identity:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| publication candidate set   | `schema_version:uint=1`, `exact_commit_sha:commit`, `root_tree_sha:tree`, `entries:set<candidate-entry>`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| compacted prefix            | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `prior_checkpoint_identity:sha256-or-null`, `members:list<checkpoint-member>`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| checkpoint identity         | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `prior_checkpoint_comment_id:uint-or-null`, `prior_checkpoint_record_digest:sha256-or-null`, `compacted_prefix_identity:sha256`, `chain_tip_comment_id:uint`, `chain_tip_record_digest:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| recovery suffix accumulator | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `scan_direction:enum(backward)`, `accumulator_step:uint`, `prior_accumulated_suffix_identity:sha256-or-null`, `page_members:list<recovery-suffix-member>`, `cumulative_member_count:uint`, `next_provider_cursor:string-or-null`, `complete:bool`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| recovery scan identity      | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `scan_direction:enum(backward)`, `provider_cursor:string-or-null`, `scanned_page_count:uint`, `scanned_comment_count:uint`, `accumulated_suffix_identity:sha256`, `complete:bool`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| recovery target             | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `orphan_comment_id:uint`, `orphan_comment_body_sha256:sha256`, `orphan_record_digest:sha256`, `last_authenticated_comment_id:uint-or-null`, `last_authenticated_record_digest:sha256-or-null`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| recovery settlement         | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `authorized_request_identity:sha256`, `recovery_target_identity:sha256`, `orphan_comment_id:uint`, `orphan_comment_body_sha256:sha256`, `orphan_record_digest:sha256`, `orphan_author_login:enum(github-actions[bot])`, `orphan_author_id:uint=41898282`, `orphan_actor_type:enum(Bot)`, `orphan_app_id:uint=15368`, `orphan_workflow_path:protected-writer-path`, `orphan_workflow_run_id:uint`, `orphan_workflow_run_attempt:uint`, `orphan_protected_dev_sha:commit`, `orphan_run_conclusion:enum(failure,cancelled,timed-out)`, `orphan_anchor_count:uint=0`, `orphan_attestation_count:uint=0`, `last_authenticated_comment_id:uint-or-null`, `last_authenticated_record_digest:sha256-or-null`, `quarantine_reason:enum(anchor-publication-interrupted)` |
-| artifact anchor             | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `record_type:record-type`, `record_digest:sha256`, `comment_id:uint`, `comment_body_sha256:sha256`, `generation_identity:sha256`, `attempt:uint`, `workflow_path:protected-writer-path`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `protected_dev_sha:commit`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Identity                     | Fixed fields, in order                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| request identity             | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `pull_request_number:uint-or-null`, `exact_head_sha:commit-or-null`, `exact_target:string-or-null`, `generation_identity:sha256`, `attempt:uint`, `request_payload_digest:sha256`, `expected_producers:set<producer>`, `predecessor_comment_id:uint-or-null`, `predecessor_record_digest:sha256-or-null`                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| request payload              | `schema_version:uint=1`, `request_kind:enum(event-reconciliation,planner-request,pause-request,recovery-request,scheduled-reconciliation)`, `requested_state:requested-lifecycle-state-or-null`, `request_owner:enum(planner,assignment,pull-request,handoff,closure,reopen,invalidation,recovery,schedule)`, `recovery_target_identity:sha256-or-null`, `reason_code:closed-reason-code`                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| source observation           | `schema_version:uint=1`, `generation_bytes_sha256:sha256`, `observed_state:lifecycle-observation`, `issue_updated_at:timestamp`, `readiness_identity:sha256-or-null`, `assignment_identity:sha256`, `pr_topology_identity:sha256`, `reviews_identity:sha256`, `conversations_identity:sha256`, `checks_identity:sha256`, `evidence_identity:sha256`, `activation_identity:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| fence identity               | `schema_version:uint=1`, `generation_identity:sha256`, `attempt:uint`, `phase:phase-enum`, `fence_sequence:uint`, `owner_workflow_path:coordinator-path`, `owner_run_id:uint`, `owner_run_attempt:uint`, `source_observation_identity:sha256`, `predecessor_comment_id:uint-or-null`, `predecessor_record_digest:sha256-or-null`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| result identity              | `schema_version:uint=1`, `expected_producer:producer`, `producer_contract_version:uint`, `generation_identity:sha256`, `attempt:uint`, `phase_fence_digest:sha256`, `workflow_path:producer-path`, `workflow_id:uint`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `workflow_job_id:uint`, `provider_observation_identity:sha256`, `conclusion:producer-conclusion`, `reason_code:closed-reason-code`                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| provider observation         | `schema_version:uint=1`, `expected_producer:producer`, `generation_identity:sha256`, `exact_head_sha:commit-or-null`, `phase_fence_digest:sha256`, `provider_result_id:uint`, `provider_result_name:closed-producer-result-name`, `provider_result_conclusion:producer-conclusion`, `provider_result_sha:commit-or-null`, `producer_payload_digest:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| effect identity              | `schema_version:uint=1`, `generation_identity:sha256`, `attempt:uint`, `phase_fence_digest:sha256`, `source_state:lifecycle-observation`, `desired_state:lifecycle-observation`, `transition_owner:transition-owner`, `mutation:enum(no-effect,set-lifecycle,remove-lifecycle)`, `source_observation_identity:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| read-back identity           | `schema_version:uint=1`, `generation_identity:sha256`, `attempt:uint`, `phase_fence_digest:sha256`, `effect_identity:sha256-or-null`, `observed_state:lifecycle-observation`, `issue_updated_at:timestamp`, `source_observation_identity:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| publication candidate set    | `schema_version:uint=1`, `exact_commit_sha:commit`, `root_tree_sha:tree`, `entries:set<candidate-entry>`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| compacted prefix             | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `prior_checkpoint_identity:sha256-or-null`, `members:list<checkpoint-member>`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| checkpoint identity          | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `prior_checkpoint_comment_id:uint-or-null`, `prior_checkpoint_record_digest:sha256-or-null`, `compacted_prefix_identity:sha256`, `chain_tip_comment_id:uint`, `chain_tip_record_digest:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| recovery suffix accumulator  | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `scan_direction:enum(backward)`, `accumulator_step:uint`, `prior_accumulated_suffix_identity:sha256-or-null`, `page_members:list<recovery-suffix-member>`, `cumulative_member_count:uint`, `next_provider_cursor:string-or-null`, `complete:bool`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| recovery scan identity       | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint`, `scan_direction:enum(backward)`, `provider_cursor:string-or-null`, `scanned_page_count:uint`, `scanned_comment_count:uint`, `accumulated_suffix_identity:sha256`, `complete:bool`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| recovery target              | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `orphan_comment_id:uint`, `orphan_comment_body_sha256:sha256`, `orphan_record_digest:sha256`, `last_authenticated_comment_id:uint-or-null`, `last_authenticated_record_digest:sha256-or-null`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| overflow recovery target     | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `prior_checkpoint_comment_id:null`, `prior_checkpoint_record_digest:null`, `first_record_comment_id:uint`, `first_record_digest:sha256`, `chain_tip_comment_id:uint`, `chain_tip_record_digest:sha256`, `non_checkpoint_record_count:uint=16`, `next_checkpoint_sequence:uint=1`                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| overflow publication locator | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `overflow_recovery_authorization_identity:sha256`, `overflow_recovery_target_identity:sha256`, `candidate_record_projection_digest:sha256`, `workflow_path:coordinator-path`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `workflow_job_id:uint`, `protected_dev_sha:commit`                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| overflow locator attestation | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `overflow_recovery_target_identity:sha256`, `overflow_publication_locator_identity:sha256`, `subject_name:string`, `subject_digest:sha256`, `issuer:enum(https://token.actions.githubusercontent.com)`, `workflow_path:coordinator-path`, `workflow_ref:enum(refs/heads/dev)`, `protected_dev_sha:commit`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `workflow_job_id:uint`                                                                                                                                                                                                                                                                                                                                                                         |
+| recovery settlement          | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `authorized_request_identity:sha256`, `recovery_target_identity:sha256`, `orphan_comment_id:uint`, `orphan_comment_body_sha256:sha256`, `orphan_record_digest:sha256`, `orphan_author_login:enum(github-actions[bot])`, `orphan_author_id:uint=41898282`, `orphan_actor_type:enum(Bot)`, `orphan_app_id:uint=15368`, `orphan_workflow_path:protected-writer-path`, `orphan_workflow_run_id:uint`, `orphan_workflow_run_attempt:uint`, `orphan_protected_dev_sha:commit`, `orphan_run_conclusion:enum(failure,cancelled,timed-out)`, `orphan_anchor_count:uint=0`, `orphan_attestation_count:uint=0`, `last_authenticated_comment_id:uint-or-null`, `last_authenticated_record_digest:sha256-or-null`, `quarantine_reason:enum(anchor-publication-interrupted)` |
+| artifact anchor              | `schema_version:uint=1`, `repository:string`, `issue_number:uint`, `record_type:record-type`, `record_digest:sha256`, `comment_id:uint`, `comment_body_sha256:sha256`, `generation_identity:sha256`, `attempt:uint`, `workflow_path:protected-writer-path`, `workflow_run_id:uint`, `workflow_run_attempt:uint`, `protected_dev_sha:commit`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+
+The exact recovery-settlement version-2 schema is:
+
+| Identity               | Fixed fields, in order                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| recovery settlement v2 | `schema_version:uint=2`, `repository:string`, `issue_number:uint`, `authorized_request_identity:sha256`, `recovery_target_identity:sha256`, `orphan_comment_id:uint`, `orphan_comment_body_sha256:sha256`, `orphan_record_digest:sha256`, `orphan_author_login:enum(github-actions[bot])`, `orphan_author_id:uint=41898282`, `orphan_actor_type:enum(Bot)`, `orphan_app_id:uint=15368`, `orphan_workflow_path:protected-writer-path`, `orphan_workflow_run_id:uint`, `orphan_workflow_run_attempt:uint`, `orphan_workflow_job_id:uint`, `orphan_protected_dev_sha:commit`, `orphan_run_conclusion:enum(failure,cancelled,timed-out)`, `orphan_anchor_attestation_step_number:uint`, `orphan_anchor_attestation_step_name:protected-writer-attestation-step-name`, `orphan_anchor_attestation_step_conclusion:enum(skipped)`, `orphan_anchor_count:uint=0-or-1`, `orphan_anchor_artifact_id:uint-or-null`, `orphan_anchor_artifact_digest:sha256-or-null`, `orphan_attestation_count:uint=0`, `last_authenticated_comment_id:uint-or-null`, `last_authenticated_record_digest:sha256-or-null`, `quarantine_reason:enum(anchor-publication-interrupted,cursor-claim-anchor-publication-interrupted,cursor-checkpoint-anchor-publication-interrupted)` |
+
+Version 1 remains byte-for-byte readable only as the accepted legacy zero-anchor schema above; no
+new writer emits it after this amendment. Every new forward orphan settlement uses version 2,
+including a zero-anchor settlement, and dispatches on the encoded schema version before parsing any
+later field. The anchor ID and digest are both null when count is zero and both non-null when count
+is one. A version-1 parser never accepts version-2 bytes, a version-2 parser never reinterprets a
+version-1 preimage, and neither form negotiates fields at runtime.
+
+The version-2 `quarantine_reason` is closed. `anchor-publication-interrupted` binds the existing
+ordinary reserved-fence or reserved-checkpoint orphan. `cursor-claim-anchor-publication-interrupted`
+binds only the exact final complete cursor-recovery phase/fence claim v4 comment intended for record
+`n + 1`. Here and throughout the cursor reserve, `n` is the authenticated live non-checkpoint
+suffix cardinality: one through 10 including the unique-genesis generation request, one through 9
+after an ordinary-v1 checkpoint root, or one through 8 after an overflow-v2 checkpoint root.
+`cursor-checkpoint-anchor-publication-interrupted` binds only the exact immediate cursor-recovery
+checkpoint comment intended for record `n + 2` after an authenticated v4 claim at record `n + 1`.
+Each cursor reason requires a fresh authenticated maintainer request for the still-unconsumed exact
+recovery target. The settlement's `authorized_request_identity` binds that fresh request, while its
+authenticated orphan/predecessor projection retains the original v4 cursor authorization and target
+identities. It also requires a failed, cancelled, or timed-out protected-writer job whose
+fixed anchor-attestation step is stably `skipped`, zero or one immutable un-attested anchor, zero
+attestations, and byte-identical orphan body, digest, predecessor, and target evidence. No other
+orphan, phase, outcome, sequence, or reason is accepted.
+
+`protected-writer-attestation-step-name` and its numeric companion form one closed mapping to the
+provider-visible GitHub job-step projection. The record-bound `orphan_protected_dev_sha` selects one
+exact closed writer topology by loading `.github/workflows/issue-lifecycle.yml` at that protected
+commit and matching its ordered writer-step slots; record schema alone never selects a number, and
+a verifier never probes alternatives. The legacy topology has no overflow-locator slots: its anchor
+attestation is `Attest exact lifecycle anchor identity`, declared YAML step ordinal `5`, and
+provider-visible step number `6`. The post-amendment topology has this final closed sequence before
+verification for every record lane:
+
+| Exact step name                                              | Declared YAML step ordinal | Provider-visible step number | Condition                                                                 |
+| ------------------------------------------------------------ | -------------------------: | ---------------------------: | ------------------------------------------------------------------------- |
+| `Read current writer job and prepare exact overflow locator` |                          3 |                            4 | runs only for overflow v2                                                 |
+| `Upload immutable overflow locator`                          |                          4 |                            5 | runs only for overflow v2                                                 |
+| `Attest exact overflow locator identity`                     |                          5 |                            6 | runs only for overflow v2                                                 |
+| `Download and verify exact overflow locator`                 |                          6 |                            7 | runs only for overflow v2                                                 |
+| `Publish and read back the canonical comment`                |                          7 |                            8 | every record lane                                                         |
+| `Upload immutable per-issue anchor`                          |                          8 |                            9 | every record lane                                                         |
+| `Attest exact lifecycle anchor identity`                     |                          9 |                           10 | every record lane; this is the mapped anchor-attestation publication step |
+
+The four overflow-only steps remain present with conclusion `skipped` for another lane, so their
+declared and provider-visible positions do not collapse. Every record written by this topology uses
+anchor ordinal `9` and provider-visible number `10`; ordinal `5` and number `6` identify the locator
+attestation and can never prove anchor non-submission. An overflow transition/read-back version-2
+candidate necessarily binds this post-amendment topology. A historical version-1 record may bind
+the legacy topology, while a post-amendment version-1 record binds the final topology; its exact
+protected commit and ordered writer slots distinguish them without runtime negotiation.
+
+For `.github/workflows/pr-contract.yml`, `Attest exact producer anchor identity` is declared YAML
+step ordinal `6` and provider-visible step number `7`. The same exact name and numbers apply to
+`.github/workflows/contract-publication.yml`. A missing, duplicate, renamed, renumbered, differently
+positioned, protected-commit-mismatched, or topology-inconsistent tuple is unknown rather than
+`skipped` and therefore cannot authorize settlement.
 
 `requested-lifecycle-state` is exactly `status: new`, `status: triaged`, `status: ready`,
 `status: in progress`, `status: pr open`, `status: ready for human review`, `status: blocked`,
@@ -180,7 +265,48 @@ The nested `candidate-entry` schema is exactly `path:string`, `mode:enum(100644,
 `record_digest:sha256`, `workflow_run_id:uint`, `workflow_job_id:uint`, and
 `result_identity:sha256`, in that order. Candidate entries sort by their complete canonical path
 node and reject duplicate normalized paths. Producer-result references sort by their complete
-canonical producer node and require exactly one member for every expected producer.
+canonical producer node and normally require exactly one member for every expected producer.
+There are exactly three closed cardinality exceptions. A terminal superseded transition/read-back
+checkpoint carries the exact sorted subset, including the empty set, of expected producers whose
+fully authenticated same-generation and same-attempt results already precede the superseded fence.
+Each included result's `phase_fence_digest` must match its unique authenticated producer-owning
+fence in the frozen predecessor chain. Each producer-owning fence precedes the superseded fence,
+and its result record must also precede that terminal fence. The result is not rebound to the later
+superseded fence. Every included producer remains unique and expected; an unexpected, duplicate,
+late, or post-fence result is malformed. Missing producers grant no result, success, or effect and
+cannot publish after the superseded fence.
+
+The second exception is only the recovery-owned `abandoned` checkpoint immediately following one
+exact version-2 recovery settlement described below. It carries the exact authenticated pre-fence
+subset for that frozen generation, including the empty set, and retains each producer's original
+owning fence.
+
+The third exception is only the recovery-owned `abandoned` checkpoint immediately following one
+exact complete cursor-recovery v4 claim. The live suffix must contain one internally valid open
+generation, begin with its authenticated generation request, contain no terminal phase/fence claim
+or checkpoint, and contain from one through 10 authenticated records including the unique-genesis
+generation request, from one through 9 after an ordinary-v1 root, or from one through 8 after an
+overflow-v2 root. The v4 claim binds that exact
+generation and the complete authenticated same-generation producer-result subset already present
+before it, including the empty set. The immediate checkpoint carries exactly that subset, retains
+each result's original producer-owning fence, fixes `transition_owner` to `recovery`, fixes
+`effect_identity` to null, and fixes `outcome` to `abandoned` and `reason_code` to
+`recovery-required`. No producer may publish after the v4 fence. A root-only scan with zero live
+records is a no-op: it authenticates the root and replay-shadow relation but emits no v4 claim,
+checkpoint, record, or effect. Any other suffix shape fails closed. No other transition/read-back
+may omit an expected producer.
+
+The locator's `candidate_record_projection_digest` is precomputable without circular provider
+identities. Its SHA-256 preimage is one ADR-0004 canonical `list` node whose first member is the enum
+`keiko-native.lifecycle-overflow-candidate-record-projection` and whose remaining members are the
+complete named field nodes of the intended transition/read-back v2 record, in canonical field
+order, omitting exactly `overflow_publication_locator_identity` and
+`overflow_publication_locator_artifact_id`. No other field, type, value, envelope rule, or record
+digest input is omitted. After parsing a candidate's strict canonical body, recovery independently
+recomputes this projection digest and requires an exact match to the value authenticated inside the
+locator. The locator pair itself must separately match the exact artifact ID, locator identity, and
+attestation. Thus changing any other candidate-record byte changes the projection, while copying or
+changing either locator field fails its independent provider binding.
 
 The nested `checkpoint-member` schema is exactly `comment_id:uint` and `record_digest:sha256`, in
 that order. Its enclosing list preserves authenticated predecessor order and rejects duplicate
@@ -330,15 +456,158 @@ Fixed fields, in order:
 29. `protected_dev_sha`: commit
 30. `recorded_at`: timestamp
 
-An incomplete `recovery` scan uses a non-null recovery-scan identity, positive page and comment
-counts, its non-null accumulated-suffix identity, a non-null cursor, `false`, and a null settlement
-identity. Its final scan claim preserves the cumulative positive counts and accumulator, uses an
-explicit null cursor, sets completion to `true`, and keeps the settlement identity null. A forward
-orphan settlement instead uses null, zero, zero, null, null, `false`, and a non-null
-`recovery_settlement_identity`. Every non-recovery claim uses null, zero, zero, null, null, `false`,
-and null. A cursor is accepted only after Issue #55's live probe proves GitHub's backward GraphQL
-timeline cursor preserves the exact stable page boundary under the held per-issue group. It is an
-opaque provider locator, never authority.
+Every phase/fence claim v1 `recovery` scan with a non-null recovery-scan identity is legacy cursor
+compatibility and has `claim_outcome` exactly `claimed`. An historical incomplete scan uses positive
+page and comment counts, its non-null accumulated-suffix identity, a non-null cursor, `false`, and a
+null settlement identity. An historical complete scan preserves the cumulative positive counts and
+accumulator, uses an explicit null cursor, sets completion to `true`, and keeps the settlement
+identity null. Any other recovery-scan cursor outcome or cursor-field combination is malformed.
+Both accepted shapes are read-only: no new writer emits, resumes, settles, or checkpoints either
+one. A complete
+v1 scan lacks the authorization, target, live-member, and replay-shadow fields required by v4, so
+it has no automatic successor and cannot be interpreted as v4. Every new cursor completion uses
+phase/fence claim v4. A forward
+orphan settlement encoded before this amendment may use null, zero, zero, null, null, `false`, and a
+non-null `recovery_settlement_identity`; that phase/fence claim v1 selects the exact legacy
+recovery settlement v1 schema and remains read-only compatibility. No new writer emits that shape.
+Every non-recovery claim uses null, zero, zero, null, null, `false`, and null. A cursor is accepted
+only after Issue #55's live probe proves GitHub's backward GraphQL timeline cursor preserves the
+exact stable page boundary under the held per-issue group. It is an opaque provider locator, never
+authority.
+
+### Phase/fence claim v2
+
+Marker:
+
+`<!-- keiko-native-lifecycle-phase-fence-claim:v2 -->`
+
+This is schema version `2` of the existing `phase-fence-claim` record type, not a fifth record type.
+Its fields are the complete Phase/fence claim v1 sequence with `schema_version`: uint `2` and one
+`recovery_settlement_schema_version`: uint `2` field inserted immediately after
+`recovery_settlement_identity`. No other field, order, type, domain, or envelope changes. The claim
+must use phase `recovery`, claim outcome `settled`, null recovery-scan identity, zero page and comment
+counts, null accumulated suffix and provider cursor, `recovery_scan_complete` false, and a non-null
+`recovery_settlement_identity` computed from the exact recovery settlement v2 schema. A phase/fence
+claim v2 is accepted only for that exact forward recovery settlement; every other phase, outcome,
+settlement version, or field shape is malformed. A settlement-bearing version-1 claim selects only
+the legacy recovery settlement v1 schema, while a settlement-bearing version-2 claim selects only
+version 2. The loader dispatches on the parent record schema version before selecting the bound
+settlement schema. It never probes both settlement parsers or infers a version from downstream
+bytes.
+
+### Legacy incomplete phase/fence claim v3
+
+Marker:
+
+`<!-- keiko-native-lifecycle-phase-fence-claim:v3 -->`
+
+Schema version `3` is read-only compatibility for the pre-amendment incomplete cursor claim. Its
+fields are the complete Phase/fence claim v1 sequence with `schema_version`: uint `3` and exactly
+these three fields inserted immediately after `recovery_scan_complete`, in this order:
+
+1. `recovery_live_record_members`: list of `checkpoint-member`
+2. `replay_shadow_body_sha256`: SHA-256 or explicit null
+3. `replay_shadow_comment_ids`: sorted list of uint
+
+The only accepted v3 shape has phase `recovery`, `claim_outcome` `claimed`, a non-null recovery-scan
+identity, positive page and comment counts, a non-null accumulated-suffix identity, a non-null
+cursor, `recovery_scan_complete` false, a null settlement identity, and the exact bounded
+live-member and replay-shadow summary. It has no cursor authorization or target fields because
+those bytes do not exist in schema v3. No new writer emits, resumes, converts, or terminalizes v3.
+Every other v3 phase, outcome, field order, cardinality, null combination, or use is malformed; a
+parser dispatches on schema version before parsing fields and never interprets v3 bytes as v4.
+
+### Complete phase/fence claim v4
+
+Marker:
+
+`<!-- keiko-native-lifecycle-phase-fence-claim:v4 -->`
+
+This is schema version `4` of the existing `phase-fence-claim` record type, not a fifth record type.
+It is used only for a new cursor-completion claim. Its fields are the complete
+Phase/fence claim v1 sequence with `schema_version`: uint `4` and exactly these six fields inserted
+immediately after `recovery_scan_complete`, in this order:
+
+1. `cursor_recovery_authorization_comment_id`: uint
+2. `cursor_recovery_authorization_identity`: SHA-256
+3. `cursor_recovery_target_identity`: SHA-256
+4. `recovery_live_record_members`: list of `checkpoint-member`
+5. `replay_shadow_body_sha256`: SHA-256 or explicit null
+6. `replay_shadow_comment_ids`: sorted list of uint
+
+`recovery_live_record_members` is the complete authenticated live suffix discovered by the bounded
+scan in predecessor order and contains at most 15 unique members. `replay_shadow_comment_ids`
+contains zero through four unique, strictly increasing numeric comment IDs. It is empty exactly when
+`replay_shadow_body_sha256` is null; otherwise every listed comment has that one exact full-body
+digest and a provisional `irrelevant` recovery-suffix-member classification under the closed
+Actions Bot/App, never-edited shape. Each list and digest is an authenticated complete summary,
+not a record, checkpoint member, target-consumption fact, or authority source.
+
+A new v4 claim uses phase `recovery`, `claim_outcome` `settled`, the complete scan identity and
+cumulative counts, a null cursor, `recovery_scan_complete` true, and a null settlement identity. Its
+cursor authorization comment ID, authorization identity, and target identity are all non-null. The
+comment ID is the exact authenticated direct-comment locator whose canonical authorization preimage
+produces the stored authorization identity. The target is exactly the incomplete
+recovery-scan identity computed from the stable two-page normal-load boundary that first proved
+older relevant history before the authorizing command comment. It has that boundary's non-null
+provider cursor and `complete` false. The exact authenticated command comment ID is an exclusive
+upper cutoff: the coordinator reconstructs the same stable historical prefix ending immediately
+before that ID, so the command itself and every later comment cannot change the target. The
+authorization is ADR-0012's exact command-specific authenticated direct-comment request whose
+`recovery_target_identity` equals that target. Both are canonical v4 record fields, so neither the
+generation's inherited `request_identity` nor an in-memory scan can substitute for the maintainer
+authority. A settlement treats the stored comment ID as an untrusted locator, repeats ADR-0012's
+exact historical-v4 six-request authentication of that original command by numeric comment ID,
+recomputes its authorization identity, and requires exact equality before accepting either the
+orphan v4 or its target. This route repeats exact REST-by-ID comment, GraphQL node/resource, and
+current permission reads without requiring the command to remain in the newest 100 comment edges or
+recovering its now-unused edge cursor. It cannot authenticate a fresh command, derive a new target,
+or replace the original cutoff. A
+single serialized recovery invocation holds the provider-budget and per-issue groups, scans every
+page from the stable normal-load boundary through the authenticated root, and may publish the final
+phase/fence claim v4 only when the complete authenticated live suffix contains one internally valid
+open generation with no terminal claim or checkpoint: one through 10 records including the
+unique-genesis request, one through 9 after an ordinary-v1 root, or one through 8 after an
+overflow-v2 root. It publishes no
+intermediate cursor or progress claim. Immediately before publishing the final claim, the
+coordinator obtains two equal current source observations that still match the frozen open
+generation and encodes the final observation identity in the claim. The final claim and its
+immediate recovery-owned
+`abandoned` transition/read-back checkpoint consume a closed two-record recovery reserve without
+crossing the 15-record bound. The v4 claim does not consume its cursor target; only full
+authentication of that immediate checkpoint, whether published directly or after one of the two
+closed cursor-orphan settlements, consumes it. A unique-genesis root alone (`n = 1`) is an admitted
+one-record open generation and is terminalized through the same v4 claim and checkpoint sequence. A
+checkpoint root with no live record after it (`n = 0`) remains a root-only no-op. A larger,
+terminal, checkpointed, multi-generation, or otherwise invalid open suffix uses its already
+defined exact recovery path or fails closed with no v4 claim, checkpoint, record, or effect.
+
+Legacy phase/fence claim v1 cursor records, whether incomplete or complete, and legacy incomplete
+v3 cursor records remain read-only compatibility. None can be resumed or converted; they cannot be
+used to derive missing authorization, target, live-member, replay-shadow, or starting-boundary
+evidence. The frozen pre-activation inventory is not limited to Issue #55's
+disposable-probe manifest. The frozen maximum issue number comes from two stable repository
+observations, and the inventory classifies every canonical issue number from 1 through that maximum
+as an issue, pull request, or missing resource. It scans the complete bounded 3-page history of
+every issue; the pull-request and missing-resource classifications remain retained negative
+evidence. Page 4, unstable classification, or an unclassified number makes the inventory incomplete
+and blocks activation. Zero v1 recovery-scan claims with a non-null recovery-scan identity, whether
+incomplete or complete, and zero v3 cursor claims across that complete inventory is an exact
+activation precondition. Discovery of one blocks activation and requires separately governed,
+exact-target human reconciliation that retains the original evidence; the maintainer records the
+blocked issue and opens an accepted remediation issue before any settlement. There is no automatic
+migration, digest-only conversion, evidence deletion, or inferred boundary. Phase/fence claim v2
+remains exclusive to forward recovery settlement. Every new cursor completion uses v4, and every
+v4 shape other than the exact complete settled claim above is malformed.
+
+Before activation, every pre-amendment protected writer run loaded from an older `dev` SHA must be
+terminal. The Issue #55 activation operation then acquires and holds the existing repository-wide
+`issue-lifecycle-provider-budget` serialization group, performs one final complete-inventory
+revalidation while holding that group, and retains it until the authenticated activation receipt is
+durable. Any queued or in-progress pre-amendment writer, inventory drift, or unavailable read blocks
+activation.
+Every writer admitted after the receipt loads the accepted activation commit and cannot emit a v1
+or v3 cursor scan claim; every new cursor completion uses v4.
 
 For each issue, the unique serialization domain is exactly
 `issue-lifecycle-${decimal issue number}` with `queue: max` and no `cancel-in-progress` key. Every
@@ -411,6 +680,325 @@ digest. Checkpoint sequence starts at one and increments exactly once. A checkpo
 already authenticated canonical evidence; it cannot change an outcome or make missing suffix
 evidence valid.
 
+### Overflow recovery transition/read-back v2
+
+Marker:
+
+`<!-- keiko-native-lifecycle-transition-read-back:v2 -->`
+
+This is schema version `2` of the existing `transition-read-back` record type, not a fifth record
+type. Its fixed prefix is `record_type:enum(transition-read-back)`, `schema_version:uint=2`,
+`digest_algorithm:enum(sha-256)`, and
+`digest_domain:enum(keiko-native.lifecycle-record.transition-read-back)`. Its fixed
+fields, in order, are the complete transition/read-back v1 field sequence with
+`schema_version:uint=2` and these four fields inserted immediately after `read_back_identity`:
+
+1. `overflow_recovery_authorization_identity`: SHA-256
+2. `overflow_recovery_target_identity`: SHA-256
+3. `overflow_publication_locator_identity`: SHA-256
+4. `overflow_publication_locator_artifact_id`: uint
+
+No other field, order, type, domain, or envelope changes. Version 2 is accepted only for the exact
+overflow-recovery path. It requires `transition_owner` `recovery`, `effect_identity` explicit null,
+`producer_results` equal to the exact authenticated pre-fence subset defined above, including the
+empty set when no producer result preceded the superseded fence, `outcome` `superseded`, and
+`reason_code` `recovery-required`.
+`request_identity` remains the authenticated request identity of the terminalized generation;
+`overflow_recovery_authorization_identity` is ADR-0012's stably authenticated direct-comment
+authorization, `overflow_recovery_target_identity` is the exact target above, and the locator pair
+must identify the exact pre-comment immutable locator and attestation below.
+The source, desired, and observed lifecycle values must be equal and independently read back, so
+the record proves no lifecycle effect. The phase fence must be the exact authenticated superseded
+fence at the chain tip. A v2 record outside this closed shape, or a v1 record carrying any new
+field, is malformed.
+
+The v2 record's `compacted_prefix_identity` is the sole version-2 use of the existing
+`keiko-native.lifecycle-compacted-prefix-identity` domain. Its exact fields are
+`schema_version:uint=2`, `repository:string`, `issue_number:uint`, `checkpoint_sequence:uint=1`,
+`prior_checkpoint_identity:null`, and `members:list<overflow-checkpoint-member>`. The nested member
+starts with `member_kind:enum(authenticated-record,quarantined-overflow-publication)`. An
+`authenticated-record` then carries exactly the ordinary `comment_id:uint` and
+`record_digest:sha256` checkpoint-member fields. A quarantined overflow-publication member is
+evidence about an incomplete publication, not an authenticated lifecycle record; it cannot become
+a predecessor, fence, checkpoint, authority, or effect. It instead carries, in order,
+`comment_id:uint`, `comment_body_sha256:sha256`, `record_digest:sha256`,
+`overflow_recovery_target_identity:sha256`, `overflow_recovery_authorization_identity:sha256`,
+`overflow_publication_locator_identity:sha256`,
+`overflow_publication_locator_artifact_id:uint`,
+`overflow_publication_locator_attestation_digest:sha256`,
+`author_login:enum(github-actions[bot])`, `author_id:uint=41898282`, `actor_type:enum(Bot)`,
+`app_id:uint=15368`, `workflow_path:coordinator-path`, `workflow_run_id:uint`,
+`workflow_run_attempt:uint`, `workflow_job_id:uint`, `protected_dev_sha:commit`,
+`job_conclusion:enum(failure,cancelled,timed-out)`, `anchor_artifact_id:uint-or-null`,
+`anchor_artifact_digest:sha256-or-null`, `anchor_attestation_count:uint=0`, and
+`quarantine_reason:enum(anchor-publication-interrupted)`. The two anchor fields are both null or
+both non-null. Apart from this compacted-prefix projection and the exact recovery-settlement v2
+schema above, no auxiliary identity accepts schema version 2.
+
+The overflow compacted-prefix list has one total order. Its first 16 members are exactly the
+authenticated-record members in predecessor order from the unique genesis request through the
+terminal superseded fence. Zero through four quarantined overflow-publication members follow those
+16 and sort by ascending numeric `comment_id`. The complete list rejects duplicate comment IDs,
+record digests, locator identities, and locator artifact IDs. A candidate that is not strictly
+greater than its preceding quarantined member, or any alternate interleaving or ordering, is
+malformed and produces no checkpoint or effect.
+
+For a quarantined member, `overflow_publication_locator_attestation_digest` is exactly the SHA-256
+identity produced by the `overflow locator attestation` auxiliary schema above. Recovery constructs
+that canonical identity from the unique matching attestation's verified subject, certificate, and
+SLSA provenance claims, normalized protected workflow/ref/commit/run/attempt values, and the job ID
+encoded in the exact subject name and locator. It then independently binds that job to the attested
+run. Provider
+bundle bytes, JSON member order, signatures, certificates, transparency-log material, and transport
+wrappers are verification inputs and are not hashed into this identity. A missing, duplicate, or
+claim-mismatched attestation yields no locator-attestation identity, candidate, checkpoint, or
+effect.
+
+For a quarantined member, a non-null `anchor_artifact_digest` is exactly SHA-256 over the exact bytes
+of the sole canonical file extracted from that candidate's post-comment anchor artifact after the
+archive has passed the ordinary single-regular-file, size, name, and traversal checks. Those bytes
+must decode byte-for-byte as the ADR-0004 canonical `artifact anchor` auxiliary schema for the
+candidate and the resulting digest must equal the recomputed artifact-anchor identity. The provider
+archive digest, archive container bytes, compression, entry metadata, JSON, and transport response
+are verification inputs and are not hashed into this field. A null anchor uses a null digest; any
+other source, missing file, second file, non-canonical bytes, or identity mismatch yields no
+candidate, checkpoint, or effect.
+
+The overflow target binds one complete genesis suffix: repository, issue, explicit null prior-
+checkpoint fields, first record pair, chain-tip pair, the literal count `16`, and checkpoint
+sequence `1`. The first record must be the unique authenticated null-predecessor generation request.
+The ordered predecessor chain and compacted-prefix identity still bind every intermediate member.
+The target cannot select a lifecycle state, branch, pull request, activation, producer result,
+merge, or arbitrary range.
+
+An overflow target is supported only when all 16 base record comments are present in the same stable
+two-page first-pass window and both reads return their exact identities and bodies. Anchors do not
+widen that discovery window or authorize exact-ID fetches. A base record outside or missing from
+that window makes the target unsupported and fails closed with no overflow recovery, record, or
+effect.
+
+Normal operation permits at most 15 non-checkpoint records after a checkpoint or genesis root. A
+normal loader still rejects the 16th as `record-live-suffix-overflow`; it cannot silently accept,
+truncate, or checkpoint that suffix. Only ADR-0012's exact direct plain-issue authorization may
+enter overflow recovery. That path must authenticate exactly 16 contiguous non-checkpoint records
+from the unique genesis root, all anchors, attestations, protected runs/jobs/refs/SHAs, predecessor
+links, stable provider reads, and the exact target before it appends this one checkpoint. A 17th
+record, any checkpoint-plus-16 shape, any missing or conflicting fact, or an already consumed target
+produces no record or effect.
+
+The ordinary writer additionally enforces a three-record terminalization reserve without changing
+that hard 15-record loader bound. At 12 non-checkpoint records after a genesis root or authenticated
+checkpoint, the only permitted next append is either the generation's terminal or superseded
+phase/fence claim, which becomes record 13, or the exact version-2 recovery phase/fence settlement
+for an unanchored reserved-fence orphan that was intended to become record 13. From an authenticated
+reserved terminal fence at record 13, the writer may append only its immediate
+transition/read-back checkpoint, or one exact version-2 recovery phase/fence settlement for an
+interrupted checkpoint publication as record 14 followed immediately by the recovery-owned
+transition/read-back checkpoint as record 15. The exact cursor-recovery phase/fence claim v4 defines
+`n` as the authenticated live non-checkpoint suffix cardinality: one through 10 including the
+unique-genesis generation request, one through 9 after an ordinary-v1 checkpoint root, or one
+through 8 after an overflow-v2 checkpoint root. It becomes
+record `n + 1`; an unanchored copy of that claim instead permits only the exact version-2
+`cursor-claim-anchor-publication-interrupted` settlement at record `n + 1`. Either authenticated
+record permits only its immediate recovery-owned transition/read-back checkpoint at record
+`n + 2`. An authenticated cursor-recovery v4 claim at record `n + 1` alternatively permits only the
+exact version-2 `cursor-checkpoint-anchor-publication-interrupted` settlement for an unanchored copy
+of that checkpoint at record `n + 2`, followed only by the recovery-owned checkpoint at record
+`n + 3`. At the maxima, a unique-genesis path uses at most records 11 through 13, an ordinary-v1
+path records 10 through 12, and an overflow-v2 path records 9 through 11. Counting the unique
+genesis request in `n` is mandatory; no root-specific offset is inferred. Neither widens the loader.
+From an interrupted-v4 settlement at record `n + 1`, only the recovery-owned null-effect checkpoint
+may follow as record `n + 2`; from a reserved-fence settlement at record 13, only that checkpoint may
+follow as record 14. A nonterminal append at 12 other than the exact cursor-recovery checkpoint or
+checkpoint-settlement continuation, any other append after a reserved fence or settlement, any
+append other than the exact successor defined above after a cursor-recovery claim or settlement, or
+any other open 13- or 14-record shape stops with no record or effect. The
+caller-held per-issue group spans the ordinary fence and checkpoint writes; a later explicit
+recovery holds the same group and binds the exact frozen generation, last authenticated predecessor,
+and orphan.
+
+If issue, pull-request, or check facts drift after the reserved terminal fence but before its
+checkpoint is authenticated, the writer does not append a second or additional fence. The same
+fence is the predecessor of a closed reserved-fence supersession projection: two stable final
+pre-comment reads must differ from the frozen generation; the checkpoint uses equal source,
+desired, and observed state from that final read, `transition_owner` `invalidation`, null effect,
+`outcome` `superseded`, and `reason_code` `superseded`. The final encoded read-back source
+observation is the sole durable superseding witness for this reserved-fence exception; no earlier
+post-fence observation is required or reconstructed. Further pre-comment changes restart the
+stable final read under the same fence. A reversion to the frozen generation before comment
+creation resumes the ordinary terminal projection instead. After an exact checkpoint anchor and
+attestation exist, later facts are availability evidence only and cannot stale the historical
+terminalization.
+
+If the reserved fence comment is accepted but anchor publication is interrupted, the existing
+authorized orphan recovery may append its exact version-2 phase/fence settlement as record 13 after
+the 12 authenticated records. The orphan body must parse as the one terminal or superseded fence
+authorized for that frozen generation and predecessor, but remains quarantined-only and is never a
+record or predecessor. Two stable exact writer-job reads must prove its fixed anchor-attestation
+publication step has the exact protected-writer mapped name and provider-visible number and the
+conclusion `skipped`, zero or one exact un-attested anchor, and zero attestations. Once that
+settlement is authenticated, record 14 is an ordinary v1 checkpoint with equal stable states,
+`transition_owner` `recovery`, null effect, `outcome` `abandoned`, and reason
+`recovery-required`. It compacts the 12-record generation suffix plus settlement before any
+successor generation.
+
+If the reserved checkpoint comment is accepted but anchor publication is interrupted, the existing
+authorized orphan recovery may append the exact version-2 settlement as record 14 only when the
+fixed anchor-attestation publication step's exact mapped name, provider-visible number, and
+`skipped` conclusion are proven in two stable exact writer-job reads. The settlement binds zero or
+one exact un-attested anchor artifact; zero attestations are mandatory.
+Once that settlement is authenticated, record 15 is an ordinary v1 checkpoint with equal stable
+states, `transition_owner` `recovery`, null effect, `outcome` `abandoned`, and reason
+`recovery-required`. It compacts the frozen terminal fence and settlement before any
+successor generation. An attempted, started, failed, cancelled, timed-out, missing, or unknown
+anchor-attestation step is ambiguous and permits no retry, quarantine, checkpoint, or effect;
+authorized human reconciliation is required. Repeated failure of the bounded settlement or final
+checkpoint remains fail-closed rather than raising the loader limit. Every lane must prove before
+its first record that its closed maximum can reach this reserve. These rules prevent ordinary
+execution from ever creating the prior-checkpoint-plus-16 shape that overflow recovery correctly
+rejects while preserving a forward path for one interrupted reserved checkpoint.
+
+If publication of the final complete cursor-recovery v4 claim comment succeeds but its anchor
+publication is interrupted, a fresh authenticated command for the still-unconsumed cursor target
+authorizes settlement. The recovery repeats the same closed root-type proof used by
+normal cursor completion. An overflow-v2-checkpoint root requires the already-established lower-ID
+root checkpoint and greater replay-shadow-ID relation. An ordinary-v1-checkpoint root requires a
+fully authenticated v1 checkpoint, a null replay-shadow digest, and an empty shadow-ID list. A
+unique-genesis root likewise requires no provisional shadows, a null replay-shadow digest, and an
+empty shadow-ID list, then authenticates the complete genesis suffix directly. Only after that
+root-specific proof and exact v4 authorization/target binding may recovery append the version-2
+`cursor-claim-anchor-publication-interrupted` settlement at record `n + 1`, where `n` is the
+authenticated live non-checkpoint suffix cardinality from one through 10 including the
+unique-genesis request, from one through 9 after an ordinary-v1 root, or from one through 8 after an
+overflow-v2 root. The orphan v4 remains
+quarantine-only. Once the settlement is authenticated, record `n + 2` is the immediate
+recovery-owned null-effect checkpoint described above; no other record or effect may intervene.
+
+If the v4 claim is authenticated at record `n + 1` and publication of its immediate cursor-recovery
+checkpoint comment succeeds but its anchor publication is interrupted, the cursor target remains
+unconsumed. A fresh authenticated command for that target authorizes recovery, which
+repeats the same overflow-v2-checkpoint, ordinary-v1-checkpoint, or unique-genesis root proof and
+exact v4 authorization/target binding before appending the version-2
+`cursor-checkpoint-anchor-publication-interrupted` settlement at record `n + 2`. The orphan
+checkpoint remains quarantine-only. Once that settlement is authenticated,
+record `n + 3` is the immediate recovery-owned null-effect checkpoint; no other record or effect may
+intervene.
+Both cursor settlements prove the exact fixed skipped-attestation and orphan facts required by the
+closed version-2 reason above. Repeated interruption of either settlement or its recovery-owned
+checkpoint fails closed for human reconciliation rather than widening the 15-record bound.
+For either settlement, the fresh command is authenticated normally and encoded in the version-2
+recovery settlement. The coordinator first selects exactly one interrupted v4 claim or its
+immediate checkpoint. It treats that v4's `cursor_recovery_authorization_comment_id` only as a
+locator, repeats the historical-v4 six-request exact-comment authentication for the original
+command, recomputes `cursor_recovery_authorization_identity`, and requires equality before
+authenticating the interrupted chain's original v4 authorization and target. That route reads the
+exact REST comment by numeric ID, its GraphQL node/resource association, and current permission
+twice without loading newest-100 edges or recovering a command-edge cursor. It cannot authorize a
+fresh command or derive a target. Those six calls are separate from the fresh command ingress and
+explicitly reserved below. It derives the
+settlement target only from the authenticated original v4
+`cursor_recovery_target_identity`, requires the fresh command to name that exact target, and never
+recomputes or replaces the target from the fresh command's cutoff. The fresh command-edge cursor is
+only its ingress-authentication boundary; it cannot replace the original command cutoff, scan
+identity, member list, or shadow summary bound by v4. Missing, ambiguous, or multiple interrupted
+chains fail closed. The orphan v4 and its predecessor retain the original v4 authorization and
+target identities. An authenticated v4 claim alone does not consume the cursor target. The target
+is consumed only when the direct
+immediate checkpoint or the settlement-following recovery checkpoint
+has its exact comment, anchor, and attestation fully authenticated. Until then, a command for that
+same target is not a replay; after consumption every reordered or duplicate command is a no-op.
+
+Each recovery-owned `abandoned` checkpoint immediately following any exact version-2 settlement in
+this reserve
+uses `producer_results` equal to the exact authenticated pre-fence subset for the frozen generation,
+including the empty set. Every included member retains the producer-owning phase-fence digest that
+precedes the interrupted reserved or cursor claim/checkpoint; recovery does not retarget a producer
+to its own settlement fence. This is the sole partial-cardinality exception for an `abandoned` outcome and
+requires that exact settlement as predecessor. No other `abandoned` transition/read-back may omit
+an expected producer, and no recovery checkpoint may add, replace, or rebind one.
+
+Successful publication and stable authentication of the v2 checkpoint compact the 16 records in
+the ordinary way and may also settle at most four strictly ordered quarantined historical
+overflow-publication members for that same unconsumed target. Overflow recovery has a hard cap of
+four historical interrupted candidate comment copies present before the current attempt. Every
+byte-identical copy is authenticated before grouping and consumes one request-budget slot; a fifth
+historical copy fails closed with no record or effect. The current attempt's single prospective
+checkpoint comment is not input to either historical-candidate stable pass and is excluded from
+that cap only while it is the current publication; its creation, read-back, anchor, and
+authentication use the separate 26-request publication budget. On success it is the authenticated
+checkpoint record. If its authentication is interrupted, it becomes a historical candidate on the
+next recovery, where a resulting fifth historical copy denies another attempt. Each candidate copy
+must be a complete exact v2 comment from the
+Actions Bot/App and protected coordinator and bind the same target and base chain. Before creating
+that comment, the writer must have published the exact locator artifact and valid locator
+attestation identified in the body. The locator claim binds the protected coordinator path, ref,
+commit, run, attempt, job, and candidate-record projection; one exact job read must bind that job to
+the attested run and prove a terminal failed, cancelled, or timed-out conclusion. Recovery must
+recompute the projection from the candidate body and match the locator before the candidate can
+enter the ordered quarantine set. Recovery fully authenticates every byte-identical copy in a
+locator-pair group, including each copy's distinct comment-bound anchor and attestation tuple,
+before it may classify any later copy as irrelevant. Exactly one fully authenticated
+post-comment anchor/attestation tuple in that group authenticates the existing checkpoint and makes
+every other fully checked copy irrelevant; two such tuples are ambiguous. When the group has no
+fully authenticated tuple, only its lowest numeric `comment_id` is the quarantined candidate;
+later fully checked copies are irrelevant only after consuming their candidate slots. A conflicting
+copy cannot match the locator-bound projection and produces no checkpoint or effect.
+The candidate has either no post-comment anchor or one exact matching anchor with no anchor
+attestation in both stable passes, and the exact terminal writer-job projection must show the fixed
+anchor-attestation publication step's mapped name, provider-visible number, and conclusion
+`skipped`. A fully valid post-comment anchor/attestation
+tuple authenticates the existing checkpoint instead. If that step was attempted, started, failed,
+cancelled, timed out, is missing, or has unknown status, absence from attestation inventories cannot
+prove non-acceptance: the candidate is ambiguous and permits no retry, quarantine, checkpoint, or
+effect. A fifth historical copy present before the current attempt, missing or invalid locator
+attestation, any anchor attestation,
+mismatched or multiple artifact, nonterminal job, unknown provenance, or conflicting body likewise
+fails closed. Existing evidence remains append-only and auditable. Subsequent wakes use the normal
+v1 protocol and 15-record bound. Its sole standing parsing exception is the authenticated
+post-success replay shadows rule. During the stable two-page normal load, reconstruction may buffer
+at most four later lifecycle-marked comments with a higher numeric `comment_id` than one fully
+authenticated overflow transition/read-back v2 checkpoint, whose full body is byte-identical to
+that checkpoint, whose author is the exact Actions Bot/App, and whose comment was never edited.
+After authenticating the lower-ID checkpoint, normal reconstruction reproducibly classifies those
+comments as irrelevant replay shadows with no additional provider requests. They are not a record,
+compacted-prefix member, predecessor, recovery candidate, target consumption, or authority source;
+the authenticated checkpoint already consumed the target and supplies the durable classification
+root. A fifth shadow, a body, actor, edit, or numeric-order mismatch, or two buffered body groups
+fails closed.
+
+If the two normal pages prove that older relevant history continues, the loader carries the same
+at-most-four buffered shadows into ordinary effect-disabled cursor recovery as `irrelevant`
+recovery-suffix members. Both the initial/normal pages and every cursor-resumed page may discover
+replay shadows. One body group and four total apply across the entire accumulator. Their
+classification is provisional and grants no independent standing. Every resumed step validates the
+cumulative group and count before adding its page. A single serialized recovery invocation keeps
+the authenticated cumulative summary and every full `recovery-suffix-member` preimage, including
+ordinary irrelevant comments, in memory across its twice-stable pages. It first fully authenticates
+the root under the same three closed branches below: overflow-v2 checkpoint plus greater shadow-ID
+relation, ordinary-v1 checkpoint plus an empty shadow summary, or unique genesis plus an empty
+shadow summary and complete directly authenticated suffix. Only then may one phase/fence claim v4
+persist the exact cursor authorization comment ID, authorization identity, and target, complete
+at-most-15 live record members, one
+shadow body digest, and exact shadow comment IDs. It publishes no intermediate cursor or progress
+claim. The
+final claim and immediate checkpoint require one through 10 live records including the
+unique-genesis request, one through 9 after an ordinary-v1 root, or one through 8 after the
+overflow-v2 root, forming the exact open generation above. A unique-genesis root alone is an
+admitted one-record open generation and is terminalized; a checkpoint root with zero later live
+records remains a no-op. Any larger or reserved open suffix uses its exact existing recovery path
+or fails closed. The hard cap is 3
+accumulator pages. At most 6 comment-page requests cover two stable reads of each page in the one
+invocation. Two independently reserved stable exact cursor-orphan writer-job reads are included:
+after reserving them and six separate original-command reauthentication calls, the
+unique-genesis/ordinary-v1-root profile uses a 126-call core and reaches at most 146 total calls.
+The overflow-v2-root profile limits the post-root live suffix to eight, uses a 127-call core, and
+reaches at most 147 total calls. Both remain within the hard 150-request ceiling.
+A fifth shadow, any mismatch or discontinuity,
+cursor exhaustion, page 4, or failure to authenticate that checkpoint produces no complete
+accumulator, checkpoint, or effect. The classification initiates no recovery, changes no 15-record
+bound, target consumption, or authority, and adds no provider request outside that closed
+allocation.
+
 ### Record authentication and chain reconstruction
 
 Authorship is necessary but insufficient. A record is trusted only when all these independently
@@ -418,7 +1006,9 @@ loaded facts match:
 
 - comment author login `github-actions[bot]`, numeric user ID `41898282`, and type `Bot`;
 - `performed_via_github_app.id` equals GitHub Actions App ID `15368`;
-- the referenced workflow, run, attempt, job, and result exist and equal the record;
+- the referenced workflow, run, attempt, and result exist and equal the record; a producer result or
+  interrupted locator that encodes `workflow_job_id` additionally requires that exact job, while a
+  successful coordinator record is correlated by its unique attested artifact-anchor tuple below;
 - the workflow path is the expected repository-owned protected producer or coordinator path;
 - the workflow ref is exactly `refs/heads/dev`;
 - the loaded workflow commit equals the record's `protected_dev_sha` and is reachable from
@@ -427,7 +1017,67 @@ loaded facts match:
   provider-assigned comment ID, exact comment-body digest, record digest, repository, protected
   workflow, workflow ref, protected commit, run, and attempt claimed by the record; and
 - repository, issue, pull request, head, target, generation, request, predecessor, and fence
-  identities independently match current canonical inputs.
+  identities independently match current canonical inputs, except for the closed historical
+  projections below.
+
+A superseded checkpoint authenticates its request, head, target, generation, attempt, and closed
+partial producer set against the frozen generation reconstructed from the authenticated predecessor
+chain, not by pretending they remain current. Ordinarily its predecessor is that frozen
+generation's exact `claim_outcome=superseded` phase/fence claim. The claim's authenticated
+`source_observation_identity` is the immutable first superseding witness and must differ from the
+frozen generation. The reserved terminal fence at record 13 is the sole alternate predecessor.
+
+For that exception, no first post-fence witness exists outside the record: immediately before
+constructing the checkpoint, the coordinator obtains two equal terminal current observations that
+differ from the frozen generation, and the final encoded read-back source-observation identity is
+the sole durable superseding witness. A second or later fact change before comment creation restarts
+that stable read under the same fence and never appends another claim or starts a successor. After
+the canonical comment and exact anchor attestation exist, a post-anchor fact change, including
+reversion to the frozen generation, does not stale this null-effect historical checkpoint. The
+final provider read still must succeed and the comment, anchor, attestation, protected
+run/job/ref/SHA, frozen generation, and bound pre-comment terminal projection must remain exact; the
+then-current observation is availability evidence only and is not compared with or encoded into
+the immutable record. When those conditions hold, the attested tuple authenticates the existing
+checkpoint and no quarantine or retry is needed. An unavailable read or any failed immutable
+binding authenticates no checkpoint or successor.
+
+The closed historical recovery authentication projection applies only to an exact phase/fence
+claim v2 carrying recovery-settlement schema v2 and its immediate recovery-owned version-1
+`abandoned` checkpoint. The settlement authenticates repository, issue, pull request, head, target,
+generation, request, predecessor, and fence fields against the frozen generation reconstructed from
+the last authenticated predecessor and the quarantined orphan, rather than requiring those frozen
+fields to equal current canonical inputs. Its exact authorized recovery request and recovery-target
+identities must still bind that predecessor and orphan. Immediately before creating the settlement
+comment, the coordinator obtains two equal stable current source observations under the issue lock;
+the final observation is encoded as the settlement claim's `source_observation_identity`. A change
+between those reads restarts them and creates no record.
+
+The immediate recovery-owned `abandoned` checkpoint authenticates against the same frozen
+generation, authorized recovery request, exact settlement predecessor, and stable current source
+observation. Its source, desired, and observed states are equal to the state in that encoded
+observation; its effect is null, and its producer set remains the exact pre-fence subset above. It
+does not reload a different current generation or rebind any frozen identity. Once the settlement's
+exact comment, anchor, and attestation are authenticated, a later current-fact change does not stale
+that historical settlement or its mandatory immediate checkpoint, including when the change occurs
+before checkpoint publication. The final provider read must still prove every immutable settlement
+and checkpoint binding; then-current facts are availability evidence only. Any missing settlement,
+non-immediate checkpoint, changed immutable binding, or unavailable read remains blocked and grants
+no successor or effect.
+
+The closed direct-cursor authentication projection applies only to an exact settled phase/fence
+claim v4 and its immediate recovery-owned version-1 `abandoned` checkpoint. The v4 claim
+authenticates the complete frozen open generation reconstructed from its authenticated root and
+live-member preimages, its encoded `cursor_recovery_authorization_identity`, its encoded
+`cursor_recovery_target_identity`, and the final of the two equal current
+source observations obtained immediately before claim publication. Its immediate checkpoint binds
+that same frozen generation, the generation request, both cursor recovery identities through the
+exact v4 predecessor, source observation, and exact
+same-generation producer subset present before v4, including empty. Once the v4 claim's exact
+comment, anchor, and attestation authenticate, later current-fact drift does not stale the claim
+or its mandatory checkpoint, including drift before checkpoint publication. The final provider
+read must still prove every immutable v4 and checkpoint binding; then-current facts are availability
+evidence only. A missing immediate checkpoint, changed immutable binding, producer publication
+after v4, or unavailable read remains blocked and grants no successor or effect.
 
 Login, marker, author association, check name, details URL, event timing, or a copied comment cannot
 authenticate a record alone. A missing `performed_via_github_app`, wrong App, wrong workflow/ref,
@@ -435,7 +1085,30 @@ deleted run, missing or invalid attestation, changed identity, unavailable metad
 contradictory reread fails closed.
 
 The attestation and artifact anchor are provider evidence, not additional lifecycle record types.
-The protected writer first publishes the canonical comment and immediately reads it back by the
+For overflow v2 only, the protected writer first performs the exact protected writer-job read and
+requires its own fixed coordinator job in the current run and attempt. It binds the returned
+positive job ID to that run before it encodes the overflow-publication-locator identity,
+uploads those canonical bytes as the sole file in one immutable artifact named exactly
+`keiko-lifecycle-overflow-locator-v1-issue-{decimal-issue}-run-{decimal-run-id}-attempt-{decimal-run-attempt}`,
+and publishes a GitHub-native attestation. The attestation subject name is exactly
+`keiko-native/lifecycle-overflow-locator/v1/{repository}/{decimal-issue}/{overflow-recovery-target-identity}/{decimal-run-id}/{decimal-run-attempt}/{decimal-job-id}`
+and its digest is exactly `sha256:{overflow-publication-locator-identity}`. The artifact inventory
+must expose exactly that provider-assigned ID, name, associated run ID, and unexpired immutable
+artifact; the attestation supplies the run attempt. Duplicates or disagreement fail closed. Six
+locator-verification requests are budgeted: that pre-locator protected writer-job read, then after
+publication one artifact inventory, one exact artifact metadata reread, the two provider requests
+for the locator archive download redirect chain, and one locator-subject attestation inventory
+whose response contains the matching bundle. The downloaded archive must pass the single-file,
+name, size, and traversal checks; its exact canonical bytes must reproduce the locator identity and
+candidate projection before the writer places the locator pair in the v2 body. The pre-locator read
+is one of these six, not an added request; its stable job ID and run association are reused rather
+than reread after upload. The writer is still running at this point, so this read grants no terminal
+conclusion; later recovery must independently prove a failed, cancelled, or timed-out terminal
+conclusion. That locator grants no record, checkpoint,
+predecessor, or effect authority; it exists solely so a later recovery can authenticate an
+anchorless interrupted comment to its protected writer run and job.
+
+The protected writer then publishes the canonical comment and immediately reads it back by the
 provider-assigned comment ID. It requires the exact full body and computes
 `comment_body_sha256` over those exact UTF-8 body bytes. Only then does it encode the
 artifact-anchor schema above, upload those canonical bytes as the sole file in one immutable
@@ -444,26 +1117,36 @@ artifact-attestation capability with only `id-token: write`, `attestations: writ
 `contents: read`, and the writer's separately scoped comment permission. It attests a subject whose
 name is exactly
 `keiko-native/lifecycle-comment/v1/{repository}/{decimal-issue}/{decimal-comment-id}/{generation-identity}/{decimal-attempt}/{record-type}/{decimal-run-id}/{decimal-run-attempt}`
-and whose digest is exactly `sha256:{artifact-anchor-identity}`. The writer performs a final
-comment, artifact, attestation, run, and job reread and may expose the record to a later phase only
-after that complete binding is stable. A crash before the post-publication anchor completes leaves
-an unauthenticated comment and grants no authority. A raw OIDC token, signing certificate,
-Sigstore bundle, credential, or provider response is never placed in the issue record.
+and whose digest is exactly `sha256:{artifact-anchor-identity}`. The writer's final six-request
+verification reads the exact comment, exact anchor metadata, the anchor archive through its
+two-request redirect chain, the anchor-subject attestation inventory, and one complete
+current-source GraphQL projection covering issue, source observation, and protected `dev`. The
+downloaded sole canonical file must reproduce the artifact-anchor identity. Verified attestation
+claims bind the
+protected run and attempt, while the earlier exact job read binds the locator's job, so separate
+final run and job rereads are redundant and prohibited. The writer may expose the record to a later
+phase only after that complete binding is stable. A crash before the post-publication anchor
+completes leaves an unauthenticated comment and grants no authority. A raw OIDC token, signing
+certificate, Sigstore bundle, credential, or provider response is never placed in the issue record.
 
 The exact writer permission set is `actions: read`, `attestations: write`, `contents: read`,
 `id-token: write`, and `issues: write`; every other permission is `none`. A producer that also owns
 an existing check receives only that already-declared check permission in its separately fenced
-check-publication job. The exact verified attestation claim set is `repository`,
-`job_workflow_ref`, `ref`, `sha`, `run_id`, `run_attempt`, and `iss`. Claims map respectively to
-the record's repository, protected workflow path, `refs/heads/dev`, `protected_dev_sha`,
-`workflow_run_id`, `workflow_run_attempt`, and GitHub Actions OIDC issuer. Missing, additional
-authority-bearing, or mismatched claim values reject the attestation.
+check-publication job. The exact verified attestation claim set is `repository`, `workflow_ref`,
+`workflow_sha`, `job_workflow_ref`, `job_workflow_sha`, `ref`, `sha`, `run_id`, `run_attempt`, and
+`iss`. Claims map respectively to the record's repository; the fixed top-level caller
+`.github/workflows/lifecycle-wakeup.yml` at `refs/heads/dev`; that caller's exact
+`protected_dev_sha`; the exact protected reusable coordinator or producer path at the same ref;
+that writer's exact same SHA; `refs/heads/dev`; `protected_dev_sha`; `workflow_run_id`;
+`workflow_run_attempt`; and the GitHub Actions OIDC issuer. Missing, additional authority-bearing,
+or mismatched claim values reject the attestation.
 
 Verification downloads the anchor artifact, requires one exact canonical file and matching
 artifact digest, recomputes its artifact-anchor identity, and matches its comment ID,
 `comment_body_sha256`, record digest, workflow run, and protected head to independently loaded
-comment and run facts. It downloads the attestation bundle by the artifact-anchor identity,
-cryptographically verifies GitHub's trusted root and OIDC issuer, and requires the certificate and
+comment and run facts. It selects the unique matching attestation bundle from the
+subject-qualified inventory response, cryptographically verifies GitHub's trusted root and OIDC
+issuer, and requires the certificate and
 SLSA provenance claims to name the exact repository, protected workflow path, `refs/heads/dev`,
 `protected_dev_sha`, workflow run, and attempt in the record. The attestation subject name and
 digest must match exactly, including the provider-assigned comment ID, and there must be one
@@ -471,6 +1154,16 @@ matching verified bundle. This binds the shared Actions App comment to the parti
 without adding an account, App, PAT, machine user, broker, database, or hosted Keiko service.
 Attestation and anchor creation and verification are GitHub-provider operations; repository code
 must use full-SHA-pinned GitHub-maintained transports and may not add an npm or runtime dependency.
+
+For a successful coordinator generation, phase/fence, or transition record, the unique verified
+attestation is the writer correlation: its subject binds the one artifact-anchor identity, which in
+turn binds exact comment ID, body digest, record digest, writer path, run, attempt, and protected
+SHA; its `workflow_ref` and `workflow_sha` bind the fixed top-level caller, while
+`job_workflow_ref` and `job_workflow_sha` bind the exact reusable coordinator. Such coordinator
+record schemas do not encode `workflow_job_id`, so no exact writer-job read is performed or
+invented for them. A producer-result record does encode that ID and therefore still requires the
+matching exact job read. More than one matching bundle or any disagreement makes the record
+unauthenticated.
 
 The effect-capable loader first reads issue comments newest-first through the GitHub GraphQL
 timeline, 100 comments per page and at most two pages, until it finds the latest authenticated
@@ -536,52 +1229,79 @@ reclassifies partial history as empty.
 
 The forward orphan-settlement record is exactly:
 
-| Field                                  | Required value                                  |
-| -------------------------------------- | ----------------------------------------------- |
-| `request_kind`                         | `recovery-request`                              |
-| `phase`                                | `recovery`                                      |
-| `claim_outcome`                        | `settled`                                       |
-| `recovery_scan_identity`               | `null`                                          |
-| `recovery_scanned_page_count`          | `0`                                             |
-| `recovery_scanned_comment_count`       | `0`                                             |
-| `recovery_accumulated_suffix_identity` | `null`                                          |
-| `recovery_provider_cursor`             | `null`                                          |
-| `recovery_scan_complete`               | `false`                                         |
-| `recovery_settlement_identity`         | `sha-256 of exact recovery-settlement preimage` |
-| `predecessor`                          | `last authenticated record or null root`        |
-| `orphan_authority`                     | `quarantined-only`                              |
+| Field                                  | Required value                                            |
+| -------------------------------------- | --------------------------------------------------------- |
+| `request_kind`                         | `recovery-request`                                        |
+| `phase`                                | `recovery`                                                |
+| `claim_outcome`                        | `settled`                                                 |
+| `recovery_scan_identity`               | `null`                                                    |
+| `recovery_scanned_page_count`          | `0`                                                       |
+| `recovery_scanned_comment_count`       | `0`                                                       |
+| `recovery_accumulated_suffix_identity` | `null`                                                    |
+| `recovery_provider_cursor`             | `null`                                                    |
+| `recovery_scan_complete`               | `false`                                                   |
+| `recovery_settlement_identity`         | `sha-256 of exact version-2 recovery-settlement preimage` |
+| `recovery_settlement_schema_version`   | `2`                                                       |
+| `predecessor`                          | `last authenticated record or null root`                  |
+| `orphan_authority`                     | `quarantined-only`                                        |
 
-The orphan body is never trusted as a record or predecessor. An explicit authorized recovery
+New settlements always use the version-2 schema; version 1 remains read-only compatibility for an
+already authenticated legacy zero-anchor settlement. The orphan body is never trusted as a record
+or predecessor. An explicit authorized recovery
 request binds the exact recovery-target identity: orphan comment ID, body digest, parsed record
 digest, and last authenticated predecessor. Under the per-issue fence, two complete stable reads
 must independently verify the unchanged canonical orphan body and digest; built-in bot user, ID,
 type, and Actions App; claimed protected writer path, `refs/heads/dev`, protected commit, run, and
-attempt; a terminal `failure`, `cancelled`, or `timed-out` run conclusion; and zero matching anchors
-and attestations. Orphan body fields are candidate locators only and grant nothing until every
-provider fact is independently loaded.
+attempt; a terminal `failure`, `cancelled`, or `timed-out` run conclusion; the exact fixed writer
+job and its complete step projection; zero or one exact matching anchor artifact; and zero matching
+attestations. The fixed anchor-attestation publication step must match the protected-writer
+mapping's exact name and provider-visible number and have conclusion `skipped` in both job reads. If
+it was attempted, started, failed, cancelled, timed out, is absent, or has unknown status, the
+provider may have accepted an attestation that is not yet visible and the orphan remains ambiguous
+forever; inventory absence cannot authorize a retry. When one un-attested anchor exists, its
+provider ID and the SHA-256 of its safely extracted sole canonical file are included in the
+settlement; the pair is explicitly null only when no anchor exists. Orphan body fields are
+candidate locators only and grant nothing until every provider fact is independently loaded.
 
-The coordinator then appends one normally authenticated phase/fence claim with the exact settlement
-matrix above and the last authenticated record as predecessor, or a null predecessor when none
-exists. Its domain-separated recovery-settlement identity binds the authorized request,
+The coordinator then appends one phase/fence claim v2 authenticated through the closed historical
+recovery projection above, with the exact settlement matrix above and the last authenticated record
+as predecessor, or a null predecessor when none exists. The parent version and encoded settlement
+version select only recovery-settlement
+schema v2. Its domain-separated recovery-settlement identity binds the authorized request,
 recovery-target identity, all exact verified orphan/provider facts, the last authenticated
 predecessor, and reason `anchor-publication-interrupted`. Once that settlement's own
 comment/anchor/attestation tuple is stably authenticated, chain reconstruction quarantines only the
 exact orphan ID/body pair as a non-member and may continue from the settlement. A changed body,
 different or missing provider fact, non-terminal or successful run, existing anchor or attestation,
-authorization mismatch, second orphan, unstable reread, or settlement-publication failure remains
-blocked and effect-disabled; it cannot be settled by inference.
+authorization mismatch, attempted or unknown anchor-attestation step, second orphan, unstable
+reread, or settlement-publication failure remains blocked and effect-disabled; it cannot be settled
+by inference. The sole existing-anchor exception is the exact un-attested anchor bound into the
+settlement above.
 
 If two comment pages do not reach the checkpoint, the workflow performs no lifecycle or status
-effect and enters recovery mode only when the stable reads prove that relevant non-empty history
-continues beyond those pages. A recovery-phase claim records the provider's backward cursor, exact
-counts, accumulated-suffix identity, and recovery-scan identity. Every scanned timeline comment,
-including an irrelevant comment, contributes one `recovery-suffix-member`; members retain the exact
-stable GraphQL edge order returned for that backward page. Provider order is evidence of complete
-pagination, never lifecycle or predecessor authority. Recovery starts its accumulator at the first
-of the two normal-load pages and computes exactly one accumulator step per stably double-read page.
-The `checkpoint_sequence` is `0` on every incomplete step. On the complete step it remains `0` for
-the unique genesis root or becomes the exact sequence from the authenticated checkpoint that ended
-the scan. The recovery-scan identity uses that same value. The fresh transition/read-back
+effect. Stable reads that prove relevant non-empty history continues beyond those pages compute the
+effect-disabled cursor-recovery target as that boundary's incomplete recovery-scan identity and
+expose only its digest through the existing redacted recovery observation. Cursor-resumed recovery
+begins only after ADR-0012's exact direct maintainer command authenticates that target. The direct
+event's exact never-edited command comment ID is the exclusive upper cutoff. Two stable bounded
+reads reconstruct the newest historical prefix strictly before the command comment ID cutoff,
+containing only lower comment IDs, and must reproduce the same two-page member bytes, accumulated
+suffix, provider boundary, counts, and incomplete recovery-scan identity that produced the command
+digest. The command and all
+later comments are ingress, not members of that frozen prefix; an edit, deletion, missing
+boundary, unstable cursor, or any lower-ID history drift fails closed. The existing direct-ingress
+reads supply this cutoff proof and add no provider request. An ordinary wake or the target digest
+alone cannot authorize recovery. The authorized single invocation retains the provider's
+backward cursor, exact counts, accumulated-suffix identity, and recovery-scan identity in memory; it
+publishes no intermediate claim. Every scanned timeline comment, including an irrelevant comment,
+contributes
+one `recovery-suffix-member`; members retain the exact stable GraphQL edge order returned for that
+backward page. Provider order is evidence of complete pagination, never lifecycle or predecessor
+authority. Recovery starts its accumulator at the first of the two normal-load pages, computes
+exactly one accumulator step per stably double-read page, and fails closed before page 4. The
+in-memory `checkpoint_sequence` is `0` on every incomplete step. On the complete step it remains `0`
+for the unique genesis root or becomes the exact sequence from the authenticated checkpoint that
+ended the scan. The recovery-scan identity uses that same value. The fresh transition/read-back
 checkpoint is sequence `1` after genesis or the authenticated prior checkpoint's sequence plus one.
 
 The recovery suffix accumulator update is exactly:
@@ -596,30 +1316,71 @@ The recovery suffix accumulator update is exactly:
 | `next_provider_cursor`              | `exact non-null cursor`      | `exact cursor; null iff root found`                 |
 | `complete`                          | `false`                      | `false until root found; then true`                 |
 
-A resumed recovery run first authenticates the prior progress claim and its comment, artifact,
-attestation, protected writer run, and predecessor. It recomputes that claim's recovery-scan
-identity from the stored page count, comment count, accumulated-suffix digest, cursor, and
-completion flag, then resumes at exactly that cursor. Two stable reads of the next page must agree
-in edge order, comment IDs, exact body digests, classifications, authenticated record and anchor
+A single recovery invocation starts from the same stable first normal-load page and keeps the
+accumulator, complete live-record set, replay-shadow group, full member preimages, and next cursor
+in memory while holding both serialization groups. Two stable reads of every page must agree in
+edge order, comment IDs, exact body digests, classifications, authenticated record and anchor
 identities, predecessor pairs, and next cursor before the workflow computes the next accumulator
-step. A step, count, cursor, page boundary, classification, or order discontinuity; duplicate
-comment, record, or anchor; relevant unauthenticated comment; or unmatched relevant anchor blocks
-progress and emits no accumulator identity.
+step. Both the initial/normal pages and every cursor-resumed page may discover replay shadows. One
+body group and four total apply across the entire accumulator. A step, count, cursor, page boundary,
+classification, or order discontinuity; duplicate comment, record, or anchor; relevant
+unauthenticated comment outside the closed exception below; or unmatched relevant anchor blocks
+the invocation and emits no claim, accumulator identity, checkpoint, record, or effect.
 
-The next serialized recovery run scans at most 100 more pages and remains effect-disabled. Each
-authenticated progress claim supersedes only the prior scan cursor and grants no authority. Its
-`recovery_scanned_page_count` equals the accumulator's `accumulator_step`, and its
-`recovery_scanned_comment_count` equals the accumulator's `cumulative_member_count`. A resumed
-claim's page count equals the prior authenticated claim's page count plus the number of new
-accumulator page steps, and its first new step is exactly the prior page count plus one. A provider
-cursor that becomes null before an authenticated checkpoint or unique genesis is found proves
-truncation and emits no progress claim. When the prior checkpoint or the unique null-predecessor
-genesis is found, the final recovery claim sets
-`recovery_scan_complete` to true and the accumulator's `complete` to true, replays every
-authenticated accumulator step and page, revalidates the compacted prefix or complete genesis
-suffix in predecessor order, and emits a fresh transition/read-back checkpoint. If the #55 live
-probe cannot prove stable backward-cursor continuation, cursor recovery remains unavailable and the
-protocol cannot activate.
+The sole exception to immediate relevant-unauthenticated rejection is a comment classified as an
+`irrelevant` recovery-suffix member provisionally under the post-success replay-shadows rule above.
+That existing classification fixes all four record, anchor, and predecessor fields to null and is a
+closed assertion of the exact Actions Bot/App, never-edited, single-body-group shape; it is not an
+authenticated record. A page may add that assertion only after combining its facts with the
+invocation's authenticated cumulative in-memory summary and proving the result still has one body
+group and no more than four unique shadow IDs. The single serialized recovery invocation
+reconstructs and retains every ordinary irrelevant and provisional-shadow `recovery-suffix-member`
+preimage across its twice-stable pages. After reaching the root, three closed branches apply. An
+overflow-v2-checkpoint-rooted invocation fully authenticates the lower-ID byte-identical v2
+checkpoint and proves every summarized shadow ID is greater. An ordinary-v1-checkpoint-rooted
+invocation fully authenticates the v1 checkpoint and requires a null replay-shadow digest and an
+empty shadow-ID list; overflow locator or shadow evidence is neither required nor accepted. A
+unique-genesis-rooted invocation likewise requires a null replay-shadow digest and an empty
+shadow-ID list, then authenticates the complete genesis suffix directly. A provisional shadow on
+either non-overflow path fails closed. Only then does the final v4 claim persist its authorization
+and target identities, the complete bounded summary, exact accumulated identity, counts, page
+boundaries, and null cursor. If any replay, summary, root,
+or checkpoint fact differs, the provisional assertion and entire recovery fail closed without a
+complete accumulator, checkpoint, or effect.
+
+The single serialized recovery invocation scans only until the complete accumulator reaches its
+hard cap of 3 pages and remains effect-disabled. It publishes no intermediate cursor or progress
+claim. The final v4 claim's `recovery_scanned_page_count` equals the complete accumulator's
+`accumulator_step`, and its `recovery_scanned_comment_count` equals the complete accumulator's
+`cumulative_member_count`. A provider cursor that becomes null before an authenticated checkpoint
+or unique genesis is found proves truncation and emits no claim. Reaching page 4 before that root
+is found is cursor exhaustion and likewise emits no claim. When the prior checkpoint or the unique
+null-predecessor genesis is found, the final phase/fence claim v4 sets `recovery_scan_complete` and
+the accumulator's `complete` to true. The invocation allows at most 6 comment-page requests: two
+requests stably read each of at most 3 pages. Three closed root-authentication branches share two
+budget profiles and the hard ceiling. A
+unique-genesis or ordinary-v1 root permits at most twelve record/root/orphan authentication tuples:
+one artifact-list call, 24 artifact-download redirect-chain calls, 12 subject-qualified attestation
+inventory calls, 24 workflow-run and referenced-workflow-inventory calls, and at most three exact
+producer-job calls consume 64 authentication calls. Two stable exact terminal writer-job reads are
+reserved independently for a cursor claim/checkpoint orphan, and six more calls repeat exact-comment
+authentication of the original v4 authorization. With 26 current-provider calls and 28 calls for
+two complete 14-call claim/checkpoint publication and read-back sequences, that core is 126 calls.
+An overflow-v2 root instead permits at most eleven record/root/orphan authentication tuples. One
+artifact-list call, 22 artifact-download redirect-chain calls, 11 subject-qualified attestation
+inventory calls, 22 workflow-run and referenced-workflow-inventory calls, and at most three exact
+producer-job calls consume 59 calls; the root's exact six locator-verification calls, two
+independent stable cursor-orphan writer-job reads, and six original-command reauthentication calls
+make 73 authentication calls. With the same 26 current-provider and 28 publication calls, that core
+is 127 calls. The fresh command's already authenticated ingress bytes are reused, but the original
+command is independently reauthenticated from the v4 comment-ID locator. The ordinary/genesis
+profile uses 126 + 6 + 14 = 146 calls. The overflow-v2-root profile uses 127 + 6 + 14 = 147. Both
+remain within the unchanged hard 150-request ceiling. The replay
+reconstructs every full
+member preimage, revalidates the compacted
+prefix or complete genesis suffix in predecessor order, and only then emits a fresh
+transition/read-back checkpoint. If the #55 live probe cannot prove this capped stable
+backward-cursor replay, cursor recovery remains unavailable and the protocol cannot activate.
 
 Every lifecycle workflow first holds its per-issue group and then acquires the additional
 repository-wide job concurrency group `issue-lifecycle-provider-budget` with `queue: max` and no
@@ -629,16 +1390,113 @@ concurrently consuming the repository-wide `GITHUB_TOKEN` quota; it does not pre
 repository checks share that group.
 
 One normal stable pass is budgeted at no more than two comment-page requests, one exact-name
-artifact-list request, 16 artifact downloads, one bulk attestation-list request for at most 16
-digests, 16 bundle downloads, 32 run/job requests, and 25 current-provider-state requests: 93
-requests. The mandatory second pass is at most 186 requests, and write/read-back operations bring
-the hard local request-counter ceiling to 200. Recovery mode has a separate 150-request ceiling and
+artifact-list request, 32 calls for 16 artifact-download redirect chains, 16 subject-qualified
+attestation inventory requests whose responses contain the matching bundles, 32 workflow-run and
+referenced-workflow-inventory requests, at most three exact producer-job requests, and 26
+current-provider-state requests. An ordinary-v1-root pass is therefore at most 112 requests. When
+the authenticated root is an overflow-v2 checkpoint, the pass also spends exactly six
+locator-verification requests: one locator-artifact inventory, one metadata read, the two-call
+archive redirect chain, one subject-qualified locator-attestation inventory, and one exact
+bound-job read. The maximum stable pass is therefore 118 requests. The mandatory second pass is at
+most 236 requests, and the existing 14 write/read-back operations bring the hard local
+request-counter ceiling to 250. Recovery mode has a separate 150-request ceiling and
 cannot perform a lifecycle/status/branch/merge effect. Neither mode relies on a racy
 `x-ratelimit-remaining` read for safety. Any core or secondary limit response, counter exhaustion,
 pagination overflow, lower observed limit, or unavailable response yields
 `provider-rate-limited` and no effect; a later scheduled run may resume only after the provider
 allows it. The global group prevents lifecycle-on-lifecycle races, while unrelated workflow quota
 use can reduce availability but cannot create authority or bypass stable rereads.
+
+Overflow recovery uses a separate hard 200-request counter. It has one closed historical-record
+authentication profile that replaces ADR-0012's independent workflow-run GET and
+referenced-workflow inventory for the 16 base records and at most four historical interrupted
+candidate comment copies present before the current attempt, counting every byte-identical copy
+before grouping. The
+GitHub-native attestation's verified issuer and SLSA/OIDC claims must bind repository, protected
+caller and writer paths, immutable `dev` ref and commit, run ID, run attempt, and subject digest;
+for each record or interrupted candidate that carries `workflow_job_id`, a separate exact
+writer-job read must bind the encoded job to that same attested run and expose the complete fixed
+step projection. A successful coordinator base record has no job field and instead requires the
+unique artifact-anchor attestation correlation defined above. This exception does not apply to
+normal loading, ordinary
+writing, effects, or any record without that exact attestation, and it permits no caller-supplied
+provenance. Consequently overflow recovery does not call the workflow-run endpoint or consume a
+referenced-workflow inventory; disagreement between the attestation, any applicable job, record, or
+static closed workflow graph fails closed.
+
+The first recovery pass consumes at
+most 108 requests and the second stable pass at most 60. Every GitHub artifact archive download is
+exactly two provider requests: the authenticated artifact `/zip` request and its redirect to the
+archive response. The first-pass base is therefore 68 requests: two comment pages, one exact-name
+base-anchor inventory, 32 calls for 16 base-anchor download redirect chains, 16 per-subject
+attestation inventories, up to 16 exact writer-job reads only for each base record that carries a
+`workflow_job_id`, and one complete current-source GraphQL read. Sixty-eight is the closed ceiling;
+successful coordinator records reduce the actual count rather than consuming fictitious job reads.
+Each subject-qualified attestation response contains the bundles for that exact digest and
+cryptographically binds repository, protected caller and writer workflow paths, ref, commit, run,
+and attempt. Where a record encodes a job, the matching exact writer-job read independently binds it
+to that attested run; a
+redundant workflow-run read and a separate provider bundle-download request are prohibited.
+
+The first-pass candidate addition is exactly 40 requests across four historical comment-copy slots:
+four candidate comment exact-ID rereads; four candidate-locator exact-name or run-scoped artifact
+inventories; four exact locator metadata rereads; eight calls for four locator download redirect
+chains; eight subject-qualified attestation inventories for four locator and four optional-anchor
+subjects; eight calls for four optional-anchor download redirect chains; and four exact terminal
+writer-job reads including their fixed step projections. A byte-identical copy consumes a complete
+slot because its comment-bound anchor and attestation tuple are distinct. Thus the first pass is at
+most `68 + 40 = 108` requests and downloads at most 24 archives once into bounded in-memory
+canonical-byte buffers.
+
+The second pass reuses only those cached canonical file bytes; it never reuses provider metadata,
+comments, attestations, jobs, or current facts. GitHub Actions artifacts are immutable after upload,
+and the second pass must independently reproduce the same provider artifact IDs, names, run IDs,
+expiry state, provider digests, exact metadata, and attestation subjects before the cached bytes can
+be reused. Any changed, deleted, expired, ambiguous, or mismatched artifact fails closed. Its
+36-request base ceiling repeats the two comment pages, base inventory, 16 attestation inventories,
+up to 16 applicable job reads, and current-source GraphQL read without another archive request. Its
+24-request candidate
+addition repeats the four exact-ID historical comment-copy slots, four locator inventories, four
+locator metadata reads, eight subject inventories, and four terminal-job reads. The second pass is
+exactly `36 + 24 = 60`. The current attempt's prospective checkpoint comment does not exist during
+these two passes and is covered only by the later 26-request publication budget.
+This asymmetric stable read proves current provider bindings twice while counting the 24 archive
+download redirects once rather than pretending each archive costs one request in both passes. The
+36-request second-pass base likewise contains up to 16 job reads only for base records that encode
+`workflow_job_id`; successful coordinator records reduce the actual total.
+
+The locator inventory, metadata, and cached downloaded sole canonical file must agree on exact
+name, provider ID, run, expiry, identity, and candidate projection across both passes; candidates
+from distinct runs or names never share an inventory request. Each candidate comment exact-ID
+reread must match complete pagination. An optional candidate-anchor subject returning any
+attestation fails closed without granting authority. Each terminal writer-job read must also prove
+the fixed anchor-attestation publication step's mapped name, provider-visible number, and conclusion
+`skipped`; an attempted or unknown step is ambiguous and denies quarantine. The one current-source
+GraphQL read covers the issue, pull request,
+readiness, equal-observation projection, and protected `dev` ref atomically.
+
+ADR-0012's direct command authentication consumes at most six requests. The remaining 26 requests
+are reserved for the checkpoint: at most three locator upload/finalization calls, at most three
+locator-attestation publication calls, and six locator-verification requests before the comment—one
+protected writer-job read, one artifact inventory, one exact metadata reread, the locator archive's
+two-request download redirect chain, and one attestation inventory; one comment create and one
+immediate reread; at most three anchor upload/finalization calls; at most three anchor-attestation
+publication calls; and six final verification calls. Those final calls are one exact comment read,
+one exact anchor metadata read, the anchor archive's two-request download redirect chain, one
+anchor-attestation inventory, and one complete current-source GraphQL read. Attestation claims bind
+the protected run and attempt, and the pre-locator job read binds the writer job, so separate final
+run and job calls are neither needed nor allowed. These maxima are exactly
+`3 + 3 + 6 + 2 + 3 + 3 + 6 = 26`.
+
+The implementation gate rejects a provider composition that cannot statically prove this
+26-request maximum. At runtime a 27th publication request is denied; an already-created comment then
+remains an incomplete candidate under the bounded explicit recovery path above. The first recovery
+pass ceiling of 108 requests, second-pass ceiling of 60, six-request authentication, and 26-request
+publication form the closed worst-case ceiling `108 + 60 + 6 + 26 = 200`; requests omitted for
+coordinator records without job IDs are not spent or replaced. Request 201 produces no record or
+effect. Unused normal or orphan-recovery allowance is not transferable. The counter covers every
+redirects and upload/finalization calls as well as cardinality, command, permission, record,
+artifact, attestation, run, job, write, and read-back requests.
 
 Protected workflows never edit or delete canonical records. GitHub comments are only logically
 append-only, so deletion cannot be made impossible. A missing previously referenced comment, an
@@ -667,8 +1525,10 @@ coordinator performs a stable complete double-read and requires:
 - the current claim is the sole latest valid fence for its generation, attempt, phase, and owning
   workflow run;
 - the protected workflow/run remains current and the fence has not been superseded; and
-- every producer result is authenticated, same-generation, same-attempt, same-fence, exact-head,
-  and from its expected producer.
+- every producer result is authenticated, same-generation, same-attempt, exact-head, bound to its
+  own unique authenticated producer-owning fence, and from its expected producer; an ordinary
+  non-superseded phase additionally requires the phase's current fence, while the closed superseded
+  exception retains each carried result's earlier pre-supersession fence.
 
 After an effect, the coordinator reloads the same complete facts and verifies exact desired
 read-back before writing the transition/read-back record. Lock loss, fence loss, unstable reads,
@@ -688,13 +1548,38 @@ The phases are:
    predecessor.
 
 Duplicate wake-ups and duplicate identical results are no-ops. An authenticated input change
-creates a new generation digest. An unchanged failed or abandoned generation is terminal and does
-not retry automatically. A crash before any external effect may resume the same generation only
-after stable reconstruction proves the exact current fence and that no effect occurred. A crash,
-timeout, deletion, or unavailable response at or after a possibly accepted effect is ambiguous,
-blocked, and never retried. Explicit recovery increments the attempt, uses a new request identity,
-binds the settled predecessor, and revalidates all current authority. Responses classified as
-403, 404, 409, 422, 429, timeout, malformed, unavailable, or partial never become success.
+creates a new generation digest. If the authenticated current facts supersede an open generation,
+the coordinator first appends its superseded phase/fence claim and then must append a terminal
+transition/read-back checkpoint for that generation before it may append a successor generation
+request. The closed reserved-boundary exception above uses the already-authenticated reserved
+terminal fence as that same generation's superseding fence when facts first drift after record 13;
+it appends no second fence. That ordinary v1 superseded terminal checkpoint has equal source,
+desired, and observed state; `transition_owner` exactly `invalidation`; `effect_identity` explicit
+null; `outcome` exactly `superseded`; `reason_code` exactly `superseded`; and only the authenticated
+producer results already present, which may be the empty set. Its phase fence, frozen-generation
+authentication, checkpoint sequence, compacted prefix, predecessor, protected commit, and timestamp
+follow the existing exact v1 rules with no alternate default. A wake that cannot publish and stably
+authenticate the terminal checkpoint stops; it cannot begin the successor generation. Repeated or
+reordered facts therefore cannot starve checkpoint creation or consume the live suffix through
+generation churn.
+
+In short, a superseded fence requires a terminal transition/read-back checkpoint before any
+successor generation.
+
+For that superseded terminal checkpoint, the frozen generation projection and the stable
+superseding-observation projection above are mandatory. Current facts prove why the old generation
+is terminal; they do not rewrite the old request or make its identities current.
+
+An unchanged failed or abandoned generation is terminal and does not retry automatically. A crash
+before any external effect may resume the same generation only after stable reconstruction proves
+the exact current fence and that no effect occurred. A crash, timeout, deletion, or unavailable
+response at or after a possibly accepted effect is ambiguous, blocked, and never retried. Explicit
+recovery increments the attempt, uses a new request identity, binds the settled predecessor, and
+revalidates all current authority. Responses classified as 403, 404, 409, 422, 429, timeout,
+malformed, unavailable, or partial never become success.
+
+An ambiguous effect is never retried; explicit recovery increments the attempt only after complete
+authorized reconstruction.
 
 ### Protected producer interface
 
@@ -812,6 +1697,21 @@ generation, attempt, fence, effect identity, and observed outcome before a new a
 Recovery moves forward; it never edits or deletes a record, guesses an outcome, restores stale
 review evidence, or weakens the sacred `dev` boundary.
 
+Suffix-overflow recovery is narrower than ambiguous-effect or ordinary orphan recovery. It cannot
+settle an effect, skip an authenticated member, raise the normal 15-record limit, or accept a
+malformed chain. It only terminalizes one explicitly authorized, fully authenticated 16-record
+suffix as a null-effect v2 checkpoint. If an earlier v2 checkpoint comment was accepted but its
+post-publication authentication was interrupted, a fresh explicit maintainer command may retry the
+still-unconsumed target and the successful v2 compacted prefix quarantines incomplete publications
+only after a complete set capped at four historical interrupted candidate comment copies has been
+authenticated; a fifth historical copy is denied. The current attempt's single prospective
+checkpoint comment uses the separate 26-request publication budget; it becomes the authenticated
+record on success or a historical candidate on the next recovery if authentication is interrupted.
+This is not automatic retry, and no ordinary settlement record is
+appended ahead of the checkpoint. The same four record types remain authoritative; version 2 of
+transition/read-back is not a fifth record type. Activation remains disabled until Issue #55, and
+every `dev` delivery remains a human-only manual merge.
+
 ## Governance and rollout
 
 This ADR is inert documentation. It creates no workflow, token permission, lifecycle transition,
@@ -836,6 +1736,13 @@ a new account, installed GitHub App, PAT, machine user, broker, database, hosted
 credential, application/runtime dependency, private-source access, or automated `dev` effect. A
 GitHub-maintained attestation transport is provider composition, must be pinned to a full commit
 SHA under the refreshed #51 contract, and receives only the permissions declared above.
+
+Issue #170 owns only this ADR and documentation amendment. After its human-only manual merge to
+`dev`, a separate defect issue must own implementation, hostile fixtures, request arithmetic, live
+effect-disabled recovery of issue #52, and exact-head qualification. That defect may salvage
+conforming code but may not activate the lifecycle, post the recovery command before its own
+accepted authority, or mutate issue #52's record chain during this decision. Sacred `dev` remains
+human-only.
 
 ## Consequences
 
@@ -886,8 +1793,9 @@ private-source content.
 
 Issue #55 must run guarded-off and post-activation disposable GitHub probes that authenticate the
 built-in bot/App/run identity and GitHub attestation, prove same-generation producer composition,
-exercise exact-name immutable artifact anchors, checkpoint rollover, more-than-100-page cursor
-recovery, rate-limit refusal, queue saturation, referenced deletion, suffix deletion, and ambiguity
+exercise exact-name immutable artifact anchors, checkpoint rollover, explicit more-than-100-page
+cursor-recovery refusal before page 4, rate-limit refusal, queue saturation, referenced deletion,
+suffix deletion, and ambiguity
 recovery without retry, and bind every live observation to the signed activation commit. Failure
 leaves the lifecycle unavailable or probe-only and never widens merge authority.
 
