@@ -2042,7 +2042,7 @@ fn stop_process_group_with_term_grace(
     let cleanup_started = Instant::now();
     let remaining = deadline.saturating_duration_since(cleanup_started);
     let term_deadline = term_grace.map_or_else(
-        || cleanup_started + remaining.saturating_sub(remaining / 5),
+        || cleanup_started + remaining / 2,
         |grace| deadline.min(cleanup_started + grace),
     );
     signal_active_process_group(active, process_group, SIGTERM);
