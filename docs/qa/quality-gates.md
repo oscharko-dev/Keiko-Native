@@ -152,13 +152,19 @@ entire accumulator. Their classification is provisional and grants no independen
 resumed step must validate the cumulative group and count before adding its page. A single
 serialized recovery invocation must keep the authenticated cumulative summary and every full
 `recovery-suffix-member` preimage, including ordinary irrelevant comments, in memory across its
-twice-stable pages. A checkpoint-rooted invocation must first fully authenticate the lower-ID
-overflow v2 checkpoint and the greater shadow-ID relationship. A unique-genesis-rooted invocation
-must instead require no provisional shadows, a null shadow digest, and an empty shadow-ID list, then
-authenticate the complete genesis suffix directly. Only then may one phase/fence claim v3 persist
-the complete at-most-15 live record members, shadow summary, and exact shadow comment IDs. It must
+twice-stable pages. The gate must distinguish three root branches. An
+overflow-v2-checkpoint-rooted invocation authenticates the lower-ID v2 checkpoint and greater
+shadow-ID relationship. An ordinary-v1-checkpoint-rooted invocation authenticates the v1
+checkpoint, requires a null shadow digest and empty shadow-ID list, and accepts no provisional
+shadow. A unique-genesis-rooted invocation requires the same empty-shadow facts and authenticates
+the complete genesis suffix directly. Both cursor-interruption settlements must repeat the same
+root-specific proof. Only then may one phase/fence claim v3 persist its non-null
+`cursor_recovery_authorization_identity` and `cursor_recovery_target_identity`, complete at-most-15
+live record members, shadow summary, and exact shadow comment IDs. The gate must prove the first
+identity is the command-specific authenticated maintainer request and the second is its exact
+incomplete-scan target, neither inferred from the inherited generation request. It must
 publish no intermediate cursor or progress claim. The final claim and immediate checkpoint require
-one through 11 live records after a unique-genesis or ordinary-v1 root, or one through 10 after an
+one through 11 live records after a unique-genesis or ordinary-v1 root, or one through 9 after an
 overflow-v2 root, forming one internally valid open generation that begins with its authenticated
 generation request and contains no terminal claim or checkpoint. The direct
 recovery-owned `abandoned` checkpoint carries exactly the authenticated same-generation producer
@@ -168,17 +174,20 @@ root and replay-shadow relation but is a no-op with no v3 claim, checkpoint, rec
 larger, reserved, or differently shaped open suffix uses its exact existing recovery path or fails
 closed.
 
-The gate must enforce a hard cap of 3 accumulator pages and two closed root profiles. At most 6
+The gate must enforce a hard cap of 3 accumulator pages, three closed root-authentication branches,
+and two budget profiles. At most 6
 comment-page requests cover two stable reads of each page in the one invocation. A unique-genesis
-or ordinary-v1 root permits at most fourteen record/root/orphan tuples and consumes 74
-authentication, 26 current-provider, and 28 publication calls: a 128-call core and 148 total calls
-with pages and the fixed 14 ingress calls. An overflow-v2 root permits at most thirteen tuples. Its
-base authentication uses one artifact list, 26 artifact-download redirect-chain calls, 13
-subject-qualified attestation inventories, 26 workflow-run and referenced-workflow-inventory calls,
-and at most three exact producer-job calls; the root's exact six locator-verification calls make 75
-authentication calls. With the same 26 current-provider and 28 publication calls, that is a
-129-call core and 149 total calls. The already authenticated ingress authorization and target bytes
-are reused; no additional provider request is made. Both profiles remain under the hard 150-request
+or ordinary-v1 root permits at most fourteen record/root/orphan tuples. Its 74 authentication calls
+plus two independently reserved stable exact cursor-orphan writer-job/skipped-step reads, 26
+current-provider calls, and 28 publication calls form a 130-call core and 150 total calls with pages
+and the fixed 14 ingress calls. An overflow-v2 root admits at most nine live records and twelve
+tuples. Its base authentication uses one artifact list, 24 artifact-download redirect-chain calls,
+12 subject-qualified attestation inventories, 24 workflow-run and referenced-workflow-inventory
+calls, and at most three exact producer-job calls; the root's six locator-verification calls and two
+stable cursor-orphan writer-job reads make 72 authentication calls. With the same 26
+current-provider and 28 publication calls, that is a 126-call core and 146 total calls. The already
+authenticated ingress authorization and target bytes are reused; no additional provider request is
+made. Both profiles remain within the hard 150-request
 ceiling. A fifth shadow, any mismatch or discontinuity, cursor exhaustion, page 4, or missing
 authenticated root must produce no complete accumulator, checkpoint, or effect. The classification
 adds no request outside that closed allocation, initiates no cursor recovery, and changes no
@@ -227,7 +236,7 @@ record 14, and after that settlement permits only the recovery-owned null-effect
 record 15. If fence publication is interrupted, the exact version-2 fence-orphan settlement is
 record 13 and only its recovery-owned checkpoint may follow at record 14. The exact complete
 cursor-recovery v3 claim defines `n` as the authenticated live non-checkpoint suffix cardinality
-from one through 11 after a unique-genesis or ordinary-v1 root, and from one through 10 after an
+from one through 11 after a unique-genesis or ordinary-v1 root, and from one through 9 after an
 overflow-v2 root, for one internally valid open generation that begins with its authenticated
 generation request and contains no terminal claim or checkpoint. It is record `n + 1` and must be
 followed immediately by its checkpoint at record `n + 2`. That direct recovery-owned `abandoned`
@@ -240,8 +249,8 @@ After an
 authenticated cursor-recovery v3 at record `n + 1`, an interrupted unanchored cursor-recovery
 checkpoint uses its exact version-2 cursor-checkpoint settlement at record `n + 2`, followed only by
 the recovery-owned checkpoint at record `n + 3`. At `n = 11` for a unique-genesis or ordinary-v1
-root, the cursor paths consume at most records 12 through 14; an overflow-v2 root stops at `n = 10`
-and records 11 through 13. Neither widens the loader. The gate must prove that
+root, the cursor paths consume at most records 12 through 14; an overflow-v2 root stops at `n = 9`
+and records 10 through 12. Neither widens the loader. The gate must prove that
 each resulting recovery-owned `abandoned` checkpoint carries exactly the authenticated pre-fence
 producer subset, including empty, while every other abandoned checkpoint requires the complete
 expected set; that the parent phase/fence record's encoded version selects settlement v2; and that
@@ -261,11 +270,12 @@ inert before Issue #55, adds no principal or credential, and remains a human-onl
 
 The gate must separately prove the direct-cursor projection. Immediately before v3 publication,
 two equal current source observations still match the frozen open generation and the claim encodes
-the final identity. The exact v3 claim and immediate checkpoint retain that frozen generation,
-authorized recovery request, observation, predecessor/member bindings, and same-generation producer
-subset. Later current-fact drift, including drift before checkpoint publication, cannot stale either
-null-effect record; an immutable mismatch, producer publication after v3, or unavailable final read
-remains blocked.
+the final identity. The exact v3 claim encodes the command-specific cursor recovery authorization
+and target identities independently of the inherited generation request; it and the immediate
+checkpoint retain that frozen generation, observation, predecessor/member bindings, and
+same-generation producer subset. Later current-fact drift, including drift before checkpoint
+publication, cannot stale either null-effect record; an immutable mismatch, producer publication
+after v3, or unavailable final read remains blocked.
 
 Publication evidence uses the exact candidate commit's complete, non-truncated recursive Git tree
 and exact regular-file blob bytes, modes, object IDs, sizes, and SHA-256 digests. The pull-request
