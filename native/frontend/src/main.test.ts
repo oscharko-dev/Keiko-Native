@@ -161,8 +161,7 @@ describe("production renderer composition", () => {
       if (Array.isArray(value)) return value.flatMap(all);
       if (typeof value !== "object" || value === null) return [];
       const props = Reflect.get(value, "props") as
-        | Record<string, unknown>
-        | undefined;
+        Record<string, unknown> | undefined;
       if (props === undefined) return [];
       return [
         { type: Reflect.get(value, "type"), props },

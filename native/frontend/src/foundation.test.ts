@@ -41,8 +41,7 @@ function textContent(value: unknown): string {
   if (Array.isArray(value)) return value.map(textContent).join(" ");
   if (typeof value !== "object" || value === null) return "";
   const props = Reflect.get(value, "props") as
-    | { children?: unknown }
-    | undefined;
+    { children?: unknown } | undefined;
   return textContent(props?.children);
 }
 
@@ -53,8 +52,7 @@ function elements(
   if (typeof value !== "object" || value === null) return [];
   const type = Reflect.get(value, "type");
   const props = Reflect.get(value, "props") as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
   if (props === undefined) return [];
   return [{ type, props }, ...elements(props.children)];
 }
