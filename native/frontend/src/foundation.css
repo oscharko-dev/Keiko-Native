@@ -1,4 +1,8 @@
 :root {
+  --control-primary-background: #6458e8;
+  --control-primary-hover-background: #5a50d6;
+  --focus-outline: #61e8c6;
+  --textarea-border: #7c849a;
   color-scheme: light dark;
   font-family:
     Inter,
@@ -36,13 +40,13 @@ button {
   border: 1px solid rgb(255 255 255 / 18%);
   border-radius: 12px;
   padding: 0.65rem 1rem;
-  background: #766cff;
+  background: var(--control-primary-background);
   color: #fff;
   cursor: pointer;
 }
 
 button:hover {
-  background: #887fff;
+  background: var(--control-primary-hover-background);
 }
 
 button:disabled,
@@ -53,7 +57,7 @@ button[aria-disabled="true"] {
 
 button:focus-visible,
 textarea:focus-visible {
-  outline: 3px solid #61e8c6;
+  outline: 3px solid var(--focus-outline);
   outline-offset: 3px;
 }
 
@@ -267,7 +271,7 @@ label {
 textarea {
   width: 100%;
   resize: vertical;
-  border: 1px solid rgb(255 255 255 / 22%);
+  border: 1px solid var(--textarea-border);
   border-radius: 14px;
   padding: 1rem;
   background: rgb(0 0 0 / 24%);
@@ -283,6 +287,8 @@ footer {
 
 @media (prefers-color-scheme: light) {
   :root {
+    --focus-outline: #08785e;
+    --textarea-border: #6d7487;
     background: #eef0f8;
     color: #13182a;
   }

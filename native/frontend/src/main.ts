@@ -201,7 +201,14 @@ export async function startRenderer(
         }
       }
     },
-    cancelTurn: () => activeTurnCancellation?.abort(),
+    cancelTurn: () => {
+      if (activeTurnCancellation === null) return;
+      if (activeTurnCancellation.signal.aborted) {
+        port.retryCodexTurnCancellation();
+      } else {
+        activeTurnCancellation.abort();
+      }
+    },
   };
   present(initial.result);
 }

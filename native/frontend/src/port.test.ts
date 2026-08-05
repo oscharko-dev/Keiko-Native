@@ -1108,4 +1108,97 @@ describe("closed streamed Codex turn port", () => {
       expect.objectContaining({ generation: authority.generation }),
     );
   });
+
+  it.each([
+    ["malformed", () => Promise.resolve("{}")],
+    ["rejected", () => Promise.reject(new Error("ipc unavailable"))],
+  ])(
+    "keeps cancellation retryable after a %s acknowledgement",
+    async (_case, firstCancellation) => {
+      const updates: TurnView[] = [];
+      const preflight = turn("preflighting");
+      const stopping: TurnView = {
+        ...preflight,
+        state: "stopping",
+        reason: "user-cancelled",
+        evidence: { ...preflight.evidence, terminalState: "stopping" },
+      };
+      const cancelled: TurnView = {
+        ...stopping,
+        state: "cancelled",
+        evidence: {
+          ...stopping.evidence,
+          cleanupComplete: true,
+          terminalState: "cancelled",
+        },
+      };
+      let cancellationAttempts = 0;
+      let resolveTurn: ((value: string) => void) | undefined;
+      let requestId = "";
+      const channel = { onmessage: (_value: TurnView) => undefined };
+      const invoke = vi.fn(
+        (command: string, arguments_: { request: string }): Promise<string> => {
+          if (command === "application_cancel") {
+            cancellationAttempts += 1;
+            if (cancellationAttempts === 1) return firstCancellation();
+            const cancellation = JSON.parse(arguments_.request) as {
+              requestId: string;
+            };
+            return Promise.resolve(
+              JSON.stringify({
+                schemaVersion: 1,
+                requestId: cancellation.requestId,
+                result: {
+                  kind: "application-cancel",
+                  status: "cancelled",
+                },
+              }),
+            );
+          }
+          requestId = (JSON.parse(arguments_.request) as { requestId: string })
+            .requestId;
+          channel.onmessage(preflight);
+          return new Promise((resolve) => {
+            resolveTurn = resolve;
+          });
+        },
+      );
+      const cancellation = new AbortController();
+      const port = createRendererPort(
+        invoke,
+        async () => authority,
+        () => channel,
+      );
+      const pending = port.codexTurn(
+        3,
+        "Bounded.",
+        (update) => updates.push(update),
+        cancellation.signal,
+      );
+      await Promise.resolve();
+
+      cancellation.abort();
+      await drainCancellationDispatch();
+      expect(updates).toEqual([preflight]);
+
+      port.retryCodexTurnCancellation();
+      await drainCancellationDispatch();
+      expect(cancellationAttempts).toBe(2);
+      expect(updates).toEqual([preflight, stopping]);
+
+      channel.onmessage(cancelled);
+      resolveTurn?.(
+        JSON.stringify({
+          schemaVersion: 1,
+          requestId,
+          result: { kind: "codex-turn", state: cancelled },
+        }),
+      );
+      await expect(pending).resolves.toEqual(
+        expect.objectContaining({
+          result: { kind: "codex-turn", state: cancelled },
+        }),
+      );
+    },
+  );
 });

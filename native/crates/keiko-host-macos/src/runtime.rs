@@ -192,19 +192,23 @@ enum RuntimeCancellation {
     RendererLost = 2,
     AppShutdown = 3,
     ContainmentFailure = 4,
+    WorkspaceChanged = 5,
 }
 
 impl RuntimeCancellation {
     fn readiness_state(self) -> RuntimeReadinessState {
         match self {
             Self::ContainmentFailure => RuntimeReadinessState::ContainmentFailed,
-            Self::User | Self::RendererLost | Self::AppShutdown => RuntimeReadinessState::Cancelled,
+            Self::User | Self::RendererLost | Self::AppShutdown | Self::WorkspaceChanged => {
+                RuntimeReadinessState::Cancelled
+            }
         }
     }
 
     fn turn_state(self) -> TurnState {
         match self {
             Self::ContainmentFailure => TurnState::ContainmentFailed,
+            Self::WorkspaceChanged => TurnState::Failed,
             Self::User | Self::RendererLost | Self::AppShutdown => TurnState::Cancelled,
         }
     }
@@ -215,6 +219,7 @@ impl RuntimeCancellation {
             Self::RendererLost => TurnReason::RendererLost,
             Self::AppShutdown => TurnReason::AppShutdown,
             Self::ContainmentFailure => TurnReason::InternalFailure,
+            Self::WorkspaceChanged => TurnReason::StaleWorkspace,
         }
     }
 }
@@ -293,6 +298,7 @@ pub struct RuntimeHost {
     configuration: Option<RuntimeConfiguration>,
     active: Arc<ActiveRuntime>,
     work_generation: Arc<AtomicU64>,
+    invalidated_workspace_generation: Arc<AtomicU64>,
 }
 
 impl RuntimeHost {
@@ -314,6 +320,7 @@ impl RuntimeHost {
             configuration,
             active: Arc::new(ActiveRuntime::default()),
             work_generation: Arc::new(AtomicU64::new(0)),
+            invalidated_workspace_generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -361,15 +368,20 @@ impl RuntimeHost {
 
     pub fn cancel_request(&self, request_id: &str) {
         let mut accepted = false;
-        if let Ok(mut control) = self.active.control.lock()
-            && self.active.running.load(Ordering::Acquire)
-        {
-            if control.request_id.as_deref() == Some(request_id) {
+        if let Ok(mut control) = self.active.control.lock() {
+            if self.active.running.load(Ordering::Acquire)
+                && control.request_id.as_deref() == Some(request_id)
+            {
                 control
                     .cancellation
                     .get_or_insert(RuntimeCancellation::User);
                 accepted = true;
-            } else if control.request_id.is_none() {
+            } else if control.request_id.is_none()
+                && control
+                    .pending_request_id
+                    .as_deref()
+                    .is_none_or(|pending| pending == request_id)
+            {
                 control.pending_request_id = Some(request_id.to_owned());
                 control
                     .cancellation
@@ -399,6 +411,13 @@ impl RuntimeHost {
         self.active.wait_for_idle(TURN_CLEANUP_RESERVE)
     }
 
+    pub fn cancel_for_workspace_change_and_wait(&self, workspace_generation: u64) -> bool {
+        self.invalidated_workspace_generation
+            .fetch_max(workspace_generation, Ordering::AcqRel);
+        self.cancel_with_reason(RuntimeCancellation::WorkspaceChanged);
+        self.active.wait_for_idle(TURN_CLEANUP_RESERVE)
+    }
+
     fn cancel_with_reason(&self, reason: RuntimeCancellation) {
         self.active.cancel(reason);
         self.signal_active_process();
@@ -419,6 +438,7 @@ impl RuntimeHost {
     pub fn run_turn(
         &self,
         request_id: &str,
+        workspace_generation: u64,
         selected_workspace: &Path,
         task: &str,
         timeout: Duration,
@@ -441,6 +461,15 @@ impl RuntimeHost {
                 TurnState::ContainmentFailed,
                 TurnReason::InternalFailure,
             );
+        }
+        if workspace_generation == 0
+            || workspace_generation
+                <= self
+                    .invalidated_workspace_generation
+                    .load(Ordering::Acquire)
+        {
+            self.active.finish_request();
+            return TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::StaleWorkspace);
         }
         let result = self.configuration.as_ref().map_or_else(
             || TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::RuntimeUnavailable),
@@ -476,6 +505,7 @@ impl RuntimeHost {
             }),
             active: Arc::new(ActiveRuntime::default()),
             work_generation: Arc::new(AtomicU64::new(0)),
+            invalidated_workspace_generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -485,6 +515,7 @@ impl RuntimeHost {
             configuration: None,
             active: Arc::new(ActiveRuntime::default()),
             work_generation: Arc::new(AtomicU64::new(0)),
+            invalidated_workspace_generation: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -1601,6 +1632,7 @@ struct TurnProtocolProjection<'a> {
     turn_id: Option<String>,
     streaming_announced: bool,
     agent_text: String,
+    projected_agent_deltas: usize,
     quarantined_events: u16,
     started_items: HashMap<String, InertItemKind>,
     completed_items: HashSet<String>,
@@ -1616,6 +1648,7 @@ impl<'a> TurnProtocolProjection<'a> {
             turn_id: None,
             streaming_announced: false,
             agent_text: String::new(),
+            projected_agent_deltas: 0,
             quarantined_events: 0,
             started_items: HashMap::new(),
             completed_items: HashSet::new(),
@@ -1888,11 +1921,13 @@ impl<'a> TurnProtocolProjection<'a> {
         if delta.is_empty()
             || self.started_items.get(item_id) != Some(&InertItemKind::AgentMessage)
             || self.completed_items.contains(item_id)
+            || self.projected_agent_deltas >= MAX_QUEUE_FRAMES
             || self.agent_text.len().saturating_add(delta.len()) > MAX_AGENT_TEXT_BYTES
         {
             return self.containment(TurnReason::BufferLimit);
         }
         self.agent_text.push_str(delta);
+        self.projected_agent_deltas += 1;
         TurnProjectionAction::AgentDelta(delta.to_owned())
     }
 
@@ -2948,6 +2983,7 @@ mod tests {
             configuration: None,
             active: Arc::new(ActiveRuntime::default()),
             work_generation: Arc::new(AtomicU64::new(0)),
+            invalidated_workspace_generation: Arc::new(AtomicU64::new(0)),
         };
         host.active.running.store(true, Ordering::Release);
         host.cancel_request("request-in-registration");
@@ -3073,6 +3109,7 @@ mod tests {
             configuration: None,
             active: Arc::new(ActiveRuntime::default()),
             work_generation: Arc::new(AtomicU64::new(0)),
+            invalidated_workspace_generation: Arc::new(AtomicU64::new(0)),
         };
         assert_eq!(
             unavailable.check("unconfigured", None).state,
@@ -3099,6 +3136,7 @@ mod tests {
             configuration: None,
             active: Arc::new(ActiveRuntime::default()),
             work_generation: Arc::new(AtomicU64::new(0)),
+            invalidated_workspace_generation: Arc::new(AtomicU64::new(0)),
         };
         let active = Arc::clone(&host.active);
         let _ = thread::spawn(move || {
@@ -3784,6 +3822,23 @@ printf '%s\n' '{"method":"item/tool/call","id":7,"params":{"path":"/private/secr
                 TurnReason::BufferLimit
             )
         ));
+
+        let mut update_flood = active();
+        update_flood
+            .started_items
+            .insert("item-1".to_owned(), InertItemKind::AgentMessage);
+        let one_byte_delta = br#"{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","delta":"x"}}"#;
+        for _ in 0..MAX_QUEUE_FRAMES {
+            assert_eq!(
+                update_flood.accept(one_byte_delta),
+                TurnProjectionAction::AgentDelta("x".to_owned())
+            );
+        }
+        assert!(matches!(
+            update_flood.accept(one_byte_delta),
+            TurnProjectionAction::Terminal(TurnState::ContainmentFailed, TurnReason::BufferLimit)
+        ));
+        assert_eq!(update_flood.agent_text.len(), MAX_QUEUE_FRAMES);
     }
 
     #[test]
@@ -3826,6 +3881,7 @@ wait
         let mut updates = Vec::new();
         let outcome = host.run_turn(
             "request-turn",
+            1,
             &repository,
             "Repository-independent prompt.",
             Duration::from_secs(5),
@@ -3842,6 +3898,86 @@ wait
         assert!(!fixture.home.join("logs_2.sqlite").exists());
         assert!(!host.active.running.load(Ordering::Acquire));
         assert_eq!(*host.active.process_group.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn cancellation_accepted_before_runtime_start_prevents_process_launch() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let repository = fixture.root.join("repository");
+        fs::create_dir(&repository).expect("repository identity");
+        let launched = fixture.root.join("runtime-started");
+        let host = fixture.scripted_host(&format!(
+            "#!/bin/sh\n: > '{}'\nexit 0\n",
+            launched.to_string_lossy()
+        ));
+
+        host.cancel_request("request-cancel-before-start");
+        let mut updates = Vec::new();
+        let outcome = host.run_turn(
+            "request-cancel-before-start",
+            1,
+            &repository,
+            "Bounded task.",
+            Duration::from_secs(1),
+            |update| updates.push(update),
+        );
+
+        assert_eq!(outcome.state, TurnState::Cancelled);
+        assert_eq!(outcome.reason, Some(TurnReason::UserCancelled));
+        assert!(outcome.cleaned);
+        assert_eq!(
+            updates,
+            vec![TurnRuntimeUpdate::Stopping(TurnReason::UserCancelled)]
+        );
+        assert!(!launched.exists(), "cancelled runtime must not start");
+        assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
+    }
+
+    #[test]
+    fn workspace_change_fence_rejects_a_stale_turn_that_registers_after_cleanup() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let repository = fixture.root.join("repository");
+        fs::create_dir(&repository).expect("repository identity");
+        let launched = fixture.root.join("workspace-fenced-runtime-started");
+        let host = fixture.scripted_host(&format!(
+            "#!/bin/sh\n: > '{}'\nexit 0\n",
+            launched.to_string_lossy()
+        ));
+
+        assert!(host.cancel_for_workspace_change_and_wait(7));
+        let stale = host.run_turn(
+            "request-stale-after-cleanup",
+            7,
+            &repository,
+            "Bounded task.",
+            Duration::from_secs(1),
+            |_| {},
+        );
+        assert_eq!(stale.state, TurnState::Failed);
+        assert_eq!(stale.reason, Some(TurnReason::StaleWorkspace));
+        assert!(stale.cleaned);
+        assert!(!launched.exists(), "stale workspace runtime must not start");
+
+        let fresh = host.run_turn(
+            "request-fresh-after-cleanup",
+            8,
+            &repository,
+            "Fresh bounded task.",
+            Duration::from_secs(1),
+            |_| {},
+        );
+        assert!(
+            launched.exists(),
+            "fresh workspace generation did not start"
+        );
+        assert_ne!(fresh.reason, Some(TurnReason::StaleWorkspace));
+        assert!(fresh.cleaned);
     }
 
     #[test]
@@ -3906,6 +4042,7 @@ while :; do /bin/sleep 1; done
             let mut updates = Vec::new();
             let outcome = running_host.run_turn(
                 "request-cancel-turn",
+                1,
                 &repository,
                 "Bounded task.",
                 Duration::from_secs(5),
@@ -3976,6 +4113,7 @@ while :; do /bin/sleep 1; done
         let pending = thread::spawn(move || {
             running_host.run_turn(
                 "request-app-shutdown",
+                1,
                 &repository,
                 "Bounded task.",
                 Duration::from_secs(5),
@@ -4004,6 +4142,80 @@ while :; do /bin/sleep 1; done
         assert_eq!(cancelled.state, TurnState::Cancelled);
         assert_eq!(cancelled.reason, Some(TurnReason::AppShutdown));
         assert!(cancelled.cleaned);
+    }
+
+    #[test]
+    fn workspace_change_fails_the_active_turn_then_allows_a_fresh_retry() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let repository = fixture.root.join("repository");
+        fs::create_dir(&repository).expect("repository identity");
+        let first_started = fixture.root.join("workspace-change-first-started");
+        let retry_started = fixture.root.join("workspace-change-retry-started");
+        let host = fixture.scripted_host(&format!(
+            r#"#!/bin/sh
+if [ ! -f '{first_started}' ]; then
+: > '{first_started}'
+: > workspace-change-ready
+read -r initialize
+while :; do /bin/sleep 1; done
+fi
+: > '{retry_started}'
+exit 0
+"#,
+            first_started = first_started.to_string_lossy(),
+            retry_started = retry_started.to_string_lossy(),
+        ));
+        let running_host = host.clone();
+        let pending = thread::spawn(move || {
+            running_host.run_turn(
+                "request-workspace-change",
+                1,
+                &repository,
+                "Bounded task.",
+                Duration::from_secs(5),
+                |_| {},
+            )
+        });
+        let wait_deadline = Instant::now() + Duration::from_secs(2);
+        let runtime_ready = || {
+            fs::read_dir(&fixture.work).is_ok_and(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .any(|entry| entry.path().join("workspace-change-ready").is_file())
+            })
+        };
+        while !runtime_ready() && Instant::now() < wait_deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(runtime_ready(), "runtime did not become ready");
+
+        assert!(host.cancel_for_workspace_change_and_wait(1));
+        let invalidated = pending.join().expect("turn thread");
+        assert_eq!(invalidated.state, TurnState::Failed);
+        assert_eq!(invalidated.reason, Some(TurnReason::StaleWorkspace));
+        assert!(invalidated.cleaned);
+        assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
+
+        let fresh_repository = fixture.root.join("fresh-repository");
+        fs::create_dir(&fresh_repository).expect("fresh repository identity");
+        let retry = host.run_turn(
+            "request-fresh-workspace",
+            2,
+            &fresh_repository,
+            "Fresh bounded task.",
+            Duration::from_secs(1),
+            |_| {},
+        );
+        assert!(
+            retry_started.exists(),
+            "fresh retry did not reach the runtime"
+        );
+        assert_ne!(retry.reason, Some(TurnReason::StaleWorkspace));
+        assert!(retry.cleaned);
+        assert!(!host.active.running.load(Ordering::Acquire));
     }
 
     #[test]
@@ -4073,6 +4285,7 @@ exit 9
         for request_id in ["crashed-attempt", "fresh-retry"] {
             let outcome = host.run_turn(
                 request_id,
+                1,
                 &repository,
                 "Bounded task.",
                 Duration::from_secs(2),

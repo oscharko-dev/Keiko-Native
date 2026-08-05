@@ -12,8 +12,10 @@ import {
   physicalObservationFailures,
   selectCommandOutput,
   selectOwnedStagedRuntime,
+  verifyOwnedRuntimeGroupsExited,
 } from "./codex-tracer-acceptance-io.mjs";
 import { acceptancePhysicalContract } from "./codex-tracer-acceptance.mjs";
+import { authenticateOwnedProcessGroup } from "./macos-accessibility-driver-harness.mjs";
 import { nativeGateTestSupport } from "./native-gate.mjs";
 
 const runtimeSha256 =
@@ -97,6 +99,39 @@ test("crash recovery selects only one exact staged runtime owned by the app", ()
       null,
     );
   }
+});
+
+test("final runtime cleanup evidence fails before signaling an authenticated survivor", async () => {
+  let now = 0;
+  const identity = {
+    pid: 51,
+    processGroupId: 51,
+    startIdentity: "10:20",
+  };
+  let survivor = identity;
+  const dependencies = {
+    listProcessGroup: () => (survivor === null ? [] : [survivor]),
+    monotonicNow: () => now,
+    readProcessIdentity: () => survivor,
+    signalProcess: () => assert.fail("verification must not signal"),
+    waitForTurn: async (milliseconds) => {
+      now += milliseconds;
+    },
+  };
+  const ownership = await authenticateOwnedProcessGroup(
+    { pid: identity.pid },
+    dependencies,
+  );
+
+  await assert.rejects(
+    verifyOwnedRuntimeGroupsExited([ownership], dependencies),
+    /acceptance-owned-runtime-residual/u,
+  );
+  survivor = null;
+  assert.equal(
+    await verifyOwnedRuntimeGroupsExited([ownership], dependencies),
+    1,
+  );
 });
 
 test("acceptance-owned processes receive only non-secret system context and explicit bindings", () => {

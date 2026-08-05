@@ -134,6 +134,12 @@ export const evaluationArtifactRoot = join(
   "keiko-native-macos-accessibility-driver/issue-111-v3",
 );
 const operatorPhases = new Set(["allowed", "denied", "revoked", "recovered"]);
+const capturePredecessorPhases = Object.freeze({
+  allowed: null,
+  denied: "allowed",
+  revoked: "allowed",
+  recovered: "revoked",
+});
 const sha256Pattern = /^[0-9a-f]{64}$/u;
 const headPattern = /^[0-9a-f]{40}$/u;
 
@@ -1683,6 +1689,25 @@ export async function preparePhysicalMatrix(
   return prepared;
 }
 
+function validateCapturePredecessor(phase, prepared, priorCapture) {
+  const predecessorPhase = capturePredecessorPhases[phase];
+  if (predecessorPhase === null) {
+    if (priorCapture !== null)
+      throw new Error("capture-predecessor-unexpected");
+    return;
+  }
+  if (
+    priorCapture?.schemaVersion !==
+      "keiko-native-macos-accessibility-driver-capture/v2" ||
+    priorCapture.phase !== predecessorPhase ||
+    !samePreparedIdentity(prepared, priorCapture.prepared) ||
+    priorCapture.options?.axuielement?.unexplainedFailures !== 0 ||
+    priorCapture.options?.axuielement?.status !== predecessorPhase
+  ) {
+    throw new Error("capture-predecessor-invalid");
+  }
+}
+
 export async function capturePhysicalMatrixPhase(
   root,
   { phase, prepared, priorCapture = null, runCandidate },
@@ -1692,26 +1717,7 @@ export async function capturePhysicalMatrixPhase(
     throw new TypeError("physical-candidate-runner-required");
   if (!validPreparedIdentity(prepared))
     throw new Error("capture-identity-invalid");
-  const predecessorPhase = {
-    allowed: null,
-    denied: "allowed",
-    revoked: "allowed",
-    recovered: "revoked",
-  }[phase];
-  if (predecessorPhase === null) {
-    if (priorCapture !== null)
-      throw new Error("capture-predecessor-unexpected");
-  } else if (
-    priorCapture === null ||
-    priorCapture.schemaVersion !==
-      "keiko-native-macos-accessibility-driver-capture/v2" ||
-    priorCapture.phase !== predecessorPhase ||
-    !samePreparedIdentity(prepared, priorCapture.prepared) ||
-    priorCapture.options?.axuielement?.unexplainedFailures !== 0 ||
-    priorCapture.options?.axuielement?.status !== predecessorPhase
-  ) {
-    throw new Error("capture-predecessor-invalid");
-  }
+  validateCapturePredecessor(phase, prepared, priorCapture);
 
   const repetitions = phase === "allowed" ? 20 : 1;
   const options = {};

@@ -178,6 +178,7 @@ export async function runPackagedTracerJourney({
   deniedWorkspaceLabel,
   execute,
   monotonicNow = () => performance.now(),
+  observeRuntime,
   prompt,
   workspaceLabel,
 }) {
@@ -187,6 +188,7 @@ export async function runPackagedTracerJourney({
   if (
     typeof crashRuntime !== "function" ||
     typeof execute !== "function" ||
+    typeof observeRuntime !== "function" ||
     !labelPattern.test(workspaceLabel ?? "") ||
     !labelPattern.test(deniedWorkspaceLabel ?? "") ||
     workspaceLabel === deniedWorkspaceLabel ||
@@ -253,6 +255,7 @@ export async function runPackagedTracerJourney({
   const turnStartedAt = monotonicNow();
   await step("submit-task");
   await step("observe-streaming", undefined, 120_000);
+  await observeRuntime();
   await step("observe-completed", undefined, 120_000);
   const turnDurationMs = Math.round(monotonicNow() - turnStartedAt);
   await step("observe-response-semantics");
@@ -261,6 +264,7 @@ export async function runPackagedTracerJourney({
   await step("set-task", prompt);
   await step("submit-task");
   await step("observe-streaming", undefined, 120_000);
+  await observeRuntime();
   const cancellationProjectionMs = await project(
     "cancel-turn",
     "observe-stopping",
@@ -271,6 +275,7 @@ export async function runPackagedTracerJourney({
   await step("set-task", prompt);
   await step("submit-task");
   await step("observe-streaming", undefined, 120_000);
+  await observeRuntime();
   await crashRuntime();
   await step("observe-failed");
   await step("check-runtime");

@@ -449,64 +449,80 @@ export function observedSafeguards({
   workspaceBefore,
 }) {
   const journeyRows = journey.timings.map(({ action }) => action);
-  const repositoryContextBytes = Buffer.byteLength(
-    JSON.stringify(journey),
-    "utf8",
-  );
+  const serializedJourney = JSON.stringify(journey);
+  const repositoryContextBytes = Buffer.byteLength(serializedJourney, "utf8");
   const fixedJourneyRows = 36;
-  const cleanRuntime =
-    runtimeBefore.entries === 0 &&
-    runtimeAfter.entries === 0 &&
-    runtimeBefore.bytes === 0 &&
-    runtimeAfter.bytes === 0;
-  const unchangedWorkspace =
-    workspaceBefore.sha256 === workspaceAfter.sha256 &&
-    workspaceBefore.entries === workspaceAfter.entries &&
-    workspaceBefore.bytes === workspaceAfter.bytes;
+  const cleanRuntime = conditionsMet(
+    runtimeBefore.entries === 0,
+    runtimeAfter.entries === 0,
+    runtimeBefore.bytes === 0,
+    runtimeAfter.bytes === 0,
+  );
+  const unchangedWorkspace = conditionsMet(
+    workspaceBefore.sha256 === workspaceAfter.sha256,
+    workspaceBefore.entries === workspaceAfter.entries,
+    workspaceBefore.bytes === workspaceAfter.bytes,
+  );
   return {
-    acceptedEffects: journey.status === "passed" && unchangedWorkspace ? 0 : 1,
-    configurableMultiAgentCapabilities:
-      containmentMarkers.includes("features.multi_agent=false") &&
-      containmentMarkers.includes("features.multi_agent_v2=false")
-        ? 0
-        : 1,
-    environmentTools:
-      containmentMarkers.includes("runtimeWorkspaceRoots") &&
-      containmentMarkers.includes("dynamicTools") &&
-      containmentMarkers.includes("selectedCapabilityRoots")
-        ? 0
-        : 1,
-    hiddenRetries: journeyRows.length === fixedJourneyRows ? 0 : 1,
-    inputRequestCapabilities: containmentMarkers.includes(
-      "tools.experimental_request_user_input.enabled=false",
-    )
-      ? 0
-      : 1,
-    localToolRequests: cleanRuntime && unchangedWorkspace ? 0 : 1,
+    acceptedEffects: failureCount(
+      journey.status === "passed",
+      unchangedWorkspace,
+    ),
+    configurableMultiAgentCapabilities: failureCount(
+      containmentMarkers.includes("features.multi_agent=false"),
+      containmentMarkers.includes("features.multi_agent_v2=false"),
+    ),
+    environmentTools: failureCount(
+      containmentMarkers.includes("runtimeWorkspaceRoots"),
+      containmentMarkers.includes("dynamicTools"),
+      containmentMarkers.includes("selectedCapabilityRoots"),
+    ),
+    hiddenRetries: failureCount(journeyRows.length === fixedJourneyRows),
+    inputRequestCapabilities: failureCount(
+      containmentMarkers.includes(
+        "tools.experimental_request_user_input.enabled=false",
+      ),
+    ),
+    localToolRequests: failureCount(cleanRuntime, unchangedWorkspace),
     manualOnlyAutomatableCheckpoints:
       acceptanceJourneyContract.manualOnlyAutomatableCheckpoints,
-    missingJourneyRows:
-      journeyRows.length === fixedJourneyRows
-        ? 0
-        : Math.abs(fixedJourneyRows - journeyRows.length),
+    missingJourneyRows: Math.abs(fixedJourneyRows - journeyRows.length),
     mockOnlyClaims: acceptanceJourneyContract.mockOnlyClaims,
     packageTestHooks: packageInspection.testHookMarkers,
-    providerEffectOwnerCrossings:
-      cleanRuntime && unchangedWorkspace && residualProcesses === 0 ? 0 : 1,
+    providerEffectOwnerCrossings: failureCount(
+      cleanRuntime,
+      unchangedWorkspace,
+      residualProcesses === 0,
+    ),
     providerEventQuarantineMaximum: 64,
-    redactionMatches: redactionMatches(JSON.stringify(journey)).length,
-    repositoryBytesInEvidence:
-      repositoryContextBytes > 0 &&
-      !JSON.stringify(journey).includes("KeikoAcceptanceIdentity104")
-        ? 0
-        : repositoryContextBytes,
+    redactionMatches: redactionMatches(serializedJourney).length,
+    repositoryBytesInEvidence: repositoryEvidenceBytes(
+      serializedJourney,
+      repositoryContextBytes,
+    ),
     repositoryContextBytesToRuntime: unchangedWorkspace
       ? 0
       : workspaceAfter.bytes,
     residualProcesses,
-    unquarantinedProviderEvents:
-      journey.status === "passed" && cleanRuntime ? 0 : 1,
+    unquarantinedProviderEvents: failureCount(
+      journey.status === "passed",
+      cleanRuntime,
+    ),
   };
+}
+
+function failureCount(...conditions) {
+  return Number(!conditionsMet(...conditions));
+}
+
+function conditionsMet(...conditions) {
+  return conditions.every(Boolean);
+}
+
+function repositoryEvidenceBytes(serializedJourney, bytes) {
+  return bytes > 0 && !serializedJourney.includes("KeikoAcceptanceIdentity104")
+    ? 0
+    : bytes;
 }
 
 function processExists(pid) {
@@ -570,7 +586,29 @@ export function selectOwnedStagedRuntime(
   return matches.length === 1 ? matches[0] : null;
 }
 
-async function crashOwnedRuntime({
+export async function verifyOwnedRuntimeGroupsExited(
+  ownerships,
+  cleanupDependencies,
+) {
+  if (!Array.isArray(ownerships) || ownerships.length === 0)
+    throw new TypeError("acceptance-owned-runtime-evidence-invalid");
+  const verificationDependencies = {
+    ...cleanupDependencies,
+    signalProcess: () => {
+      throw new Error("acceptance-owned-runtime-residual");
+    },
+  };
+  for (const ownership of ownerships) {
+    if (
+      (await terminateOwnedProcess(ownership, verificationDependencies)) !== 0
+    ) {
+      throw new Error("acceptance-owned-runtime-residual");
+    }
+  }
+  return ownerships.length;
+}
+
+async function authenticateOwnedStagedRuntime({
   appPid,
   cleanupDependencies,
   expectedRuntimeSha256,
@@ -594,11 +632,15 @@ async function crashOwnedRuntime({
   ) {
     throw new Error("acceptance-runtime-ownership-invalid");
   }
-  await authenticateOwnedProcessGroup(
+  return authenticateOwnedProcessGroup(
     { pid: runtime.pid },
     cleanupDependencies,
   );
-  process.kill(-runtime.pgid, "SIGKILL");
+}
+
+async function crashOwnedRuntime(options) {
+  const ownership = await authenticateOwnedStagedRuntime(options);
+  process.kill(-ownership.processGroupId, "SIGKILL");
 }
 
 async function createIdentityWorkspace(prefix) {
@@ -794,6 +836,7 @@ export function createCodexTracerAcceptanceIo() {
         child,
         cleanupDependencies,
       );
+      const runtimeOwnerships = [];
       let cleaned = false;
       try {
         const journey = await runPackagedTracerJourney({
@@ -811,6 +854,16 @@ export function createCodexTracerAcceptanceIo() {
               binary: adapter.binary,
               pid: child.pid,
             }),
+          observeRuntime: async () => {
+            runtimeOwnerships.push(
+              await authenticateOwnedStagedRuntime({
+                appPid: child.pid,
+                cleanupDependencies,
+                expectedRuntimeSha256: prepared.bindings.runtimeArtifactSha256,
+                runtimeWorkRoot: prepared.internal.runtimeWorkRoot,
+              }),
+            );
+          },
           prompt,
           workspaceLabel: basename(prepared.internal.workspaceRoot),
         });
@@ -818,6 +871,10 @@ export function createCodexTracerAcceptanceIo() {
         if (!(await waitForProcessExit(child.pid, 5_000)))
           throw new Error("acceptance-app-quit-failed");
         await terminateOwnedProcess(ownership, cleanupDependencies);
+        await verifyOwnedRuntimeGroupsExited(
+          runtimeOwnerships,
+          cleanupDependencies,
+        );
         const cleanupMs = Math.round(performance.now() - cleanupStartedAt);
         cleaned = true;
         const [runtimeAfter, workspaceAfter] = await Promise.all([
@@ -863,8 +920,15 @@ export function createCodexTracerAcceptanceIo() {
           }),
         };
       } finally {
-        if (!cleaned)
+        if (!cleaned) {
+          for (const runtimeOwnership of runtimeOwnerships) {
+            await terminateOwnedProcess(
+              runtimeOwnership,
+              cleanupDependencies,
+            ).catch(() => undefined);
+          }
           await terminateOwnedProcess(ownership, cleanupDependencies);
+        }
       }
     },
     async cleanup(prepared) {

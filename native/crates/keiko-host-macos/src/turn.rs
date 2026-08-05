@@ -85,6 +85,7 @@ pub fn turn_request(
     let task = session.task().to_owned();
     let outcome = runtime.run_turn(
         &request_id,
+        workspace_generation,
         &selected_workspace,
         &task,
         Duration::from_millis(u64::from(timeout_ms)),

@@ -577,6 +577,30 @@ test("operator phases retain one exact identity and run 20 allowed repetitions",
     });
     assert.deepEqual(allowed.timings.systemEvents, []);
 
+    await assert.rejects(
+      capturePhysicalMatrixPhase(root, {
+        phase: "denied",
+        prepared,
+        priorCapture: null,
+        runCandidate: async () => {
+          throw new Error("must-not-run");
+        },
+      }),
+      /capture-predecessor-invalid/u,
+    );
+
+    await assert.rejects(
+      capturePhysicalMatrixPhase(root, {
+        phase: "allowed",
+        prepared,
+        priorCapture: allowed,
+        runCandidate: async () => {
+          throw new Error("must-not-run");
+        },
+      }),
+      /capture-predecessor-unexpected/u,
+    );
+
     let failedCalls = 0;
     const failed = await capturePhysicalMatrixPhase(root, {
       phase: "allowed",

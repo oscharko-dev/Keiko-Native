@@ -197,6 +197,7 @@ pub fn workspace_request(
     window: WebviewWindow,
     lifecycle: State<'_, Mutex<HostLifecycle>>,
     workspace: State<'_, Mutex<WorkspaceHost>>,
+    runtime: State<'_, RuntimeHost>,
     generation: u64,
     document_nonce: String,
     request: String,
@@ -213,6 +214,9 @@ pub fn workspace_request(
         workspace.inner(),
         &sender,
         &request,
+        Box::new(|workspace_generation| {
+            runtime.cancel_for_workspace_change_and_wait(workspace_generation)
+        }),
         Box::new(platform_select_workspace),
     );
     if output.acknowledged_status {

@@ -34,11 +34,7 @@ export interface FoundationResponse {
 }
 
 export type WorkspaceClosedReason =
-  | "cancelled"
-  | "permission-denied"
-  | "invalid"
-  | "unavailable"
-  | "unsafe";
+  "cancelled" | "permission-denied" | "invalid" | "unavailable" | "unsafe";
 
 export type WorkspaceState =
   | { kind: "empty"; generation: number }
@@ -212,6 +208,7 @@ export function createRendererPort(
   },
 ) {
   let sequence = 0;
+  let activeTurnCancellationRetry: (() => void) | null = null;
 
   async function health(signal?: AbortSignal): Promise<HealthResponse> {
     if (signal?.aborted) throw new Error("application-health-cancelled");
@@ -523,7 +520,12 @@ export function createRendererPort(
       let latest: TurnView | null = null;
       let cancellationAccepted = false;
       let cancellationDispatched = false;
-      const finish = () => signal?.removeEventListener("abort", cancel);
+      const finish = () => {
+        signal?.removeEventListener("abort", cancel);
+        if (activeTurnCancellationRetry === dispatchCancellation) {
+          activeTurnCancellationRetry = null;
+        }
+      };
       const fail = (message: string) => {
         if (terminal) return;
         terminal = true;
@@ -568,10 +570,15 @@ export function createRendererPort(
             if (isAcceptedCancellation(encoded, request.requestId)) {
               cancellationAccepted = true;
               projectStopping();
+            } else {
+              cancellationDispatched = false;
             }
           })
-          .catch(() => undefined);
+          .catch(() => {
+            if (!terminal) cancellationDispatched = false;
+          });
       };
+      activeTurnCancellationRetry = dispatchCancellation;
       const cancel = () => {
         if (terminal || (latest !== null && isTerminalTurn(latest))) return;
         dispatchCancellation();
@@ -659,6 +666,7 @@ export function createRendererPort(
     runtimeReadiness: (signal?: AbortSignal) =>
       runtime({ kind: "runtime-readiness" }, signal),
     codexTurn,
+    retryCodexTurnCancellation: () => activeTurnCancellationRetry?.(),
   };
 }
 

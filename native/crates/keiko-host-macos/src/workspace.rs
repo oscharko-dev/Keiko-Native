@@ -154,6 +154,7 @@ pub fn workspace_request(
     workspace: &Mutex<WorkspaceHost>,
     sender: &SenderContext,
     request: &str,
+    settle_active_runtime: Box<dyn FnOnce(u64) -> bool + '_>,
     picker: Box<dyn FnOnce() -> FolderPickerResult + '_>,
 ) -> WorkspaceRequestOutput {
     let accepted = {
@@ -167,7 +168,17 @@ pub fn workspace_request(
         }
     };
     match request_operation(&accepted.request) {
-        Operation::WorkspaceSelect => select_workspace(lifecycle, workspace, accepted, picker),
+        Operation::WorkspaceSelect => {
+            if !settle_runtime_before_workspace_change(workspace, settle_active_runtime) {
+                finish_encoded(
+                    lifecycle,
+                    accepted,
+                    encode_error("unknown-request", ReasonCode::InternalFailure),
+                )
+            } else {
+                select_workspace(lifecycle, workspace, accepted, picker)
+            }
+        }
         Operation::WorkspaceStatus => finish_immediate(
             lifecycle,
             accepted,
@@ -177,21 +188,45 @@ pub fn workspace_request(
             ),
             true,
         ),
-        Operation::WorkspaceClear => finish_immediate(
-            lifecycle,
-            accepted,
-            workspace.lock().map_or_else(
-                |_| Err(WorkspaceError::StaleGeneration),
-                |mut workspace| workspace.clear(),
-            ),
-            false,
-        ),
+        Operation::WorkspaceClear => {
+            if !settle_runtime_before_workspace_change(workspace, settle_active_runtime) {
+                finish_encoded(
+                    lifecycle,
+                    accepted,
+                    encode_error("unknown-request", ReasonCode::InternalFailure),
+                )
+            } else {
+                finish_immediate(
+                    lifecycle,
+                    accepted,
+                    workspace.lock().map_or_else(
+                        |_| Err(WorkspaceError::StaleGeneration),
+                        |mut workspace| workspace.clear(),
+                    ),
+                    false,
+                )
+            }
+        }
         _ => finish_encoded(
             lifecycle,
             accepted,
             encode_error("unknown-request", ReasonCode::UnknownOperation),
         ),
     }
+}
+
+fn settle_runtime_before_workspace_change(
+    workspace: &Mutex<WorkspaceHost>,
+    settle_active_runtime: Box<dyn FnOnce(u64) -> bool + '_>,
+) -> bool {
+    let Some(workspace_generation) = workspace
+        .lock()
+        .ok()
+        .map(|workspace| workspace.application.current_generation())
+    else {
+        return false;
+    };
+    settle_active_runtime(workspace_generation)
 }
 
 fn select_workspace(
@@ -463,6 +498,10 @@ mod tests {
         (Mutex::new(lifecycle), sender)
     }
 
+    fn settled_runtime() -> Box<dyn FnOnce(u64) -> bool> {
+        Box::new(|_| true)
+    }
+
     #[test]
     fn bounded_metadata_checks_accept_one_git_root_and_reject_non_roots_and_symlinks() {
         let repository = Fixture::new();
@@ -642,6 +681,7 @@ mod tests {
             &host,
             &sender,
             &request(sender.generation, 1, "workspace-select"),
+            settled_runtime(),
             Box::new(|| {
                 host.lock()
                     .expect("workspace during picker")
@@ -682,6 +722,7 @@ mod tests {
             &host,
             &sender,
             &request(sender.generation, 1, "workspace-status"),
+            settled_runtime(),
             Box::new(|| panic!("status must not open the picker")),
         );
 
@@ -704,6 +745,7 @@ mod tests {
             &host,
             &sender,
             &request(sender.generation, 1, "workspace-select"),
+            settled_runtime(),
             Box::new(|| {
                 let _ = catch_unwind(AssertUnwindSafe(|| {
                     let _guard = lifecycle.lock().expect("lifecycle before poison");
@@ -733,6 +775,7 @@ mod tests {
             &host,
             &sender,
             &request(sender.generation, 1, "workspace-select"),
+            settled_runtime(),
             Box::new(|| {
                 let _ = catch_unwind(AssertUnwindSafe(|| {
                     let _guard = host.lock().expect("workspace before poison");
@@ -753,6 +796,7 @@ mod tests {
             &host,
             &sender,
             &request(sender.generation, 2, "workspace-status"),
+            settled_runtime(),
             Box::new(|| panic!("status must not open the picker")),
         );
         assert!(
@@ -767,6 +811,7 @@ mod tests {
             &host,
             &sender,
             &request(sender.generation, 3, "workspace-clear"),
+            settled_runtime(),
             Box::new(|| panic!("clear must not open the picker")),
         );
         assert!(
@@ -783,6 +828,7 @@ mod tests {
             &host,
             &sender,
             &request(sender.generation, 1, "workspace-select"),
+            settled_runtime(),
             Box::new(|| {
                 let _ = catch_unwind(AssertUnwindSafe(|| {
                     let _guard = lifecycle.lock().expect("lifecycle before poison");
@@ -840,16 +886,22 @@ mod tests {
             ),
         ] {
             let picker_called = AtomicBool::new(false);
+            let runtime_settle_called = AtomicBool::new(false);
             let denied = workspace_request(
                 &lifecycle,
                 &host,
                 &denied_sender,
                 &request(denied_sender.generation, 1, "workspace-select"),
+                Box::new(|_| {
+                    runtime_settle_called.store(true, Ordering::Relaxed);
+                    true
+                }),
                 Box::new(|| {
                     picker_called.store(true, Ordering::Relaxed);
                     FolderPickerResult::Selected(fixture.root.clone())
                 }),
             );
+            assert!(!runtime_settle_called.load(Ordering::Relaxed));
             assert!(!picker_called.load(Ordering::Relaxed));
             assert!(denied.encoded.contains(reason));
             assert!(!denied.acknowledged_status);
@@ -860,6 +912,7 @@ mod tests {
             &host,
             &sender,
             &request(sender.generation, 1, "workspace-select"),
+            settled_runtime(),
             Box::new(|| FolderPickerResult::Selected(fixture.root.clone())),
         );
         assert!(accepted.encoded.contains(r#""kind":"bound""#));
@@ -876,6 +929,7 @@ mod tests {
             &host,
             &sender,
             &request(sender.generation, 2, "workspace-select"),
+            settled_runtime(),
             Box::new(|| FolderPickerResult::Cancelled),
         );
         assert!(cancelled.encoded.contains(r#""reason":"cancelled""#));
@@ -887,6 +941,7 @@ mod tests {
             &host,
             &sender,
             &request(sender.generation, 3, "workspace-select"),
+            settled_runtime(),
             Box::new(|| FolderPickerResult::Unavailable),
         );
         assert!(unavailable.encoded.contains(r#""reason":"unavailable""#));
@@ -897,6 +952,7 @@ mod tests {
             &host,
             &sender,
             &request(sender.generation, 4, "workspace-status"),
+            settled_runtime(),
             Box::new(|| panic!("status must not open the picker")),
         );
         assert!(status.encoded.contains(r#""kind":"closed""#));
@@ -907,10 +963,108 @@ mod tests {
             &host,
             &sender,
             &request(sender.generation, 5, "workspace-clear"),
+            settled_runtime(),
             Box::new(|| panic!("clear must not open the picker")),
         );
         assert!(cleared.encoded.contains(r#""kind":"empty""#));
         assert!(!cleared.acknowledged_status);
+    }
+
+    #[test]
+    fn workspace_clear_waits_for_runtime_cleanup_before_retiring_authority() {
+        let fixture = Fixture::new();
+        fs::create_dir(fixture.root.join(".git")).expect("Git marker");
+        let (lifecycle, sender) = session();
+        let host = Mutex::new(WorkspaceHost::default());
+        host.lock()
+            .expect("workspace host")
+            .select(FolderPickerResult::Selected(fixture.root.clone()))
+            .expect("initial binding");
+        let cleanup_attempted = AtomicBool::new(false);
+
+        let blocked = workspace_request(
+            &lifecycle,
+            &host,
+            &sender,
+            &request(sender.generation, 1, "workspace-clear"),
+            Box::new(|workspace_generation| {
+                assert_eq!(workspace_generation, 1);
+                cleanup_attempted.store(true, Ordering::Relaxed);
+                false
+            }),
+            Box::new(|| panic!("clear must not open the picker")),
+        );
+
+        assert!(cleanup_attempted.load(Ordering::Relaxed));
+        assert!(blocked.encoded.contains(r#""code":"internal-failure""#));
+        assert!(matches!(
+            host.lock().expect("workspace host").application.view(),
+            WorkspaceView::Bound { generation: 1, .. }
+        ));
+
+        let retried = workspace_request(
+            &lifecycle,
+            &host,
+            &sender,
+            &request(sender.generation, 2, "workspace-clear"),
+            Box::new(|_| true),
+            Box::new(|| panic!("clear must not open the picker")),
+        );
+        assert!(retried.encoded.contains(r#""kind":"empty""#));
+        assert!(matches!(
+            host.lock().expect("workspace host").application.view(),
+            WorkspaceView::Empty { generation: 2 }
+        ));
+    }
+
+    #[test]
+    fn workspace_replacement_waits_for_runtime_cleanup_before_opening_picker() {
+        let original = Fixture::new();
+        let replacement = Fixture::new();
+        fs::create_dir(original.root.join(".git")).expect("original Git marker");
+        fs::create_dir(replacement.root.join(".git")).expect("replacement Git marker");
+        let (lifecycle, sender) = session();
+        let host = Mutex::new(WorkspaceHost::default());
+        host.lock()
+            .expect("workspace host")
+            .select(FolderPickerResult::Selected(original.root.clone()))
+            .expect("initial binding");
+        let picker_called = AtomicBool::new(false);
+
+        let blocked = workspace_request(
+            &lifecycle,
+            &host,
+            &sender,
+            &request(sender.generation, 1, "workspace-select"),
+            Box::new(|workspace_generation| {
+                assert_eq!(workspace_generation, 1);
+                false
+            }),
+            Box::new(|| {
+                picker_called.store(true, Ordering::Relaxed);
+                FolderPickerResult::Selected(replacement.root.clone())
+            }),
+        );
+        assert!(!picker_called.load(Ordering::Relaxed));
+        assert!(blocked.encoded.contains(r#""code":"internal-failure""#));
+        assert!(matches!(
+            host.lock().expect("workspace host").application.view(),
+            WorkspaceView::Bound { generation: 1, .. }
+        ));
+
+        let retried = workspace_request(
+            &lifecycle,
+            &host,
+            &sender,
+            &request(sender.generation, 2, "workspace-select"),
+            Box::new(|_| true),
+            Box::new(|| FolderPickerResult::Selected(replacement.root.clone())),
+        );
+        assert!(retried.encoded.contains(r#""kind":"bound""#));
+        assert!(matches!(
+            host.lock().expect("workspace host").application.view(),
+            WorkspaceView::Bound { generation: 2, .. }
+        ));
     }
 
     #[test]
@@ -925,6 +1079,7 @@ mod tests {
             &host,
             &sender,
             &request(sender.generation, 1, "workspace-select"),
+            settled_runtime(),
             Box::new(|| {
                 lifecycle.lock().expect("lifecycle").set_test_now_ms(60_000);
                 FolderPickerResult::Selected(fixture.root.clone())
@@ -939,6 +1094,7 @@ mod tests {
             &host,
             &sender,
             &request(sender.generation, 2, "workspace-select"),
+            settled_runtime(),
             Box::new(|| {
                 let cancellation =
                     format!(r#"{{"schemaVersion":1,"requestId":"{cancellation_id}"}}"#);
