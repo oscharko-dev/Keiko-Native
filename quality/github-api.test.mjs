@@ -54,6 +54,17 @@ const validRoutes = [
     "GET",
   ],
   [
+    "GET combined commit status page",
+    `/repos/${repository}/commits/${sha}/status?per_page=100&page=2`,
+    "GET",
+  ],
+  [
+    "GET exact recursive git tree",
+    `/repos/${repository}/git/trees/${sha}?recursive=1`,
+    "GET",
+  ],
+  ["GET exact git blob", `/repos/${repository}/git/blobs/${sha}`, "GET"],
+  [
     "GET collaborator permission",
     `/repos/${repository}/collaborators/github-actions%5Bbot%5D/permission`,
     "GET",
@@ -196,6 +207,10 @@ const invalidTypedTargets = [
   `/repos/owner/repo/statuses/${sha.toUpperCase()}`,
   `/repos/owner/repo/statuses/${sha.slice(1)}`,
   `/repos/owner/repo/statuses/${sha.slice(0, -1)}g`,
+  `/repos/owner/repo/git/trees/${sha.toUpperCase()}?recursive=1`,
+  `/repos/owner/repo/git/trees/${sha}`,
+  `/repos/owner/repo/git/trees/${sha}?recursive=true`,
+  `/repos/owner/repo/git/blobs/${sha.toUpperCase()}`,
   "/repos/owner/repo/collaborators/%61lice/permission",
   "/repos/owner/repo/collaborators/alice%2Fadmin/permission",
   "/repos/owner/repo/collaborators/alice%3aadmin/permission",

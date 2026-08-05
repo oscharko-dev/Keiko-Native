@@ -204,6 +204,10 @@ const repositoryControlPlaneModules = Object.freeze([
   "quality/lifecycle-wake-locator-writer.mjs",
   "quality/lifecycle-wake.mjs",
   "quality/lifecycle-wakeup-router.mjs",
+  "quality/migration-dry-run.mjs",
+  "quality/migration-github-provider.mjs",
+  "quality/migration-inventory.mjs",
+  "quality/migration-orchestrator.mjs",
   "quality/single-file-zip.mjs",
 ]);
 
@@ -3238,6 +3242,7 @@ async function fixtureRepository() {
     ".github/workflows/issue-readiness.yml",
     ".github/workflows/lifecycle-wakeup.yml",
     ".github/workflows/merge-group.yml",
+    ".github/workflows/migration-dry-run.yml",
     ".github/workflows/internal-release.yml",
     ".github/workflows/mutation-security.yml",
     ".github/workflows/osv-scanner.yml",
@@ -3252,6 +3257,7 @@ async function fixtureRepository() {
     "docs/qa/guarded-epic-merge.md",
     "docs/product/source-baseline.md",
     "docs/qa/issue-lifecycle.md",
+    "docs/qa/migration-dry-run.md",
     "docs/qa/repository-activation.md",
     "package.json",
     "quality/check-native-vulnerability-results.mjs",
