@@ -75,6 +75,10 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
   assert.match(tracerAccessibilitySource, /AXIsProcessTrustedWithOptions/u);
   assert.match(
     tracerAccessibilitySource,
+    /isFinishedLaunching[\s\S]*?missing-or-ambiguous-semantic-target[\s\S]*?AXUIElementCreateApplication/u,
+  );
+  assert.match(
+    tracerAccessibilitySource,
     /\[activatingActions containsObject:action\]/u,
   );
   for (const attribute of [
@@ -93,6 +97,25 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
   assert.match(tracerAccessibilitySource, /CFSTR\("AXOpen"\)/u);
   assert.match(
     tracerAccessibilitySource,
+    /SelectPickerItem\(\s*application,\s*\(__bridge CFStringRef\)label\)/u,
+  );
+  const selectPickerItem = tracerAccessibilitySource.match(
+    /static BOOL SelectPickerItem\([\s\S]*?\n\}\n\nstatic BOOL PickerIsAt/u,
+  )?.[0];
+  assert.match(
+    selectPickerItem ?? "",
+    /AXUIElementSetAttributeValue\([\s\S]*?kAXSelectedRowsAttribute/u,
+  );
+  assert.match(
+    selectPickerItem ?? "",
+    /AXUIElementCopyAttributeValue\([\s\S]*?kAXSelectedRowsAttribute/u,
+  );
+  assert.match(selectPickerItem ?? "", /CFArrayContainsValue/u);
+  const selectWorkspace = tracerAccessibilitySource.match(
+    /else if \(\[action isEqualToString:@"select-workspace"\]\) \{[\s\S]*?\n    \} else if/u,
+  )?.[0];
+  assert.doesNotMatch(
+    selectWorkspace ?? "",
     /OpenPickerItem\(\s*application,\s*\(__bridge CFStringRef\)label\)/u,
   );
   assert.match(
@@ -102,6 +125,20 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
   assert.match(
     tracerAccessibilitySource,
     /NavigatePickerToDocuments\(application\)/u,
+  );
+  assert.match(
+    tracerAccessibilitySource,
+    /SelectPickerSidebarItem\(application, CFSTR\("Documents"\)\)/u,
+  );
+  const selectPickerSidebarItem = tracerAccessibilitySource.match(
+    /static BOOL SelectPickerSidebarItem\([\s\S]*?\n\}\n\nstatic BOOL PressPickerControl/u,
+  )?.[0];
+  assert.match(selectPickerSidebarItem ?? "", /kAXOutlineRole/u);
+  assert.match(selectPickerSidebarItem ?? "", /kAXRowsAttribute/u);
+  assert.match(selectPickerSidebarItem ?? "", /RowContainsExpected/u);
+  assert.match(
+    selectPickerSidebarItem ?? "",
+    /AXUIElementSetAttributeValue\([\s\S]*?kAXSelectedRowsAttribute/u,
   );
   assert.match(
     tracerAccessibilitySource,
@@ -133,7 +170,7 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
   );
   assert.doesNotMatch(
     tracerAccessibilitySource,
-    /no-effect prompt|Users\/|repository content|credential|authorization/iu,
+    /no-effect prompt|Users\/|repository content|credential|authorization|picker-stage/iu,
   );
 });
 

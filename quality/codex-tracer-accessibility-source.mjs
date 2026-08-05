@@ -398,7 +398,40 @@ static AXUIElementRef FindInRow(
   return result;
 }
 
-static AXUIElementRef FindPickerItem(
+static BOOL RowContainsExpected(
+    AXUIElementRef root, CFStringRef expected, NSUInteger depth) {
+  if (depth > 4) return NO;
+  if (ElementMatches(root, expected)) return YES;
+  const CFStringRef containers[] = {
+    kAXChildrenAttribute,
+    kAXVisibleChildrenAttribute,
+    kAXContentsAttribute,
+  };
+  for (NSUInteger containerIndex = 0;
+       containerIndex < 3;
+       containerIndex += 1) {
+    CFTypeRef value = NULL;
+    if (AXUIElementCopyAttributeValue(
+            root, containers[containerIndex], &value) != kAXErrorSuccess ||
+        value == NULL)
+      continue;
+    BOOL found = NO;
+    if (CFGetTypeID(value) == CFArrayGetTypeID()) {
+      CFArrayRef children = (CFArrayRef)value;
+      CFIndex count = MIN(CFArrayGetCount(children), 32);
+      for (CFIndex index = 0; index < count && !found; index += 1)
+        found = RowContainsExpected(
+            (AXUIElementRef)CFArrayGetValueAtIndex(children, index),
+            expected,
+            depth + 1);
+    }
+    CFRelease(value);
+    if (found) return YES;
+  }
+  return NO;
+}
+
+static AXUIElementRef FindPickerRow(
     AXUIElementRef application, CFStringRef expected) {
   AXUIElementRef panel = FindPickerPanel(application);
   if (panel == NULL) return NULL;
@@ -418,13 +451,27 @@ static AXUIElementRef FindPickerItem(
   CFArrayRef rows = (CFArrayRef)value;
   CFIndex count = MIN(CFArrayGetCount(rows), 512);
   for (CFIndex index = 0; index < count; index += 1) {
-    result = FindInRow(
-        (AXUIElementRef)CFArrayGetValueAtIndex(rows, index), expected, 0);
-    if (result != NULL) break;
+    AXUIElementRef row =
+        (AXUIElementRef)CFArrayGetValueAtIndex(rows, index);
+    AXUIElementRef match = FindInRow(row, expected, 0);
+    if (match != NULL) {
+      CFRelease(match);
+      result = (AXUIElementRef)CFRetain(row);
+      break;
+    }
   }
   CFRelease(value);
   CFRelease(list);
   return result;
+}
+
+static AXUIElementRef FindPickerItem(
+    AXUIElementRef application, CFStringRef expected) {
+  AXUIElementRef row = FindPickerRow(application, expected);
+  if (row == NULL) return NULL;
+  AXUIElementRef item = FindInRow(row, expected, 0);
+  CFRelease(row);
+  return item;
 }
 
 static BOOL OpenPickerItem(
@@ -434,6 +481,44 @@ static BOOL OpenPickerItem(
   AXError error = AXUIElementPerformAction(item, CFSTR("AXOpen"));
   CFRelease(item);
   return error == kAXErrorSuccess;
+}
+
+static BOOL SelectPickerItem(
+    AXUIElementRef application, CFStringRef expected) {
+  AXUIElementRef row = FindPickerRow(application, expected);
+  if (row == NULL) return NO;
+  AXUIElementRef panel = FindPickerPanel(application);
+  if (panel == NULL) {
+    CFRelease(row);
+    return NO;
+  }
+  AXUIElementRef list =
+      FindDescendantByIdentifier(panel, CFSTR("ListView"));
+  CFRelease(panel);
+  if (list == NULL) {
+    CFRelease(row);
+    return NO;
+  }
+  const void *rowValue = row;
+  CFArrayRef requested =
+      CFArrayCreate(NULL, &rowValue, 1, &kCFTypeArrayCallBacks);
+  AXError error = AXUIElementSetAttributeValue(
+      list, kAXSelectedRowsAttribute, requested);
+  CFTypeRef selected = NULL;
+  BOOL observed =
+      error == kAXErrorSuccess &&
+      AXUIElementCopyAttributeValue(
+          list, kAXSelectedRowsAttribute, &selected) == kAXErrorSuccess &&
+      selected != NULL && CFGetTypeID(selected) == CFArrayGetTypeID() &&
+      CFArrayContainsValue(
+          (CFArrayRef)selected,
+          CFRangeMake(0, CFArrayGetCount((CFArrayRef)selected)),
+          row);
+  if (selected != NULL) CFRelease(selected);
+  CFRelease(requested);
+  CFRelease(list);
+  CFRelease(row);
+  return observed;
 }
 
 static BOOL PickerIsAt(
@@ -448,6 +533,78 @@ static BOOL PickerIsAt(
       StringAttributeEquals(location, kAXValueAttribute, expected);
   CFRelease(location);
   return matches;
+}
+
+static BOOL SelectPickerSidebarItem(
+    AXUIElementRef application, CFStringRef expected) {
+  AXUIElementRef panel = FindPickerPanel(application);
+  if (panel == NULL) return NO;
+  CFMutableArrayRef queue =
+      CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
+  CFArrayAppendValue(queue, panel);
+  CFRelease(panel);
+  BOOL observed = NO;
+  for (CFIndex cursor = 0;
+       cursor < CFArrayGetCount(queue) && cursor < 128 && !observed;
+       cursor += 1) {
+    AXUIElementRef element =
+        (AXUIElementRef)CFArrayGetValueAtIndex(queue, cursor);
+    if (StringAttributeEquals(element, kAXRoleAttribute, kAXOutlineRole) &&
+        !StringAttributeEquals(
+            element, kAXIdentifierAttribute, CFSTR("ListView"))) {
+      CFTypeRef rowsValue = NULL;
+      if (AXUIElementCopyAttributeValue(
+              element, kAXRowsAttribute, &rowsValue) == kAXErrorSuccess &&
+          rowsValue != NULL &&
+          CFGetTypeID(rowsValue) == CFArrayGetTypeID()) {
+        CFArrayRef rows = (CFArrayRef)rowsValue;
+        CFIndex count = MIN(CFArrayGetCount(rows), 64);
+        for (CFIndex index = 0; index < count && !observed; index += 1) {
+          AXUIElementRef row =
+              (AXUIElementRef)CFArrayGetValueAtIndex(rows, index);
+          if (!RowContainsExpected(row, expected, 0)) continue;
+          const void *rowValue = row;
+          CFArrayRef requested =
+              CFArrayCreate(NULL, &rowValue, 1, &kCFTypeArrayCallBacks);
+          AXError error = AXUIElementSetAttributeValue(
+              element, kAXSelectedRowsAttribute, requested);
+          CFTypeRef selected = NULL;
+          observed =
+              error == kAXErrorSuccess &&
+              AXUIElementCopyAttributeValue(
+                  element, kAXSelectedRowsAttribute, &selected) ==
+                  kAXErrorSuccess &&
+              selected != NULL &&
+              CFGetTypeID(selected) == CFArrayGetTypeID() &&
+              CFArrayContainsValue(
+                  (CFArrayRef)selected,
+                  CFRangeMake(
+                      0, CFArrayGetCount((CFArrayRef)selected)),
+                  row);
+          if (selected != NULL) CFRelease(selected);
+          CFRelease(requested);
+        }
+      }
+      if (rowsValue != NULL) CFRelease(rowsValue);
+    }
+    CFTypeRef childrenValue = NULL;
+    if (AXUIElementCopyAttributeValue(
+            element, kAXChildrenAttribute, &childrenValue) !=
+            kAXErrorSuccess ||
+        childrenValue == NULL)
+      continue;
+    if (CFGetTypeID(childrenValue) == CFArrayGetTypeID()) {
+      CFArrayRef children = (CFArrayRef)childrenValue;
+      CFIndex count = MIN(CFArrayGetCount(children), 64);
+      for (CFIndex index = 0;
+           index < count && CFArrayGetCount(queue) < 128;
+           index += 1)
+        CFArrayAppendValue(queue, CFArrayGetValueAtIndex(children, index));
+    }
+    CFRelease(childrenValue);
+  }
+  CFRelease(queue);
+  return observed;
 }
 
 static BOOL PressPickerControl(
@@ -522,7 +679,15 @@ static BOOL NavigatePickerToDocuments(AXUIElementRef application) {
         PickerIsAt(application, CFSTR("Dokumente")))
       return YES;
   }
-  if (!PressPickerControl(application, CFSTR("where popup"))) return NO;
+  if (SelectPickerSidebarItem(application, CFSTR("Documents")) ||
+      SelectPickerSidebarItem(application, CFSTR("Dokumente"))) {
+    usleep(100 * 1000);
+    return PickerIsAt(application, CFSTR("Documents")) ||
+        PickerIsAt(application, CFSTR("Dokumente"));
+  }
+  if (!PressPickerControl(application, CFSTR("where popup"))) {
+    return NO;
+  }
   usleep(100 * 1000);
   AXUIElementRef item = FindMenuItem(application, CFSTR("Documents"));
   if (item == NULL) item = FindMenuItem(application, CFSTR("Dokumente"));
@@ -763,6 +928,12 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
       Emit(NO, "invalid-invocation");
       return 2;
     }
+    NSRunningApplication *runningApplication =
+        [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
+    if (runningApplication == nil || ![runningApplication isFinishedLaunching]) {
+      Emit(NO, "missing-or-ambiguous-semantic-target");
+      return 1;
+    }
     if ([activatingActions containsObject:action]) {
       if (!ActivateApplication(pid)) {
         Emit(NO, "missing-or-ambiguous-semantic-target");
@@ -805,7 +976,7 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
           (PickerIsAt(application, (__bridge CFStringRef)label) ||
            (EnsurePickerListView(application) &&
             NavigatePickerToDocuments(application) &&
-            OpenPickerItem(application, (__bridge CFStringRef)label)));
+            SelectPickerItem(application, (__bridge CFStringRef)label)));
       if (passed) {
         passed = NO;
         for (NSUInteger attempt = 0; attempt < 20 && !passed; attempt += 1) {
