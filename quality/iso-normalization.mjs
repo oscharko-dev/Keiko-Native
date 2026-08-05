@@ -152,10 +152,7 @@ function directoryRecord(image, offset, bound) {
 function normalizeRecord(image, record, timestamp) {
   image.set(timestamp, record.offset + 18);
   let tf = 0;
-  for (
-    let offset = record.systemUse;
-    offset < record.offset + record.length;
-  ) {
+  for (let offset = record.systemUse; offset < record.offset + record.length;) {
     if (image[offset] === 0) {
       if (image.subarray(offset, record.offset + record.length).some(Boolean))
         throw new Error("release-image-directory-rejected");

@@ -14,7 +14,7 @@ const requiredMarkers = [
   "npm run release:verify",
   "subject-checksums: ${{ runner.temp }}/release-subjects.txt",
   "create-storage-record: false",
-  "actions/attest@a1948c3f048ba23858d222213b7c278aabede763",
+  "actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d",
   "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
   "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
   "retention-days: 14",
@@ -58,7 +58,7 @@ const expectedPermissions = Object.freeze({
   verify: Object.freeze({ contents: "read" }),
 });
 const expectedWorkflowSha256 =
-  "ee7867f6f8dadf14cd26fd666f8f4277545b342a9c616ef8ad8714b17f1a52d3";
+  "8c2869cd83d5ac2711efe46998bba3861c115dffdd360413565bbf1b79191e51";
 
 export function internalReleaseWorkflowFailures(workflow) {
   if (typeof workflow !== "string") return ["release-workflow-source"];
