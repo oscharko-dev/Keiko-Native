@@ -45,6 +45,10 @@ const BINARY_ENV: &str = "KEIKO_CODEX_0_145_0_BINARY";
 const HOME_ENV: &str = "KEIKO_CODEX_0_145_0_HOME";
 const WORK_ROOT_ENV: &str = "KEIKO_CODEX_0_145_0_WORK_ROOT";
 const CANCEL_TERM_GRACE: Duration = Duration::from_millis(500);
+// Preserve a bounded TERM/KILL window without starving macOS first-execution
+// validation after the verified runtime has been staged.
+const READINESS_CLEANUP_RESERVE: Duration = Duration::from_millis(300);
+const READINESS_MAX_TERM_GRACE: Duration = Duration::from_millis(100);
 const TURN_CLEANUP_RESERVE: Duration = Duration::from_secs(5);
 const CODEX_CONTAINMENT_ARGUMENTS: &[&str] = &[
     "-c",
@@ -1214,9 +1218,7 @@ fn run_protocol(
         );
     }
     let mut projection = ProtocolProjection::new(&configuration.codex_home);
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    let cleanup_reserve = remaining / 5;
-    let protocol_deadline = deadline.checked_sub(cleanup_reserve).unwrap_or(deadline);
+    let protocol_deadline = readiness_protocol_deadline(deadline, Instant::now());
     let state = loop {
         if !refresh_owned_processes(active) {
             break RuntimeReadinessState::ContainmentFailed;
@@ -1277,6 +1279,16 @@ fn run_protocol(
         active,
         deadline,
     )
+}
+
+fn readiness_protocol_deadline(deadline: Instant, protocol_started: Instant) -> Instant {
+    let remaining = deadline.saturating_duration_since(protocol_started);
+    let cleanup_reserve = READINESS_CLEANUP_RESERVE.min(remaining / 5);
+    deadline.checked_sub(cleanup_reserve).unwrap_or(deadline)
+}
+
+fn readiness_term_grace(cleanup_remaining: Duration) -> Duration {
+    READINESS_MAX_TERM_GRACE.min(cleanup_remaining / 3)
 }
 
 fn write_json_line(writer: &mut impl Write, value: &Value) -> io::Result<()> {
@@ -1996,7 +2008,14 @@ fn cleanup_after(
     active: &ActiveRuntime,
     deadline: Instant,
 ) -> ProtocolOutcome {
-    let cleaned = stop_process_group(&mut child, process_group, active, deadline);
+    let cleanup_remaining = deadline.saturating_duration_since(Instant::now());
+    let cleaned = stop_process_group_with_term_grace(
+        &mut child,
+        process_group,
+        active,
+        deadline,
+        Some(readiness_term_grace(cleanup_remaining)),
+    );
     ProtocolOutcome {
         state,
         quarantined_events,
@@ -2023,7 +2042,7 @@ fn stop_process_group_with_term_grace(
     let cleanup_started = Instant::now();
     let remaining = deadline.saturating_duration_since(cleanup_started);
     let term_deadline = term_grace.map_or_else(
-        || cleanup_started + remaining.saturating_sub(remaining / 5),
+        || cleanup_started + remaining / 2,
         |grace| deadline.min(cleanup_started + grace),
     );
     signal_active_process_group(active, process_group, SIGTERM);
@@ -4091,6 +4110,84 @@ while :; do /bin/sleep 1; done
             started.elapsed()
         );
         assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
+    }
+
+    #[test]
+    fn readiness_cleanup_reserve_is_capped_after_staging_and_proportional_for_short_budgets() {
+        let request_started = Instant::now();
+        let deadline = request_started + DEFAULT_REQUEST_TIMEOUT;
+        let protocol_started = request_started + Duration::from_millis(500);
+        let protocol_deadline = readiness_protocol_deadline(deadline, protocol_started);
+
+        assert_eq!(
+            protocol_deadline.duration_since(protocol_started),
+            Duration::from_millis(4_200)
+        );
+        assert_eq!(
+            deadline.duration_since(protocol_deadline),
+            READINESS_CLEANUP_RESERVE
+        );
+
+        let short_deadline = request_started + Duration::from_secs(1);
+        let short_protocol_started = request_started + Duration::from_millis(500);
+        let short_protocol_deadline =
+            readiness_protocol_deadline(short_deadline, short_protocol_started);
+        assert_eq!(
+            short_protocol_deadline.duration_since(short_protocol_started),
+            Duration::from_millis(400)
+        );
+        assert_eq!(
+            short_deadline.duration_since(short_protocol_deadline),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            readiness_term_grace(READINESS_CLEANUP_RESERVE),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            readiness_term_grace(Duration::from_millis(100)),
+            Duration::from_nanos(33_333_333)
+        );
+    }
+
+    #[test]
+    fn readiness_cleanup_reaps_after_escalating_a_term_resistant_process() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(
+                "trap '' TERM; /bin/sh -c \"trap '' TERM; while :; do :; done\" & printf 'ready\\n'; wait",
+            )
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("TERM-resistant readiness process");
+        let process_group = child.id() as i32;
+        let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+        let mut ready = String::new();
+        stdout.read_line(&mut ready).expect("readiness handshake");
+        assert_eq!(ready, "ready\n");
+
+        let active = ActiveRuntime::default();
+        *active.process_group.lock().expect("process-group state") = Some(process_group);
+        let outcome = cleanup_after(
+            child,
+            process_group,
+            RuntimeReadinessState::TimedOut,
+            0,
+            &active,
+            Instant::now() + READINESS_CLEANUP_RESERVE,
+        );
+
+        assert_eq!(outcome.state, RuntimeReadinessState::TimedOut);
+        assert!(outcome.cleaned);
+        assert_eq!(
+            *active.process_group.lock().expect("process-group state"),
+            None
+        );
+        assert!(!process_group_exists(process_group));
     }
 
     #[test]
