@@ -180,6 +180,17 @@ export async function startRenderer(
           task,
           (state) => {
             turnState = state;
+            if (
+              state.state === "failed" &&
+              state.reason === "stale-workspace"
+            ) {
+              workspaceState = {
+                kind: "closed",
+                generation: state.workspaceGeneration,
+                reason: "unavailable",
+              };
+              runtimeState = null;
+            }
             present(currentView);
           },
           cancellation.signal,

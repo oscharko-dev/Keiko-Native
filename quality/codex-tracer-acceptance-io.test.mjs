@@ -16,6 +16,7 @@ import {
   acceptanceEnvironmentFailures,
   canonicalRuntimeRoot,
   canonicalRuntimeResources,
+  cleanupAcceptanceFixture,
   measureFirstVisibleP95,
   observedSafeguards,
   packageArtifactFailures,
@@ -75,6 +76,51 @@ test("acceptance restores the retained home and discards provider writes", async
   });
   assert.equal(await readFile(join(runtimeHome, "stable"), "utf8"), "retained");
   await assert.rejects(readFile(join(runtimeHome, "cache"), "utf8"));
+});
+
+test("acceptance restores the authenticated home before fallible fixture removal", async () => {
+  const calls = [];
+  await assert.rejects(
+    cleanupAcceptanceFixture(
+      { internal: {} },
+      {
+        chmodDeniedWorkspace: async () => calls.push("chmod"),
+        removeDeniedWorkspace: async () => calls.push("remove-denied"),
+        removeObservation: async () => calls.push("remove-observation"),
+        removeRunRoot: async () => calls.push("remove-run-root"),
+        removeWorkspace: async () => {
+          calls.push("remove-workspace");
+          throw new Error("fixture removal failed");
+        },
+        restoreRuntimeHome: async () => calls.push("restore-home"),
+      },
+    ),
+    /fixture removal failed/u,
+  );
+  assert.equal(calls[0], "restore-home");
+});
+
+test("acceptance retains the authenticated backup when restoration fails", async () => {
+  const calls = [];
+  await assert.rejects(
+    cleanupAcceptanceFixture(
+      { internal: {} },
+      {
+        chmodDeniedWorkspace: async () => calls.push("chmod"),
+        removeDeniedWorkspace: async () => calls.push("remove-denied"),
+        removeObservation: async () => calls.push("remove-observation"),
+        removeRunRoot: async () => calls.push("remove-run-root"),
+        removeWorkspace: async () => calls.push("remove-workspace"),
+        restoreRuntimeHome: async () => {
+          calls.push("restore-home");
+          throw new Error("restore failed");
+        },
+      },
+    ),
+    /restore failed/u,
+  );
+  assert.equal(calls[0], "restore-home");
+  assert.equal(calls.includes("remove-run-root"), false);
 });
 
 test("first-visible p95 permits one bounded cold-launch outlier", async () => {

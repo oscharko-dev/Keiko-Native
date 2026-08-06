@@ -482,6 +482,55 @@ export async function restorePersistentRuntimeHome({
   await rm(discardedHome, { force: true, recursive: true });
 }
 
+export async function cleanupAcceptanceFixture(prepared, dependencies = {}) {
+  const internal = prepared.internal;
+  const restoreRuntimeHome =
+    dependencies.restoreRuntimeHome ??
+    (() =>
+      restorePersistentRuntimeHome({
+        retainedHome: internal.retainedRuntimeHome,
+        runRoot: internal.runRoot,
+        runtimeHome: internal.runtimeHome,
+      }));
+  const actions = [
+    dependencies.chmodDeniedWorkspace ??
+      (() => chmod(internal.deniedWorkspaceRoot, 0o700).catch(() => undefined)),
+    dependencies.removeWorkspace ??
+      (() => rm(internal.workspaceRoot, { force: true, recursive: true })),
+    dependencies.removeDeniedWorkspace ??
+      (() =>
+        rm(internal.deniedWorkspaceRoot, { force: true, recursive: true })),
+    dependencies.removeObservation ??
+      (() => rm(physicalObservationPath, { force: true })),
+  ];
+  let firstFailure;
+  let homeRestored = false;
+  try {
+    await restoreRuntimeHome();
+    homeRestored = true;
+  } catch (error) {
+    firstFailure = error;
+  }
+  for (const action of actions) {
+    try {
+      await action();
+    } catch (error) {
+      firstFailure ??= error;
+    }
+  }
+  if (homeRestored) {
+    try {
+      await (
+        dependencies.removeRunRoot ??
+        (() => rm(internal.runRoot, { force: true, recursive: true }))
+      )();
+    } catch (error) {
+      firstFailure ??= error;
+    }
+  }
+  if (firstFailure !== undefined) throw firstFailure;
+}
+
 export function observedSafeguards({
   containmentMarkers,
   homeAfter,
@@ -1002,24 +1051,7 @@ export function createCodexTracerAcceptanceIo() {
       }
     },
     async cleanup(prepared) {
-      await chmod(prepared.internal.deniedWorkspaceRoot, 0o700).catch(
-        () => undefined,
-      );
-      await rm(prepared.internal.workspaceRoot, {
-        force: true,
-        recursive: true,
-      });
-      await rm(prepared.internal.deniedWorkspaceRoot, {
-        force: true,
-        recursive: true,
-      });
-      await restorePersistentRuntimeHome({
-        retainedHome: prepared.internal.retainedRuntimeHome,
-        runRoot: prepared.internal.runRoot,
-        runtimeHome: prepared.internal.runtimeHome,
-      });
-      await rm(prepared.internal.runRoot, { force: true, recursive: true });
-      await rm(physicalObservationPath, { force: true });
+      await cleanupAcceptanceFixture(prepared);
     },
     async writeEvidence(evidence) {
       await writeFile(
