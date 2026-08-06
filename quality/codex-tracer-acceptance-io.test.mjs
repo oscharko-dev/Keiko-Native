@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -13,9 +20,11 @@ import {
   observedSafeguards,
   packageArtifactFailures,
   physicalObservationFailures,
+  restorePersistentRuntimeHome,
   selectCommandOutput,
   selectOwnedStagedRuntime,
   snapshotDirectory,
+  stageDisposableRuntimeHome,
   verifyOwnedRuntimeGroupsExited,
 } from "./codex-tracer-acceptance-io.mjs";
 import { acceptancePhysicalContract } from "./codex-tracer-acceptance.mjs";
@@ -40,6 +49,32 @@ test("directory snapshots bind symlink targets without following them", async (t
 
   assert.equal(before.entries, 2);
   assert.notEqual(before.sha256, after.sha256);
+});
+
+test("acceptance restores the retained home and discards provider writes", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "keiko-home-swap-"));
+  t.after(() => rm(root, { force: true, recursive: true }));
+  const runtimeHome = join(root, "codex-home");
+  const runRoot = join(root, "run");
+  await mkdir(runtimeHome, { mode: 0o700 });
+  await mkdir(runRoot, { mode: 0o700 });
+  await writeFile(join(runtimeHome, "stable"), "retained", "utf8");
+
+  const retainedHome = await stageDisposableRuntimeHome(runtimeHome, runRoot);
+  await writeFile(join(runtimeHome, "stable"), "provider-write", "utf8");
+  await writeFile(join(runtimeHome, "cache"), "discarded", "utf8");
+  assert.equal(
+    await readFile(join(retainedHome, "stable"), "utf8"),
+    "retained",
+  );
+
+  await restorePersistentRuntimeHome({
+    retainedHome,
+    runRoot,
+    runtimeHome,
+  });
+  assert.equal(await readFile(join(runtimeHome, "stable"), "utf8"), "retained");
+  await assert.rejects(readFile(join(runtimeHome, "cache"), "utf8"));
 });
 
 test("first-visible p95 permits one bounded cold-launch outlier", async () => {

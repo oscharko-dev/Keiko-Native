@@ -2,12 +2,14 @@ import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import {
   chmod,
+  cp,
   mkdir,
   mkdtemp,
   readFile,
   readlink,
   readdir,
   realpath,
+  rename,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -444,6 +446,42 @@ export async function snapshotDirectory(root) {
   return { bytes, entries, sha256: digest.digest("hex") };
 }
 
+export async function stageDisposableRuntimeHome(runtimeHome, runRoot) {
+  const disposableHome = join(runRoot, "disposable-codex-home");
+  const retainedHome = join(runRoot, "retained-codex-home");
+  await cp(runtimeHome, disposableHome, {
+    recursive: true,
+    verbatimSymlinks: true,
+  });
+  await chmod(disposableHome, 0o700);
+  let retained = false;
+  try {
+    await rename(runtimeHome, retainedHome);
+    retained = true;
+    await rename(disposableHome, runtimeHome);
+  } catch (error) {
+    if (retained) await rename(retainedHome, runtimeHome);
+    throw error;
+  }
+  return retainedHome;
+}
+
+export async function restorePersistentRuntimeHome({
+  retainedHome,
+  runRoot,
+  runtimeHome,
+}) {
+  const discardedHome = join(runRoot, "discarded-codex-home");
+  await rename(runtimeHome, discardedHome);
+  try {
+    await rename(retainedHome, runtimeHome);
+  } catch (error) {
+    await rename(discardedHome, runtimeHome);
+    throw error;
+  }
+  await rm(discardedHome, { force: true, recursive: true });
+}
+
 export function observedSafeguards({
   containmentMarkers,
   homeAfter,
@@ -730,26 +768,31 @@ export function createCodexTracerAcceptanceIo() {
         binary: runtimeBinary,
         home: runtimeHome,
       });
-      const environment = await inspectEnvironment(runtime);
-      if (acceptanceEnvironmentFailures(environment).length > 0)
-        throw new Error("acceptance-environment-invalid");
-      const sourceRevision = run(
-        "git",
-        hardenedGitArguments(["rev-parse", "HEAD"]),
-      );
-      if (!REVISION_PATTERN.test(sourceRevision))
-        throw new Error("acceptance-source-revision-invalid");
-      packageAcceptance();
-      const inspected = await inspectPackage(sourceRevision);
       const runRoot = await canonicalRuntimeRoot(
         await mkdtemp(join(tmpdir(), "keiko-native-codex-tracer-104-")),
       );
       await chmod(runRoot, 0o700);
-      const runtimeWorkRoot = join(runRoot, "runtime-work");
-      await mkdir(runtimeWorkRoot, { mode: 0o700 });
+      let retainedRuntimeHome;
       let workspaceRoot;
       let deniedWorkspaceRoot;
       try {
+        retainedRuntimeHome = await stageDisposableRuntimeHome(
+          runtime.home,
+          runRoot,
+        );
+        const environment = await inspectEnvironment(runtime);
+        if (acceptanceEnvironmentFailures(environment).length > 0)
+          throw new Error("acceptance-environment-invalid");
+        const sourceRevision = run(
+          "git",
+          hardenedGitArguments(["rev-parse", "HEAD"]),
+        );
+        if (!REVISION_PATTERN.test(sourceRevision))
+          throw new Error("acceptance-source-revision-invalid");
+        packageAcceptance();
+        const inspected = await inspectPackage(sourceRevision);
+        const runtimeWorkRoot = join(runRoot, "runtime-work");
+        await mkdir(runtimeWorkRoot, { mode: 0o700 });
         workspaceRoot = await createIdentityWorkspace(
           "KeikoAcceptanceIdentity104",
         );
@@ -757,6 +800,49 @@ export function createCodexTracerAcceptanceIo() {
           "KeikoAcceptanceIdentity104Denied",
         );
         await chmod(deniedWorkspaceRoot, 0o000);
+        const expected = {
+          packageExecutableSha256: inspected.executableSha256,
+          packageManifestSha256: inspected.packageManifestSha256,
+          sourceRevision,
+        };
+        return {
+          bindings: {
+            authProfileClass: "human-provisioned-chatgpt-keyring",
+            authorityProfile: "keiko-codex-no-effect-v1",
+            containmentProfile: "keiko-codex-readiness-v1",
+            experimentalSchemaSha256:
+              "46c4414f08cdbb20e66ce4153ee1edcb865ed5fda67e59511a78939ddb7a82d1",
+            issueReadinessFingerprint:
+              "54a50110230af03db88acc3d503f038cb2e4a9557094fcff48ab19c01ee0af24",
+            packageExecutableSha256: inspected.executableSha256,
+            packageManifestSha256: inspected.packageManifestSha256,
+            parentReadinessFingerprint:
+              "ff404fd8d0f7b336b997da77e55c5a5abc8c8cab1639b8e708f0b5792c283347",
+            promptSha256: acceptedEnvironment.promptSha256,
+            runtimeArtifactSha256: acceptedEnvironment.runtimeSha256,
+            runtimePackage: "@openai/codex",
+            runtimeVersion: "0.145.0",
+            sourceRevision,
+            stableSchemaSha256:
+              "27fc5257cdd29b97b2abb064caadec32a72b7567d6df26a7f82c5f452c8bdfb9",
+          },
+          expected,
+          internal: {
+            containmentMarkers: inspected.containmentMarkers,
+            packageExecutable,
+            packageRoot,
+            deniedWorkspaceRoot,
+            retainedRuntimeHome,
+            runRoot,
+            runtimeBinary: runtime.binary,
+            runtimeHome: runtime.home,
+            runtimeWorkRoot,
+            workspaceRoot,
+          },
+          packageInspection: structuredClone(
+            acceptancePackageInspectionContract,
+          ),
+        };
       } catch {
         if (workspaceRoot !== undefined)
           await rm(workspaceRoot, { force: true, recursive: true });
@@ -764,53 +850,22 @@ export function createCodexTracerAcceptanceIo() {
           await chmod(deniedWorkspaceRoot, 0o700).catch(() => undefined);
           await rm(deniedWorkspaceRoot, { force: true, recursive: true });
         }
+        if (retainedRuntimeHome !== undefined) {
+          await restorePersistentRuntimeHome({
+            retainedHome: retainedRuntimeHome,
+            runRoot,
+            runtimeHome: runtime.home,
+          });
+        }
         await rm(runRoot, { force: true, recursive: true });
         throw new Error("acceptance-workspace-fixture-unavailable");
       }
-      const expected = {
-        packageExecutableSha256: inspected.executableSha256,
-        packageManifestSha256: inspected.packageManifestSha256,
-        sourceRevision,
-      };
-      return {
-        bindings: {
-          authProfileClass: "human-provisioned-chatgpt-keyring",
-          authorityProfile: "keiko-codex-no-effect-v1",
-          containmentProfile: "keiko-codex-readiness-v1",
-          experimentalSchemaSha256:
-            "46c4414f08cdbb20e66ce4153ee1edcb865ed5fda67e59511a78939ddb7a82d1",
-          issueReadinessFingerprint:
-            "54a50110230af03db88acc3d503f038cb2e4a9557094fcff48ab19c01ee0af24",
-          packageExecutableSha256: inspected.executableSha256,
-          packageManifestSha256: inspected.packageManifestSha256,
-          parentReadinessFingerprint:
-            "ff404fd8d0f7b336b997da77e55c5a5abc8c8cab1639b8e708f0b5792c283347",
-          promptSha256: acceptedEnvironment.promptSha256,
-          runtimeArtifactSha256: acceptedEnvironment.runtimeSha256,
-          runtimePackage: "@openai/codex",
-          runtimeVersion: "0.145.0",
-          sourceRevision,
-          stableSchemaSha256:
-            "27fc5257cdd29b97b2abb064caadec32a72b7567d6df26a7f82c5f452c8bdfb9",
-        },
-        expected,
-        internal: {
-          containmentMarkers: inspected.containmentMarkers,
-          packageExecutable,
-          packageRoot,
-          deniedWorkspaceRoot,
-          runRoot,
-          runtimeBinary: runtime.binary,
-          runtimeHome: runtime.home,
-          runtimeWorkRoot,
-          workspaceRoot,
-        },
-        packageInspection: structuredClone(acceptancePackageInspectionContract),
-      };
     },
     async runProductionJourney(prepared) {
       return {
-        homeBefore: await snapshotDirectory(prepared.internal.runtimeHome),
+        homeBefore: await snapshotDirectory(
+          prepared.internal.retainedRuntimeHome,
+        ),
         runtimeBefore: await snapshotDirectory(
           prepared.internal.runtimeWorkRoot,
         ),
@@ -890,7 +945,7 @@ export function createCodexTracerAcceptanceIo() {
         const cleanupMs = Math.round(performance.now() - cleanupStartedAt);
         cleaned = true;
         const [homeAfter, runtimeAfter, workspaceAfter] = await Promise.all([
-          snapshotDirectory(prepared.internal.runtimeHome),
+          snapshotDirectory(prepared.internal.retainedRuntimeHome),
           snapshotDirectory(prepared.internal.runtimeWorkRoot),
           snapshotDirectory(prepared.internal.workspaceRoot),
         ]);
@@ -957,6 +1012,11 @@ export function createCodexTracerAcceptanceIo() {
       await rm(prepared.internal.deniedWorkspaceRoot, {
         force: true,
         recursive: true,
+      });
+      await restorePersistentRuntimeHome({
+        retainedHome: prepared.internal.retainedRuntimeHome,
+        runRoot: prepared.internal.runRoot,
+        runtimeHome: prepared.internal.runtimeHome,
       });
       await rm(prepared.internal.runRoot, { force: true, recursive: true });
       await rm(physicalObservationPath, { force: true });
