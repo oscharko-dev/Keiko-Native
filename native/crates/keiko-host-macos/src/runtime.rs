@@ -207,6 +207,7 @@ struct ProcessIdentity {
 struct ActiveRuntime {
     process_group: Mutex<Option<i32>>,
     owned_processes: Mutex<HashSet<ProcessIdentity>>,
+    retained_runtime_homes: Mutex<Vec<DisposableRuntimeHome>>,
     retained_work_directories: Mutex<HashSet<PathBuf>>,
     control: Mutex<RuntimeControl>,
     finished: Condvar,
@@ -263,9 +264,6 @@ impl RuntimeCancellation {
 
 impl ActiveRuntime {
     fn claim_request(&self, request_id: &str) -> bool {
-        if !reconcile_retained_work_directories(self) {
-            return false;
-        }
         let Ok(process_group) = self.process_group.lock() else {
             return false;
         };
@@ -278,6 +276,11 @@ impl ActiveRuntime {
             return false;
         }
         drop(process_group);
+        if !reconcile_retained_runtime_homes(self) || !reconcile_retained_work_directories(self) {
+            self.running.store(false, Ordering::Release);
+            self.finished.notify_all();
+            return false;
+        }
         self.begin_request(request_id)
     }
 
@@ -474,6 +477,7 @@ impl RuntimeHost {
             return false;
         }
         reconcile_retained_process_group(&self.active, deadline)
+            && reconcile_retained_runtime_homes(&self.active)
             && reconcile_retained_work_directories(&self.active)
     }
 
@@ -772,7 +776,12 @@ fn perform_turn(
         deadline,
         update,
     );
-    let home_restored = disposable_home.restore();
+    let home_restored = if outcome.cleaned {
+        disposable_home.restore()
+    } else {
+        retain_runtime_home(active, disposable_home);
+        false
+    };
     let work_cleaned = if home_restored {
         cleanup_or_retain_work_directory(active, &work_directory)
     } else {
@@ -816,6 +825,7 @@ fn reconcile_retained_work_directories(active: &ActiveRuntime) -> bool {
 struct DisposableRuntimeHome {
     discarded_home: PathBuf,
     persistent_home: PathBuf,
+    restore_on_drop: bool,
     restored: bool,
     retained_home: PathBuf,
 }
@@ -863,6 +873,7 @@ impl DisposableRuntimeHome {
         Ok(Self {
             discarded_home,
             persistent_home: persistent_home.to_path_buf(),
+            restore_on_drop: true,
             restored: false,
             retained_home,
         })
@@ -891,8 +902,28 @@ impl DisposableRuntimeHome {
 
 impl Drop for DisposableRuntimeHome {
     fn drop(&mut self) {
-        let _ = self.restore();
+        if self.restore_on_drop {
+            let _ = self.restore();
+        }
     }
+}
+
+fn retain_runtime_home(active: &ActiveRuntime, mut home: DisposableRuntimeHome) {
+    home.restore_on_drop = false;
+    let mut retained = active
+        .retained_runtime_homes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    retained.push(home);
+}
+
+fn reconcile_retained_runtime_homes(active: &ActiveRuntime) -> bool {
+    let mut retained = active
+        .retained_runtime_homes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    retained.retain_mut(|home| !home.restore());
+    retained.is_empty()
 }
 
 fn copy_auth_identity(persistent_home: &Path, disposable_home: &Path) -> Result<(), ()> {
@@ -1482,6 +1513,7 @@ fn bind_configuration(
     if !private_owned_directory(&work_root) || !protected_directory_chain(&work_root) {
         return Err(RuntimeReadinessState::ContainmentFailed);
     }
+    recover_orphaned_readiness_directories(&work_root)?;
     recover_interrupted_runtime_home(&configuration.codex_home, &work_root)?;
     let codex_home = canonical_existing(&configuration.codex_home, true)?;
     if !private_owned_directory(&codex_home) || !protected_directory_chain(&codex_home) {
@@ -1672,6 +1704,42 @@ fn valid_turn_directory_name(name: &str) -> bool {
         && !generation.is_empty()
         && process.bytes().all(|byte| byte.is_ascii_digit())
         && generation.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn recover_orphaned_readiness_directories(work_root: &Path) -> Result<(), RuntimeReadinessState> {
+    for entry in fs::read_dir(work_root).map_err(|_| RuntimeReadinessState::ContainmentFailed)? {
+        let entry = entry.map_err(|_| RuntimeReadinessState::ContainmentFailed)?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !name.starts_with("readiness-") {
+            continue;
+        }
+        let Some(owner_process) = readiness_owner_process(&name) else {
+            return Err(RuntimeReadinessState::ContainmentFailed);
+        };
+        let metadata = fs::symlink_metadata(entry.path())
+            .map_err(|_| RuntimeReadinessState::ContainmentFailed)?;
+        if !private_owned_directory_metadata(&metadata, effective_user_id()) {
+            return Err(RuntimeReadinessState::ContainmentFailed);
+        }
+        if process_identity(owner_process).is_none() && fs::remove_dir_all(entry.path()).is_err() {
+            return Err(RuntimeReadinessState::ContainmentFailed);
+        }
+    }
+    Ok(())
+}
+
+fn readiness_owner_process(name: &str) -> Option<i32> {
+    let (process, generation) = name.strip_prefix("readiness-")?.split_once('-')?;
+    if process.is_empty()
+        || generation.is_empty()
+        || !process.bytes().all(|byte| byte.is_ascii_digit())
+        || !generation.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    process.parse::<i32>().ok().filter(|process| *process > 0)
 }
 
 fn protected_directory_chain(path: &Path) -> bool {
@@ -3584,6 +3652,7 @@ mod tests {
         let mut rollback = DisposableRuntimeHome {
             discarded_home: fixture.root.join("same-path-discarded"),
             persistent_home: same_path.clone(),
+            restore_on_drop: true,
             restored: false,
             retained_home: same_path.clone(),
         };
@@ -4084,9 +4153,83 @@ mod tests {
             .work
             .join(format!("readiness-{}-1", std::process::id()));
         fs::create_dir(&collision).expect("collision");
+        fs::set_permissions(&collision, fs::Permissions::from_mode(0o700))
+            .expect("private collision");
         assert_eq!(
             host.check("collision", None).state,
             RuntimeReadinessState::Unavailable
+        );
+    }
+
+    #[test]
+    fn readiness_recovery_removes_only_owned_orphaned_directories() {
+        let fixture = Fixture::new();
+        for invalid in [
+            "turn-1-1",
+            "readiness--1",
+            "readiness-1-",
+            "readiness-x-1",
+            "readiness-1-x",
+            "readiness-0-1",
+            "readiness-2147483648-1",
+        ] {
+            assert_eq!(readiness_owner_process(invalid), None, "{invalid}");
+        }
+        assert_eq!(readiness_owner_process("readiness-51-9"), Some(51));
+
+        let orphan = fixture.work.join("readiness-2147483647-1");
+        fs::create_dir(&orphan).expect("orphaned readiness directory");
+        fs::set_permissions(&orphan, fs::Permissions::from_mode(0o700))
+            .expect("private orphaned readiness directory");
+        fs::write(orphan.join("provider-state"), b"ephemeral").expect("orphaned state");
+
+        let live = fixture
+            .work
+            .join(format!("readiness-{}-2", std::process::id()));
+        fs::create_dir(&live).expect("live readiness directory");
+        fs::set_permissions(&live, fs::Permissions::from_mode(0o700))
+            .expect("private live readiness directory");
+        let unrelated = fixture.work.join("turn-51-9");
+        fs::create_dir(&unrelated).expect("unrelated work directory");
+
+        recover_orphaned_readiness_directories(&fixture.work)
+            .expect("recover orphaned readiness state");
+        assert!(!orphan.exists());
+        assert!(live.exists());
+        assert!(unrelated.exists());
+        fs::remove_dir(&live).expect("remove live fixture");
+        fs::remove_dir(&unrelated).expect("remove unrelated fixture");
+
+        let malformed = fixture.work.join("readiness-invalid");
+        fs::create_dir(&malformed).expect("malformed readiness directory");
+        fs::set_permissions(&malformed, fs::Permissions::from_mode(0o700))
+            .expect("private malformed readiness directory");
+        assert_eq!(
+            recover_orphaned_readiness_directories(&fixture.work),
+            Err(RuntimeReadinessState::ContainmentFailed)
+        );
+        fs::remove_dir(&malformed).expect("remove malformed readiness directory");
+
+        let unsafe_mode = fixture.work.join("readiness-2147483647-3");
+        fs::create_dir(&unsafe_mode).expect("unsafe readiness directory");
+        assert_eq!(
+            recover_orphaned_readiness_directories(&fixture.work),
+            Err(RuntimeReadinessState::ContainmentFailed)
+        );
+        fs::remove_dir(&unsafe_mode).expect("remove unsafe readiness directory");
+
+        let removal_blocked = fixture.work.join("readiness-2147483647-4");
+        fs::create_dir(&removal_blocked).expect("removal-blocked readiness directory");
+        fs::set_permissions(&removal_blocked, fs::Permissions::from_mode(0o700))
+            .expect("private removal-blocked readiness directory");
+        fs::set_permissions(&fixture.work, fs::Permissions::from_mode(0o500))
+            .expect("block readiness removal");
+        let blocked_result = recover_orphaned_readiness_directories(&fixture.work);
+        fs::set_permissions(&fixture.work, fs::Permissions::from_mode(0o700))
+            .expect("restore work-root permissions");
+        assert_eq!(
+            blocked_result,
+            Err(RuntimeReadinessState::ContainmentFailed)
         );
     }
 
@@ -5483,6 +5626,18 @@ while :; do /bin/sleep 1; done
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         for workspace_change in [false, true] {
             let fixture = Fixture::new();
+            fs::write(fixture.home.join("persistent-only"), b"persistent")
+                .expect("persistent-only state");
+            let retained_work = fixture.work.join(if workspace_change {
+                "turn-71-1"
+            } else {
+                "turn-72-1"
+            });
+            fs::create_dir(&retained_work).expect("retained turn directory");
+            fs::set_permissions(&retained_work, fs::Permissions::from_mode(0o700))
+                .expect("private retained turn directory");
+            let staged_home = DisposableRuntimeHome::stage(&fixture.home, &retained_work)
+                .expect("stage retained runtime home");
             let ready = fixture.root.join("retained-cleanup-ready");
             let mut child = Command::new("/bin/sh")
                 .arg("-c")
@@ -5501,12 +5656,17 @@ while :; do /bin/sleep 1; done
             assert!(ready.is_file(), "retained process did not become ready");
 
             let host = RuntimeHost::unavailable_for_test();
+            retain_runtime_home(&host.active, staged_home);
+            retain_work_directory(&host.active, &retained_work);
+            assert!(!fixture.home.join("persistent-only").exists());
             *host
                 .active
                 .process_group
                 .lock()
                 .expect("process-group state") = Some(process_group);
             register_owned_process(&host.active, process_group);
+            assert!(!host.active.claim_request("blocked-before-home-restore"));
+            assert!(!fixture.home.join("persistent-only").exists());
             let cleaned = if workspace_change {
                 host.cancel_for_workspace_change_and_wait(1)
             } else {
@@ -5521,6 +5681,18 @@ while :; do /bin/sleep 1; done
             assert!(cleaned, "cleanup did not reconcile retained ownership");
             assert!(!residual, "retained process group survived cleanup");
             assert_eq!(*host.active.process_group.lock().unwrap(), None);
+            assert_eq!(
+                fs::read(fixture.home.join("persistent-only")).expect("restored persistent state"),
+                b"persistent"
+            );
+            assert!(!retained_work.exists());
+            assert!(
+                host.active
+                    .retained_runtime_homes
+                    .lock()
+                    .expect("retained runtime homes")
+                    .is_empty()
+            );
         }
     }
 

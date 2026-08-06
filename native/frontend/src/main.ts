@@ -203,10 +203,7 @@ export async function startRenderer(
           cancellation.signal,
         );
       } catch {
-        if (
-          turnState !== null &&
-          ["preflighting", "streaming", "stopping"].includes(turnState.state)
-        ) {
+        if (turnState?.workspaceGeneration === workspaceGeneration) {
           turnState = null;
         }
         console.error(

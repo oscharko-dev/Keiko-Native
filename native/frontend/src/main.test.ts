@@ -317,7 +317,7 @@ describe("production renderer composition", () => {
     expect(rendered).not.toContain("raw workspace transport detail");
   });
 
-  it("clears a non-terminal turn after a redacted request failure", async () => {
+  it("clears a channel-only terminal turn after settlement fails", async () => {
     Object.defineProperty(globalThis, "document", {
       configurable: true,
       value: { getElementById: () => ({}) },
@@ -346,21 +346,21 @@ describe("production renderer composition", () => {
           taskId: "task-0000000000000007-0000000000000001",
           runId: "run-0000000000000007-0000000000000001",
           workspaceGeneration: request.operation.workspaceGeneration,
-          state: "preflighting",
-          agentText: "",
-          providerThreadEstablished: false,
-          providerTurnEstablished: false,
+          state: "completed",
+          agentText: "Channel-only answer.",
+          providerThreadEstablished: true,
+          providerTurnEstablished: true,
           evidence: {
             runtimeVersion: "0.145.0",
             runtimeArtifactSha256:
               "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
             containmentProfile: "keiko-codex-readiness-v1",
             authorityProfile: "keiko-codex-no-effect-v1",
-            messageBytes: 0,
+            messageBytes: 20,
             quarantinedEvents: 0,
             acceptedEffects: 0,
-            cleanupComplete: false,
-            terminalState: "preflighting",
+            cleanupComplete: true,
+            terminalState: "completed",
           },
         });
         throw new Error("raw provider detail");

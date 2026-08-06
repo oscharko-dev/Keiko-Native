@@ -701,7 +701,11 @@ export async function createEvaluationArtifacts(root) {
   };
 }
 
-export async function compileProcessGroupInspector(root, compile = runClosed) {
+export async function compileProcessGroupInspector(
+  root,
+  compile = runClosed,
+  inspect = runClosed,
+) {
   await mkdir(root, { recursive: true });
   const source = join(root, "ProcessGroupLauncher.c");
   const binary = join(root, "ProcessGroupLauncher");
@@ -713,6 +717,14 @@ export async function compileProcessGroupInspector(root, compile = runClosed) {
     result.timedOut === true
   ) {
     throw new Error("process-inspector-compile-failed");
+  }
+  const preflight = inspect(binary, ["--inspect"], 5_000);
+  if (
+    preflight?.exitCode !== 0 ||
+    preflight.signal !== null ||
+    preflight.timedOut === true
+  ) {
+    throw new Error("process-inspector-preflight-failed");
   }
   return binary;
 }
