@@ -1147,7 +1147,7 @@ fn create_private_turn_directory(work_directory: &Path) -> Result<(), TurnRuntim
 
 fn create_private_turn_directory_with(
     work_directory: &Path,
-    harden: impl FnOnce(&Path) -> io::Result<()>,
+    harden: fn(&Path) -> io::Result<()>,
 ) -> Result<(), TurnRuntimeOutcome> {
     if fs::create_dir(work_directory).is_err() {
         return Err(TurnRuntimeOutcome::terminal(
@@ -3386,6 +3386,7 @@ mod tests {
             "poisoned runtime control must not masquerade as renderer loss"
         );
         host.cancel_request("poisoned-bookkeeping");
+        assert!(!host.cancel_for_app_shutdown_and_wait());
         host.active.running.store(true, Ordering::Release);
         host.active.finish_request();
         assert!(!host.active.running.load(Ordering::Acquire));
@@ -3696,9 +3697,41 @@ printf '%s\n' '{"method":"item/tool/call","id":7,"params":{"path":"/private/secr
         let home = Path::new("/private/tmp/codex-home");
         let work = Path::new("/private/tmp/codex-work");
 
+        for event in [
+            br#"{"method":"thread/started","params":{"thread":{}}}"#.as_slice(),
+            br#"{"method":"thread/status/changed","params":{"threadId":"thread-1"}}"#.as_slice(),
+        ] {
+            assert_turn_containment(
+                TurnProtocolProjection::new(home, work).accept(event),
+                TurnReason::ProtocolRejected,
+            );
+        }
+
+        let mut correlated_thread = active_turn_projection(home, work);
+        assert_eq!(
+            correlated_thread
+                .accept(br#"{"method":"thread/status/changed","params":{"threadId":"thread-1"}}"#,),
+            TurnProjectionAction::Quarantine
+        );
+        assert_eq!(
+            correlated_thread.accept(
+                br#"{"method":"remoteControl/status/changed","params":{"environmentId":null,"installationId":"redacted","serverName":"redacted","status":"disabled"}}"#,
+            ),
+            TurnProjectionAction::Quarantine
+        );
         assert_turn_containment(
-            TurnProtocolProjection::new(home, work)
-                .accept(br#"{"method":"thread/started","params":{"thread":{}}}"#),
+            correlated_thread.accept(
+                br#"{"method":"thread/tokenUsage/updated","params":{"threadId":"other","turnId":"turn-1","tokenUsage":{"total":{"inputTokens":12,"cachedInputTokens":0,"outputTokens":3,"reasoningOutputTokens":0,"totalTokens":15},"last":{"inputTokens":12,"cachedInputTokens":0,"outputTokens":3,"reasoningOutputTokens":0,"totalTokens":15},"modelContextWindow":128000}}}"#,
+            ),
+            TurnReason::ProtocolRejected,
+        );
+
+        let mut active_without_correlation = TurnProtocolProjection::new(home, work);
+        active_without_correlation.stage = TurnProjectionStage::Active;
+        assert_turn_containment(
+            active_without_correlation.accept(
+                br#"{"method":"item/started","params":{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-1","type":"agentMessage"}}}"#,
+            ),
             TurnReason::ProtocolRejected,
         );
 
@@ -4443,6 +4476,28 @@ while :; do /bin/sleep 1; done
     }
 
     #[test]
+    fn retained_child_reaping_requires_an_exited_owned_child() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(!reap_child(i32::MAX));
+
+        let mut child = Command::new("/usr/bin/true")
+            .spawn()
+            .expect("short-lived child fixture");
+        let process = child.id() as i32;
+        let wait_deadline = Instant::now() + Duration::from_secs(1);
+        while !child_exited_without_reaping(process).is_ok_and(|exited| exited)
+            && Instant::now() < wait_deadline
+        {
+            thread::yield_now();
+        }
+        assert!(child_exited_without_reaping(process).is_ok_and(|exited| exited));
+        assert!(reap_child(process));
+        let _ = child.wait();
+    }
+
+    #[test]
     fn turn_directory_permission_failure_reports_proven_cleanup() {
         let fixture = Fixture::new();
         let work_directory = fixture.work.join("partial-turn");
@@ -4456,6 +4511,20 @@ while :; do /bin/sleep 1; done
         assert_eq!(outcome.reason, Some(TurnReason::RuntimeUnavailable));
         assert!(outcome.cleaned);
         assert!(!work_directory.exists());
+    }
+
+    #[test]
+    fn turn_directory_creation_collision_is_cleanly_unavailable() {
+        let fixture = Fixture::new();
+        let work_directory = fixture.work.join("existing-turn");
+        fs::create_dir(&work_directory).expect("existing turn collision");
+
+        let outcome = create_private_turn_directory(&work_directory).expect_err("collision");
+
+        assert_eq!(outcome.state, TurnState::Failed);
+        assert_eq!(outcome.reason, Some(TurnReason::RuntimeUnavailable));
+        assert!(outcome.cleaned);
+        assert!(work_directory.is_dir());
     }
 
     #[test]
