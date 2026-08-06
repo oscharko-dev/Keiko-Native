@@ -3462,6 +3462,23 @@ mod tests {
     }
 
     #[test]
+    fn poisoned_runtime_ownership_gate_fails_closed() {
+        let active = Arc::new(ActiveRuntime::default());
+        let poison_target = Arc::clone(&active);
+        let _ = thread::spawn(move || {
+            let _guard = poison_target
+                .process_group
+                .lock()
+                .expect("process-group state before poisoning");
+            panic!("poison process-group ownership");
+        })
+        .join();
+
+        assert!(!active.claim_request("blocked-by-poison"));
+        assert!(!active.running.load(Ordering::Acquire));
+    }
+
+    #[test]
     fn runtime_child_limit_denies_forks_before_exec() {
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
@@ -3962,6 +3979,17 @@ printf '%s\n' '{"method":"item/tool/call","id":7,"params":{"path":"/private/secr
         assert_turn_containment(
             mismatched_completion.accept(
                 &serde_json::to_vec(&json!({"method": "item/completed", "params": {"threadId": "thread-1", "turnId": "turn-1", "item": {"id": "item-mismatch", "type": "agentMessage", "text": "different"}}})).unwrap(),
+            ),
+            TurnReason::ProtocolRejected,
+        );
+
+        let mut missing_item_buffer = active_turn_projection(home, work);
+        missing_item_buffer
+            .started_items
+            .insert("item-1".to_owned(), InertItemKind::AgentMessage);
+        assert_turn_containment(
+            missing_item_buffer.accept(
+                br#"{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","delta":"visible"}}"#,
             ),
             TurnReason::ProtocolRejected,
         );
@@ -4671,6 +4699,19 @@ while :; do /bin/sleep 1; done
     }
 
     #[test]
+    fn private_directory_rejects_post_creation_permission_drift() {
+        let fixture = Fixture::new();
+        let work_directory = fixture.work.join("permission-drift");
+
+        let outcome = create_private_directory_with(&work_directory, |path| {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+        });
+
+        assert_eq!(outcome, Err(PrivateDirectoryFailure::Unavailable));
+        assert!(!work_directory.exists());
+    }
+
+    #[test]
     fn turn_directory_creation_collision_is_cleanly_unavailable() {
         let fixture = Fixture::new();
         let work_directory = fixture.work.join("existing-turn");
@@ -4685,15 +4726,15 @@ while :; do /bin/sleep 1; done
     }
 
     #[test]
-    fn turn_directory_permission_failure_never_claims_unproven_cleanup() {
+    fn turn_directory_substitution_never_claims_unproven_cleanup() {
         let fixture = Fixture::new();
         let work_directory = fixture.work.join("replaced-partial-turn");
         let outcome = create_private_turn_directory_with(&work_directory, |path| {
             fs::remove_dir(path).expect("remove partial directory");
             fs::write(path, b"replacement").expect("replace directory with file");
-            Err(io::Error::new(io::ErrorKind::PermissionDenied, "fixture"))
+            Ok(())
         })
-        .expect_err("permission failure");
+        .expect_err("substitution failure");
 
         assert_eq!(outcome.state, TurnState::CleanupFailed);
         assert_eq!(outcome.reason, Some(TurnReason::CleanupFailed));
