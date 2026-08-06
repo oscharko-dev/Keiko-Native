@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -12,6 +15,7 @@ import {
   physicalObservationFailures,
   selectCommandOutput,
   selectOwnedStagedRuntime,
+  snapshotDirectory,
   verifyOwnedRuntimeGroupsExited,
 } from "./codex-tracer-acceptance-io.mjs";
 import { acceptancePhysicalContract } from "./codex-tracer-acceptance.mjs";
@@ -22,6 +26,21 @@ const runtimeSha256 =
   "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590";
 const promptSha256 =
   "e1a92579b1ca673135331829beb97792c1289a6bccdfe0303302256c546960f6";
+
+test("directory snapshots bind symlink targets without following them", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "keiko-home-snapshot-"));
+  t.after(() => rm(root, { force: true, recursive: true }));
+  await writeFile(join(root, "credentials.json"), "stable", "utf8");
+  await symlink("first-target", join(root, "runtime-link"));
+
+  const before = await snapshotDirectory(root);
+  await rm(join(root, "runtime-link"));
+  await symlink("second-target", join(root, "runtime-link"));
+  const after = await snapshotDirectory(root);
+
+  assert.equal(before.entries, 2);
+  assert.notEqual(before.sha256, after.sha256);
+});
 
 test("first-visible p95 permits one bounded cold-launch outlier", async () => {
   let now = 0;

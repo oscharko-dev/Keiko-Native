@@ -5,6 +5,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readlink,
   readdir,
   realpath,
   rm,
@@ -406,7 +407,7 @@ async function inspectPackage(sourceRevision) {
   return { ...inspected, containmentMarkers };
 }
 
-async function snapshotDirectory(root) {
+export async function snapshotDirectory(root) {
   const digest = createHash("sha256");
   let bytes = 0;
   let entries = 0;
@@ -428,6 +429,11 @@ async function snapshotDirectory(root) {
         bytes += content.length;
         digest.update("file\0", "utf8");
         digest.update(content);
+      } else if (child.isSymbolicLink()) {
+        const target = await readlink(join(directory, child.name), "buffer");
+        bytes += target.length;
+        digest.update("symlink\0", "utf8");
+        digest.update(target);
       } else {
         throw new Error("acceptance-snapshot-entry-invalid");
       }
