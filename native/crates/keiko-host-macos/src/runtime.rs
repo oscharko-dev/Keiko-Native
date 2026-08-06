@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -33,6 +33,7 @@ const MAX_QUARANTINED_EVENTS: u16 = 64;
 const P_PID: i32 = 1;
 const PROC_PIDTBSDINFO: i32 = 3;
 const PROCESS_STATUS_ZOMBIE: u32 = 5;
+const RLIMIT_NPROC: i32 = 7;
 const SIGKILL: i32 = 9;
 const SIGTERM: i32 = 15;
 const WEXITED: i32 = 0x0000_0004;
@@ -112,6 +113,8 @@ const CODEX_CONTAINMENT_ARGUMENTS: &[&str] = &[
 ];
 
 unsafe extern "C" {
+    #[link_name = "geteuid"]
+    fn keiko_geteuid() -> u32;
     #[link_name = "kill"]
     fn keiko_kill(process_or_group: i32, signal: i32) -> i32;
     #[link_name = "proc_listpgrppids"]
@@ -128,6 +131,8 @@ unsafe extern "C" {
     ) -> i32;
     #[link_name = "waitid"]
     fn keiko_waitid(id_type: i32, id: u32, information: *mut WaitInformation, options: i32) -> i32;
+    #[link_name = "setrlimit"]
+    fn keiko_setrlimit(resource: i32, limit: *const ResourceLimit) -> i32;
     #[cfg(not(test))]
     #[link_name = "ptrace"]
     fn keiko_ptrace(request: i32, process: i32, address: *mut c_void, data: i32) -> i32;
@@ -174,6 +179,12 @@ struct ProcessBsdInformation {
     nice: i32,
     started_seconds: u64,
     started_microseconds: u64,
+}
+
+#[repr(C)]
+struct ResourceLimit {
+    current: u64,
+    maximum: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -249,6 +260,22 @@ impl RuntimeCancellation {
 }
 
 impl ActiveRuntime {
+    fn claim_request(&self, request_id: &str) -> bool {
+        let Ok(process_group) = self.process_group.lock() else {
+            return false;
+        };
+        if process_group.is_some()
+            || self
+                .running
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return false;
+        }
+        drop(process_group);
+        self.begin_request(request_id)
+    }
+
     fn begin_request(&self, request_id: &str) -> bool {
         let Ok(mut control) = self.control.lock() else {
             self.running.store(false, Ordering::Release);
@@ -363,15 +390,7 @@ impl RuntimeHost {
         timeout: Duration,
     ) -> RuntimeReadinessView {
         let deadline = Instant::now() + timeout;
-        if self
-            .active
-            .running
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return RuntimeReadinessView::terminal(RuntimeReadinessState::ContainmentFailed, 0);
-        }
-        if !self.active.begin_request(request_id) {
+        if !self.active.claim_request(request_id) {
             return RuntimeReadinessView::terminal(RuntimeReadinessState::ContainmentFailed, 0);
         }
         let result = self.configuration.as_ref().map_or_else(
@@ -479,18 +498,7 @@ impl RuntimeHost {
         mut update: impl FnMut(TurnRuntimeUpdate),
     ) -> TurnRuntimeOutcome {
         let deadline = Instant::now() + timeout;
-        if self
-            .active
-            .running
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return TurnRuntimeOutcome::terminal(
-                TurnState::ContainmentFailed,
-                TurnReason::InternalFailure,
-            );
-        }
-        if !self.active.begin_request(request_id) {
+        if !self.active.claim_request(request_id) {
             return TurnRuntimeOutcome::terminal(
                 TurnState::ContainmentFailed,
                 TurnReason::InternalFailure,
@@ -672,8 +680,8 @@ fn perform_check(
     let work_directory = verified
         .work_root
         .join(format!("readiness-{}-{generation}", std::process::id()));
-    if fs::create_dir(&work_directory).is_err() {
-        return RuntimeReadinessView::terminal(RuntimeReadinessState::Unavailable, 0);
+    if let Err(state) = create_private_readiness_directory(&work_directory) {
+        return RuntimeReadinessView::terminal(state, 0);
     }
     let outcome = run_protocol(&mut verified, &work_directory, active, deadline);
     let work_cleaned = fs::remove_dir_all(&work_directory).is_ok();
@@ -1005,12 +1013,13 @@ fn cleanup_turn(
     active: &ActiveRuntime,
     deadline: Instant,
 ) -> TurnRuntimeOutcome {
-    let cleanup_deadline = if outcome.state == TurnState::Cancelled {
+    let cancellation_cleanup = active.cancellation().is_some();
+    let cleanup_deadline = if cancellation_cleanup {
         deadline.min(Instant::now() + TURN_CLEANUP_RESERVE)
     } else {
         deadline
     };
-    outcome.cleaned = if outcome.state == TurnState::Cancelled {
+    outcome.cleaned = if cancellation_cleanup {
         stop_process_group_with_term_grace(
             &mut child,
             process_group,
@@ -1140,35 +1149,68 @@ impl VerifiedConfiguration {
 }
 
 fn create_private_turn_directory(work_directory: &Path) -> Result<(), TurnRuntimeOutcome> {
-    create_private_turn_directory_with(work_directory, |path| {
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-    })
+    create_private_turn_directory_with(work_directory, |_| Ok(()))
 }
 
 fn create_private_turn_directory_with(
     work_directory: &Path,
     harden: fn(&Path) -> io::Result<()>,
 ) -> Result<(), TurnRuntimeOutcome> {
-    if fs::create_dir(work_directory).is_err() {
-        return Err(TurnRuntimeOutcome::terminal(
+    match create_private_directory_with(work_directory, harden) {
+        Ok(()) => Ok(()),
+        Err(PrivateDirectoryFailure::Unavailable) => Err(TurnRuntimeOutcome::terminal(
             TurnState::Failed,
             TurnReason::RuntimeUnavailable,
-        ));
+        )),
+        Err(PrivateDirectoryFailure::CleanupFailed) => {
+            let mut outcome =
+                TurnRuntimeOutcome::terminal(TurnState::CleanupFailed, TurnReason::CleanupFailed);
+            outcome.cleaned = false;
+            Err(outcome)
+        }
     }
-    if harden(work_directory).is_ok() {
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PrivateDirectoryFailure {
+    Unavailable,
+    CleanupFailed,
+}
+
+fn create_private_readiness_directory(work_directory: &Path) -> Result<(), RuntimeReadinessState> {
+    create_private_directory_with(work_directory, |_| Ok(())).map_err(|failure| match failure {
+        PrivateDirectoryFailure::Unavailable => RuntimeReadinessState::Unavailable,
+        PrivateDirectoryFailure::CleanupFailed => RuntimeReadinessState::CleanupFailed,
+    })
+}
+
+fn create_private_directory_with(
+    work_directory: &Path,
+    harden: fn(&Path) -> io::Result<()>,
+) -> Result<(), PrivateDirectoryFailure> {
+    let mut builder = fs::DirBuilder::new();
+    builder.mode(0o700);
+    if builder.create(work_directory).is_err() {
+        return Err(PrivateDirectoryFailure::Unavailable);
+    }
+    if harden(work_directory).is_ok() && private_directory_is_owned(work_directory) {
         return Ok(());
     }
     if fs::remove_dir_all(work_directory).is_ok() {
-        Err(TurnRuntimeOutcome::terminal(
-            TurnState::Failed,
-            TurnReason::RuntimeUnavailable,
-        ))
+        Err(PrivateDirectoryFailure::Unavailable)
     } else {
-        let mut outcome =
-            TurnRuntimeOutcome::terminal(TurnState::CleanupFailed, TurnReason::CleanupFailed);
-        outcome.cleaned = false;
-        Err(outcome)
+        Err(PrivateDirectoryFailure::CleanupFailed)
     }
+}
+
+fn private_directory_is_owned(work_directory: &Path) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(work_directory) else {
+        return false;
+    };
+    metadata.is_dir()
+        && metadata.permissions().mode() & 0o777 == 0o700
+        // SAFETY: geteuid has no arguments or mutable memory effects.
+        && metadata.uid() == unsafe { keiko_geteuid() }
 }
 
 #[cfg(test)]
@@ -1183,11 +1225,11 @@ fn spawn_verified_runtime(command: &mut Command) -> io::Result<Child> {
     // selected image can execute its first instruction.
     unsafe {
         command.pre_exec(|| {
-            if keiko_ptrace(PT_TRACE_ME, 0, std::ptr::null_mut(), 0) == 0 {
-                Ok(())
-            } else {
-                Err(io::Error::last_os_error())
+            deny_runtime_forks()?;
+            if keiko_ptrace(PT_TRACE_ME, 0, std::ptr::null_mut(), 0) != 0 {
+                return Err(io::Error::last_os_error());
             }
+            Ok(())
         });
     }
     let mut child = command.spawn()?;
@@ -1231,6 +1273,20 @@ fn spawn_verified_runtime(command: &mut Command) -> io::Result<Child> {
         return Err(io::Error::last_os_error());
     }
     Ok(child)
+}
+
+fn deny_runtime_forks() -> io::Result<()> {
+    let limit = ResourceLimit {
+        current: 0,
+        maximum: 0,
+    };
+    // SAFETY: setrlimit reads the fixed local structure and applies the
+    // irreversible per-process maximum only to this child before exec.
+    if unsafe { keiko_setrlimit(RLIMIT_NPROC, &limit) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 fn wait_status_is_exec_stop(status: i32) -> bool {
@@ -1787,6 +1843,7 @@ struct TurnProtocolProjection<'a> {
     projected_agent_deltas: usize,
     quarantined_events: u16,
     started_items: HashMap<String, InertItemKind>,
+    agent_message_text: HashMap<String, String>,
     completed_items: HashSet<String>,
 }
 
@@ -1803,6 +1860,7 @@ impl<'a> TurnProtocolProjection<'a> {
             projected_agent_deltas: 0,
             quarantined_events: 0,
             started_items: HashMap::new(),
+            agent_message_text: HashMap::new(),
             completed_items: HashSet::new(),
         }
     }
@@ -2063,7 +2121,14 @@ impl<'a> TurnProtocolProjection<'a> {
             {
                 return self.containment(TurnReason::ProtocolRejected);
             }
+            if item_kind == InertItemKind::AgentMessage {
+                self.agent_message_text
+                    .insert(item_id.to_owned(), String::new());
+            }
         } else if self.started_items.get(item_id) != Some(&item_kind)
+            || (item_kind == InertItemKind::AgentMessage
+                && item.get("text").and_then(Value::as_str)
+                    != self.agent_message_text.get(item_id).map(String::as_str))
             || !self.completed_items.insert(item_id.to_owned())
         {
             return self.containment(TurnReason::ProtocolRejected);
@@ -2092,6 +2157,10 @@ impl<'a> TurnProtocolProjection<'a> {
         {
             return self.containment(TurnReason::BufferLimit);
         }
+        let Some(item_text) = self.agent_message_text.get_mut(item_id) else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
+        item_text.push_str(delta);
         self.agent_text.push_str(delta);
         self.projected_agent_deltas += 1;
         TurnProjectionAction::AgentDelta(delta.to_owned())
@@ -3360,6 +3429,57 @@ mod tests {
     }
 
     #[test]
+    fn retained_runtime_ownership_blocks_every_new_request() {
+        let host = RuntimeHost::unavailable_for_test();
+        *host
+            .active
+            .process_group
+            .lock()
+            .expect("process-group state") = Some(i32::MAX);
+
+        assert_eq!(
+            host.check("blocked-readiness", None).state,
+            RuntimeReadinessState::ContainmentFailed
+        );
+        let turn = host.run_turn(
+            "blocked-turn",
+            1,
+            Path::new("/private/tmp/unused-workspace"),
+            "Bounded task.",
+            Duration::from_millis(10),
+            |_| {},
+        );
+        assert_eq!(turn.state, TurnState::ContainmentFailed);
+        assert_eq!(
+            *host
+                .active
+                .process_group
+                .lock()
+                .expect("process-group state"),
+            Some(i32::MAX)
+        );
+        assert!(!host.active.running.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn runtime_child_limit_denies_forks_before_exec() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg("/usr/bin/true & wait")
+            .stderr(Stdio::null());
+        // SAFETY: the child applies only the fixed process limit before exec.
+        unsafe {
+            command.pre_exec(deny_runtime_forks);
+        }
+        let status = command.status().expect("limited child started");
+        assert!(!status.success(), "runtime child unexpectedly forked");
+    }
+
+    #[test]
     fn poisoned_request_bookkeeping_still_fails_closed() {
         let host = RuntimeHost {
             configuration: None,
@@ -3806,7 +3926,7 @@ printf '%s\n' '{"method":"item/tool/call","id":7,"params":{"path":"/private/secr
             "params": {
                 "threadId": "thread-1",
                 "turnId": "turn-1",
-                "item": {"id": "item-1", "type": "agentMessage"}
+                "item": {"id": "item-1", "type": "agentMessage", "text": ""}
             }
         });
         assert_turn_containment(
@@ -3817,12 +3937,32 @@ printf '%s\n' '{"method":"item/tool/call","id":7,"params":{"path":"/private/secr
         duplicate_completion
             .started_items
             .insert("item-1".to_owned(), InertItemKind::AgentMessage);
+        duplicate_completion
+            .agent_message_text
+            .insert("item-1".to_owned(), String::new());
         assert_eq!(
             duplicate_completion.accept(&serde_json::to_vec(&completed).unwrap()),
             TurnProjectionAction::Quarantine
         );
         assert_turn_containment(
             duplicate_completion.accept(&serde_json::to_vec(&completed).unwrap()),
+            TurnReason::ProtocolRejected,
+        );
+
+        let mut mismatched_completion = active_turn_projection(home, work);
+        for event in [
+            json!({"method": "item/started", "params": {"threadId": "thread-1", "turnId": "turn-1", "item": {"id": "item-mismatch", "type": "agentMessage"}}}),
+            json!({"method": "item/agentMessage/delta", "params": {"threadId": "thread-1", "turnId": "turn-1", "itemId": "item-mismatch", "delta": "visible"}}),
+        ] {
+            assert!(matches!(
+                mismatched_completion.accept(&serde_json::to_vec(&event).unwrap()),
+                TurnProjectionAction::Quarantine | TurnProjectionAction::AgentDelta(_)
+            ));
+        }
+        assert_turn_containment(
+            mismatched_completion.accept(
+                &serde_json::to_vec(&json!({"method": "item/completed", "params": {"threadId": "thread-1", "turnId": "turn-1", "item": {"id": "item-mismatch", "type": "agentMessage", "text": "different"}}})).unwrap(),
+            ),
             TurnReason::ProtocolRejected,
         );
 
@@ -4110,6 +4250,9 @@ printf '%s\n' '{"method":"item/tool/call","id":7,"params":{"path":"/private/secr
         update_flood
             .started_items
             .insert("item-1".to_owned(), InertItemKind::AgentMessage);
+        update_flood
+            .agent_message_text
+            .insert("item-1".to_owned(), String::new());
         let one_byte_delta = br#"{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","delta":"x"}}"#;
         for _ in 0..MAX_QUEUE_FRAMES {
             assert_eq!(
@@ -4153,7 +4296,7 @@ printf '%s\n' '{{"id":4,"result":{{"turn":{{"id":"turn-1","status":"inProgress"}
 printf '%s\n' '{{"method":"turn/started","params":{{"threadId":"thread-1","turn":{{"id":"turn-1","status":"inProgress"}}}}}}'
 printf '%s\n' '{{"method":"item/started","params":{{"threadId":"thread-1","turnId":"turn-1","startedAtMs":1,"item":{{"type":"agentMessage","id":"item-1"}}}}}}'
 printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","delta":"Bounded answer."}}}}'
-printf '%s\n' '{{"method":"item/completed","params":{{"threadId":"thread-1","turnId":"turn-1","completedAtMs":2,"item":{{"type":"agentMessage","id":"item-1"}}}}}}'
+printf '%s\n' '{{"method":"item/completed","params":{{"threadId":"thread-1","turnId":"turn-1","completedAtMs":2,"item":{{"type":"agentMessage","id":"item-1","text":"Bounded answer."}}}}}}'
 printf '%s\n' '{{"method":"thread/tokenUsage/updated","params":{{"threadId":"thread-1","turnId":"turn-1","tokenUsage":{{"total":{{"inputTokens":12,"cachedInputTokens":0,"outputTokens":3,"reasoningOutputTokens":0,"totalTokens":15}},"last":{{"inputTokens":12,"cachedInputTokens":0,"outputTokens":3,"reasoningOutputTokens":0,"totalTokens":15}},"modelContextWindow":128000}}}}}}'
 /bin/sleep 30 &
 printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"thread-1","turn":{{"id":"turn-1","status":"completed","error":null}}}}}}'
@@ -4514,6 +4657,20 @@ while :; do /bin/sleep 1; done
     }
 
     #[test]
+    fn readiness_directory_is_created_private_and_owned() {
+        let fixture = Fixture::new();
+        let work_directory = fixture.work.join("private-readiness");
+
+        create_private_readiness_directory(&work_directory).expect("private readiness directory");
+
+        let metadata = fs::symlink_metadata(&work_directory).expect("readiness metadata");
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+        // SAFETY: geteuid has no arguments or mutable memory effects.
+        assert_eq!(metadata.uid(), unsafe { keiko_geteuid() });
+        fs::remove_dir(&work_directory).expect("remove readiness fixture");
+    }
+
+    #[test]
     fn turn_directory_creation_collision_is_cleanly_unavailable() {
         let fixture = Fixture::new();
         let work_directory = fixture.work.join("existing-turn");
@@ -4560,6 +4717,7 @@ if [ ! -f '{first_started}' ]; then
 : > '{first_started}'
 : > workspace-change-ready
 read -r initialize
+trap '' TERM
 while :; do /bin/sleep 1; done
 fi
 : > '{retry_started}'
@@ -4592,7 +4750,13 @@ exit 0
         }
         assert!(runtime_ready(), "runtime did not become ready");
 
+        let cancellation_started = Instant::now();
         assert!(host.cancel_for_workspace_change_and_wait(1));
+        assert!(
+            cancellation_started.elapsed() < Duration::from_secs(2),
+            "workspace cleanup did not use the bounded cancellation grace: {:?}",
+            cancellation_started.elapsed()
+        );
         let invalidated = pending.join().expect("turn thread");
         assert_eq!(invalidated.state, TurnState::Failed);
         assert_eq!(invalidated.reason, Some(TurnReason::StaleWorkspace));

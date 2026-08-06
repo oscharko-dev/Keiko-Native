@@ -315,7 +315,7 @@ impl HostLifecycle {
             state.state = TurnState::CleanupFailed;
             state.reason = Some(TurnReason::CleanupFailed);
             state.evidence.terminal_state = TurnState::CleanupFailed;
-        } else {
+        } else if state.state != TurnState::ContainmentFailed {
             match terminal_reason {
                 None => {}
                 Some(ReasonCode::Cancelled) => {

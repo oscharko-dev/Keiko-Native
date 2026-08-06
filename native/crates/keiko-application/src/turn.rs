@@ -147,9 +147,21 @@ impl TurnSession {
         if self.state != TurnState::Preflighting {
             return Err(TurnError::InvalidTransition);
         }
-        self.provider_thread_established = true;
-        self.provider_turn_established = true;
+        self.retain_provider_correlations(true, true)?;
         self.state = TurnState::Streaming;
+        Ok(())
+    }
+
+    pub fn retain_provider_correlations(
+        &mut self,
+        thread_established: bool,
+        turn_established: bool,
+    ) -> Result<(), TurnError> {
+        if turn_established && !thread_established {
+            return Err(TurnError::InvalidTransition);
+        }
+        self.provider_thread_established |= thread_established;
+        self.provider_turn_established |= turn_established;
         Ok(())
     }
 
@@ -369,6 +381,23 @@ mod tests {
         assert_eq!(view.evidence.authority_profile, NO_EFFECT_AUTHORITY_PROFILE);
         assert_eq!(view.evidence.terminal_state, TurnState::Completed);
         assert_eq!(current.complete(), Err(TurnError::InvalidTransition));
+    }
+
+    #[test]
+    fn partial_provider_correlation_is_retained_and_invalid_order_fails_closed() {
+        let mut current = session("Retain one established correlation.");
+
+        current
+            .retain_provider_correlations(true, false)
+            .expect("thread correlation");
+        let view = current.view();
+        assert!(view.provider_thread_established);
+        assert!(!view.provider_turn_established);
+        assert_eq!(
+            current.retain_provider_correlations(false, true),
+            Err(TurnError::InvalidTransition)
+        );
+        assert!(!current.view().provider_turn_established);
     }
 
     #[test]

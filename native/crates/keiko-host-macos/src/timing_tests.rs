@@ -1,4 +1,6 @@
 use keiko_application::current_build_identity;
+use keiko_application::runtime::RuntimeDescriptor;
+use keiko_application::turn::TurnSession;
 use keiko_ui_port::{dispatch_health, encode_success};
 
 use super::*;
@@ -211,4 +213,40 @@ fn runtime_cleanup_failure_survives_the_request_deadline() {
             )
             .contains("timed-out")
     );
+}
+
+#[test]
+fn turn_containment_failure_survives_late_cancel_and_deadline() {
+    for cancellation_at_ms in [Some(1_u64), None] {
+        let (mut lifecycle, sender) = started();
+        lifecycle.set_test_now_ms(0);
+        let accepted = accept(&mut lifecycle, &sender, 1, "request-00000001");
+        if let Some(cancelled_at_ms) = cancellation_at_ms {
+            lifecycle.set_test_now_ms(cancelled_at_ms);
+            assert!(
+                lifecycle
+                    .cancel_application_request(&sender, &cancel(1))
+                    .contains("cancelled")
+            );
+        }
+        lifecycle.set_test_now_ms(1_000);
+        let mut session = TurnSession::new(
+            1,
+            1,
+            1,
+            "Bounded task.".to_owned(),
+            RuntimeDescriptor::approved(),
+        )
+        .expect("turn session");
+        session
+            .fail(TurnState::ContainmentFailed, TurnReason::ProtocolRejected)
+            .expect("containment terminal");
+        session.settle_cleanup(true).expect("cleanup settlement");
+
+        let encoded = lifecycle.complete_turn_request(accepted, session.view());
+
+        assert!(encoded.contains("containment-failed"));
+        assert!(!encoded.contains("cancelled"));
+        assert!(!encoded.contains("timed-out"));
+    }
 }

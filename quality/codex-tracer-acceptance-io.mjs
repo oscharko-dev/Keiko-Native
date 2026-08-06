@@ -440,6 +440,8 @@ async function snapshotDirectory(root) {
 
 export function observedSafeguards({
   containmentMarkers,
+  homeAfter,
+  homeBefore,
   journey,
   packageInspection,
   residualProcesses,
@@ -457,6 +459,9 @@ export function observedSafeguards({
     runtimeAfter.entries === 0,
     runtimeBefore.bytes === 0,
     runtimeAfter.bytes === 0,
+    homeBefore.sha256 === homeAfter.sha256,
+    homeBefore.entries === homeAfter.entries,
+    homeBefore.bytes === homeAfter.bytes,
   );
   const unchangedWorkspace = conditionsMet(
     workspaceBefore.sha256 === workspaceAfter.sha256,
@@ -799,6 +804,7 @@ export function createCodexTracerAcceptanceIo() {
     },
     async runProductionJourney(prepared) {
       return {
+        homeBefore: await snapshotDirectory(prepared.internal.runtimeHome),
         runtimeBefore: await snapshotDirectory(
           prepared.internal.runtimeWorkRoot,
         ),
@@ -877,7 +883,8 @@ export function createCodexTracerAcceptanceIo() {
         );
         const cleanupMs = Math.round(performance.now() - cleanupStartedAt);
         cleaned = true;
-        const [runtimeAfter, workspaceAfter] = await Promise.all([
+        const [homeAfter, runtimeAfter, workspaceAfter] = await Promise.all([
+          snapshotDirectory(prepared.internal.runtimeHome),
           snapshotDirectory(prepared.internal.runtimeWorkRoot),
           snapshotDirectory(prepared.internal.workspaceRoot),
         ]);
@@ -910,6 +917,8 @@ export function createCodexTracerAcceptanceIo() {
           },
           safeguards: observedSafeguards({
             containmentMarkers: prepared.internal.containmentMarkers,
+            homeAfter,
+            homeBefore: production.homeBefore,
             journey,
             packageInspection: prepared.packageInspection,
             residualProcesses: processExists(child.pid) ? 1 : 0,

@@ -555,6 +555,26 @@ describe("production renderer composition", () => {
       },
     };
     turnChannel?.onmessage(cancelled);
+    const earlyRetryElements = all(render.mock.calls.at(-1)?.[0]);
+    const earlyRetryTask = earlyRetryElements.find(
+      ({ props }) => props.id === "codex-task",
+    )?.props;
+    const earlyRetrySubmit = earlyRetryElements.find(
+      ({ type, props }) =>
+        type === "button" && props.children === "Begrenzten Auftrag starten",
+    )?.props;
+    const earlyRetryTaskNode = { disabled: false, value: "Retry task." };
+    const earlyRetrySubmitNode = { disabled: true };
+    (earlyRetryTask?.ref as (node: typeof earlyRetryTaskNode) => void)(
+      earlyRetryTaskNode,
+    );
+    (earlyRetrySubmit?.ref as (node: typeof earlyRetrySubmitNode) => void)(
+      earlyRetrySubmitNode,
+    );
+    (earlyRetryTask?.onInput as () => void)();
+    (earlyRetrySubmit?.onClick as () => void)();
+    expect(earlyRetrySubmitNode.disabled).toBe(true);
+    const terminalRenderCount = render.mock.calls.length;
     resolveTurn?.(
       JSON.stringify({
         schemaVersion: 1,
@@ -563,5 +583,24 @@ describe("production renderer composition", () => {
       }),
     );
     for (let index = 0; index < 6; index += 1) await Promise.resolve();
+    expect(render).toHaveBeenCalledTimes(terminalRenderCount + 2);
+    const recoveredElements = all(render.mock.calls.at(-1)?.[0]);
+    const recoveredTask = recoveredElements.find(
+      ({ props }) => props.id === "codex-task",
+    )?.props;
+    const recoveredSubmit = recoveredElements.find(
+      ({ type, props }) =>
+        type === "button" && props.children === "Begrenzten Auftrag starten",
+    )?.props;
+    const recoveredTaskNode = { disabled: false, value: "Retry task." };
+    const recoveredSubmitNode = { disabled: true };
+    (recoveredTask?.ref as (node: typeof recoveredTaskNode) => void)(
+      recoveredTaskNode,
+    );
+    (recoveredSubmit?.ref as (node: typeof recoveredSubmitNode) => void)(
+      recoveredSubmitNode,
+    );
+    (recoveredTask?.onInput as () => void)();
+    expect(recoveredSubmitNode.disabled).toBe(false);
   });
 });

@@ -198,6 +198,7 @@ export async function startRenderer(
       } finally {
         if (activeTurnCancellation === cancellation) {
           activeTurnCancellation = null;
+          present(currentView);
         }
       }
     },

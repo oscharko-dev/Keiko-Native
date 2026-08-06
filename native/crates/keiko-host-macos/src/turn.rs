@@ -113,6 +113,13 @@ pub fn turn_request(
 }
 
 fn settle_session(session: &mut TurnSession, outcome: TurnRuntimeOutcome, projection_failed: bool) {
+    let projection_failed = projection_failed
+        || session
+            .retain_provider_correlations(
+                outcome.provider_thread_established,
+                outcome.provider_turn_established,
+            )
+            .is_err();
     let state_result = if projection_failed {
         session.fail(TurnState::ContainmentFailed, TurnReason::ProtocolRejected)
     } else {
@@ -358,6 +365,24 @@ mod tests {
             invalid_completion.view().state,
             TurnState::ContainmentFailed
         );
+
+        let mut partial_correlation = new_session();
+        settle_session(
+            &mut partial_correlation,
+            TurnRuntimeOutcome {
+                state: TurnState::Failed,
+                reason: Some(TurnReason::ProviderFailed),
+                agent_text: String::new(),
+                provider_thread_established: true,
+                provider_turn_established: false,
+                quarantined_events: 0,
+                cleaned: true,
+            },
+            false,
+        );
+        let partial_view = partial_correlation.view();
+        assert!(partial_view.provider_thread_established);
+        assert!(!partial_view.provider_turn_established);
     }
 
     #[test]

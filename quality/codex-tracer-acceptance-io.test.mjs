@@ -379,6 +379,8 @@ test("safeguards are derived from observed containment, journey, filesystem, and
     },
     packageInspection: { testHookMarkers: 0 },
     residualProcesses: 0,
+    homeBefore: { bytes: 1, entries: 1, sha256: "e".repeat(64) },
+    homeAfter: { bytes: 1, entries: 1, sha256: "e".repeat(64) },
     runtimeBefore: { bytes: 0, entries: 0, sha256: "b".repeat(64) },
     runtimeAfter: { bytes: 0, entries: 0, sha256: "b".repeat(64) },
     workspaceBefore: snapshot,
@@ -393,6 +395,7 @@ test("safeguards are derived from observed containment, journey, filesystem, and
   const changed = observedSafeguards({
     ...input,
     residualProcesses: 1,
+    homeAfter: { bytes: 2, entries: 2, sha256: "f".repeat(64) },
     runtimeAfter: { bytes: 1, entries: 1, sha256: "c".repeat(64) },
     workspaceAfter: { bytes: 1, entries: 2, sha256: "d".repeat(64) },
   });
