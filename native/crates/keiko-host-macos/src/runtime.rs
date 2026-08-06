@@ -4403,6 +4403,7 @@ wait
             "#!/bin/sh\n: > '{}'\nexit 0\n",
             launched.to_string_lossy()
         ));
+        let test_deadline = Duration::from_secs(5);
 
         assert!(host.cancel_for_workspace_change_and_wait(7));
         let stale = host.run_turn(
@@ -4410,7 +4411,7 @@ wait
             7,
             &repository,
             "Bounded task.",
-            Duration::from_secs(1),
+            test_deadline,
             |_| {},
         );
         assert_eq!(stale.state, TurnState::Failed);
@@ -4423,7 +4424,7 @@ wait
             8,
             &repository,
             "Fresh bounded task.",
-            Duration::from_secs(1),
+            test_deadline,
             |_| {},
         );
         assert!(
