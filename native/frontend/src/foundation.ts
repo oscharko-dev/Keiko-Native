@@ -315,7 +315,7 @@ function canvasSurface(
       "Keine Coding-, Wissens- oder Agentenfunktion ist in diesem internen Meilenstein enthalten.",
     ),
     workspacePanel(workspace, workspaceController),
-    runtimePanel(runtime, runtimeController),
+    runtimePanel(runtime, runtimeController, turn),
     createElement(
       "label",
       { htmlFor: "ime-harness" },
@@ -551,8 +551,12 @@ function observeTurnAction(action: Promise<void>): void {
 function runtimePanel(
   runtime: RuntimeReadiness | null,
   controller: RuntimeController,
+  turn: TurnView | null,
 ): ReactElement {
   const checking = runtime?.state === "checking";
+  const occupied = ["preflighting", "streaming", "stopping"].includes(
+    turn?.state ?? "",
+  );
   return createElement(
     "section",
     {
@@ -580,7 +584,7 @@ function runtimePanel(
       "button",
       {
         type: "button",
-        disabled: checking,
+        disabled: checking || occupied,
         onClick: () => observeRuntimeAction(controller.checkRuntime()),
       },
       checking

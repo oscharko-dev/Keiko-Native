@@ -15,9 +15,7 @@ use std::time::{Duration, Instant};
 
 use crate::sha256::sha256_copy;
 #[cfg(test)]
-use crate::sha256::sha256_file;
-#[cfg(test)]
-use crate::sha256::sha256_reader;
+use crate::sha256::{sha256_file, sha256_reader};
 use crate::{AcceptedRequest, HostLifecycle, SenderContext};
 use keiko_application::runtime::{
     CODEX_RUNTIME_SHA256, RuntimeReadinessState, RuntimeReadinessView,
@@ -40,6 +38,23 @@ const SIGTERM: i32 = 15;
 const WEXITED: i32 = 0x0000_0004;
 const WNOHANG: i32 = 0x0000_0001;
 const WNOWAIT: i32 = 0x0000_0020;
+#[cfg(not(test))]
+const PT_TRACE_ME: i32 = 0;
+#[cfg(not(test))]
+const PT_KILL: i32 = 8;
+#[cfg(not(test))]
+const PT_DETACH: i32 = 11;
+#[cfg(not(test))]
+const WUNTRACED: i32 = 0x0000_0002;
+#[cfg(not(test))]
+const CS_OPS_CDHASH: u32 = 5;
+const SIGTRAP: i32 = 5;
+// Kernel-reported CodeDirectory identity for the exact SHA-256-bound official
+// @openai/codex 0.145.0 macOS arm64 artifact.
+const CODEX_RUNTIME_CDHASH: [u8; 20] = [
+    0xc9, 0xda, 0x02, 0x8e, 0x20, 0x80, 0xa6, 0x84, 0xd2, 0xc3, 0x55, 0xe6, 0xf4, 0x0f, 0xfc, 0x53,
+    0xc2, 0x1f, 0xf7, 0xee,
+];
 
 const BINARY_ENV: &str = "KEIKO_CODEX_0_145_0_BINARY";
 const HOME_ENV: &str = "KEIKO_CODEX_0_145_0_HOME";
@@ -113,6 +128,15 @@ unsafe extern "C" {
     ) -> i32;
     #[link_name = "waitid"]
     fn keiko_waitid(id_type: i32, id: u32, information: *mut WaitInformation, options: i32) -> i32;
+    #[cfg(not(test))]
+    #[link_name = "ptrace"]
+    fn keiko_ptrace(request: i32, process: i32, address: *mut c_void, data: i32) -> i32;
+    #[cfg(not(test))]
+    #[link_name = "waitpid"]
+    fn keiko_waitpid(process: i32, status: *mut i32, options: i32) -> i32;
+    #[cfg(not(test))]
+    #[link_name = "csops"]
+    fn keiko_csops(process: i32, operation: u32, data: *mut c_void, size: usize) -> i32;
 }
 
 #[repr(C)]
@@ -407,15 +431,25 @@ impl RuntimeHost {
     }
 
     pub fn cancel_for_app_shutdown_and_wait(&self) -> bool {
-        self.cancel_for_app_shutdown();
-        self.active.wait_for_idle(TURN_CLEANUP_RESERVE)
+        self.cancel_and_wait(RuntimeCancellation::AppShutdown)
     }
 
     pub fn cancel_for_workspace_change_and_wait(&self, workspace_generation: u64) -> bool {
         self.invalidated_workspace_generation
             .fetch_max(workspace_generation, Ordering::AcqRel);
-        self.cancel_with_reason(RuntimeCancellation::WorkspaceChanged);
-        self.active.wait_for_idle(TURN_CLEANUP_RESERVE)
+        self.cancel_and_wait(RuntimeCancellation::WorkspaceChanged)
+    }
+
+    fn cancel_and_wait(&self, reason: RuntimeCancellation) -> bool {
+        let deadline = Instant::now() + TURN_CLEANUP_RESERVE;
+        self.cancel_with_reason(reason);
+        if !self
+            .active
+            .wait_for_idle(deadline.saturating_duration_since(Instant::now()))
+        {
+            return false;
+        }
+        reconcile_retained_process_group(&self.active, deadline)
     }
 
     fn cancel_with_reason(&self, reason: RuntimeCancellation) {
@@ -695,10 +729,8 @@ fn perform_turn(
     let work_directory = verified
         .work_root
         .join(format!("turn-{}-{generation}", std::process::id()));
-    if fs::create_dir(&work_directory).is_err()
-        || fs::set_permissions(&work_directory, fs::Permissions::from_mode(0o700)).is_err()
-    {
-        return TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::RuntimeUnavailable);
+    if let Err(outcome) = create_private_turn_directory(&work_directory) {
+        return outcome;
     }
     let mut outcome = run_turn_protocol(
         &mut verified,
@@ -740,7 +772,7 @@ fn run_turn_protocol(
             );
         }
     };
-    let mut command = Command::new(executable);
+    let mut command = Command::new(executable.path());
     command
         .args(CODEX_CONTAINMENT_ARGUMENTS)
         .current_dir(work_directory)
@@ -751,10 +783,17 @@ fn run_turn_protocol(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
-    let mut child = match command.spawn() {
+    let mut child = match spawn_verified_runtime(&mut command) {
         Ok(child) => child,
-        Err(_) => {
-            return TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::RuntimeUnavailable);
+        Err(error) => {
+            return if error.kind() == io::ErrorKind::PermissionDenied {
+                TurnRuntimeOutcome::terminal(
+                    TurnState::ContainmentFailed,
+                    TurnReason::ProtocolRejected,
+                )
+            } else {
+                TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::RuntimeUnavailable)
+            };
         }
     };
     let process_group = child.id() as i32;
@@ -1018,6 +1057,17 @@ struct VerifiedConfiguration {
     work_root: PathBuf,
 }
 
+#[derive(Debug)]
+struct VerifiedExecutable {
+    path: PathBuf,
+}
+
+impl VerifiedExecutable {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
 impl VerifiedConfiguration {
     fn revalidate_binary_identity(&self) -> Result<(), RuntimeReadinessState> {
         let descriptor_metadata = self
@@ -1057,7 +1107,7 @@ impl VerifiedConfiguration {
     fn stage_verified_binary(
         &mut self,
         work_directory: &Path,
-    ) -> Result<PathBuf, RuntimeReadinessState> {
+    ) -> Result<VerifiedExecutable, RuntimeReadinessState> {
         self.revalidate_binary_identity()?;
         self.binary_file
             .seek(SeekFrom::Start(0))
@@ -1085,8 +1135,106 @@ impl VerifiedConfiguration {
         if !staged_file_valid(&staged_metadata, &staged_sha256, &self.expected_sha256) {
             return Err(RuntimeReadinessState::ContainmentFailed);
         }
-        Ok(staged)
+        Ok(VerifiedExecutable { path: staged })
     }
+}
+
+fn create_private_turn_directory(work_directory: &Path) -> Result<(), TurnRuntimeOutcome> {
+    create_private_turn_directory_with(work_directory, |path| {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+    })
+}
+
+fn create_private_turn_directory_with(
+    work_directory: &Path,
+    harden: impl FnOnce(&Path) -> io::Result<()>,
+) -> Result<(), TurnRuntimeOutcome> {
+    if fs::create_dir(work_directory).is_err() {
+        return Err(TurnRuntimeOutcome::terminal(
+            TurnState::Failed,
+            TurnReason::RuntimeUnavailable,
+        ));
+    }
+    if harden(work_directory).is_ok() {
+        return Ok(());
+    }
+    if fs::remove_dir_all(work_directory).is_ok() {
+        Err(TurnRuntimeOutcome::terminal(
+            TurnState::Failed,
+            TurnReason::RuntimeUnavailable,
+        ))
+    } else {
+        let mut outcome =
+            TurnRuntimeOutcome::terminal(TurnState::CleanupFailed, TurnReason::CleanupFailed);
+        outcome.cleaned = false;
+        Err(outcome)
+    }
+}
+
+#[cfg(test)]
+fn spawn_verified_runtime(command: &mut Command) -> io::Result<Child> {
+    command.spawn()
+}
+
+#[cfg(not(test))]
+fn spawn_verified_runtime(command: &mut Command) -> io::Result<Child> {
+    // SAFETY: the child makes only the async-signal-safe PT_TRACE_ME syscall
+    // before exec. The kernel then stops it at the exec boundary, before the
+    // selected image can execute its first instruction.
+    unsafe {
+        command.pre_exec(|| {
+            if keiko_ptrace(PT_TRACE_ME, 0, std::ptr::null_mut(), 0) == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        });
+    }
+    let mut child = command.spawn()?;
+    let process = child.id() as i32;
+    let mut status = 0_i32;
+    // SAFETY: waitpid observes only the direct child returned above and keeps
+    // it stopped for validation rather than reaping it.
+    let waited = unsafe { keiko_waitpid(process, &mut status, WUNTRACED) };
+    let mut actual_cdhash = [0_u8; CODEX_RUNTIME_CDHASH.len()];
+    let validated = waited == process
+        && wait_status_is_exec_stop(status)
+        // SAFETY: csops writes exactly the fixed CDHash buffer for the stopped
+        // direct child. No provider code has run yet.
+        && unsafe {
+            keiko_csops(
+                process,
+                CS_OPS_CDHASH,
+                actual_cdhash.as_mut_ptr().cast::<c_void>(),
+                actual_cdhash.len(),
+            )
+        } == 0
+        && actual_cdhash == CODEX_RUNTIME_CDHASH;
+    if !validated {
+        // SAFETY: PT_KILL applies only to the stopped direct child.
+        unsafe {
+            keiko_ptrace(PT_KILL, process, std::ptr::null_mut(), 0);
+        }
+        let _ = child.wait();
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "runtime executable identity",
+        ));
+    }
+    // SAFETY: address 1 requests continuation from the current instruction;
+    // detaching releases only the validated direct child.
+    if unsafe { keiko_ptrace(PT_DETACH, process, std::ptr::dangling_mut::<c_void>(), 0) } != 0 {
+        unsafe {
+            keiko_ptrace(PT_KILL, process, std::ptr::null_mut(), 0);
+        }
+        let _ = child.wait();
+        return Err(io::Error::last_os_error());
+    }
+    Ok(child)
+}
+
+fn wait_status_is_exec_stop(status: i32) -> bool {
+    status & 0x7f == 0x7f && (status >> 8) & 0xff == SIGTRAP
 }
 
 fn staged_file_valid(metadata: &Metadata, digest: &str, expected_digest: &str) -> bool {
@@ -1174,7 +1322,7 @@ fn run_protocol(
             };
         }
     };
-    let mut command = Command::new(executable);
+    let mut command = Command::new(executable.path());
     command
         .args(CODEX_CONTAINMENT_ARGUMENTS)
         .current_dir(work_directory)
@@ -1185,11 +1333,15 @@ fn run_protocol(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
-    let mut child = match command.spawn() {
+    let mut child = match spawn_verified_runtime(&mut command) {
         Ok(child) => child,
-        Err(_) => {
+        Err(error) => {
             return ProtocolOutcome {
-                state: RuntimeReadinessState::Unavailable,
+                state: if error.kind() == io::ErrorKind::PermissionDenied {
+                    RuntimeReadinessState::ContainmentFailed
+                } else {
+                    RuntimeReadinessState::Unavailable
+                },
                 quarantined_events: 0,
                 cleaned: true,
             };
@@ -1789,6 +1941,17 @@ impl<'a> TurnProtocolProjection<'a> {
         let Some(method) = object.get("method").and_then(Value::as_str) else {
             return self.containment(TurnReason::ProtocolRejected);
         };
+        if matches!(
+            method,
+            "turn/started"
+                | "item/started"
+                | "item/completed"
+                | "item/agentMessage/delta"
+                | "turn/completed"
+        ) && self.stage != TurnProjectionStage::Active
+        {
+            return self.containment(TurnReason::ProtocolRejected);
+        }
         let params = object.get("params");
         match method {
             "remoteControl/status/changed" if remote_control_is_disabled(params) => {
@@ -1808,13 +1971,16 @@ impl<'a> TurnProtocolProjection<'a> {
     }
 
     fn quarantine_thread_event(&mut self, params: Option<&Value>) -> TurnProjectionAction {
+        let Some(thread_id) = self.thread_id.as_deref() else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
         let Some(thread) = params
             .and_then(|params| params.get("thread"))
             .and_then(Value::as_object)
         else {
             return self.containment(TurnReason::ProtocolRejected);
         };
-        if self.thread_id.as_deref() == thread.get("id").and_then(Value::as_str) {
+        if Some(thread_id) == thread.get("id").and_then(Value::as_str) {
             self.quarantine()
         } else {
             self.containment(TurnReason::ProtocolRejected)
@@ -1822,7 +1988,10 @@ impl<'a> TurnProtocolProjection<'a> {
     }
 
     fn quarantine_correlated_thread(&mut self, params: Option<&Value>) -> TurnProjectionAction {
-        if self.thread_id.as_deref()
+        let Some(thread_id) = self.thread_id.as_deref() else {
+            return self.containment(TurnReason::ProtocolRejected);
+        };
+        if Some(thread_id)
             == params
                 .and_then(|params| params.get("threadId"))
                 .and_then(Value::as_str)
@@ -1859,10 +2028,7 @@ impl<'a> TurnProtocolProjection<'a> {
         };
         if self.thread_id.as_deref() != params.get("threadId").and_then(Value::as_str)
             || turn.get("status").and_then(Value::as_str) != Some("inProgress")
-            || self
-                .turn_id
-                .as_deref()
-                .is_some_and(|known| known != turn_id)
+            || self.turn_id.as_deref() != Some(turn_id)
         {
             return self.containment(TurnReason::ProtocolRejected);
         }
@@ -1959,8 +2125,12 @@ impl<'a> TurnProtocolProjection<'a> {
     }
 
     fn correlations_match(&self, params: &serde_json::Map<String, Value>) -> bool {
-        self.thread_id.as_deref() == params.get("threadId").and_then(Value::as_str)
-            && self.turn_id.as_deref() == params.get("turnId").and_then(Value::as_str)
+        let (Some(thread_id), Some(turn_id)) = (self.thread_id.as_deref(), self.turn_id.as_deref())
+        else {
+            return false;
+        };
+        Some(thread_id) == params.get("threadId").and_then(Value::as_str)
+            && Some(turn_id) == params.get("turnId").and_then(Value::as_str)
     }
 
     fn streaming_action(&mut self) -> TurnProjectionAction {
@@ -2098,6 +2268,57 @@ fn stop_process_group_with_term_grace(
     }
     let _ = child.try_wait();
     false
+}
+
+fn reconcile_retained_process_group(active: &ActiveRuntime, deadline: Instant) -> bool {
+    let Some(process_group) = active.process_group.lock().ok().and_then(|group| *group) else {
+        return true;
+    };
+    let _ = refresh_owned_processes(active);
+    signal_active_process_group(active, process_group, SIGTERM);
+    let term_deadline = deadline.min(Instant::now() + CANCEL_TERM_GRACE);
+    while Instant::now() < term_deadline {
+        if retire_retained_process_group_if_stopped(active, process_group) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    signal_active_process_group(active, process_group, SIGKILL);
+    while Instant::now() < deadline {
+        if retire_retained_process_group_if_stopped(active, process_group) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    retire_retained_process_group_if_stopped(active, process_group)
+}
+
+fn retire_retained_process_group_if_stopped(active: &ActiveRuntime, process_group: i32) -> bool {
+    let _ = refresh_owned_processes(active);
+    let owned_alive = active.owned_processes.lock().map_or(true, |mut owned| {
+        owned.retain(|identity| process_identity(identity.process_id) == Some(*identity));
+        !owned.is_empty()
+    });
+    let group_exists = process_group_exists(process_group);
+    let descendants_alive =
+        process_group_has_descendants(process_group, process_group).unwrap_or(group_exists);
+    let child_exited = child_exited_without_reaping(process_group).unwrap_or(!group_exists);
+    if owned_alive || descendants_alive || !child_exited {
+        return false;
+    }
+    if group_exists && !reap_child(process_group) {
+        return false;
+    }
+    retire_active_process_group(active, process_group);
+    true
+}
+
+fn reap_child(child: i32) -> bool {
+    let mut information = WaitInformation::default();
+    // SAFETY: waitid receives the retained positive child PID owned by this
+    // supervisor and reaps it only after all live descendants are absent.
+    let result = unsafe { keiko_waitid(P_PID, child as u32, &mut information, WEXITED) };
+    result == 0 && information.process_id == child
 }
 
 fn signal_active_process_group(active: &ActiveRuntime, process_group: i32, signal: i32) -> bool {
@@ -2339,7 +2560,6 @@ fn signal_process(process: i32, signal: i32) {
     }
 }
 
-#[cfg(test)]
 fn process_group_exists(process_group: i32) -> bool {
     // SAFETY: signal 0 performs existence/permission checking only. The process
     // group ID came directly from the child created by this supervisor.
@@ -2882,7 +3102,7 @@ mod tests {
     }
 
     #[test]
-    fn staged_runtime_is_bound_to_verified_descriptor_not_mutable_install_path() {
+    fn staged_runtime_is_copied_from_the_verified_descriptor() {
         let fixture = Fixture::new();
         let _host = fixture.scripted_host("#!/bin/sh\nprintf 'verified\\n'\n");
         let expected = sha256_file(&fixture.binary).expect("approved digest");
@@ -2895,19 +3115,28 @@ mod tests {
         let mut verified = bind_configuration(&configuration, None).expect("bound");
         let stage_root = fixture.work.join("stage-test");
         fs::create_dir(&stage_root).expect("stage root");
-        let staged = verified
+        let executable = verified
             .stage_verified_binary(&stage_root)
-            .expect("verified staging");
+            .expect("verified staged executable");
 
         fs::write(&fixture.binary, "#!/bin/sh\nprintf 'replacement\\n'\n")
             .expect("replace installation path");
         fs::set_permissions(&fixture.binary, fs::Permissions::from_mode(0o700))
             .expect("replacement mode");
-        assert_eq!(sha256_file(&staged).expect("staged digest"), expected);
-        let output = Command::new(staged)
+        let output = Command::new(executable.path())
             .output()
             .expect("execute staged runtime");
         assert_eq!(output.stdout, b"verified\n");
+    }
+
+    #[test]
+    fn suspended_exec_validation_requires_the_exact_runtime_cdhash() {
+        assert_eq!(CODEX_RUNTIME_CDHASH.len(), 20);
+        assert!(wait_status_is_exec_stop((SIGTRAP << 8) | 0x7f));
+        assert!(!wait_status_is_exec_stop(0));
+        let mut substituted = CODEX_RUNTIME_CDHASH;
+        substituted[0] ^= 0xff;
+        assert_ne!(substituted, CODEX_RUNTIME_CDHASH);
     }
 
     #[test]
@@ -3466,6 +3695,27 @@ printf '%s\n' '{"method":"item/tool/call","id":7,"params":{"path":"/private/secr
     fn turn_projection_rejects_uncorrelated_lifecycle_items_and_deltas() {
         let home = Path::new("/private/tmp/codex-home");
         let work = Path::new("/private/tmp/codex-work");
+
+        assert_turn_containment(
+            TurnProtocolProjection::new(home, work)
+                .accept(br#"{"method":"thread/started","params":{"thread":{}}}"#),
+            TurnReason::ProtocolRejected,
+        );
+
+        for event in [
+            json!({"method": "turn/started", "params": {"threadId": "thread-1", "turn": {"id": "turn-1", "status": "inProgress"}}}),
+            json!({"method": "item/started", "params": {"threadId": "thread-1", "turnId": "turn-1", "item": {"id": "item-1", "type": "agentMessage"}}}),
+            json!({"method": "item/agentMessage/delta", "params": {"threadId": "thread-1", "turnId": "turn-1", "itemId": "item-1", "delta": "unsafe"}}),
+            json!({"method": "turn/completed", "params": {"threadId": "thread-1", "turn": {"id": "turn-1", "status": "completed"}}}),
+        ] {
+            let mut pre_active = TurnProtocolProjection::new(home, work);
+            pre_active.thread_id = Some("thread-1".to_owned());
+            pre_active.turn_id = Some("turn-1".to_owned());
+            assert_turn_containment(
+                pre_active.accept(&serde_json::to_vec(&event).unwrap()),
+                TurnReason::ProtocolRejected,
+            );
+        }
 
         for event in [
             json!({"method": "thread/started"}),
@@ -4142,6 +4392,87 @@ while :; do /bin/sleep 1; done
         assert_eq!(cancelled.state, TurnState::Cancelled);
         assert_eq!(cancelled.reason, Some(TurnReason::AppShutdown));
         assert!(cancelled.cleaned);
+    }
+
+    #[test]
+    fn shutdown_and_workspace_change_reconcile_retained_term_resistant_processes() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for workspace_change in [false, true] {
+            let fixture = Fixture::new();
+            let ready = fixture.root.join("retained-cleanup-ready");
+            let mut child = Command::new("/bin/sh")
+                .arg("-c")
+                .arg(format!(
+                    "trap '' TERM; : > '{}'; while :; do /bin/sleep 1; done",
+                    ready.to_string_lossy()
+                ))
+                .process_group(0)
+                .spawn()
+                .expect("retained process fixture");
+            let process_group = child.id() as i32;
+            let wait_deadline = Instant::now() + Duration::from_secs(2);
+            while !ready.is_file() && Instant::now() < wait_deadline {
+                thread::sleep(Duration::from_millis(5));
+            }
+            assert!(ready.is_file(), "retained process did not become ready");
+
+            let host = RuntimeHost::unavailable_for_test();
+            *host
+                .active
+                .process_group
+                .lock()
+                .expect("process-group state") = Some(process_group);
+            register_owned_process(&host.active, process_group);
+            let cleaned = if workspace_change {
+                host.cancel_for_workspace_change_and_wait(1)
+            } else {
+                host.cancel_for_app_shutdown_and_wait()
+            };
+            let residual = process_group_exists(process_group);
+            if residual {
+                signal_process_group(process_group, SIGKILL);
+            }
+            let _ = child.wait();
+
+            assert!(cleaned, "cleanup did not reconcile retained ownership");
+            assert!(!residual, "retained process group survived cleanup");
+            assert_eq!(*host.active.process_group.lock().unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn turn_directory_permission_failure_reports_proven_cleanup() {
+        let fixture = Fixture::new();
+        let work_directory = fixture.work.join("partial-turn");
+        let outcome = create_private_turn_directory_with(&work_directory, |path| {
+            fs::write(path.join("owned"), b"partial").expect("partial owned entry");
+            Err(io::Error::new(io::ErrorKind::PermissionDenied, "fixture"))
+        })
+        .expect_err("permission failure");
+
+        assert_eq!(outcome.state, TurnState::Failed);
+        assert_eq!(outcome.reason, Some(TurnReason::RuntimeUnavailable));
+        assert!(outcome.cleaned);
+        assert!(!work_directory.exists());
+    }
+
+    #[test]
+    fn turn_directory_permission_failure_never_claims_unproven_cleanup() {
+        let fixture = Fixture::new();
+        let work_directory = fixture.work.join("replaced-partial-turn");
+        let outcome = create_private_turn_directory_with(&work_directory, |path| {
+            fs::remove_dir(path).expect("remove partial directory");
+            fs::write(path, b"replacement").expect("replace directory with file");
+            Err(io::Error::new(io::ErrorKind::PermissionDenied, "fixture"))
+        })
+        .expect_err("permission failure");
+
+        assert_eq!(outcome.state, TurnState::CleanupFailed);
+        assert_eq!(outcome.reason, Some(TurnReason::CleanupFailed));
+        assert!(!outcome.cleaned);
+        fs::remove_file(work_directory).expect("remove replacement fixture");
     }
 
     #[test]

@@ -535,6 +535,11 @@ describe("closed Foundation presentation", () => {
       streaming,
       turnController,
     );
+    const readinessRetry = elements(active).find(
+      ({ type, props }) =>
+        type === "button" && props.children === "Prüfung wiederholen",
+    )?.props;
+    expect(readinessRetry?.disabled).toBe(true);
     const cancel = elements(active).find(
       ({ type, props }) =>
         type === "button" && props.children === "Codex-Lauf abbrechen",
