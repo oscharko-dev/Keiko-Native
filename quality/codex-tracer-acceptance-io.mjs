@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
+import { constants as fileConstants } from "node:fs";
 import {
   chmod,
-  cp,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   readlink,
   readdir,
@@ -449,11 +450,39 @@ export async function snapshotDirectory(root) {
 export async function stageDisposableRuntimeHome(runtimeHome, runRoot) {
   const disposableHome = join(runRoot, "disposable-codex-home");
   const retainedHome = join(runRoot, "retained-codex-home");
-  await cp(runtimeHome, disposableHome, {
-    recursive: true,
-    verbatimSymlinks: true,
-  });
-  await chmod(disposableHome, 0o700);
+  await mkdir(disposableHome, { mode: 0o700 });
+  const source = await open(
+    join(runtimeHome, "installation_id"),
+    fileConstants.O_RDONLY | fileConstants.O_NOFOLLOW,
+  );
+  try {
+    const metadata = await source.stat();
+    if (
+      !metadata.isFile() ||
+      metadata.uid !== process.geteuid() ||
+      (metadata.mode & 0o022) !== 0 ||
+      metadata.size < 1 ||
+      metadata.size > 4096
+    ) {
+      throw new Error("acceptance-auth-identity-invalid");
+    }
+    const identity = await source.readFile();
+    if (identity.length !== metadata.size)
+      throw new Error("acceptance-auth-identity-drift");
+    const destination = await open(
+      join(disposableHome, "installation_id"),
+      fileConstants.O_WRONLY | fileConstants.O_CREAT | fileConstants.O_EXCL,
+      0o600,
+    );
+    try {
+      await destination.writeFile(identity);
+      await destination.sync();
+    } finally {
+      await destination.close();
+    }
+  } finally {
+    await source.close();
+  }
   let retained = false;
   try {
     await rename(runtimeHome, retainedHome);

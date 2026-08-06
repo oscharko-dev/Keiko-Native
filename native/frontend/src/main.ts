@@ -112,6 +112,10 @@ export async function startRenderer(
     },
   };
   const presentWorkspace = (state: WorkspaceState): void => {
+    if (state.generation !== workspaceState.generation) {
+      runtimeState = null;
+      turnState = null;
+    }
     workspaceState = state;
     present(currentView);
   };
@@ -179,6 +183,9 @@ export async function startRenderer(
           workspaceGeneration,
           task,
           (state) => {
+            if (workspaceState.generation !== state.workspaceGeneration) {
+              return;
+            }
             turnState = state;
             if (
               state.state === "failed" &&

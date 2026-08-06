@@ -207,6 +207,7 @@ struct ProcessIdentity {
 struct ActiveRuntime {
     process_group: Mutex<Option<i32>>,
     owned_processes: Mutex<HashSet<ProcessIdentity>>,
+    retained_work_directories: Mutex<HashSet<PathBuf>>,
     control: Mutex<RuntimeControl>,
     finished: Condvar,
     #[cfg(test)]
@@ -262,6 +263,9 @@ impl RuntimeCancellation {
 
 impl ActiveRuntime {
     fn claim_request(&self, request_id: &str) -> bool {
+        if !reconcile_retained_work_directories(self) {
+            return false;
+        }
         let Ok(process_group) = self.process_group.lock() else {
             return false;
         };
@@ -470,6 +474,7 @@ impl RuntimeHost {
             return false;
         }
         reconcile_retained_process_group(&self.active, deadline)
+            && reconcile_retained_work_directories(&self.active)
     }
 
     fn cancel_with_reason(&self, reason: RuntimeCancellation) {
@@ -685,7 +690,7 @@ fn perform_check(
         return RuntimeReadinessView::terminal(state, 0);
     }
     let outcome = run_protocol(&mut verified, &work_directory, active, deadline);
-    let work_cleaned = fs::remove_dir_all(&work_directory).is_ok();
+    let work_cleaned = cleanup_or_retain_work_directory(active, &work_directory);
     if !outcome.cleaned || !work_cleaned {
         RuntimeReadinessView::terminal(
             RuntimeReadinessState::CleanupFailed,
@@ -745,7 +750,7 @@ fn perform_turn(
         match DisposableRuntimeHome::stage(&verified.codex_home, &work_directory) {
             Ok(home) => home,
             Err(()) => {
-                let cleaned = fs::remove_dir_all(&work_directory).is_ok();
+                let cleaned = cleanup_or_retain_work_directory(active, &work_directory);
                 return if cleaned {
                     TurnRuntimeOutcome::terminal(
                         TurnState::ContainmentFailed,
@@ -768,13 +773,43 @@ fn perform_turn(
         update,
     );
     let home_restored = disposable_home.restore();
-    let work_cleaned = home_restored && fs::remove_dir_all(&work_directory).is_ok();
+    let work_cleaned = if home_restored {
+        cleanup_or_retain_work_directory(active, &work_directory)
+    } else {
+        retain_work_directory(active, &work_directory);
+        false
+    };
     outcome.cleaned = outcome.cleaned && work_cleaned;
     if !outcome.cleaned {
         outcome.state = TurnState::CleanupFailed;
         outcome.reason = Some(TurnReason::CleanupFailed);
     }
     outcome
+}
+
+fn cleanup_or_retain_work_directory(active: &ActiveRuntime, path: &Path) -> bool {
+    if fs::remove_dir_all(path).is_ok() {
+        return true;
+    }
+    retain_work_directory(active, path);
+    false
+}
+
+fn retain_work_directory(active: &ActiveRuntime, path: &Path) {
+    let mut retained = active
+        .retained_work_directories
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    retained.insert(path.to_path_buf());
+}
+
+fn reconcile_retained_work_directories(active: &ActiveRuntime) -> bool {
+    let mut retained = active
+        .retained_work_directories
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    retained.retain(|path| fs::remove_dir_all(path).is_err());
+    retained.is_empty()
 }
 
 #[derive(Debug)]
@@ -797,10 +832,16 @@ impl DisposableRuntimeHome {
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or(())?;
+        if !valid_turn_directory_name(work_name) {
+            return Err(());
+        }
         let retained_home =
             persistent_parent.join(format!(".keiko-retained-{persistent_name}-{work_name}"));
-        let discarded_home = work_directory.join("discarded-codex-home");
-        if fs::symlink_metadata(&retained_home).is_ok() {
+        let discarded_home =
+            persistent_parent.join(format!(".keiko-discarded-{persistent_name}-{work_name}"));
+        if fs::symlink_metadata(&retained_home).is_ok()
+            || fs::symlink_metadata(&discarded_home).is_ok()
+        {
             return Err(());
         }
         fs::DirBuilder::new()
@@ -844,7 +885,7 @@ impl DisposableRuntimeHome {
             return false;
         }
         self.restored = true;
-        true
+        fs::remove_dir_all(&self.discarded_home).is_ok()
     }
 }
 
@@ -1437,9 +1478,13 @@ fn bind_configuration(
     selected_workspace: Option<&Path>,
 ) -> Result<VerifiedConfiguration, RuntimeReadinessState> {
     let binary = canonical_existing(&configuration.binary, false)?;
-    let codex_home = canonical_existing(&configuration.codex_home, true)?;
     let work_root = canonical_existing(&configuration.work_root, true)?;
-    if !private_owned_work_root(&work_root) || !protected_directory_chain(&work_root) {
+    if !private_owned_directory(&work_root) || !protected_directory_chain(&work_root) {
+        return Err(RuntimeReadinessState::ContainmentFailed);
+    }
+    recover_interrupted_runtime_home(&configuration.codex_home, &work_root)?;
+    let codex_home = canonical_existing(&configuration.codex_home, true)?;
+    if !private_owned_directory(&codex_home) || !protected_directory_chain(&codex_home) {
         return Err(RuntimeReadinessState::ContainmentFailed);
     }
     if roots_overlap(&codex_home, &work_root)
@@ -1476,13 +1521,157 @@ fn effective_user_id() -> u32 {
     unsafe { keiko_geteuid() }
 }
 
-fn private_owned_work_root(path: &Path) -> bool {
+fn private_owned_directory(path: &Path) -> bool {
     fs::symlink_metadata(path)
-        .is_ok_and(|metadata| private_owned_work_root_metadata(&metadata, effective_user_id()))
+        .is_ok_and(|metadata| private_owned_directory_metadata(&metadata, effective_user_id()))
 }
 
-fn private_owned_work_root_metadata(metadata: &fs::Metadata, owner: u32) -> bool {
+fn private_owned_directory_metadata(metadata: &fs::Metadata, owner: u32) -> bool {
     metadata.is_dir() && metadata.uid() == owner && metadata.permissions().mode() & 0o777 == 0o700
+}
+
+fn recover_interrupted_runtime_home(
+    persistent_home: &Path,
+    work_root: &Path,
+) -> Result<(), RuntimeReadinessState> {
+    if !persistent_home.is_absolute() {
+        return Err(RuntimeReadinessState::ContainmentFailed);
+    }
+    let parent = persistent_home
+        .parent()
+        .ok_or(RuntimeReadinessState::ContainmentFailed)?;
+    let home_name = persistent_home
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(RuntimeReadinessState::ContainmentFailed)?;
+    let canonical_parent = canonical_existing(parent, true)?;
+    if !protected_directory_chain(&canonical_parent) {
+        return Err(RuntimeReadinessState::ContainmentFailed);
+    }
+
+    let retained_prefix = format!(".keiko-retained-{home_name}-");
+    let discarded_prefix = format!(".keiko-discarded-{home_name}-");
+    let mut retained = None;
+    let mut discarded = None;
+    for entry in
+        fs::read_dir(&canonical_parent).map_err(|_| RuntimeReadinessState::ContainmentFailed)?
+    {
+        let entry = entry.map_err(|_| RuntimeReadinessState::ContainmentFailed)?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let (slot, suffix, retained_marker) =
+            if let Some(suffix) = name.strip_prefix(&retained_prefix) {
+                (&mut retained, suffix, true)
+            } else if let Some(suffix) = name.strip_prefix(&discarded_prefix) {
+                (&mut discarded, suffix, false)
+            } else {
+                continue;
+            };
+        if slot.is_some() || !valid_turn_directory_name(suffix) {
+            return Err(RuntimeReadinessState::ContainmentFailed);
+        }
+        let metadata = fs::symlink_metadata(entry.path())
+            .map_err(|_| RuntimeReadinessState::ContainmentFailed)?;
+        let mode = metadata.permissions().mode() & 0o777;
+        if !metadata.is_dir()
+            || metadata.uid() != effective_user_id()
+            || if retained_marker {
+                mode != 0o000 && mode != 0o700
+            } else {
+                mode != 0o700
+            }
+        {
+            return Err(RuntimeReadinessState::ContainmentFailed);
+        }
+        *slot = Some((entry.path(), suffix.to_owned()));
+    }
+
+    if retained.is_none() && discarded.is_none() {
+        return Ok(());
+    }
+    if retained
+        .as_ref()
+        .zip(discarded.as_ref())
+        .is_some_and(|(left, right)| left.1 != right.1)
+    {
+        return Err(RuntimeReadinessState::ContainmentFailed);
+    }
+    let persistent_exists = match fs::symlink_metadata(persistent_home) {
+        Ok(metadata) => {
+            if !private_owned_directory_metadata(&metadata, effective_user_id()) {
+                return Err(RuntimeReadinessState::ContainmentFailed);
+            }
+            true
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(_) => return Err(RuntimeReadinessState::ContainmentFailed),
+    };
+
+    if let Some((retained_path, suffix)) = retained {
+        let discarded_path = canonical_parent.join(format!("{discarded_prefix}{suffix}"));
+        if persistent_exists
+            && (discarded.is_some() || fs::rename(persistent_home, &discarded_path).is_err())
+        {
+            return Err(RuntimeReadinessState::ContainmentFailed);
+        }
+        if fs::set_permissions(&retained_path, fs::Permissions::from_mode(0o700)).is_err()
+            || fs::rename(&retained_path, persistent_home).is_err()
+        {
+            if persistent_exists {
+                let _ = fs::rename(&discarded_path, persistent_home);
+            }
+            let _ = fs::set_permissions(&retained_path, fs::Permissions::from_mode(0o000));
+            return Err(RuntimeReadinessState::ContainmentFailed);
+        }
+        if fs::symlink_metadata(&discarded_path).is_ok()
+            && fs::remove_dir_all(&discarded_path).is_err()
+        {
+            return Err(RuntimeReadinessState::ContainmentFailed);
+        }
+        cleanup_recovered_turn_directory(work_root, &suffix)?;
+        return Ok(());
+    }
+
+    let Some((discarded_path, suffix)) = discarded else {
+        return Ok(());
+    };
+    if !persistent_exists || fs::remove_dir_all(discarded_path).is_err() {
+        return Err(RuntimeReadinessState::ContainmentFailed);
+    }
+    cleanup_recovered_turn_directory(work_root, &suffix)
+}
+
+fn cleanup_recovered_turn_directory(
+    work_root: &Path,
+    turn_name: &str,
+) -> Result<(), RuntimeReadinessState> {
+    let turn_directory = work_root.join(turn_name);
+    match fs::symlink_metadata(&turn_directory) {
+        Ok(metadata) => {
+            if !private_owned_directory_metadata(&metadata, effective_user_id())
+                || fs::remove_dir_all(turn_directory).is_err()
+            {
+                return Err(RuntimeReadinessState::ContainmentFailed);
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => return Err(RuntimeReadinessState::ContainmentFailed),
+    }
+    Ok(())
+}
+
+fn valid_turn_directory_name(name: &str) -> bool {
+    let Some((process, generation)) = name
+        .strip_prefix("turn-")
+        .and_then(|rest| rest.split_once('-'))
+    else {
+        return false;
+    };
+    !process.is_empty()
+        && !generation.is_empty()
+        && process.bytes().all(|byte| byte.is_ascii_digit())
+        && generation.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn protected_directory_chain(path: &Path) -> bool {
@@ -2801,6 +2990,7 @@ fn process_group_exists(process_group: i32) -> bool {
 mod tests {
     use super::*;
     use std::io::Cursor;
+    use std::os::unix::ffi::OsStringExt;
     use std::os::unix::fs::symlink;
 
     static PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -3263,6 +3453,36 @@ mod tests {
         );
         fs::set_permissions(&writable_parent, fs::Permissions::from_mode(0o700))
             .expect("restore parent for fixture cleanup");
+
+        fs::set_permissions(&fixture.home, fs::Permissions::from_mode(0o777))
+            .expect("writable home");
+        assert_eq!(
+            bind_configuration(&nested, None).expect_err("writable Codex home"),
+            RuntimeReadinessState::ContainmentFailed
+        );
+        fs::set_permissions(&fixture.home, fs::Permissions::from_mode(0o700))
+            .expect("restore private home");
+
+        let writable_home_parent = fixture.root.join("writable-home-parent");
+        let nested_home = writable_home_parent.join("home");
+        fs::create_dir_all(&nested_home).expect("nested home");
+        fs::write(nested_home.join(CODEX_INSTALLATION_ID), b"installation")
+            .expect("nested installation identity");
+        fs::set_permissions(&writable_home_parent, fs::Permissions::from_mode(0o777))
+            .expect("writable home parent");
+        fs::set_permissions(&nested_home, fs::Permissions::from_mode(0o700))
+            .expect("private nested home");
+        let unprotected_home = RuntimeConfiguration {
+            codex_home: nested_home,
+            work_root: fixture.work.clone(),
+            ..nested
+        };
+        assert_eq!(
+            bind_configuration(&unprotected_home, None).expect_err("unprotected Codex home parent"),
+            RuntimeReadinessState::ContainmentFailed
+        );
+        fs::set_permissions(&writable_home_parent, fs::Permissions::from_mode(0o700))
+            .expect("restore home parent for fixture cleanup");
     }
 
     #[test]
@@ -3309,8 +3529,8 @@ mod tests {
             &installation_metadata,
             effective_user_id().wrapping_add(1)
         ));
-        assert!(!private_owned_work_root(&installation_id));
-        assert!(!private_owned_work_root_metadata(
+        assert!(!private_owned_directory(&installation_id));
+        assert!(!private_owned_directory_metadata(
             &fs::symlink_metadata(&fixture.work).expect("work metadata"),
             effective_user_id().wrapping_add(1)
         ));
@@ -3323,11 +3543,11 @@ mod tests {
             b"installation"
         );
 
-        let turn_directory = fixture.work.join("turn-home");
+        let turn_directory = fixture.work.join("turn-1-1");
         fs::create_dir(&turn_directory).expect("turn directory");
         fs::set_permissions(&turn_directory, fs::Permissions::from_mode(0o700))
             .expect("private turn directory");
-        let retained_collision = fixture.root.join(".keiko-retained-home-turn-home");
+        let retained_collision = fixture.root.join(".keiko-retained-home-turn-1-1");
         fs::create_dir(&retained_collision).expect("retained collision");
         assert!(DisposableRuntimeHome::stage(&fixture.home, &turn_directory).is_err());
         fs::remove_dir(&retained_collision).expect("remove retained collision");
@@ -3337,7 +3557,7 @@ mod tests {
         assert!(staged.restore());
         assert!(staged.restore());
 
-        let failed_turn_directory = fixture.work.join("failed-turn-home");
+        let failed_turn_directory = fixture.work.join("turn-1-2");
         fs::create_dir(&failed_turn_directory).expect("failed turn directory");
         let mut missing_retained =
             DisposableRuntimeHome::stage(&fixture.home, &failed_turn_directory)
@@ -3350,7 +3570,7 @@ mod tests {
         fs::remove_dir_all(&missing_retained.retained_home).expect("remove retained home");
         assert!(!missing_retained.restore());
 
-        let missing_persistent_turn = fixture.work.join("missing-persistent-turn-home");
+        let missing_persistent_turn = fixture.work.join("turn-1-3");
         fs::create_dir(&missing_persistent_turn).expect("missing-persistent turn directory");
         let mut missing_persistent =
             DisposableRuntimeHome::stage(&fixture.home, &missing_persistent_turn)
@@ -3369,6 +3589,294 @@ mod tests {
         };
         assert!(!rollback.restore());
         assert!(same_path.exists());
+    }
+
+    #[test]
+    fn interrupted_runtime_home_swaps_restore_persistent_state_before_binding() {
+        let fixture = Fixture::new();
+        fs::write(fixture.home.join("persistent-only"), b"keep").expect("persistent state");
+        let turn_directory = fixture.work.join("turn-41-1");
+        fs::create_dir(&turn_directory).expect("turn directory");
+        fs::set_permissions(&turn_directory, fs::Permissions::from_mode(0o700))
+            .expect("private turn directory");
+        let staged = DisposableRuntimeHome::stage(&fixture.home, &turn_directory)
+            .expect("stage disposable home");
+        fs::write(fixture.home.join("provider-output"), b"discard").expect("provider output");
+        std::mem::forget(staged);
+
+        recover_interrupted_runtime_home(&fixture.home, &fixture.work)
+            .expect("recover active swap");
+        assert_eq!(
+            fs::read(fixture.home.join("persistent-only")).expect("restored persistent state"),
+            b"keep"
+        );
+        assert!(!fixture.home.join("provider-output").exists());
+        assert!(!turn_directory.exists());
+
+        let second_turn = fixture.work.join("turn-41-2");
+        fs::create_dir(&second_turn).expect("second turn directory");
+        fs::set_permissions(&second_turn, fs::Permissions::from_mode(0o700))
+            .expect("private second turn directory");
+        let mut staged = DisposableRuntimeHome::stage(&fixture.home, &second_turn)
+            .expect("stage second disposable home");
+        fs::rename(&staged.persistent_home, &staged.discarded_home)
+            .expect("begin interrupted restore");
+        fs::set_permissions(&staged.retained_home, fs::Permissions::from_mode(0o700))
+            .expect("unlock retained home");
+        fs::rename(&staged.retained_home, &staged.persistent_home)
+            .expect("restore persistent home before cleanup");
+        staged.restored = true;
+        std::mem::forget(staged);
+
+        recover_interrupted_runtime_home(&fixture.home, &fixture.work)
+            .expect("recover post-restore discard");
+        assert!(!second_turn.exists());
+        assert!(fixture.home.join("persistent-only").exists());
+        assert!(
+            fs::read_dir(&fixture.root)
+                .expect("fixture entries")
+                .all(|entry| !entry
+                    .expect("fixture entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".keiko-discarded-home-"))
+        );
+    }
+
+    #[test]
+    fn runtime_home_recovery_rejects_ambiguous_or_unsafe_state() {
+        let fixture = Fixture::new();
+        assert_eq!(
+            recover_interrupted_runtime_home(Path::new("relative-home"), &fixture.work),
+            Err(RuntimeReadinessState::ContainmentFailed)
+        );
+        assert_eq!(
+            recover_interrupted_runtime_home(Path::new("/"), &fixture.work),
+            Err(RuntimeReadinessState::ContainmentFailed)
+        );
+        let non_utf8_home = fixture.root.join(std::ffi::OsString::from_vec(vec![
+            b'h', b'o', b'm', b'e', 0xff,
+        ]));
+        assert_eq!(
+            recover_interrupted_runtime_home(&non_utf8_home, &fixture.work),
+            Err(RuntimeReadinessState::ContainmentFailed)
+        );
+
+        let invalid_name = fixture.root.join(".keiko-retained-home-invalid");
+        fs::create_dir(&invalid_name).expect("invalid marker name");
+        assert_eq!(
+            recover_interrupted_runtime_home(&fixture.home, &fixture.work),
+            Err(RuntimeReadinessState::ContainmentFailed)
+        );
+        fs::remove_dir(&invalid_name).expect("remove invalid marker name");
+
+        let first = fixture.root.join(".keiko-retained-home-turn-51-1");
+        let second = fixture.root.join(".keiko-retained-home-turn-51-2");
+        fs::create_dir(&first).expect("first duplicate marker");
+        fs::create_dir(&second).expect("second duplicate marker");
+        fs::set_permissions(&first, fs::Permissions::from_mode(0o700))
+            .expect("first marker permissions");
+        fs::set_permissions(&second, fs::Permissions::from_mode(0o700))
+            .expect("second marker permissions");
+        assert_eq!(
+            recover_interrupted_runtime_home(&fixture.home, &fixture.work),
+            Err(RuntimeReadinessState::ContainmentFailed)
+        );
+        fs::remove_dir(&first).expect("remove first duplicate marker");
+        fs::remove_dir(&second).expect("remove second duplicate marker");
+
+        let marker_file = fixture.root.join(".keiko-retained-home-turn-51-3");
+        fs::write(&marker_file, b"not a directory").expect("marker file");
+        assert_eq!(
+            recover_interrupted_runtime_home(&fixture.home, &fixture.work),
+            Err(RuntimeReadinessState::ContainmentFailed)
+        );
+        fs::remove_file(&marker_file).expect("remove marker file");
+
+        let writable_marker = fixture.root.join(".keiko-retained-home-turn-51-4");
+        fs::create_dir(&writable_marker).expect("writable marker");
+        fs::set_permissions(&writable_marker, fs::Permissions::from_mode(0o755))
+            .expect("writable marker permissions");
+        assert_eq!(
+            recover_interrupted_runtime_home(&fixture.home, &fixture.work),
+            Err(RuntimeReadinessState::ContainmentFailed)
+        );
+        fs::remove_dir(&writable_marker).expect("remove writable marker");
+
+        let retained = fixture.root.join(".keiko-retained-home-turn-51-5");
+        let mismatched = fixture.root.join(".keiko-discarded-home-turn-51-6");
+        fs::create_dir(&retained).expect("retained marker");
+        fs::create_dir(&mismatched).expect("mismatched discarded marker");
+        fs::set_permissions(&retained, fs::Permissions::from_mode(0o000))
+            .expect("lock retained marker");
+        fs::set_permissions(&mismatched, fs::Permissions::from_mode(0o700))
+            .expect("discarded marker permissions");
+        assert_eq!(
+            recover_interrupted_runtime_home(&fixture.home, &fixture.work),
+            Err(RuntimeReadinessState::ContainmentFailed)
+        );
+        fs::set_permissions(&retained, fs::Permissions::from_mode(0o700))
+            .expect("unlock retained marker");
+        fs::remove_dir(&retained).expect("remove retained marker");
+        fs::remove_dir(&mismatched).expect("remove mismatched marker");
+
+        let retained = fixture.root.join(".keiko-retained-home-turn-51-7");
+        let discarded = fixture.root.join(".keiko-discarded-home-turn-51-7");
+        fs::create_dir(&retained).expect("matching retained marker");
+        fs::create_dir(&discarded).expect("matching discarded marker");
+        fs::set_permissions(&retained, fs::Permissions::from_mode(0o700))
+            .expect("matching retained permissions");
+        fs::set_permissions(&discarded, fs::Permissions::from_mode(0o700))
+            .expect("matching discarded permissions");
+        assert_eq!(
+            recover_interrupted_runtime_home(&fixture.home, &fixture.work),
+            Err(RuntimeReadinessState::ContainmentFailed)
+        );
+        fs::remove_dir(&retained).expect("remove matching retained marker");
+        fs::remove_dir(&discarded).expect("remove matching discarded marker");
+
+        let retained = fixture.root.join(".keiko-retained-home-turn-51-8");
+        fs::create_dir(&retained).expect("marker for unsafe persistent home");
+        fs::set_permissions(&retained, fs::Permissions::from_mode(0o700))
+            .expect("marker permissions");
+        fs::set_permissions(&fixture.home, fs::Permissions::from_mode(0o777))
+            .expect("unsafe persistent home permissions");
+        assert_eq!(
+            recover_interrupted_runtime_home(&fixture.home, &fixture.work),
+            Err(RuntimeReadinessState::ContainmentFailed)
+        );
+        fs::set_permissions(&fixture.home, fs::Permissions::from_mode(0o700))
+            .expect("restore persistent home permissions");
+        fs::remove_dir(&retained).expect("remove marker for unsafe persistent home");
+
+        assert!(!valid_turn_directory_name("invalid"));
+        assert!(!valid_turn_directory_name("turn--1"));
+        assert!(!valid_turn_directory_name("turn-1-"));
+        assert!(!valid_turn_directory_name("turn-x-1"));
+        assert!(!valid_turn_directory_name("turn-1-x"));
+        assert!(valid_turn_directory_name("turn-51-9"));
+
+        let read_only = Fixture::new();
+        let retained = read_only.root.join(".keiko-retained-home-turn-55-1");
+        fs::create_dir(&retained).expect("read-only retained marker");
+        fs::set_permissions(&retained, fs::Permissions::from_mode(0o000))
+            .expect("lock read-only retained marker");
+        fs::set_permissions(&read_only.root, fs::Permissions::from_mode(0o500))
+            .expect("read-only home parent");
+        assert_eq!(
+            recover_interrupted_runtime_home(&read_only.home, &read_only.work),
+            Err(RuntimeReadinessState::ContainmentFailed)
+        );
+        fs::set_permissions(&read_only.root, fs::Permissions::from_mode(0o700))
+            .expect("restore home parent permissions");
+        fs::set_permissions(&retained, fs::Permissions::from_mode(0o700))
+            .expect("unlock read-only retained marker");
+        fs::remove_dir(&retained).expect("remove read-only retained marker");
+    }
+
+    #[test]
+    fn runtime_home_recovery_handles_missing_paths_and_rejects_unsafe_cleanup() {
+        let fixture = Fixture::new();
+        let retained = fixture.root.join(".keiko-retained-home-turn-52-1");
+        fs::rename(&fixture.home, &retained).expect("retain persistent home");
+        fs::set_permissions(&retained, fs::Permissions::from_mode(0o000))
+            .expect("lock retained home");
+        recover_interrupted_runtime_home(&fixture.home, &fixture.work)
+            .expect("recover missing persistent path");
+        assert!(fixture.home.exists());
+
+        let discarded = fixture.root.join(".keiko-discarded-home-turn-52-2");
+        fs::rename(&fixture.home, &discarded).expect("discard persistent home");
+        assert_eq!(
+            recover_interrupted_runtime_home(&fixture.home, &fixture.work),
+            Err(RuntimeReadinessState::ContainmentFailed)
+        );
+        fs::rename(&discarded, &fixture.home).expect("restore discarded home");
+
+        let retained = fixture.root.join(".keiko-retained-home-turn-52-3");
+        fs::rename(&fixture.home, &retained).expect("retain original home");
+        fs::set_permissions(&retained, fs::Permissions::from_mode(0o000))
+            .expect("lock original home");
+        fs::create_dir(&fixture.home).expect("disposable home");
+        fs::set_permissions(&fixture.home, fs::Permissions::from_mode(0o700))
+            .expect("private disposable home");
+        let unsafe_turn = fixture.work.join("turn-52-3");
+        fs::create_dir(&unsafe_turn).expect("unsafe turn directory");
+        fs::set_permissions(&unsafe_turn, fs::Permissions::from_mode(0o755))
+            .expect("unsafe turn permissions");
+        assert_eq!(
+            recover_interrupted_runtime_home(&fixture.home, &fixture.work),
+            Err(RuntimeReadinessState::ContainmentFailed)
+        );
+        assert!(fixture.home.join(CODEX_INSTALLATION_ID).exists());
+        fs::set_permissions(&unsafe_turn, fs::Permissions::from_mode(0o700))
+            .expect("restore turn permissions");
+        fs::remove_dir(&unsafe_turn).expect("remove unsafe turn directory");
+
+        let blocked = Fixture::new();
+        let retained = blocked.root.join(".keiko-retained-home-turn-53-1");
+        fs::rename(&blocked.home, &retained).expect("retain blocked home");
+        fs::set_permissions(&retained, fs::Permissions::from_mode(0o000))
+            .expect("lock blocked home");
+        fs::set_permissions(&blocked.work, fs::Permissions::from_mode(0o000))
+            .expect("block work lookup");
+        assert_eq!(
+            recover_interrupted_runtime_home(&blocked.home, &blocked.work),
+            Err(RuntimeReadinessState::ContainmentFailed)
+        );
+        fs::set_permissions(&blocked.work, fs::Permissions::from_mode(0o700))
+            .expect("restore blocked work root");
+
+        let unwritable = Fixture::new();
+        let retained = unwritable.root.join(".keiko-retained-home-turn-54-1");
+        fs::rename(&unwritable.home, &retained).expect("retain unwritable home");
+        fs::set_permissions(&retained, fs::Permissions::from_mode(0o000))
+            .expect("lock unwritable home");
+        let turn = unwritable.work.join("turn-54-1");
+        fs::create_dir(&turn).expect("unwritable cleanup turn");
+        fs::set_permissions(&turn, fs::Permissions::from_mode(0o700))
+            .expect("private unwritable cleanup turn");
+        fs::set_permissions(&unwritable.work, fs::Permissions::from_mode(0o500))
+            .expect("unwritable work root");
+        assert_eq!(
+            recover_interrupted_runtime_home(&unwritable.home, &unwritable.work),
+            Err(RuntimeReadinessState::ContainmentFailed)
+        );
+        fs::set_permissions(&unwritable.work, fs::Permissions::from_mode(0o700))
+            .expect("restore unwritable work root");
+        fs::remove_dir(&turn).expect("remove unwritable cleanup turn");
+
+        let restore_blocked = Fixture::new();
+        let retained = restore_blocked.root.join(".keiko-retained-home-turn-56-1");
+        fs::rename(&restore_blocked.home, &retained).expect("retain restore-blocked home");
+        fs::set_permissions(&retained, fs::Permissions::from_mode(0o000))
+            .expect("lock restore-blocked home");
+        fs::set_permissions(&restore_blocked.root, fs::Permissions::from_mode(0o500))
+            .expect("block retained restore rename");
+        assert_eq!(
+            recover_interrupted_runtime_home(&restore_blocked.home, &restore_blocked.work),
+            Err(RuntimeReadinessState::ContainmentFailed)
+        );
+        fs::set_permissions(&restore_blocked.root, fs::Permissions::from_mode(0o700))
+            .expect("restore retained parent permissions");
+        fs::set_permissions(&retained, fs::Permissions::from_mode(0o700))
+            .expect("unlock restore-blocked home");
+        fs::rename(&retained, &restore_blocked.home).expect("restore blocked persistent home");
+
+        let discard_blocked = Fixture::new();
+        let discarded = discard_blocked.root.join(".keiko-discarded-home-turn-57-1");
+        fs::create_dir(&discarded).expect("discard-blocked marker");
+        fs::set_permissions(&discarded, fs::Permissions::from_mode(0o700))
+            .expect("discard-blocked marker permissions");
+        fs::set_permissions(&discard_blocked.root, fs::Permissions::from_mode(0o500))
+            .expect("block discard removal");
+        assert_eq!(
+            recover_interrupted_runtime_home(&discard_blocked.home, &discard_blocked.work),
+            Err(RuntimeReadinessState::ContainmentFailed)
+        );
+        fs::set_permissions(&discard_blocked.root, fs::Permissions::from_mode(0o700))
+            .expect("restore discard parent permissions");
+        fs::remove_dir(&discarded).expect("remove discard-blocked marker");
     }
 
     #[test]
@@ -3766,6 +4274,26 @@ mod tests {
             Some(i32::MAX)
         );
         assert!(!host.active.running.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn retained_work_directories_are_retried_before_the_next_request() {
+        let fixture = Fixture::new();
+        let retained = fixture.work.join("turn-42-1");
+        fs::create_dir(&retained).expect("retained work directory");
+        let active = ActiveRuntime::default();
+        retain_work_directory(&active, &retained);
+
+        assert!(
+            active
+                .retained_work_directories
+                .lock()
+                .expect("retained work set")
+                .contains(&retained)
+        );
+        assert!(active.claim_request("retry-cleanup"));
+        assert!(!retained.exists());
+        active.finish_request();
     }
 
     #[test]

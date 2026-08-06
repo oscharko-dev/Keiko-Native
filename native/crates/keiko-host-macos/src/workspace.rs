@@ -432,7 +432,7 @@ fn safe_display_label(root: &Path) -> String {
     let Some(label) = root.file_name().and_then(|label| label.to_str()) else {
         return "Local repository".to_owned();
     };
-    if label.trim().is_empty() || label.chars().any(char::is_control) {
+    if label.trim().is_empty() || label.chars().any(is_unsafe_display_character) {
         return "Local repository".to_owned();
     }
     let mut bounded = String::new();
@@ -443,6 +443,34 @@ fn safe_display_label(root: &Path) -> String {
         bounded.push(character);
     }
     bounded
+}
+
+fn is_unsafe_display_character(character: char) -> bool {
+    character.is_control()
+        || matches!(
+            character,
+            '\u{00ad}'
+                | '\u{0600}'..='\u{0605}'
+                | '\u{061c}'
+                | '\u{06dd}'
+                | '\u{070f}'
+                | '\u{0890}'..='\u{0891}'
+                | '\u{08e2}'
+                | '\u{180e}'
+                | '\u{200b}'..='\u{200f}'
+                | '\u{202a}'..='\u{202e}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{206f}'
+                | '\u{feff}'
+                | '\u{fff9}'..='\u{fffb}'
+                | '\u{110bd}'
+                | '\u{110cd}'
+                | '\u{13430}'..='\u{1343f}'
+                | '\u{1bca0}'..='\u{1bca3}'
+                | '\u{1d173}'..='\u{1d17a}'
+                | '\u{e0001}'
+                | '\u{e0020}'..='\u{e007f}'
+        )
 }
 
 #[cfg(test)]
@@ -534,6 +562,17 @@ mod tests {
             safe_display_label(Path::new("/tmp/unsafe\nlabel")),
             "Local repository"
         );
+        for label in [
+            "/tmp/repository\u{0600}",
+            "/tmp/repository\u{061c}",
+            "/tmp/repository\u{0890}",
+            "/tmp/repository\u{202e}txt",
+            "/tmp/repository\u{2067}isolated\u{2069}",
+            "/tmp/repository\u{200b}",
+            "/tmp/repository\u{feff}",
+        ] {
+            assert_eq!(safe_display_label(Path::new(label)), "Local repository");
+        }
         assert_eq!(
             safe_display_label(Path::new(&format!(
                 "/tmp/{}",

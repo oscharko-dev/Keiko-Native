@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -59,15 +60,27 @@ test("acceptance restores the retained home and discards provider writes", async
   const runRoot = join(root, "run");
   await mkdir(runtimeHome, { mode: 0o700 });
   await mkdir(runRoot, { mode: 0o700 });
+  await writeFile(join(runtimeHome, "installation_id"), "installation", {
+    mode: 0o600,
+  });
   await writeFile(join(runtimeHome, "stable"), "retained", "utf8");
+  const external = join(root, "external");
+  await writeFile(external, "must-not-be-exposed", "utf8");
+  await symlink(external, join(runtimeHome, "external-link"));
 
   const retainedHome = await stageDisposableRuntimeHome(runtimeHome, runRoot);
-  await writeFile(join(runtimeHome, "stable"), "provider-write", "utf8");
+  await writeFile(
+    join(runtimeHome, "installation_id"),
+    "provider-write",
+    "utf8",
+  );
   await writeFile(join(runtimeHome, "cache"), "discarded", "utf8");
   assert.equal(
     await readFile(join(retainedHome, "stable"), "utf8"),
     "retained",
   );
+  await assert.rejects(readFile(join(runtimeHome, "stable"), "utf8"));
+  await assert.rejects(readFile(join(runtimeHome, "external-link"), "utf8"));
 
   await restorePersistentRuntimeHome({
     retainedHome,
@@ -75,7 +88,55 @@ test("acceptance restores the retained home and discards provider writes", async
     runtimeHome,
   });
   assert.equal(await readFile(join(runtimeHome, "stable"), "utf8"), "retained");
+  assert.equal(await readFile(external, "utf8"), "must-not-be-exposed");
   await assert.rejects(readFile(join(runtimeHome, "cache"), "utf8"));
+});
+
+test("acceptance rejects a symlinked authentication identity", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "keiko-home-symlink-auth-"));
+  t.after(() => rm(root, { force: true, recursive: true }));
+  const runtimeHome = join(root, "codex-home");
+  const runRoot = join(root, "run");
+  const external = join(root, "external-installation-id");
+  await mkdir(runtimeHome, { mode: 0o700 });
+  await mkdir(runRoot, { mode: 0o700 });
+  await writeFile(external, "installation", { mode: 0o600 });
+  await symlink(external, join(runtimeHome, "installation_id"));
+
+  await assert.rejects(
+    stageDisposableRuntimeHome(runtimeHome, runRoot),
+    /ELOOP|symlink|open/iu,
+  );
+  assert.equal(await readFile(external, "utf8"), "installation");
+});
+
+test("acceptance rejects malformed authentication identity files", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "keiko-home-invalid-auth-"));
+  t.after(() => rm(root, { force: true, recursive: true }));
+
+  for (const [name, prepare] of [
+    ["directory", (path) => mkdir(path, { mode: 0o700 })],
+    [
+      "writable",
+      async (path) => {
+        await writeFile(path, "installation", { mode: 0o600 });
+        await chmod(path, 0o666);
+      },
+    ],
+    ["empty", (path) => writeFile(path, "", { mode: 0o600 })],
+    ["oversized", (path) => writeFile(path, "x".repeat(4097), { mode: 0o600 })],
+  ]) {
+    const runtimeHome = join(root, `${name}-home`);
+    const runRoot = join(root, `${name}-run`);
+    await mkdir(runtimeHome, { mode: 0o700 });
+    await mkdir(runRoot, { mode: 0o700 });
+    await prepare(join(runtimeHome, "installation_id"));
+
+    await assert.rejects(
+      stageDisposableRuntimeHome(runtimeHome, runRoot),
+      /acceptance-auth-identity-invalid/u,
+    );
+  }
 });
 
 test("acceptance restores the authenticated home before fallible fixture removal", async () => {

@@ -962,6 +962,11 @@ describe("closed streamed Codex turn port", () => {
       { ...completed, state: "failed", reason: undefined },
       {
         ...completed,
+        providerThreadEstablished: false,
+        providerTurnEstablished: false,
+      },
+      {
+        ...completed,
         evidence: { ...completed.evidence, quarantinedEvents: 65 },
       },
     ]) {
@@ -1026,6 +1031,33 @@ describe("closed streamed Codex turn port", () => {
         }),
       );
     }
+
+    const preflight = turn("preflighting");
+    const completed = turn("completed", "Skipped streaming.");
+    const skipsStreaming = vi.fn(
+      async (
+        command: string,
+        arguments_: {
+          onEvent?: { onmessage: (value: TurnView) => void };
+        },
+      ) => {
+        if (command === "application_cancel") return "{}";
+        arguments_.onEvent?.onmessage(preflight);
+        arguments_.onEvent?.onmessage(completed);
+        return "late";
+      },
+    );
+    await expect(
+      createRendererPort(
+        skipsStreaming,
+        async () => authority,
+        () => ({ onmessage: () => undefined }),
+      ).codexTurn(3, "Bounded.", () => undefined),
+    ).rejects.toThrow("codex-turn-failed");
+    expect(skipsStreaming).toHaveBeenCalledWith(
+      "application_cancel",
+      expect.any(Object),
+    );
   });
 
   it("requests cancellation but waits for the authoritative cleaned terminal", async () => {

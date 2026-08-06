@@ -987,7 +987,10 @@ export function isTurnView(value: unknown): value is TurnView {
             value.reason === "cleanup-failed"
           : evidence.cleanupComplete) &&
         (value.state === "completed"
-          ? value.reason === undefined && value.agentText.length > 0
+          ? value.reason === undefined &&
+            value.agentText.length > 0 &&
+            value.providerThreadEstablished &&
+            value.providerTurnEstablished
           : isTurnReason(value.reason))
       : true)
   );
@@ -1032,7 +1035,7 @@ function validTurnProgression(
     (previous.state === "preflighting" &&
       (next.state === "streaming" ||
         next.state === "stopping" ||
-        isTerminalTurn(next))) ||
+        (isTerminalTurn(next) && next.state !== "completed"))) ||
     (previous.state === "streaming" &&
       (next.state === "stopping" || isTerminalTurn(next))) ||
     (previous.state === "stopping" &&
