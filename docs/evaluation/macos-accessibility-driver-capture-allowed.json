@@ -4,7 +4,7 @@
   "predecessor": null,
   "prepared": {
     "schemaVersion": "keiko-native-macos-accessibility-driver-prepared/v1",
-    "sourceHead": "8d5894350abd2a2e8453449420661608407d0128",
+    "sourceHead": "a8e718e2f85ace049da085d84ceb32e68ed950f9",
     "sourceDigest": "8a1631f2ae7ecdaf7847681ef039c2cc31d01c9cd4a93466da1fce2bb8b0e608",
     "bundleIdentifier": "dev.oscharko.keiko-native.evaluation.accessibility",
     "representativePackageSha256": "9221319c3d37bdd7c2e36c0558f039d60d1aa3b3223f49668c3b4fa7aedf3e0c",

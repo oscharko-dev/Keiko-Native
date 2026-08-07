@@ -1,6 +1,6 @@
 {
   "schema": "keiko-native-package-manifest/v1",
-  "sourceRevision": "8d5894350abd2a2e8453449420661608407d0128",
+  "sourceRevision": "a8e718e2f85ace049da085d84ceb32e68ed950f9",
   "target": "keiko-native-desktop",
   "platform": "macos-arm64",
   "policySha256": "0dce0d48b1d133257e79d8df1e8551baf60dc75cb99c12a535b4fdbd2df9cba6",
@@ -13,7 +13,7 @@
     {
       "mode": "0755",
       "path": "Contents/MacOS/keiko-native-desktop",
-      "sha256": "1e95d63ecc96ddfe3c9f53eb76e56c1b85340545a3a12a731174795c3f60e437"
+      "sha256": "00a3c9592af61699caa5e2764f294592f62d889b1587e1f6d1465e080f1deecb"
     },
     {
       "mode": "0644",
