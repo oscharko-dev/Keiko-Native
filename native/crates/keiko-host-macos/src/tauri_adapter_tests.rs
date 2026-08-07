@@ -106,6 +106,29 @@ fn document_start_install_loss_and_shutdown_fail_closed() {
             keiko_ui_port::ReasonCode::ShuttingDown
         ))
     );
+
+    for (cleanup_proven, prevent_exit) in [(true, false), (false, true)] {
+        let exit_lifecycle = Mutex::new(HostLifecycle::default());
+        assert!(activate_document(&exit_lifecycle, Some(nonce('d'))));
+        let exit_authority = exit_lifecycle
+            .lock()
+            .expect("lifecycle")
+            .sender_for_document("main", "tauri://localhost", 1, &nonce('d'));
+        assert_eq!(
+            begin_exit_request_shutdown(&exit_lifecycle, || cleanup_proven),
+            prevent_exit
+        );
+        assert_eq!(
+            exit_lifecycle
+                .lock()
+                .expect("lifecycle")
+                .begin_application_request(&exit_authority, b"{}"),
+            Err((
+                "unknown-request".to_owned(),
+                keiko_ui_port::ReasonCode::ShuttingDown
+            ))
+        );
+    }
 }
 #[test]
 fn failed_document_start_clears_finished_install_and_old_work() {

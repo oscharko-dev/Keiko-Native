@@ -80,6 +80,10 @@ const CODEX_CONTAINMENT_ARGUMENTS: &[&str] = &[
     "-c",
     "cli_auth_credentials_store=\"keyring\"",
     "-c",
+    "model_provider=\"openai\"",
+    "-c",
+    "openai_base_url=\"\"",
+    "-c",
     "history.persistence=\"none\"",
     "-c",
     "features.apps=false",
@@ -3050,6 +3054,9 @@ mod tests {
     #[test]
     fn turn_and_readiness_share_the_closed_no_effect_runtime_arguments() {
         let joined = CODEX_CONTAINMENT_ARGUMENTS.join(" ");
+        for provider_binding in ["model_provider=\"openai\"", "openai_base_url=\"\""] {
+            assert!(joined.contains(provider_binding), "{provider_binding}");
+        }
         for disabled in [
             "features.multi_agent=false",
             "features.multi_agent_v2=false",

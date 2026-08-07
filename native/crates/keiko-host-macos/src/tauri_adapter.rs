@@ -407,12 +407,31 @@ pub fn handle_window_event<R: Runtime>(window: &Window<R>, event: &tauri::Window
     }
 }
 
+fn begin_exit_request_shutdown(
+    lifecycle: &Mutex<HostLifecycle>,
+    stop_runtime: impl FnOnce() -> bool,
+) -> bool {
+    shut_down(lifecycle);
+    !stop_runtime()
+}
+
 pub fn handle_run_event<R: Runtime>(handle: &AppHandle<R>, event: RunEvent) {
-    if matches!(event, RunEvent::Exit | RunEvent::ExitRequested { .. }) {
-        shut_down(handle.state::<Mutex<HostLifecycle>>().inner());
-        if !stop_runtime_for_shutdown(handle.state::<RuntimeHost>().inner()) {
-            eprintln!("keiko-native-runtime-shutdown-cleanup-failed");
+    match event {
+        RunEvent::ExitRequested { api, .. } => {
+            if begin_exit_request_shutdown(handle.state::<Mutex<HostLifecycle>>().inner(), || {
+                stop_runtime_for_shutdown(handle.state::<RuntimeHost>().inner())
+            }) {
+                api.prevent_exit();
+                eprintln!("keiko-native-runtime-shutdown-cleanup-failed");
+            }
         }
+        RunEvent::Exit => {
+            shut_down(handle.state::<Mutex<HostLifecycle>>().inner());
+            if !stop_runtime_for_shutdown(handle.state::<RuntimeHost>().inner()) {
+                eprintln!("keiko-native-runtime-shutdown-cleanup-failed");
+            }
+        }
+        _ => {}
     }
 }
 
