@@ -14,6 +14,7 @@ import {
   observedSafeguards,
   packageArtifactFailures,
   physicalObservationFailures,
+  runAcceptanceSubprocess,
   selectCommandOutput,
   selectOwnedStagedRuntime,
   snapshotDirectory,
@@ -327,6 +328,38 @@ test("the exact auth probe reads the CLI status stream without merging output", 
   );
   assert.equal(selectCommandOutput(result, "stdout"), "");
   assert.throws(() => selectCommandOutput(result, "combined"));
+});
+
+test("acceptance subprocesses fail closed on their explicit deadline", () => {
+  let observedOptions;
+  const timedOut = (_command, _args, options) => {
+    observedOptions = options;
+    return {
+      error: { code: "ETIMEDOUT" },
+      signal: "SIGKILL",
+      status: null,
+      stderr: "",
+      stdout: "",
+    };
+  };
+
+  assert.throws(
+    () =>
+      runAcceptanceSubprocess(
+        "/usr/bin/true",
+        [],
+        { timeoutMs: 1_234 },
+        timedOut,
+      ),
+    /acceptance-subprocess-timed-out/u,
+  );
+  assert.equal(observedOptions.timeout, 1_234);
+  assert.equal(observedOptions.killSignal, "SIGKILL");
+  assert.throws(
+    () =>
+      runAcceptanceSubprocess("/usr/bin/true", [], { timeoutMs: 0 }, timedOut),
+    /acceptance-subprocess-timeout-invalid/u,
+  );
 });
 
 test("the external environment is the exact authoritative toolchain, runtime, prompt, and auth class", () => {

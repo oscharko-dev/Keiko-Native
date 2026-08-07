@@ -71,6 +71,10 @@ const providerArg0EntryNames = Object.freeze([
 const providerArg0DirectoryPattern = /^codex-arg0[A-Za-z0-9]{6}$/u;
 const providerArg0MaxDirectories = 64;
 const providerModelCacheMaxBytes = 1_048_576;
+const acceptanceSubprocessTimeouts = Object.freeze({
+  acceptance: 10 * 60 * 1_000,
+  inspection: 10_000,
+});
 const acceptanceProcessEnvironmentKeys = Object.freeze([
   "HOME",
   "LANG",
@@ -314,35 +318,54 @@ export function acceptanceProcessEnvironment(
   return selected;
 }
 
-function run(command, args, options = {}) {
+export function runAcceptanceSubprocess(
+  command,
+  args,
+  options = {},
+  spawnProcess = spawnSync,
+) {
+  if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0)
+    throw new TypeError("acceptance-subprocess-timeout-invalid");
   const environment =
     options.inheritEnvironment === false
       ? acceptanceProcessEnvironment(process.env, options.env)
       : { ...process.env, ...options.env };
-  const result = spawnSync(command, args, {
+  const result = spawnProcess(command, args, {
     cwd: options.cwd ?? repositoryRoot,
     encoding: "utf8",
     env: noReplaceGitEnvironment(environment),
     maxBuffer: 50 * 1024 * 1024,
     shell: false,
+    timeout: options.timeoutMs,
+    killSignal: "SIGKILL",
   });
+  if (result.error?.code === "ETIMEDOUT")
+    throw new Error("acceptance-subprocess-timed-out");
   if (result.status !== 0 || result.error)
     throw new Error("acceptance-subprocess-failed");
   return selectCommandOutput(result, options.output);
+}
+
+function run(command, args, options = {}) {
+  return runAcceptanceSubprocess(command, args, options);
 }
 
 function exactNpmVersion() {
   const npmExecPath = process.env.npm_execpath;
   if (typeof npmExecPath !== "string" || npmExecPath.length === 0)
     throw new Error("acceptance-npm-unavailable");
-  return run(process.execPath, [npmExecPath, "--version"]);
+  return run(process.execPath, [npmExecPath, "--version"], {
+    timeoutMs: acceptanceSubprocessTimeouts.inspection,
+  });
 }
 
 function packageAcceptance() {
   const npmExecPath = process.env.npm_execpath;
   if (typeof npmExecPath !== "string" || npmExecPath.length === 0)
     throw new Error("acceptance-npm-unavailable");
-  run(process.execPath, [npmExecPath, "run", "--silent", "acceptance:macos"]);
+  run(process.execPath, [npmExecPath, "run", "--silent", "acceptance:macos"], {
+    timeoutMs: acceptanceSubprocessTimeouts.acceptance,
+  });
 }
 
 async function inspectEnvironment({ binary, home }) {
@@ -364,6 +387,7 @@ async function inspectEnvironment({ binary, home }) {
         env: { CODEX_HOME: home },
         inheritEnvironment: false,
         output: "stderr",
+        timeoutMs: acceptanceSubprocessTimeouts.inspection,
       },
     ),
     nodeVersion: process.versions.node,
@@ -374,6 +398,7 @@ async function inspectEnvironment({ binary, home }) {
     runtimeSha256: sha256(runtimeBytes),
     runtimeVersion: run(binary, ["--version"], {
       inheritEnvironment: false,
+      timeoutMs: acceptanceSubprocessTimeouts.inspection,
     }),
   };
 }
@@ -751,7 +776,9 @@ async function authenticateOwnedStagedRuntime({
   expectedRuntimeSha256,
   runtimeWorkRoot,
 }) {
-  const processes = run("/bin/ps", ["-axo", "pid=,ppid=,pgid=,command="])
+  const processes = run("/bin/ps", ["-axo", "pid=,ppid=,pgid=,command="], {
+    timeoutMs: acceptanceSubprocessTimeouts.inspection,
+  })
     .split("\n")
     .map(parseProcessRow)
     .filter(Boolean);
@@ -874,6 +901,7 @@ export function createCodexTracerAcceptanceIo() {
         const sourceRevision = run(
           "git",
           hardenedGitArguments(["rev-parse", "HEAD"]),
+          { timeoutMs: acceptanceSubprocessTimeouts.inspection },
         );
         if (!REVISION_PATTERN.test(sourceRevision))
           throw new Error("acceptance-source-revision-invalid");

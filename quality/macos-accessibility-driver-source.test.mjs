@@ -142,6 +142,31 @@ test("checkout authentication allows only versioned retained evidence paths afte
   }
 });
 
+test("checkout authentication accepts squash delivery through the immutable source digest", () => {
+  assert.deepEqual(
+    authenticateEvaluationCheckout({
+      ancestor: false,
+      changes: [],
+      currentHead: "b".repeat(40),
+      evaluationHead: "a".repeat(40),
+      sourceDigestAuthenticated: true,
+      workingTreeClean: true,
+    }),
+    { authenticated: true, reasonCode: null },
+  );
+  assert.deepEqual(
+    authenticateEvaluationCheckout({
+      ancestor: false,
+      changes: [],
+      currentHead: "b".repeat(40),
+      evaluationHead: "a".repeat(40),
+      sourceDigestAuthenticated: false,
+      workingTreeClean: true,
+    }),
+    { authenticated: false, reasonCode: "evaluation-head-not-ancestor" },
+  );
+});
+
 function gitResult(stdout = "", exitCode = 0) {
   return {
     exitCode,
@@ -186,6 +211,21 @@ test("current checkout authentication binds clean bytes, fixed root, and full ob
   );
   assert.ok(
     calls.find(({ args }) => args[0] === "diff").args.includes("--abbrev=40"),
+  );
+
+  assert.deepEqual(
+    authenticateCurrentEvaluationCheckout(evaluationHead, {
+      inspectInputs: () => ({ authenticated: true, reasonCode: null }),
+      run: (args) => {
+        if (args[0] === "status") return gitResult();
+        if (args[0] === "rev-parse") return gitResult(`${currentHead}\n`);
+        if (args[0] === "merge-base") return gitResult("", 1);
+        if (args[0] === "diff") return gitResult();
+        throw new Error("squash-authentication-read-past-diff");
+      },
+      sourceDigestAuthenticated: true,
+    }),
+    { authenticated: true, reasonCode: null },
   );
 
   let foreignRootInvoked = false;

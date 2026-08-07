@@ -138,7 +138,7 @@ export function renderFoundation(
     ),
     createElement(
       "section",
-      { className: `surface surface-${view.kind}`, "aria-live": "polite" },
+      { className: `surface surface-${view.kind}` },
       surface(
         view,
         controller,
@@ -508,7 +508,6 @@ function turnResult(turn: TurnView | null): ReactElement | null {
           {
             className: "agent-response",
             "aria-label": "Codex-Antwort",
-            "aria-live": "polite",
           },
           turn.agentText,
         )

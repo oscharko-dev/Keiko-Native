@@ -66,6 +66,7 @@ export function authenticateEvaluationCheckout({
   changes,
   currentHead,
   evaluationHead,
+  sourceDigestAuthenticated = false,
   workingTreeClean,
 }) {
   if (
@@ -73,12 +74,14 @@ export function authenticateEvaluationCheckout({
     !headPattern.test(currentHead ?? "") ||
     typeof ancestor !== "boolean" ||
     !Array.isArray(changes) ||
+    typeof sourceDigestAuthenticated !== "boolean" ||
     typeof workingTreeClean !== "boolean"
   )
     return checkoutInvalid("evaluation-checkout-input-invalid");
   if (!workingTreeClean)
     return checkoutInvalid("evaluation-working-tree-dirty");
-  if (!ancestor) return checkoutInvalid("evaluation-head-not-ancestor");
+  if (!ancestor && !sourceDigestAuthenticated)
+    return checkoutInvalid("evaluation-head-not-ancestor");
   if (currentHead === evaluationHead)
     return changes.length === 0
       ? Object.freeze({ authenticated: true, reasonCode: null })
@@ -292,6 +295,7 @@ export function authenticateCurrentEvaluationCheckout(
     inspectInputs = inspectCurrentRuntimeInputs,
     repositoryRoot = evaluationRepositoryRoot,
     run = runGit,
+    sourceDigestAuthenticated = false,
   } = {},
 ) {
   if (!headPattern.test(evaluationHead ?? ""))
@@ -299,7 +303,8 @@ export function authenticateCurrentEvaluationCheckout(
   if (
     repositoryRoot !== evaluationRepositoryRoot ||
     typeof run !== "function" ||
-    typeof inspectInputs !== "function"
+    typeof inspectInputs !== "function" ||
+    typeof sourceDigestAuthenticated !== "boolean"
   )
     return checkoutInvalid("evaluation-checkout-input-invalid");
   const runtimeInputs = inspectInputs(run, repositoryRoot);
@@ -322,12 +327,8 @@ export function authenticateCurrentEvaluationCheckout(
     ["merge-base", "--is-ancestor", evaluationHead, currentHead],
     repositoryRoot,
   );
-  if (ancestor.exitCode !== 0)
-    return checkoutInvalid(
-      ancestor.exitCode === 1
-        ? "evaluation-head-not-ancestor"
-        : "evaluation-checkout-unavailable",
-    );
+  if (ancestor.exitCode !== 0 && ancestor.exitCode !== 1)
+    return checkoutInvalid("evaluation-checkout-unavailable");
   const diff = run(
     [
       "diff",
@@ -348,10 +349,11 @@ export function authenticateCurrentEvaluationCheckout(
   if (changes === null)
     return checkoutInvalid("evaluation-checkout-diff-invalid");
   return authenticateEvaluationCheckout({
-    ancestor: true,
+    ancestor: ancestor.exitCode === 0,
     changes,
     currentHead,
     evaluationHead,
+    sourceDigestAuthenticated,
     workingTreeClean: true,
   });
 }

@@ -29,6 +29,47 @@ struct InspectedWorkspace {
     root_identity: WorkspaceRootIdentity,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct WorkspaceRuntimeBinding {
+    canonical_root: PathBuf,
+    root_identity: WorkspaceRootIdentity,
+}
+
+impl WorkspaceRuntimeBinding {
+    #[cfg(test)]
+    pub(crate) fn inspect(path: &Path) -> Result<Self, WorkspaceClosedReason> {
+        let inspected = inspect_workspace_root(path)?;
+        Ok(Self {
+            canonical_root: inspected.canonical_root,
+            root_identity: inspected.root_identity,
+        })
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.canonical_root
+    }
+
+    pub(crate) fn remains_current(&self) -> bool {
+        inspect_workspace_root(&self.canonical_root)
+            .is_ok_and(|current| current.root_identity == self.root_identity)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(path: &Path) -> Self {
+        if path.is_dir() && !path.join(".git").exists() {
+            fs::create_dir(path.join(".git")).expect("test workspace marker");
+        }
+        let metadata = fs::symlink_metadata(path).ok();
+        Self {
+            canonical_root: path.to_path_buf(),
+            root_identity: WorkspaceRootIdentity::new(
+                metadata.as_ref().map_or(0, MetadataExt::dev),
+                metadata.as_ref().map_or(0, MetadataExt::ino),
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct WorkspaceHost {
     application: WorkspaceApplication,
@@ -54,7 +95,7 @@ impl WorkspaceHost {
     pub(crate) fn current_root_for_generation(
         &mut self,
         generation: u64,
-    ) -> Result<PathBuf, WorkspaceError> {
+    ) -> Result<WorkspaceRuntimeBinding, WorkspaceError> {
         let view = self.status()?;
         if !matches!(
             view,
@@ -67,7 +108,10 @@ impl WorkspaceHost {
         }
         self.bound_root
             .as_ref()
-            .map(|bound| bound.canonical_root.clone())
+            .map(|bound| WorkspaceRuntimeBinding {
+                canonical_root: bound.canonical_root.clone(),
+                root_identity: bound.root_identity,
+            })
             .ok_or(WorkspaceError::StaleGeneration)
     }
 

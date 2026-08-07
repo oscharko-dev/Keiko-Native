@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use crate::sha256::sha256_copy;
 #[cfg(test)]
 use crate::sha256::{sha256_file, sha256_reader};
+use crate::workspace::WorkspaceRuntimeBinding;
 use crate::{AcceptedRequest, HostLifecycle, SenderContext};
 use keiko_application::runtime::{
     CODEX_RUNTIME_SHA256, RuntimeReadinessState, RuntimeReadinessView,
@@ -65,6 +66,7 @@ const CODEX_INSTALLATION_ID: &str = "installation_id";
 const RUNTIME_OWNER_RECORD: &str = ".keiko-runtime-owner";
 const STDIN_EOF_GRACE: Duration = Duration::from_millis(100);
 const CANCEL_TERM_GRACE: Duration = Duration::from_millis(500);
+const DESCENDANT_REAP_GRACE: Duration = Duration::from_millis(100);
 // Preserve a bounded TERM/KILL window without starving macOS first-execution
 // validation after the verified runtime has been staged.
 const READINESS_CLEANUP_RESERVE: Duration = Duration::from_millis(300);
@@ -503,11 +505,11 @@ impl RuntimeHost {
         }
     }
 
-    pub fn run_turn(
+    pub(crate) fn run_turn(
         &self,
         request_id: &str,
         workspace_generation: u64,
-        selected_workspace: &Path,
+        selected_workspace: &WorkspaceRuntimeBinding,
         task: &str,
         timeout: Duration,
         mut update: impl FnMut(TurnRuntimeUpdate),
@@ -525,6 +527,10 @@ impl RuntimeHost {
                     .invalidated_workspace_generation
                     .load(Ordering::Acquire)
         {
+            self.active.finish_request();
+            return TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::StaleWorkspace);
+        }
+        if !selected_workspace.remains_current() {
             self.active.finish_request();
             return TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::StaleWorkspace);
         }
@@ -701,7 +707,9 @@ fn perform_check(
         verified
             .work_root
             .join(runtime_work_directory_name("readiness", owner, generation));
-    if let Err(state) = create_private_readiness_directory(&work_directory, owner, generation) {
+    if let Err(state) =
+        create_private_readiness_directory(active, &work_directory, owner, generation)
+    {
         return RuntimeReadinessView::terminal(state, 0);
     }
     let outcome = run_protocol(&mut verified, &work_directory, active, deadline);
@@ -718,7 +726,7 @@ fn perform_check(
 
 fn perform_turn(
     configuration: &RuntimeConfiguration,
-    selected_workspace: &Path,
+    selected_workspace: &WorkspaceRuntimeBinding,
     task: &str,
     active: &ActiveRuntime,
     work_generation: &AtomicU64,
@@ -736,7 +744,10 @@ fn perform_turn(
     if Instant::now() >= deadline {
         return TurnRuntimeOutcome::terminal(TurnState::TimedOut, TurnReason::TimedOut);
     }
-    let mut verified = match bind_configuration(configuration, Some(selected_workspace)) {
+    if !selected_workspace.remains_current() {
+        return TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::StaleWorkspace);
+    }
+    let mut verified = match bind_configuration(configuration, Some(selected_workspace.path())) {
         Ok(verified) => verified,
         Err(RuntimeReadinessState::Unavailable) => {
             return TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::RuntimeUnavailable);
@@ -754,6 +765,9 @@ fn perform_turn(
             );
         }
     };
+    if !selected_workspace.remains_current() {
+        return TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::StaleWorkspace);
+    }
     let Some(owner) = process_identity(std::process::id() as i32) else {
         return TurnRuntimeOutcome::terminal(
             TurnState::ContainmentFailed,
@@ -764,7 +778,8 @@ fn perform_turn(
     let work_directory = verified
         .work_root
         .join(runtime_work_directory_name("turn", owner, generation));
-    if let Err(outcome) = create_private_turn_directory(&work_directory, owner, generation) {
+    if let Err(outcome) = create_private_turn_directory(active, &work_directory, owner, generation)
+    {
         return outcome;
     }
     // Codex 0.145.0 derives its keyring account from the canonical CODEX_HOME
@@ -773,7 +788,7 @@ fn perform_turn(
     let mut outcome = run_turn_protocol(
         &mut verified,
         &work_directory,
-        selected_workspace,
+        selected_workspace.path(),
         task,
         active,
         deadline,
@@ -814,7 +829,10 @@ fn reconcile_retained_work_directories(active: &ActiveRuntime) -> bool {
         .retained_work_directories
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    retained.retain(|path| fs::remove_dir_all(path).is_err());
+    retained.retain(|path| match fs::symlink_metadata(path) {
+        Ok(_) => fs::remove_dir_all(path).is_err(),
+        Err(error) => error.kind() != io::ErrorKind::NotFound,
+    });
     retained.is_empty()
 }
 
@@ -1210,14 +1228,16 @@ impl VerifiedConfiguration {
 }
 
 fn create_private_turn_directory(
+    active: &ActiveRuntime,
     work_directory: &Path,
     owner: ProcessIdentity,
     generation: u64,
 ) -> Result<(), TurnRuntimeOutcome> {
-    create_private_turn_directory_with(work_directory, owner, generation, |_| Ok(()))
+    create_private_turn_directory_with(active, work_directory, owner, generation, |_| Ok(()))
 }
 
 fn create_private_turn_directory_with(
+    active: &ActiveRuntime,
     work_directory: &Path,
     owner: ProcessIdentity,
     generation: u64,
@@ -1230,6 +1250,7 @@ fn create_private_turn_directory_with(
             TurnReason::RuntimeUnavailable,
         )),
         Err(PrivateDirectoryFailure::CleanupFailed) => {
+            retain_work_directory(active, work_directory);
             let mut outcome =
                 TurnRuntimeOutcome::terminal(TurnState::CleanupFailed, TurnReason::CleanupFailed);
             outcome.cleaned = false;
@@ -1245,16 +1266,19 @@ enum PrivateDirectoryFailure {
 }
 
 fn create_private_readiness_directory(
+    active: &ActiveRuntime,
     work_directory: &Path,
     owner: ProcessIdentity,
     generation: u64,
 ) -> Result<(), RuntimeReadinessState> {
-    create_private_runtime_directory_with(work_directory, owner, generation, |_| Ok(())).map_err(
-        |failure| match failure {
-            PrivateDirectoryFailure::Unavailable => RuntimeReadinessState::Unavailable,
-            PrivateDirectoryFailure::CleanupFailed => RuntimeReadinessState::CleanupFailed,
-        },
-    )
+    match create_private_runtime_directory_with(work_directory, owner, generation, |_| Ok(())) {
+        Ok(()) => Ok(()),
+        Err(PrivateDirectoryFailure::Unavailable) => Err(RuntimeReadinessState::Unavailable),
+        Err(PrivateDirectoryFailure::CleanupFailed) => {
+            retain_work_directory(active, work_directory);
+            Err(RuntimeReadinessState::CleanupFailed)
+        }
+    }
 }
 
 fn create_private_runtime_directory_with(
@@ -2664,6 +2688,23 @@ fn stop_process_group_with_term_grace(
         }
         thread::sleep(Duration::from_millis(10));
     }
+    // Kill authenticated descendants before the group leader so a supervising
+    // runtime can reap its own children and exit without leaving transient
+    // zombies that outlive this request's cleanup deadline.
+    let _ = refresh_owned_processes(active);
+    if signal_active_descendants(active, process_group, SIGKILL) {
+        let descendant_started = Instant::now();
+        let descendant_grace =
+            DESCENDANT_REAP_GRACE.min(deadline.saturating_duration_since(descendant_started) / 2);
+        let descendant_deadline = deadline.min(descendant_started + descendant_grace);
+        while Instant::now() < descendant_deadline {
+            if ready_to_reap(child.id() as i32, process_group, active) {
+                retire_active_process_group(active, process_group);
+                return child.wait().is_ok();
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
     signal_active_process_group(active, process_group, SIGKILL);
     while Instant::now() < deadline {
         if ready_to_reap(child.id() as i32, process_group, active) {
@@ -2745,6 +2786,28 @@ fn signal_active_process_group(active: &ActiveRuntime, process_group: i32, signa
         }
     }
     true
+}
+
+fn signal_active_descendants(active: &ActiveRuntime, process_group: i32, signal: i32) -> bool {
+    let Ok(active_group) = active.process_group.lock() else {
+        return false;
+    };
+    if *active_group != Some(process_group) {
+        return false;
+    }
+    let Ok(owned) = active.owned_processes.lock() else {
+        return false;
+    };
+    let mut signalled = false;
+    for identity in owned
+        .iter()
+        .copied()
+        .filter(|identity| process_identity(identity.process_id) == Some(*identity))
+    {
+        signal_process(identity.process_id, signal);
+        signalled = true;
+    }
+    signalled
 }
 
 fn retire_active_process_group(active: &ActiveRuntime, process_group: i32) {
@@ -3556,6 +3619,7 @@ mod tests {
     #[test]
     fn runtime_directory_recovery_uses_exact_process_start_identity() {
         let fixture = Fixture::new();
+        let active = ActiveRuntime::default();
         let owner = process_identity(std::process::id() as i32).expect("test process identity");
         let reused_pid = ProcessIdentity {
             started_seconds: owner.started_seconds.saturating_add(1),
@@ -3576,10 +3640,12 @@ mod tests {
         let orphaned_turn = fixture
             .work
             .join(runtime_work_directory_name("turn", dead, 3));
-        create_private_readiness_directory(&live, owner, 1).expect("live runtime directory");
-        create_private_readiness_directory(&reused, reused_pid, 2)
+        create_private_readiness_directory(&active, &live, owner, 1)
+            .expect("live runtime directory");
+        create_private_readiness_directory(&active, &reused, reused_pid, 2)
             .expect("reused runtime directory");
-        create_private_turn_directory(&orphaned_turn, dead, 3).expect("orphaned runtime directory");
+        create_private_turn_directory(&active, &orphaned_turn, dead, 3)
+            .expect("orphaned runtime directory");
         let unrelated = fixture.work.join("unrelated");
         fs::create_dir(&unrelated).expect("unrelated directory");
         recover_orphaned_runtime_directories(&fixture.work).expect("recover stale runtime work");
@@ -3628,7 +3694,7 @@ mod tests {
         let unsafe_directory = fixture
             .work
             .join(runtime_work_directory_name("turn", dead, 4));
-        create_private_turn_directory(&unsafe_directory, dead, 4)
+        create_private_turn_directory(&active, &unsafe_directory, dead, 4)
             .expect("unsafe runtime directory");
         fs::set_permissions(&unsafe_directory, fs::Permissions::from_mode(0o755))
             .expect("unsafe runtime permissions");
@@ -3643,7 +3709,7 @@ mod tests {
         let removal_blocked = fixture
             .work
             .join(runtime_work_directory_name("turn", dead, 5));
-        create_private_turn_directory(&removal_blocked, dead, 5)
+        create_private_turn_directory(&active, &removal_blocked, dead, 5)
             .expect("removal-blocked runtime directory");
         fs::set_permissions(&fixture.work, fs::Permissions::from_mode(0o500))
             .expect("block work removal");
@@ -3858,7 +3924,7 @@ mod tests {
         let collision = fixture
             .work
             .join(runtime_work_directory_name("readiness", owner, 1));
-        create_private_readiness_directory(&collision, owner, 1).expect("collision");
+        create_private_readiness_directory(&active, &collision, owner, 1).expect("collision");
         assert_eq!(
             host.check("collision", None).state,
             RuntimeReadinessState::Unavailable
@@ -4034,7 +4100,7 @@ mod tests {
         let turn = host.run_turn(
             "blocked-turn",
             1,
-            Path::new("/private/tmp/unused-workspace"),
+            &WorkspaceRuntimeBinding::for_test(Path::new("/private/tmp/unused-workspace")),
             "Bounded task.",
             Duration::from_millis(10),
             |_| {},
@@ -4171,7 +4237,7 @@ mod tests {
         let mut updates = Vec::new();
         let turn = perform_turn(
             configuration,
-            &fixture.root,
+            &WorkspaceRuntimeBinding::for_test(&fixture.root),
             "Bounded task.",
             &active,
             &AtomicU64::new(0),
@@ -4957,7 +5023,7 @@ wait
         let outcome = host.run_turn(
             "request-turn",
             1,
-            &repository,
+            &WorkspaceRuntimeBinding::for_test(&repository),
             "Repository-independent prompt.",
             Duration::from_secs(5),
             |update| updates.push(update),
@@ -4999,7 +5065,7 @@ printf '%s\n' '{"method":"effect/requested","params":{}}'
         let outcome = host.run_turn(
             "request-containment-cleanup",
             1,
-            &repository,
+            &WorkspaceRuntimeBinding::for_test(&repository),
             "Repository-independent prompt.",
             Duration::from_secs(8),
             |_| {},
@@ -5027,7 +5093,7 @@ printf '%s\n' '{"method":"effect/requested","params":{}}'
         let outcome = host.run_turn(
             "request-cancel-before-start",
             1,
-            &repository,
+            &WorkspaceRuntimeBinding::for_test(&repository),
             "Bounded task.",
             Duration::from_secs(1),
             |update| updates.push(update),
@@ -5063,7 +5129,7 @@ printf '%s\n' '{"method":"effect/requested","params":{}}'
         let stale = host.run_turn(
             "request-stale-after-cleanup",
             7,
-            &repository,
+            &WorkspaceRuntimeBinding::for_test(&repository),
             "Bounded task.",
             test_deadline,
             |_| {},
@@ -5076,7 +5142,7 @@ printf '%s\n' '{"method":"effect/requested","params":{}}'
         let fresh = host.run_turn(
             "request-fresh-after-cleanup",
             8,
-            &repository,
+            &WorkspaceRuntimeBinding::for_test(&repository),
             "Fresh bounded task.",
             test_deadline,
             |_| {},
@@ -5152,7 +5218,7 @@ while :; do /bin/sleep 1; done
             let outcome = running_host.run_turn(
                 "request-cancel-turn",
                 1,
-                &repository,
+                &WorkspaceRuntimeBinding::for_test(&repository),
                 "Bounded task.",
                 Duration::from_secs(5),
                 |update| updates.push(update),
@@ -5223,7 +5289,7 @@ while :; do /bin/sleep 1; done
             running_host.run_turn(
                 "request-app-shutdown",
                 1,
-                &repository,
+                &WorkspaceRuntimeBinding::for_test(&repository),
                 "Bounded task.",
                 Duration::from_secs(5),
                 |_| {},
@@ -5278,13 +5344,15 @@ while :; do /bin/sleep 1; done
     #[test]
     fn turn_directory_permission_failure_reports_proven_cleanup() {
         let fixture = Fixture::new();
+        let active = ActiveRuntime::default();
         let work_directory = fixture.work.join("partial-turn");
         let owner = process_identity(std::process::id() as i32).expect("test process identity");
-        let outcome = create_private_turn_directory_with(&work_directory, owner, 1, |path| {
-            fs::write(path.join("owned"), b"partial").expect("partial owned entry");
-            Err(io::Error::new(io::ErrorKind::PermissionDenied, "fixture"))
-        })
-        .expect_err("permission failure");
+        let outcome =
+            create_private_turn_directory_with(&active, &work_directory, owner, 1, |path| {
+                fs::write(path.join("owned"), b"partial").expect("partial owned entry");
+                Err(io::Error::new(io::ErrorKind::PermissionDenied, "fixture"))
+            })
+            .expect_err("permission failure");
 
         assert_eq!(outcome.state, TurnState::Failed);
         assert_eq!(outcome.reason, Some(TurnReason::RuntimeUnavailable));
@@ -5295,12 +5363,13 @@ while :; do /bin/sleep 1; done
     #[test]
     fn readiness_directory_is_created_private_and_owned() {
         let fixture = Fixture::new();
+        let active = ActiveRuntime::default();
         let owner = process_identity(std::process::id() as i32).expect("test process identity");
         let work_directory = fixture
             .work
             .join(runtime_work_directory_name("readiness", owner, 1));
 
-        create_private_readiness_directory(&work_directory, owner, 1)
+        create_private_readiness_directory(&active, &work_directory, owner, 1)
             .expect("private readiness directory");
 
         let metadata = fs::symlink_metadata(&work_directory).expect("readiness metadata");
@@ -5443,12 +5512,13 @@ while :; do /bin/sleep 1; done
     #[test]
     fn turn_directory_creation_collision_is_cleanly_unavailable() {
         let fixture = Fixture::new();
+        let active = ActiveRuntime::default();
         let work_directory = fixture.work.join("existing-turn");
         fs::create_dir(&work_directory).expect("existing turn collision");
         let owner = process_identity(std::process::id() as i32).expect("test process identity");
 
-        let outcome =
-            create_private_turn_directory(&work_directory, owner, 1).expect_err("collision");
+        let outcome = create_private_turn_directory(&active, &work_directory, owner, 1)
+            .expect_err("collision");
 
         assert_eq!(outcome.state, TurnState::Failed);
         assert_eq!(outcome.reason, Some(TurnReason::RuntimeUnavailable));
@@ -5459,19 +5529,29 @@ while :; do /bin/sleep 1; done
     #[test]
     fn turn_directory_substitution_never_claims_unproven_cleanup() {
         let fixture = Fixture::new();
+        let active = ActiveRuntime::default();
         let work_directory = fixture.work.join("replaced-partial-turn");
         let owner = process_identity(std::process::id() as i32).expect("test process identity");
-        let outcome = create_private_turn_directory_with(&work_directory, owner, 1, |path| {
-            fs::remove_dir(path).expect("remove partial directory");
-            fs::write(path, b"replacement").expect("replace directory with file");
-            Ok(())
-        })
-        .expect_err("substitution failure");
+        let outcome =
+            create_private_turn_directory_with(&active, &work_directory, owner, 1, |path| {
+                fs::remove_dir(path).expect("remove partial directory");
+                fs::write(path, b"replacement").expect("replace directory with file");
+                Ok(())
+            })
+            .expect_err("substitution failure");
 
         assert_eq!(outcome.state, TurnState::CleanupFailed);
         assert_eq!(outcome.reason, Some(TurnReason::CleanupFailed));
         assert!(!outcome.cleaned);
+        assert!(
+            active
+                .retained_work_directories
+                .lock()
+                .expect("retained work")
+                .contains(&work_directory)
+        );
         fs::remove_file(work_directory).expect("remove replacement fixture");
+        assert!(reconcile_retained_work_directories(&active));
     }
 
     #[test]
@@ -5504,7 +5584,7 @@ exit 0
             running_host.run_turn(
                 "request-workspace-change",
                 1,
-                &repository,
+                &WorkspaceRuntimeBinding::for_test(&repository),
                 "Bounded task.",
                 Duration::from_secs(5),
                 |_| {},
@@ -5541,7 +5621,7 @@ exit 0
         let retry = host.run_turn(
             "request-fresh-workspace",
             2,
-            &fresh_repository,
+            &WorkspaceRuntimeBinding::for_test(&fresh_repository),
             "Fresh bounded task.",
             Duration::from_secs(1),
             |_| {},
@@ -5553,6 +5633,33 @@ exit 0
         assert_ne!(retry.reason, Some(TurnReason::StaleWorkspace));
         assert!(retry.cleaned);
         assert!(!host.active.running.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn workspace_identity_replacement_before_runtime_bind_fails_stale() {
+        let fixture = Fixture::new();
+        let repository = fixture.root.join("repository");
+        fs::create_dir(&repository).expect("repository identity");
+        fs::create_dir(repository.join(".git")).expect("repository marker");
+        let binding = WorkspaceRuntimeBinding::inspect(&repository).expect("workspace binding");
+        let replaced = fixture.root.join("replaced-repository");
+        fs::rename(&repository, &replaced).expect("replace selected repository");
+        fs::create_dir(&repository).expect("replacement repository");
+        fs::create_dir(repository.join(".git")).expect("replacement marker");
+        let host = fixture.scripted_host("#!/bin/sh\nexit 0\n");
+
+        let outcome = host.run_turn(
+            "request-replaced-workspace",
+            1,
+            &binding,
+            "Bounded task.",
+            Duration::from_secs(1),
+            |_| {},
+        );
+
+        assert_eq!(outcome.state, TurnState::Failed);
+        assert_eq!(outcome.reason, Some(TurnReason::StaleWorkspace));
+        assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
     }
 
     #[test]
@@ -5623,7 +5730,7 @@ exit 9
             let outcome = host.run_turn(
                 request_id,
                 1,
-                &repository,
+                &WorkspaceRuntimeBinding::for_test(&repository),
                 "Bounded task.",
                 Duration::from_secs(2),
                 |_| {},
@@ -5705,11 +5812,14 @@ while :; do /bin/sleep 1; done
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let reaped_marker = fixture.root.join("descendant-reaped");
         let mut child = Command::new("/bin/sh")
             .arg("-c")
-            .arg(
-                "trap '' TERM; /bin/sh -c \"trap '' TERM; while :; do :; done\" & printf 'ready\\n'; wait",
-            )
+            .arg(format!(
+                "trap '' TERM; /bin/sh -c \"trap '' TERM; while :; do :; done\" & printf 'ready\\n'; wait; printf reaped > {}",
+                reaped_marker.display()
+            ))
             .process_group(0)
             .stdout(Stdio::piped())
             .spawn()
@@ -5736,6 +5846,10 @@ while :; do /bin/sleep 1; done
         assert_eq!(
             *active.process_group.lock().expect("process-group state"),
             None
+        );
+        assert_eq!(
+            fs::read_to_string(reaped_marker).expect("parent reaped descendant"),
+            "reaped"
         );
         assert!(!process_group_exists(process_group));
     }

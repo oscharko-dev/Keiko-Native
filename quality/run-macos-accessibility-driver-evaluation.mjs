@@ -61,8 +61,13 @@ function closedInvalid(reasonCode) {
 
 async function run() {
   const evidence = JSON.parse(await readFile(evidenceUrl, "utf8"));
+  const currentSourceDigest = await physicalEvaluationSourceDigest();
   const checkout = authenticateCurrentEvaluationCheckout(
     evidence.bindings?.evaluationHead,
+    {
+      sourceDigestAuthenticated:
+        currentSourceDigest === evidence.bindings?.evaluationSourceSha256,
+    },
   );
   if (!checkout.authenticated) return closedInvalid(checkout.reasonCode);
   const [acceptanceEvidenceRaw, packageManifestRaw, packagePolicyRaw] =
@@ -94,7 +99,7 @@ async function run() {
   );
   return evaluateMacosAccessibilityDriver({
     args: process.argv.slice(2),
-    currentSourceDigest: await physicalEvaluationSourceDigest(),
+    currentSourceDigest,
     evidence,
     foundationPackageAttestation,
     retainedArtifacts,

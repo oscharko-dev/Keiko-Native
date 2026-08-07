@@ -477,7 +477,11 @@ describe("closed Foundation presentation", () => {
     const response = elements(rendered).find(
       ({ props }) => props["aria-label"] === "Codex-Antwort",
     );
-    expect(response?.props["aria-live"]).toBe("polite");
+    expect(response?.props["aria-live"]).toBeUndefined();
+    const surface = elements(rendered).find(({ props }) =>
+      String(props.className ?? "").startsWith("surface "),
+    );
+    expect(surface?.props["aria-live"]).toBeUndefined();
 
     const task = elements(rendered).find(
       ({ props }) => props.id === "codex-task",
