@@ -3981,6 +3981,7 @@ mod tests {
         retire_active_process_group(&active, i32::MAX);
         assert!(!signal_active_process_group(&active, i32::MAX, SIGTERM));
         assert!(!signal_active_process_group(&active, i32::MAX, SIGKILL));
+        assert!(!signal_active_descendants(&active, i32::MAX, SIGKILL));
 
         let poisoned = Arc::new(ActiveRuntime::default());
         let poison_target = Arc::clone(&poisoned);
@@ -3993,6 +3994,7 @@ mod tests {
         })
         .join();
         assert!(!signal_active_process_group(&poisoned, i32::MAX, SIGTERM));
+        assert!(!signal_active_descendants(&poisoned, i32::MAX, SIGKILL));
         assert!(!refresh_owned_processes(&poisoned));
         assert_eq!(owned_descendants_alive(&poisoned, i32::MAX), None);
         retire_active_process_group(&poisoned, i32::MAX);
@@ -4012,6 +4014,11 @@ mod tests {
         })
         .join();
         assert!(!refresh_owned_processes(&poisoned_owned));
+        assert!(!signal_active_descendants(
+            &poisoned_owned,
+            i32::MAX,
+            SIGKILL
+        ));
     }
 
     #[test]
