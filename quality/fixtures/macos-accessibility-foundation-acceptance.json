@@ -1,11 +1,11 @@
 {
   "schema": "keiko-native-packaged-shell-evidence/v2",
-  "sourceRevision": "b49c1ed241892e3b1e18b6c883f64d128726d7e0",
+  "sourceRevision": "8d5894350abd2a2e8453449420661608407d0128",
   "readinessFingerprint": "9ffd5d0ff53857f35ff47f470a4661fdd89ddcba8d08a2b92cf9c36a4afd446e",
   "foundationReadinessFingerprint": "da2459bd3becc6cbf651a24ef1b64d1b11a8ed642bfddc92923f0d6ed6dc8e5e",
-  "packageManifestSha256": "4507e808a933fd7b7371d3088a92597a16c5cb39a281ebd7050989b8f31e2655",
+  "packageManifestSha256": "0e672112e252b2e72ee63233b18f3e86af389eff6f6f4518fbc5286323926795",
   "cargoLockSha256": "5e0a3945e58dcb5269868409f1910e2a63bf5a3a272e9d888d22acfd340541d5",
-  "npmLockSha256": "4b1dc737171bb30b1cd8178eb43e64198bab70e3abb53cca4ef9d4037aee4d87",
+  "npmLockSha256": "f1103f967075d00c24f1161894690bca6dbf5f8b796ea66a1d1bff378ce55c7b",
   "runner": "local-macos",
   "architecture": "arm64",
   "outcomes": [
@@ -23,9 +23,9 @@
     "host-unavailable",
     "shutting-down"
   ],
-  "acknowledgementMs": 5777,
-  "workspaceAcknowledgementMs": 5777,
-  "shutdownMs": 645,
+  "acknowledgementMs": 2253,
+  "workspaceAcknowledgementMs": 2253,
+  "shutdownMs": 135,
   "cleanupOwnedDescendants": 0,
   "redaction": "closed"
 }

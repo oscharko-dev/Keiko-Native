@@ -36,7 +36,7 @@ function input() {
   return {
     acceptanceEvidenceRaw,
     bindings: {
-      evaluationHead: "b49c1ed241892e3b1e18b6c883f64d128726d7e0",
+      evaluationHead: "8d5894350abd2a2e8453449420661608407d0128",
       foundationEvidenceSha256: sha256(acceptanceEvidenceRaw),
       foundationPackageSha256: sha256(packageManifestRaw),
     },
@@ -56,11 +56,11 @@ test("authenticates the retained closed Foundation package evidence", () => {
   assert.deepEqual(authenticated, {
     authenticated: true,
     packageManifestSha256:
-      "4507e808a933fd7b7371d3088a92597a16c5cb39a281ebd7050989b8f31e2655",
+      "0e672112e252b2e72ee63233b18f3e86af389eff6f6f4518fbc5286323926795",
     packagePolicySha256:
-      "4863f24efdec90c6217acba75c50114076c7e65eee95b1e52b96043904d43507",
+      "0dce0d48b1d133257e79d8df1e8551baf60dc75cb99c12a535b4fdbd2df9cba6",
     reasonCode: null,
-    sourceRevision: "b49c1ed241892e3b1e18b6c883f64d128726d7e0",
+    sourceRevision: "8d5894350abd2a2e8453449420661608407d0128",
   });
   assert.equal(isAuthenticatedFoundationPackage(authenticated), true);
   assert.equal(
