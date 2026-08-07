@@ -439,6 +439,7 @@ describe("closed Foundation presentation", () => {
         messageBytes: 24,
         quarantinedEvents: 2,
         acceptedEffects: 0,
+        repositoryContextBytesToRuntime: 0,
         cleanupComplete: true,
         terminalState: "completed",
       },

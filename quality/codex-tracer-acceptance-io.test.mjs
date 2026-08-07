@@ -22,11 +22,10 @@ import {
   observedSafeguards,
   packageArtifactFailures,
   physicalObservationFailures,
-  restorePersistentRuntimeHome,
   selectCommandOutput,
   selectOwnedStagedRuntime,
   snapshotDirectory,
-  stageDisposableRuntimeHome,
+  snapshotProtectedRuntimeProfile,
   verifyOwnedRuntimeGroupsExited,
 } from "./codex-tracer-acceptance-io.mjs";
 import { acceptancePhysicalContract } from "./codex-tracer-acceptance.mjs";
@@ -53,93 +52,61 @@ test("directory snapshots bind symlink targets without following them", async (t
   assert.notEqual(before.sha256, after.sha256);
 });
 
-test("acceptance restores the retained home and discards provider writes", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "keiko-home-swap-"));
+test("protected runtime profile permits only bounded provider-local cache state", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "keiko-profile-snapshot-"));
   t.after(() => rm(root, { force: true, recursive: true }));
-  const runtimeHome = join(root, "codex-home");
-  const runRoot = join(root, "run");
-  await mkdir(runtimeHome, { mode: 0o700 });
-  await mkdir(runRoot, { mode: 0o700 });
-  await writeFile(join(runtimeHome, "installation_id"), "installation", {
-    mode: 0o600,
-  });
-  await writeFile(join(runtimeHome, "stable"), "retained", "utf8");
-  const external = join(root, "external");
-  await writeFile(external, "must-not-be-exposed", "utf8");
-  await symlink(external, join(runtimeHome, "external-link"));
+  await mkdir(join(root, "tmp/arg0"), { recursive: true });
+  const runtimeBinary = join(root, "runtime-bin");
+  await writeFile(runtimeBinary, "runtime", "utf8");
+  await writeFile(join(root, "credentials.json"), "stable", "utf8");
+  await writeFile(join(root, "models_cache.json"), '{"etag":"first"}', "utf8");
 
-  const retainedHome = await stageDisposableRuntimeHome(runtimeHome, runRoot);
-  await writeFile(
-    join(runtimeHome, "installation_id"),
-    "provider-write",
-    "utf8",
+  const options = { expectedRuntimeBinary: runtimeBinary };
+  const before = await snapshotProtectedRuntimeProfile(root, options);
+  await writeFile(join(root, "models_cache.json"), '{"etag":"second"}', "utf8");
+  const crashDirectory = join(root, "tmp/arg0/codex-arg0Ab12Cd");
+  await mkdir(crashDirectory);
+  await writeFile(join(crashDirectory, ".lock"), "", "utf8");
+  for (const alias of ["apply_patch", "applypatch", "codex-execve-wrapper"])
+    await symlink(runtimeBinary, join(crashDirectory, alias));
+  const afterCacheRefresh = await snapshotProtectedRuntimeProfile(
+    root,
+    options,
   );
-  await writeFile(join(runtimeHome, "cache"), "discarded", "utf8");
-  assert.equal(
-    await readFile(join(retainedHome, "stable"), "utf8"),
-    "retained",
+  assert.deepEqual(afterCacheRefresh, before);
+
+  await writeFile(join(root, "credentials.json"), "changed", "utf8");
+  const afterProtectedChange = await snapshotProtectedRuntimeProfile(
+    root,
+    options,
   );
-  await assert.rejects(readFile(join(runtimeHome, "stable"), "utf8"));
-  await assert.rejects(readFile(join(runtimeHome, "external-link"), "utf8"));
+  assert.notEqual(afterProtectedChange.sha256, before.sha256);
 
-  await restorePersistentRuntimeHome({
-    retainedHome,
-    runRoot,
-    runtimeHome,
-  });
-  assert.equal(await readFile(join(runtimeHome, "stable"), "utf8"), "retained");
-  assert.equal(await readFile(external, "utf8"), "must-not-be-exposed");
-  await assert.rejects(readFile(join(runtimeHome, "cache"), "utf8"));
-});
-
-test("acceptance rejects a symlinked authentication identity", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "keiko-home-symlink-auth-"));
-  t.after(() => rm(root, { force: true, recursive: true }));
-  const runtimeHome = join(root, "codex-home");
-  const runRoot = join(root, "run");
-  const external = join(root, "external-installation-id");
-  await mkdir(runtimeHome, { mode: 0o700 });
-  await mkdir(runRoot, { mode: 0o700 });
-  await writeFile(external, "installation", { mode: 0o600 });
-  await symlink(external, join(runtimeHome, "installation_id"));
-
+  await writeFile(join(crashDirectory, "unexpected"), "unexpected", "utf8");
   await assert.rejects(
-    stageDisposableRuntimeHome(runtimeHome, runRoot),
-    /ELOOP|symlink|open/iu,
+    snapshotProtectedRuntimeProfile(root, options),
+    /acceptance-runtime-profile-arg0-invalid/u,
   );
-  assert.equal(await readFile(external, "utf8"), "installation");
 });
 
-test("acceptance rejects malformed authentication identity files", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "keiko-home-invalid-auth-"));
+test("protected runtime profile rejects malformed cache entries", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "keiko-profile-cache-"));
   t.after(() => rm(root, { force: true, recursive: true }));
+  await writeFile(join(root, "models_cache.json"), "not-json", "utf8");
+  await assert.rejects(
+    snapshotProtectedRuntimeProfile(root),
+    /acceptance-runtime-profile-cache-invalid/u,
+  );
 
-  for (const [name, prepare] of [
-    ["directory", (path) => mkdir(path, { mode: 0o700 })],
-    [
-      "writable",
-      async (path) => {
-        await writeFile(path, "installation", { mode: 0o600 });
-        await chmod(path, 0o666);
-      },
-    ],
-    ["empty", (path) => writeFile(path, "", { mode: 0o600 })],
-    ["oversized", (path) => writeFile(path, "x".repeat(4097), { mode: 0o600 })],
-  ]) {
-    const runtimeHome = join(root, `${name}-home`);
-    const runRoot = join(root, `${name}-run`);
-    await mkdir(runtimeHome, { mode: 0o700 });
-    await mkdir(runRoot, { mode: 0o700 });
-    await prepare(join(runtimeHome, "installation_id"));
-
-    await assert.rejects(
-      stageDisposableRuntimeHome(runtimeHome, runRoot),
-      /acceptance-auth-identity-invalid/u,
-    );
-  }
+  await rm(join(root, "models_cache.json"));
+  await symlink("missing-cache", join(root, "models_cache.json"));
+  await assert.rejects(
+    snapshotProtectedRuntimeProfile(root),
+    /acceptance-runtime-profile-cache-invalid/u,
+  );
 });
 
-test("acceptance restores the authenticated home before fallible fixture removal", async () => {
+test("acceptance attempts every isolated fixture cleanup after a failure", async () => {
   const calls = [];
   await assert.rejects(
     cleanupAcceptanceFixture(
@@ -153,15 +120,15 @@ test("acceptance restores the authenticated home before fallible fixture removal
           calls.push("remove-workspace");
           throw new Error("fixture removal failed");
         },
-        restoreRuntimeHome: async () => calls.push("restore-home"),
       },
     ),
     /fixture removal failed/u,
   );
-  assert.equal(calls[0], "restore-home");
+  assert.equal(calls.includes("remove-run-root"), true);
+  assert.equal(calls.includes("remove-denied"), true);
 });
 
-test("acceptance retains the authenticated backup when restoration fails", async () => {
+test("acceptance reports run-root cleanup failure after other cleanup", async () => {
   const calls = [];
   await assert.rejects(
     cleanupAcceptanceFixture(
@@ -170,18 +137,17 @@ test("acceptance retains the authenticated backup when restoration fails", async
         chmodDeniedWorkspace: async () => calls.push("chmod"),
         removeDeniedWorkspace: async () => calls.push("remove-denied"),
         removeObservation: async () => calls.push("remove-observation"),
-        removeRunRoot: async () => calls.push("remove-run-root"),
-        removeWorkspace: async () => calls.push("remove-workspace"),
-        restoreRuntimeHome: async () => {
-          calls.push("restore-home");
-          throw new Error("restore failed");
+        removeRunRoot: async () => {
+          calls.push("remove-run-root");
+          throw new Error("run-root removal failed");
         },
+        removeWorkspace: async () => calls.push("remove-workspace"),
       },
     ),
-    /restore failed/u,
+    /run-root removal failed/u,
   );
-  assert.equal(calls[0], "restore-home");
-  assert.equal(calls.includes("remove-run-root"), false);
+  assert.equal(calls.includes("remove-workspace"), true);
+  assert.equal(calls.includes("remove-run-root"), true);
 });
 
 test("first-visible p95 permits one bounded cold-launch outlier", async () => {
@@ -532,6 +498,7 @@ test("safeguards are derived from observed containment, journey, filesystem, and
       "selectedCapabilityRoots",
     ],
     journey: {
+      repositoryContextBytesToRuntime: 0,
       status: "passed",
       timings: Array.from({ length: 36 }, (_, index) => ({
         action: `checkpoint-${index}`,
@@ -539,6 +506,11 @@ test("safeguards are derived from observed containment, journey, filesystem, and
       })),
     },
     packageInspection: { testHookMarkers: 0 },
+    repositoryEvidenceCanaries: [
+      "/private/KeikoAcceptanceIdentity104-abcd",
+      "KeikoAcceptanceIdentity104-abcd",
+      "KeikoRepositoryContextCanary104",
+    ],
     residualProcesses: 0,
     homeBefore: { bytes: 1, entries: 1, sha256: "e".repeat(64) },
     homeAfter: { bytes: 1, entries: 1, sha256: "e".repeat(64) },
@@ -563,6 +535,17 @@ test("safeguards are derived from observed containment, journey, filesystem, and
   assert.equal(changed.acceptedEffects, 1);
   assert.equal(changed.localToolRequests, 1);
   assert.equal(changed.providerEffectOwnerCrossings, 1);
-  assert.equal(changed.repositoryContextBytesToRuntime, 1);
+  assert.equal(changed.repositoryContextBytesToRuntime, 0);
   assert.equal(changed.residualProcesses, 1);
+
+  const leaked = observedSafeguards({
+    ...input,
+    journey: {
+      ...input.journey,
+      repositoryContextBytesToRuntime: 7,
+      note: "KeikoRepositoryContextCanary104",
+    },
+  });
+  assert.equal(leaked.repositoryContextBytesToRuntime, 7);
+  assert.ok(leaked.repositoryBytesInEvidence > 0);
 });

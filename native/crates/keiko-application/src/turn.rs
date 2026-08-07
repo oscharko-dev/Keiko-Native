@@ -58,6 +58,8 @@ pub struct TurnEvidence {
     pub quarantined_events: u16,
     #[serde(rename = "acceptedEffects")]
     pub accepted_effects: u8,
+    #[serde(rename = "repositoryContextBytesToRuntime")]
+    pub repository_context_bytes_to_runtime: u64,
     #[serde(rename = "cleanupComplete")]
     pub cleanup_complete: bool,
     #[serde(rename = "terminalState")]
@@ -106,6 +108,7 @@ pub struct TurnSession {
     provider_thread_established: bool,
     provider_turn_established: bool,
     quarantined_events: u16,
+    repository_context_bytes_to_runtime: u64,
     cleanup_complete: bool,
 }
 
@@ -135,6 +138,7 @@ impl TurnSession {
             provider_thread_established: false,
             provider_turn_established: false,
             quarantined_events: 0,
+            repository_context_bytes_to_runtime: 0,
             cleanup_complete: false,
         })
     }
@@ -186,6 +190,10 @@ impl TurnSession {
             .filter(|count| *count <= MAX_QUARANTINED_TURN_EVENTS)
             .ok_or(TurnError::QuarantineLimit)?;
         Ok(())
+    }
+
+    pub fn record_repository_context_bytes_to_runtime(&mut self, bytes: u64) {
+        self.repository_context_bytes_to_runtime = bytes;
     }
 
     pub fn complete(&mut self) -> Result<(), TurnError> {
@@ -279,6 +287,7 @@ impl TurnSession {
                 message_bytes: u32::try_from(self.agent_text.len()).unwrap_or(u32::MAX),
                 quarantined_events: self.quarantined_events,
                 accepted_effects: 0,
+                repository_context_bytes_to_runtime: self.repository_context_bytes_to_runtime,
                 cleanup_complete: self.cleanup_complete,
                 terminal_state: self.state,
             },

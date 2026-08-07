@@ -113,7 +113,9 @@ pub fn turn_request(
 }
 
 fn settle_session(session: &mut TurnSession, outcome: TurnRuntimeOutcome, projection_failed: bool) {
+    session.record_repository_context_bytes_to_runtime(outcome.repository_context_bytes_to_runtime);
     let projection_failed = projection_failed
+        || outcome.repository_context_bytes_to_runtime > 0
         || session
             .retain_provider_correlations(
                 outcome.provider_thread_established,
@@ -300,6 +302,7 @@ mod tests {
             provider_thread_established: false,
             provider_turn_established: false,
             quarantined_events: 0,
+            repository_context_bytes_to_runtime: 0,
             cleaned,
         };
         let new_session = || {
@@ -355,6 +358,17 @@ mod tests {
         );
         assert_eq!(projection_failed.view().state, TurnState::ContainmentFailed);
 
+        let mut repository_context_rejected = new_session();
+        let mut leaked = outcome(TurnState::Completed, None, true);
+        leaked.repository_context_bytes_to_runtime = 7;
+        settle_session(&mut repository_context_rejected, leaked, false);
+        let rejected_view = repository_context_rejected.view();
+        assert_eq!(rejected_view.state, TurnState::ContainmentFailed);
+        assert_eq!(
+            rejected_view.evidence.repository_context_bytes_to_runtime,
+            7
+        );
+
         let mut invalid_completion = new_session();
         settle_session(
             &mut invalid_completion,
@@ -376,6 +390,7 @@ mod tests {
                 provider_thread_established: true,
                 provider_turn_established: false,
                 quarantined_events: 0,
+                repository_context_bytes_to_runtime: 0,
                 cleaned: true,
             },
             false,

@@ -1029,8 +1029,9 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
           CFSTR("Codex antwortet innerhalb der Nur-Text-Grenze."));
     } else if ([action isEqualToString:@"observe-completed"]) {
       passed = HasUnique(
-          application,
-          CFSTR("Codex hat normal geantwortet und die Laufzeit wurde beendet."));
+                   application,
+                   CFSTR("Codex hat normal geantwortet und die Laufzeit wurde beendet.")) &&
+          HasUnique(application, CFSTR("Repository-Kontext an Codex: 0 Byte."));
     } else if ([action isEqualToString:@"observe-stopping"]) {
       passed = HasCancellationProjection(application);
     } else if ([action isEqualToString:@"observe-cancelled"]) {

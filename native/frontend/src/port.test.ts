@@ -878,6 +878,7 @@ describe("closed streamed Codex turn port", () => {
       messageBytes: new TextEncoder().encode(agentText).length,
       quarantinedEvents: state === "preflighting" ? 0 : 1,
       acceptedEffects: 0,
+      repositoryContextBytesToRuntime: 0,
       cleanupComplete:
         !["preflighting", "streaming", "stopping"].includes(state) &&
         state !== "cleanup-failed",
@@ -950,6 +951,13 @@ describe("closed streamed Codex turn port", () => {
       {
         ...completed,
         evidence: { ...completed.evidence, acceptedEffects: 1 },
+      },
+      {
+        ...completed,
+        evidence: {
+          ...completed.evidence,
+          repositoryContextBytesToRuntime: 1,
+        },
       },
       {
         ...completed,

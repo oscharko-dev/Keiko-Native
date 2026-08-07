@@ -130,6 +130,7 @@ export interface TurnView {
     messageBytes: number;
     quarantinedEvents: number;
     acceptedEffects: 0;
+    repositoryContextBytesToRuntime: number;
     cleanupComplete: boolean;
     terminalState: TurnState;
   };
@@ -950,6 +951,7 @@ export function isTurnView(value: unknown): value is TurnView {
       "messageBytes",
       "quarantinedEvents",
       "acceptedEffects",
+      "repositoryContextBytesToRuntime",
       "cleanupComplete",
       "terminalState",
     ]) &&
@@ -963,6 +965,11 @@ export function isTurnView(value: unknown): value is TurnView {
     Number(evidence.quarantinedEvents) >= 0 &&
     Number(evidence.quarantinedEvents) <= 64 &&
     evidence.acceptedEffects === 0 &&
+    Number.isSafeInteger(evidence.repositoryContextBytesToRuntime) &&
+    Number(evidence.repositoryContextBytesToRuntime) >= 0 &&
+    (evidence.repositoryContextBytesToRuntime === 0 ||
+      value.state === "containment-failed" ||
+      value.state === "cleanup-failed") &&
     typeof evidence.cleanupComplete === "boolean" &&
     evidence.terminalState === value.state &&
     (value.state === "preflighting"

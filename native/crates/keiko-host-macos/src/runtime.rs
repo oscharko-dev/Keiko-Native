@@ -60,7 +60,10 @@ const CODEX_RUNTIME_CDHASH: [u8; 20] = [
 const BINARY_ENV: &str = "KEIKO_CODEX_0_145_0_BINARY";
 const HOME_ENV: &str = "KEIKO_CODEX_0_145_0_HOME";
 const WORK_ROOT_ENV: &str = "KEIKO_CODEX_0_145_0_WORK_ROOT";
+#[cfg(test)]
 const CODEX_INSTALLATION_ID: &str = "installation_id";
+const RUNTIME_OWNER_RECORD: &str = ".keiko-runtime-owner";
+const STDIN_EOF_GRACE: Duration = Duration::from_millis(100);
 const CANCEL_TERM_GRACE: Duration = Duration::from_millis(500);
 // Preserve a bounded TERM/KILL window without starving macOS first-execution
 // validation after the verified runtime has been staged.
@@ -207,7 +210,6 @@ struct ProcessIdentity {
 struct ActiveRuntime {
     process_group: Mutex<Option<i32>>,
     owned_processes: Mutex<HashSet<ProcessIdentity>>,
-    retained_runtime_homes: Mutex<Vec<DisposableRuntimeHome>>,
     retained_work_directories: Mutex<HashSet<PathBuf>>,
     control: Mutex<RuntimeControl>,
     finished: Condvar,
@@ -276,7 +278,7 @@ impl ActiveRuntime {
             return false;
         }
         drop(process_group);
-        if !reconcile_retained_runtime_homes(self) || !reconcile_retained_work_directories(self) {
+        if !reconcile_retained_work_directories(self) {
             self.running.store(false, Ordering::Release);
             self.finished.notify_all();
             return false;
@@ -477,7 +479,6 @@ impl RuntimeHost {
             return false;
         }
         reconcile_retained_process_group(&self.active, deadline)
-            && reconcile_retained_runtime_homes(&self.active)
             && reconcile_retained_work_directories(&self.active)
     }
 
@@ -588,6 +589,7 @@ pub struct TurnRuntimeOutcome {
     pub provider_thread_established: bool,
     pub provider_turn_established: bool,
     pub quarantined_events: u16,
+    pub repository_context_bytes_to_runtime: u64,
     pub cleaned: bool,
 }
 
@@ -600,6 +602,7 @@ impl TurnRuntimeOutcome {
             provider_thread_established: false,
             provider_turn_established: false,
             quarantined_events: 0,
+            repository_context_bytes_to_runtime: 0,
             cleaned: true,
         }
     }
@@ -686,11 +689,15 @@ fn perform_check(
     if Instant::now() >= deadline {
         return RuntimeReadinessView::terminal(RuntimeReadinessState::TimedOut, 0);
     }
+    let Some(owner) = process_identity(std::process::id() as i32) else {
+        return RuntimeReadinessView::terminal(RuntimeReadinessState::ContainmentFailed, 0);
+    };
     let generation = work_generation.fetch_add(1, Ordering::AcqRel) + 1;
-    let work_directory = verified
-        .work_root
-        .join(format!("readiness-{}-{generation}", std::process::id()));
-    if let Err(state) = create_private_readiness_directory(&work_directory) {
+    let work_directory =
+        verified
+            .work_root
+            .join(runtime_work_directory_name("readiness", owner, generation));
+    if let Err(state) = create_private_readiness_directory(&work_directory, owner, generation) {
         return RuntimeReadinessView::terminal(state, 0);
     }
     let outcome = run_protocol(&mut verified, &work_directory, active, deadline);
@@ -712,7 +719,7 @@ fn perform_turn(
     active: &ActiveRuntime,
     work_generation: &AtomicU64,
     deadline: Instant,
-    update: &mut impl FnMut(TurnRuntimeUpdate),
+    update: &mut dyn FnMut(TurnRuntimeUpdate),
 ) -> TurnRuntimeOutcome {
     if let Some(cancellation) = active.cancellation() {
         let state = cancellation.turn_state();
@@ -743,46 +750,32 @@ fn perform_turn(
             );
         }
     };
+    let Some(owner) = process_identity(std::process::id() as i32) else {
+        return TurnRuntimeOutcome::terminal(
+            TurnState::ContainmentFailed,
+            TurnReason::ProtocolRejected,
+        );
+    };
     let generation = work_generation.fetch_add(1, Ordering::AcqRel) + 1;
     let work_directory = verified
         .work_root
-        .join(format!("turn-{}-{generation}", std::process::id()));
-    if let Err(outcome) = create_private_turn_directory(&work_directory) {
+        .join(runtime_work_directory_name("turn", owner, generation));
+    if let Err(outcome) = create_private_turn_directory(&work_directory, owner, generation) {
         return outcome;
     }
-    let mut disposable_home =
-        match DisposableRuntimeHome::stage(&verified.codex_home, &work_directory) {
-            Ok(home) => home,
-            Err(()) => {
-                let cleaned = cleanup_or_retain_work_directory(active, &work_directory);
-                return if cleaned {
-                    TurnRuntimeOutcome::terminal(
-                        TurnState::ContainmentFailed,
-                        TurnReason::ProtocolRejected,
-                    )
-                } else {
-                    TurnRuntimeOutcome::terminal(
-                        TurnState::CleanupFailed,
-                        TurnReason::CleanupFailed,
-                    )
-                };
-            }
-        };
+    // Codex 0.145.0 derives its keyring account from the canonical CODEX_HOME
+    // path. Keep the dedicated, human-provisioned profile path stable; transient
+    // SQLite and turn state stay in the private work directory below.
     let mut outcome = run_turn_protocol(
         &mut verified,
         &work_directory,
+        selected_workspace,
         task,
         active,
         deadline,
         update,
     );
-    let home_restored = if outcome.cleaned {
-        disposable_home.restore()
-    } else {
-        retain_runtime_home(active, disposable_home);
-        false
-    };
-    let work_cleaned = if home_restored {
+    let work_cleaned = if outcome.cleaned {
         cleanup_or_retain_work_directory(active, &work_directory)
     } else {
         retain_work_directory(active, &work_directory);
@@ -821,152 +814,14 @@ fn reconcile_retained_work_directories(active: &ActiveRuntime) -> bool {
     retained.is_empty()
 }
 
-#[derive(Debug)]
-struct DisposableRuntimeHome {
-    discarded_home: PathBuf,
-    persistent_home: PathBuf,
-    restore_on_drop: bool,
-    restored: bool,
-    retained_home: PathBuf,
-}
-
-impl DisposableRuntimeHome {
-    fn stage(persistent_home: &Path, work_directory: &Path) -> Result<Self, ()> {
-        let disposable_home = work_directory.join("disposable-codex-home");
-        let persistent_parent = persistent_home.parent().ok_or(())?;
-        let persistent_name = persistent_home
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or(())?;
-        let work_name = work_directory
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or(())?;
-        if !valid_turn_directory_name(work_name) {
-            return Err(());
-        }
-        let retained_home =
-            persistent_parent.join(format!(".keiko-retained-{persistent_name}-{work_name}"));
-        let discarded_home =
-            persistent_parent.join(format!(".keiko-discarded-{persistent_name}-{work_name}"));
-        if fs::symlink_metadata(&retained_home).is_ok()
-            || fs::symlink_metadata(&discarded_home).is_ok()
-        {
-            return Err(());
-        }
-        fs::DirBuilder::new()
-            .mode(0o700)
-            .create(&disposable_home)
-            .map_err(|_| ())?;
-        copy_auth_identity(persistent_home, &disposable_home)?;
-        fs::rename(persistent_home, &retained_home).map_err(|_| ())?;
-        if fs::set_permissions(&retained_home, fs::Permissions::from_mode(0o000)).is_err() {
-            let _ = fs::set_permissions(&retained_home, fs::Permissions::from_mode(0o700));
-            let _ = fs::rename(&retained_home, persistent_home);
-            return Err(());
-        }
-        if fs::rename(&disposable_home, persistent_home).is_err() {
-            let _ = fs::set_permissions(&retained_home, fs::Permissions::from_mode(0o700));
-            let _ = fs::rename(&retained_home, persistent_home);
-            return Err(());
-        }
-        Ok(Self {
-            discarded_home,
-            persistent_home: persistent_home.to_path_buf(),
-            restore_on_drop: true,
-            restored: false,
-            retained_home,
-        })
-    }
-
-    fn restore(&mut self) -> bool {
-        if self.restored {
-            return true;
-        }
-        if fs::set_permissions(&self.retained_home, fs::Permissions::from_mode(0o700)).is_err() {
-            return false;
-        }
-        if fs::rename(&self.persistent_home, &self.discarded_home).is_err() {
-            let _ = fs::set_permissions(&self.retained_home, fs::Permissions::from_mode(0o000));
-            return false;
-        }
-        if fs::rename(&self.retained_home, &self.persistent_home).is_err() {
-            let _ = fs::rename(&self.discarded_home, &self.persistent_home);
-            let _ = fs::set_permissions(&self.retained_home, fs::Permissions::from_mode(0o000));
-            return false;
-        }
-        self.restored = true;
-        fs::remove_dir_all(&self.discarded_home).is_ok()
-    }
-}
-
-impl Drop for DisposableRuntimeHome {
-    fn drop(&mut self) {
-        if self.restore_on_drop {
-            let _ = self.restore();
-        }
-    }
-}
-
-fn retain_runtime_home(active: &ActiveRuntime, mut home: DisposableRuntimeHome) {
-    home.restore_on_drop = false;
-    let mut retained = active
-        .retained_runtime_homes
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    retained.push(home);
-}
-
-fn reconcile_retained_runtime_homes(active: &ActiveRuntime) -> bool {
-    let mut retained = active
-        .retained_runtime_homes
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    retained.retain_mut(|home| !home.restore());
-    retained.is_empty()
-}
-
-fn copy_auth_identity(persistent_home: &Path, disposable_home: &Path) -> Result<(), ()> {
-    let source_path = persistent_home.join(CODEX_INSTALLATION_ID);
-    let source_path_metadata = fs::symlink_metadata(&source_path).map_err(|_| ())?;
-    if !valid_auth_identity_metadata(&source_path_metadata, effective_user_id()) {
-        return Err(());
-    }
-    let source = File::open(&source_path).map_err(|_| ())?;
-    let source_metadata = source.metadata().map_err(|_| ())?;
-    if FileIdentity::from_metadata(&source_metadata)
-        != FileIdentity::from_metadata(&source_path_metadata)
-    {
-        return Err(());
-    }
-    let destination_path = disposable_home.join(CODEX_INSTALLATION_ID);
-    let mut destination = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(0o600)
-        .open(destination_path)
-        .map_err(|_| ())?;
-    let copied = io::copy(&mut source.take(4097), &mut destination).map_err(|_| ())?;
-    if copied != source_metadata.len() {
-        return Err(());
-    }
-    destination.sync_all().map_err(|_| ())
-}
-
-fn valid_auth_identity_metadata(metadata: &fs::Metadata, owner: u32) -> bool {
-    metadata.is_file()
-        && metadata.uid() == owner
-        && metadata.permissions().mode() & 0o022 == 0
-        && (1..=4096).contains(&metadata.len())
-}
-
 fn run_turn_protocol(
     configuration: &mut VerifiedConfiguration,
     work_directory: &Path,
+    selected_workspace: &Path,
     task: &str,
     active: &ActiveRuntime,
     deadline: Instant,
-    update: &mut impl FnMut(TurnRuntimeUpdate),
+    update: &mut dyn FnMut(TurnRuntimeUpdate),
 ) -> TurnRuntimeOutcome {
     let executable = match configuration.stage_verified_binary(work_directory) {
         Ok(executable) => executable,
@@ -1034,22 +889,24 @@ fn run_turn_protocol(
     let (sender, receiver) = mpsc::sync_channel(MAX_QUEUE_FRAMES);
     spawn_stdout_reader(stdout, sender, Arc::clone(&queued_bytes));
     spawn_stderr_reader(stderr, Arc::clone(&stderr_saturated));
-    if write_json_line(
-        &mut stdin,
-        &json!({
-            "method": "initialize",
-            "id": 1,
-            "params": {
-                "clientInfo": {
-                    "name": "keiko_native",
-                    "title": "Keiko Native",
-                    "version": env!("CARGO_PKG_VERSION")
-                },
-                "capabilities": {"experimentalApi": true}
-            }
-        }),
-    )
-    .is_err()
+    let mut boundary_audit = RuntimeBoundaryAudit::new(selected_workspace);
+    if boundary_audit
+        .write_json_line(
+            &mut stdin,
+            &json!({
+                "method": "initialize",
+                "id": 1,
+                "params": {
+                    "clientInfo": {
+                        "name": "keiko_native",
+                        "title": "Keiko Native",
+                        "version": env!("CARGO_PKG_VERSION")
+                    },
+                    "capabilities": {"experimentalApi": true}
+                }
+            }),
+        )
+        .is_err()
     {
         return cleanup_turn(
             child,
@@ -1093,13 +950,43 @@ fn run_turn_protocol(
                         update(TurnRuntimeUpdate::ProviderEventQuarantined);
                     }
                     TurnProjectionAction::SendAccountRead => {
-                        if write_json_line(&mut stdin, &json!({"method":"initialized"})).is_err()
-                            || write_json_line(
+                        if boundary_audit
+                            .write_json_line(&mut stdin, &json!({"method":"initialized"}))
+                            .is_err()
+                            || boundary_audit
+                                .write_json_line(
+                                    &mut stdin,
+                                    &json!({
+                                        "method": "account/read",
+                                        "id": 2,
+                                        "params": {"refreshToken": false}
+                                    }),
+                                )
+                                .is_err()
+                        {
+                            break (TurnState::ContainmentFailed, TurnReason::ProtocolRejected);
+                        }
+                    }
+                    TurnProjectionAction::SendThreadStart => {
+                        let work = work_directory.to_string_lossy();
+                        if boundary_audit
+                            .write_json_line(
                                 &mut stdin,
                                 &json!({
-                                    "method": "account/read",
-                                    "id": 2,
-                                    "params": {"refreshToken": false}
+                                    "method": "thread/start",
+                                    "id": 3,
+                                    "params": {
+                                        "cwd": work,
+                                        "runtimeWorkspaceRoots": [],
+                                        "approvalPolicy": "never",
+                                        "approvalsReviewer": "user",
+                                        "sandbox": "read-only",
+                                        "ephemeral": true,
+                                        "environments": [],
+                                        "dynamicTools": [],
+                                        "selectedCapabilityRoots": [],
+                                        "experimentalRawEvents": false
+                                    }
                                 }),
                             )
                             .is_err()
@@ -1107,57 +994,32 @@ fn run_turn_protocol(
                             break (TurnState::ContainmentFailed, TurnReason::ProtocolRejected);
                         }
                     }
-                    TurnProjectionAction::SendThreadStart => {
-                        let work = work_directory.to_string_lossy();
-                        if write_json_line(
-                            &mut stdin,
-                            &json!({
-                                "method": "thread/start",
-                                "id": 3,
-                                "params": {
-                                    "cwd": work,
-                                    "runtimeWorkspaceRoots": [],
-                                    "approvalPolicy": "never",
-                                    "approvalsReviewer": "user",
-                                    "sandbox": "read-only",
-                                    "ephemeral": true,
-                                    "environments": [],
-                                    "dynamicTools": [],
-                                    "selectedCapabilityRoots": [],
-                                    "experimentalRawEvents": false
-                                }
-                            }),
-                        )
-                        .is_err()
-                        {
-                            break (TurnState::ContainmentFailed, TurnReason::ProtocolRejected);
-                        }
-                    }
                     TurnProjectionAction::SendTurnStart(thread_id) => {
-                        if write_json_line(
-                            &mut stdin,
-                            &json!({
-                                "method": "turn/start",
-                                "id": 4,
-                                "params": {
-                                    "threadId": thread_id,
-                                    "input": [{
-                                        "type": "text",
-                                        "text": task,
-                                        "text_elements": []
-                                    }],
-                                    "environments": [],
-                                    "runtimeWorkspaceRoots": [],
-                                    "approvalPolicy": "never",
-                                    "approvalsReviewer": "user",
-                                    "sandboxPolicy": {
-                                        "type": "readOnly",
-                                        "networkAccess": false
+                        if boundary_audit
+                            .write_json_line(
+                                &mut stdin,
+                                &json!({
+                                    "method": "turn/start",
+                                    "id": 4,
+                                    "params": {
+                                        "threadId": thread_id,
+                                        "input": [{
+                                            "type": "text",
+                                            "text": task,
+                                            "text_elements": []
+                                        }],
+                                        "environments": [],
+                                        "runtimeWorkspaceRoots": [],
+                                        "approvalPolicy": "never",
+                                        "approvalsReviewer": "user",
+                                        "sandboxPolicy": {
+                                            "type": "readOnly",
+                                            "networkAccess": false
+                                        }
                                     }
-                                }
-                            }),
-                        )
-                        .is_err()
+                                }),
+                            )
+                            .is_err()
                         {
                             break (TurnState::ContainmentFailed, TurnReason::ProtocolRejected);
                         }
@@ -1200,6 +1062,7 @@ fn run_turn_protocol(
         provider_thread_established: projection.thread_id.is_some(),
         provider_turn_established: projection.turn_id.is_some(),
         quarantined_events: projection.quarantined_events,
+        repository_context_bytes_to_runtime: boundary_audit.repository_context_bytes_to_runtime,
         cleaned: true,
     };
     if outcome.state == TurnState::Completed && outcome.agent_text.is_empty() {
@@ -1216,27 +1079,14 @@ fn cleanup_turn(
     active: &ActiveRuntime,
     deadline: Instant,
 ) -> TurnRuntimeOutcome {
-    let bounded_cleanup = active.cancellation().is_some()
-        || matches!(
-            outcome.state,
-            TurnState::ContainmentFailed | TurnState::Failed
-        );
-    let cleanup_deadline = if bounded_cleanup {
-        deadline.min(Instant::now() + TURN_CLEANUP_RESERVE)
-    } else {
-        deadline
-    };
-    outcome.cleaned = if bounded_cleanup {
-        stop_process_group_with_term_grace(
-            &mut child,
-            process_group,
-            active,
-            cleanup_deadline,
-            Some(CANCEL_TERM_GRACE),
-        )
-    } else {
-        stop_process_group(&mut child, process_group, active, cleanup_deadline)
-    };
+    let cleanup_deadline = deadline.min(Instant::now() + TURN_CLEANUP_RESERVE);
+    outcome.cleaned = stop_process_group_with_term_grace(
+        &mut child,
+        process_group,
+        active,
+        cleanup_deadline,
+        Some(CANCEL_TERM_GRACE),
+    );
     outcome
 }
 
@@ -1355,15 +1205,21 @@ impl VerifiedConfiguration {
     }
 }
 
-fn create_private_turn_directory(work_directory: &Path) -> Result<(), TurnRuntimeOutcome> {
-    create_private_turn_directory_with(work_directory, |_| Ok(()))
+fn create_private_turn_directory(
+    work_directory: &Path,
+    owner: ProcessIdentity,
+    generation: u64,
+) -> Result<(), TurnRuntimeOutcome> {
+    create_private_turn_directory_with(work_directory, owner, generation, |_| Ok(()))
 }
 
 fn create_private_turn_directory_with(
     work_directory: &Path,
+    owner: ProcessIdentity,
+    generation: u64,
     harden: fn(&Path) -> io::Result<()>,
 ) -> Result<(), TurnRuntimeOutcome> {
-    match create_private_directory_with(work_directory, harden) {
+    match create_private_runtime_directory_with(work_directory, owner, generation, harden) {
         Ok(()) => Ok(()),
         Err(PrivateDirectoryFailure::Unavailable) => Err(TurnRuntimeOutcome::terminal(
             TurnState::Failed,
@@ -1384,11 +1240,34 @@ enum PrivateDirectoryFailure {
     CleanupFailed,
 }
 
-fn create_private_readiness_directory(work_directory: &Path) -> Result<(), RuntimeReadinessState> {
-    create_private_directory_with(work_directory, |_| Ok(())).map_err(|failure| match failure {
-        PrivateDirectoryFailure::Unavailable => RuntimeReadinessState::Unavailable,
-        PrivateDirectoryFailure::CleanupFailed => RuntimeReadinessState::CleanupFailed,
-    })
+fn create_private_readiness_directory(
+    work_directory: &Path,
+    owner: ProcessIdentity,
+    generation: u64,
+) -> Result<(), RuntimeReadinessState> {
+    create_private_runtime_directory_with(work_directory, owner, generation, |_| Ok(())).map_err(
+        |failure| match failure {
+            PrivateDirectoryFailure::Unavailable => RuntimeReadinessState::Unavailable,
+            PrivateDirectoryFailure::CleanupFailed => RuntimeReadinessState::CleanupFailed,
+        },
+    )
+}
+
+fn create_private_runtime_directory_with(
+    work_directory: &Path,
+    owner: ProcessIdentity,
+    generation: u64,
+    harden: fn(&Path) -> io::Result<()>,
+) -> Result<(), PrivateDirectoryFailure> {
+    create_private_directory_with(work_directory, harden)?;
+    if write_runtime_owner_record(work_directory, owner, generation).is_ok() {
+        return Ok(());
+    }
+    if fs::remove_dir_all(work_directory).is_ok() {
+        Err(PrivateDirectoryFailure::Unavailable)
+    } else {
+        Err(PrivateDirectoryFailure::CleanupFailed)
+    }
 }
 
 fn create_private_directory_with(
@@ -1513,8 +1392,7 @@ fn bind_configuration(
     if !private_owned_directory(&work_root) || !protected_directory_chain(&work_root) {
         return Err(RuntimeReadinessState::ContainmentFailed);
     }
-    recover_orphaned_readiness_directories(&work_root)?;
-    recover_interrupted_runtime_home(&configuration.codex_home, &work_root)?;
+    recover_orphaned_runtime_directories(&work_root)?;
     let codex_home = canonical_existing(&configuration.codex_home, true)?;
     if !private_owned_directory(&codex_home) || !protected_directory_chain(&codex_home) {
         return Err(RuntimeReadinessState::ContainmentFailed);
@@ -1562,160 +1440,20 @@ fn private_owned_directory_metadata(metadata: &fs::Metadata, owner: u32) -> bool
     metadata.is_dir() && metadata.uid() == owner && metadata.permissions().mode() & 0o777 == 0o700
 }
 
-fn recover_interrupted_runtime_home(
-    persistent_home: &Path,
-    work_root: &Path,
-) -> Result<(), RuntimeReadinessState> {
-    if !persistent_home.is_absolute() {
-        return Err(RuntimeReadinessState::ContainmentFailed);
-    }
-    let parent = persistent_home
-        .parent()
-        .ok_or(RuntimeReadinessState::ContainmentFailed)?;
-    let home_name = persistent_home
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or(RuntimeReadinessState::ContainmentFailed)?;
-    let canonical_parent = canonical_existing(parent, true)?;
-    if !protected_directory_chain(&canonical_parent) {
-        return Err(RuntimeReadinessState::ContainmentFailed);
-    }
-
-    let retained_prefix = format!(".keiko-retained-{home_name}-");
-    let discarded_prefix = format!(".keiko-discarded-{home_name}-");
-    let mut retained = None;
-    let mut discarded = None;
-    for entry in
-        fs::read_dir(&canonical_parent).map_err(|_| RuntimeReadinessState::ContainmentFailed)?
-    {
-        let entry = entry.map_err(|_| RuntimeReadinessState::ContainmentFailed)?;
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        let (slot, suffix, retained_marker) =
-            if let Some(suffix) = name.strip_prefix(&retained_prefix) {
-                (&mut retained, suffix, true)
-            } else if let Some(suffix) = name.strip_prefix(&discarded_prefix) {
-                (&mut discarded, suffix, false)
-            } else {
-                continue;
-            };
-        if slot.is_some() || !valid_turn_directory_name(suffix) {
-            return Err(RuntimeReadinessState::ContainmentFailed);
-        }
-        let metadata = fs::symlink_metadata(entry.path())
-            .map_err(|_| RuntimeReadinessState::ContainmentFailed)?;
-        let mode = metadata.permissions().mode() & 0o777;
-        if !metadata.is_dir()
-            || metadata.uid() != effective_user_id()
-            || if retained_marker {
-                mode != 0o000 && mode != 0o700
-            } else {
-                mode != 0o700
-            }
-        {
-            return Err(RuntimeReadinessState::ContainmentFailed);
-        }
-        *slot = Some((entry.path(), suffix.to_owned()));
-    }
-
-    if retained.is_none() && discarded.is_none() {
-        return Ok(());
-    }
-    if retained
-        .as_ref()
-        .zip(discarded.as_ref())
-        .is_some_and(|(left, right)| left.1 != right.1)
-    {
-        return Err(RuntimeReadinessState::ContainmentFailed);
-    }
-    let persistent_exists = match fs::symlink_metadata(persistent_home) {
-        Ok(metadata) => {
-            if !private_owned_directory_metadata(&metadata, effective_user_id()) {
-                return Err(RuntimeReadinessState::ContainmentFailed);
-            }
-            true
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-        Err(_) => return Err(RuntimeReadinessState::ContainmentFailed),
-    };
-
-    if let Some((retained_path, suffix)) = retained {
-        let discarded_path = canonical_parent.join(format!("{discarded_prefix}{suffix}"));
-        if persistent_exists
-            && (discarded.is_some() || fs::rename(persistent_home, &discarded_path).is_err())
-        {
-            return Err(RuntimeReadinessState::ContainmentFailed);
-        }
-        if fs::set_permissions(&retained_path, fs::Permissions::from_mode(0o700)).is_err()
-            || fs::rename(&retained_path, persistent_home).is_err()
-        {
-            if persistent_exists {
-                let _ = fs::rename(&discarded_path, persistent_home);
-            }
-            let _ = fs::set_permissions(&retained_path, fs::Permissions::from_mode(0o000));
-            return Err(RuntimeReadinessState::ContainmentFailed);
-        }
-        if fs::symlink_metadata(&discarded_path).is_ok()
-            && fs::remove_dir_all(&discarded_path).is_err()
-        {
-            return Err(RuntimeReadinessState::ContainmentFailed);
-        }
-        cleanup_recovered_turn_directory(work_root, &suffix)?;
-        return Ok(());
-    }
-
-    let Some((discarded_path, suffix)) = discarded else {
-        return Ok(());
-    };
-    if !persistent_exists || fs::remove_dir_all(discarded_path).is_err() {
-        return Err(RuntimeReadinessState::ContainmentFailed);
-    }
-    cleanup_recovered_turn_directory(work_root, &suffix)
-}
-
-fn cleanup_recovered_turn_directory(
-    work_root: &Path,
-    turn_name: &str,
-) -> Result<(), RuntimeReadinessState> {
-    let turn_directory = work_root.join(turn_name);
-    match fs::symlink_metadata(&turn_directory) {
-        Ok(metadata) => {
-            if !private_owned_directory_metadata(&metadata, effective_user_id())
-                || fs::remove_dir_all(turn_directory).is_err()
-            {
-                return Err(RuntimeReadinessState::ContainmentFailed);
-            }
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(_) => return Err(RuntimeReadinessState::ContainmentFailed),
-    }
-    Ok(())
-}
-
-fn valid_turn_directory_name(name: &str) -> bool {
-    let Some((process, generation)) = name
-        .strip_prefix("turn-")
-        .and_then(|rest| rest.split_once('-'))
-    else {
-        return false;
-    };
-    !process.is_empty()
-        && !generation.is_empty()
-        && process.bytes().all(|byte| byte.is_ascii_digit())
-        && generation.bytes().all(|byte| byte.is_ascii_digit())
-}
-
-fn recover_orphaned_readiness_directories(work_root: &Path) -> Result<(), RuntimeReadinessState> {
+fn recover_orphaned_runtime_directories(work_root: &Path) -> Result<(), RuntimeReadinessState> {
     for entry in fs::read_dir(work_root).map_err(|_| RuntimeReadinessState::ContainmentFailed)? {
         let entry = entry.map_err(|_| RuntimeReadinessState::ContainmentFailed)?;
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        if !name.starts_with("readiness-") {
+        let owner = if name.starts_with("readiness-") {
+            runtime_work_directory_identity(&entry.path(), "readiness")
+        } else if name.starts_with("turn-") {
+            runtime_work_directory_identity(&entry.path(), "turn")
+        } else {
             continue;
-        }
-        let Some(owner_process) = readiness_owner_process(&name) else {
+        };
+        let Some((owner, _generation)) = owner else {
             return Err(RuntimeReadinessState::ContainmentFailed);
         };
         let metadata = fs::symlink_metadata(entry.path())
@@ -1723,23 +1461,117 @@ fn recover_orphaned_readiness_directories(work_root: &Path) -> Result<(), Runtim
         if !private_owned_directory_metadata(&metadata, effective_user_id()) {
             return Err(RuntimeReadinessState::ContainmentFailed);
         }
-        if process_identity(owner_process).is_none() && fs::remove_dir_all(entry.path()).is_err() {
+        if process_identity(owner.process_id) != Some(owner)
+            && fs::remove_dir_all(entry.path()).is_err()
+        {
             return Err(RuntimeReadinessState::ContainmentFailed);
         }
     }
     Ok(())
 }
 
-fn readiness_owner_process(name: &str) -> Option<i32> {
-    let (process, generation) = name.strip_prefix("readiness-")?.split_once('-')?;
-    if process.is_empty()
-        || generation.is_empty()
-        || !process.bytes().all(|byte| byte.is_ascii_digit())
-        || !generation.bytes().all(|byte| byte.is_ascii_digit())
+fn runtime_work_directory_name(prefix: &str, owner: ProcessIdentity, generation: u64) -> String {
+    // Keep the provider-facing work path short; the owned sidecar binds the full start identity.
+    format!("{prefix}-{}-{generation}", owner.process_id)
+}
+
+fn runtime_work_directory_coordinates(name: &str, prefix: &str) -> Option<(i32, u64)> {
+    let mut fields = name.strip_prefix(&format!("{prefix}-"))?.split('-');
+    let process_id = fields.next()?.parse::<i32>().ok()?;
+    let generation = fields.next()?.parse::<u64>().ok()?;
+    if fields.next().is_some() || process_id <= 0 || generation == 0 {
+        return None;
+    }
+    Some((process_id, generation))
+}
+
+fn write_runtime_owner_record(
+    work_directory: &Path,
+    owner: ProcessIdentity,
+    generation: u64,
+) -> io::Result<()> {
+    let name = work_directory
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "runtime directory name"))?;
+    let prefix = if name.starts_with("readiness-") {
+        "readiness"
+    } else if name.starts_with("turn-") {
+        "turn"
+    } else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "runtime directory prefix",
+        ));
+    };
+    if runtime_work_directory_coordinates(name, prefix) != Some((owner.process_id, generation)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "runtime directory identity",
+        ));
+    }
+    let record = format!(
+        "{}:{}:{}:{generation}\n",
+        owner.process_id, owner.started_seconds, owner.started_microseconds
+    );
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(work_directory.join(RUNTIME_OWNER_RECORD))?;
+    file.write_all(record.as_bytes())?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn valid_runtime_owner_record_metadata(metadata: &fs::Metadata, owner: u32) -> bool {
+    metadata.is_file()
+        && metadata.uid() == owner
+        && metadata.permissions().mode() & 0o777 == 0o600
+        && metadata.len() > 0
+        && metadata.len() <= 128
+}
+
+fn runtime_work_directory_identity(
+    work_directory: &Path,
+    prefix: &str,
+) -> Option<(ProcessIdentity, u64)> {
+    let name = work_directory.file_name()?.to_str()?;
+    let (named_process, named_generation) = runtime_work_directory_coordinates(name, prefix)?;
+    let record_path = work_directory.join(RUNTIME_OWNER_RECORD);
+    let path_metadata = fs::symlink_metadata(&record_path).ok()?;
+    if !valid_runtime_owner_record_metadata(&path_metadata, effective_user_id()) {
+        return None;
+    }
+    let mut file = File::open(record_path).ok()?;
+    let file_metadata = file.metadata().ok()?;
+    if FileIdentity::from_metadata(&path_metadata) != FileIdentity::from_metadata(&file_metadata) {
+        return None;
+    }
+    let mut record = String::new();
+    file.read_to_string(&mut record).ok()?;
+    let record = record.strip_suffix('\n')?;
+    let mut fields = record.split(':');
+    let process_id = fields.next()?.parse::<i32>().ok()?;
+    let started_seconds = fields.next()?.parse::<u64>().ok()?;
+    let started_microseconds = fields.next()?.parse::<u64>().ok()?;
+    let generation = fields.next()?.parse::<u64>().ok()?;
+    if fields.next().is_some()
+        || process_id != named_process
+        || generation != named_generation
+        || started_seconds == 0
+        || started_microseconds >= 1_000_000
     {
         return None;
     }
-    process.parse::<i32>().ok().filter(|process| *process > 0)
+    Some((
+        ProcessIdentity {
+            process_id,
+            started_microseconds,
+            started_seconds,
+        },
+        generation,
+    ))
 }
 
 fn protected_directory_chain(path: &Path) -> bool {
@@ -1952,6 +1784,79 @@ fn write_json_line(writer: &mut impl Write, value: &Value) -> io::Result<()> {
     serde_json::to_writer(&mut *writer, value)?;
     writer.write_all(b"\n")?;
     writer.flush()
+}
+
+#[derive(Debug)]
+struct RuntimeBoundaryAudit {
+    repository_markers: Vec<Vec<u8>>,
+    repository_context_bytes_to_runtime: u64,
+}
+
+impl RuntimeBoundaryAudit {
+    fn new(selected_workspace: &Path) -> Self {
+        let mut repository_markers: Vec<Vec<u8>> = Vec::new();
+        for marker in [
+            selected_workspace.to_string_lossy().as_bytes(),
+            selected_workspace
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .as_bytes(),
+        ] {
+            if !marker.is_empty()
+                && !repository_markers
+                    .iter()
+                    .any(|existing| existing.as_slice() == marker)
+            {
+                repository_markers.push(marker.to_vec());
+            }
+        }
+        Self {
+            repository_markers,
+            repository_context_bytes_to_runtime: 0,
+        }
+    }
+
+    fn write_json_line(&mut self, writer: &mut impl Write, value: &Value) -> io::Result<()> {
+        let mut structural_value = value.clone();
+        if structural_value.get("method").and_then(Value::as_str) == Some("turn/start")
+            && let Some(inputs) = structural_value
+                .pointer_mut("/params/input")
+                .and_then(Value::as_array_mut)
+        {
+            for input in inputs {
+                if let Some(text) = input.get_mut("text") {
+                    *text = Value::String(String::new());
+                }
+            }
+        }
+        let structural_bytes = serde_json::to_vec(&structural_value)?;
+        let leaked_bytes = self
+            .repository_markers
+            .iter()
+            .map(|marker| count_byte_occurrences(&structural_bytes, marker) * marker.len())
+            .sum::<usize>() as u64;
+        if leaked_bytes > 0 {
+            self.repository_context_bytes_to_runtime = self
+                .repository_context_bytes_to_runtime
+                .saturating_add(leaked_bytes);
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "repository context rejected at runtime boundary",
+            ));
+        }
+        write_json_line(writer, value)
+    }
+}
+
+fn count_byte_occurrences(haystack: &[u8], needle: &[u8]) -> usize {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return 0;
+    }
+    haystack
+        .windows(needle.len())
+        .filter(|window| *window == needle)
+        .count()
 }
 
 #[derive(Debug)]
@@ -2715,6 +2620,7 @@ fn cleanup_after(
     }
 }
 
+#[cfg(test)]
 fn stop_process_group(
     child: &mut Child,
     process_group: i32,
@@ -2733,11 +2639,20 @@ fn stop_process_group_with_term_grace(
 ) -> bool {
     let cleanup_started = Instant::now();
     let remaining = deadline.saturating_duration_since(cleanup_started);
-    let term_deadline = term_grace.map_or_else(
-        || cleanup_started + remaining / 2,
-        |grace| deadline.min(cleanup_started + grace),
-    );
+    let grace = term_grace.unwrap_or(remaining / 3);
+    let eof_grace = STDIN_EOF_GRACE.min(remaining / 3);
+    let graceful_deadline = deadline.min(cleanup_started + eof_grace);
+    // stdin has already been closed by every caller. Give app-server a bounded
+    // chance to run its own destructors before TERM/KILL escalation.
+    while Instant::now() < graceful_deadline {
+        if ready_to_reap(child.id() as i32, process_group, active) {
+            retire_active_process_group(active, process_group);
+            return child.wait().is_ok();
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
     signal_active_process_group(active, process_group, SIGTERM);
+    let term_deadline = deadline.min(Instant::now() + grace);
     while Instant::now() < term_deadline {
         if ready_to_reap(child.id() as i32, process_group, active) {
             retire_active_process_group(active, process_group);
@@ -3058,10 +2973,79 @@ fn process_group_exists(process_group: i32) -> bool {
 mod tests {
     use super::*;
     use std::io::Cursor;
-    use std::os::unix::ffi::OsStringExt;
     use std::os::unix::fs::symlink;
 
     static PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn runtime_boundary_counts_and_rejects_structural_repository_context() {
+        let workspace = Path::new("/private/KeikoRepositoryCanary");
+        let mut audit = RuntimeBoundaryAudit::new(workspace);
+        let mut writer = Vec::new();
+        let result = audit.write_json_line(
+            &mut writer,
+            &json!({
+                "method": "thread/start",
+                "params": {"cwd": workspace, "runtimeWorkspaceRoots": []}
+            }),
+        );
+        assert_eq!(
+            result.expect_err("repository context must fail").kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert!(
+            writer.is_empty(),
+            "rejected bytes must not cross the boundary"
+        );
+        assert!(audit.repository_context_bytes_to_runtime > 0);
+    }
+
+    #[test]
+    fn runtime_boundary_allows_exact_user_task_without_treating_it_as_product_context() {
+        let workspace = Path::new("/private/KeikoRepositoryCanary");
+        let mut audit = RuntimeBoundaryAudit::new(workspace);
+        let mut writer = Vec::new();
+        audit
+            .write_json_line(
+                &mut writer,
+                &json!({
+                    "method": "turn/start",
+                    "params": {
+                        "input": [{
+                            "type": "text",
+                            "text": "Explain /private/KeikoRepositoryCanary exactly.",
+                            "text_elements": []
+                        }],
+                        "runtimeWorkspaceRoots": []
+                    }
+                }),
+            )
+            .expect("exact user input is authorized");
+        assert!(!writer.is_empty());
+        assert_eq!(audit.repository_context_bytes_to_runtime, 0);
+
+        let mut missing_input = RuntimeBoundaryAudit::new(Path::new("repository"));
+        missing_input
+            .write_json_line(
+                &mut Vec::new(),
+                &json!({"method": "turn/start", "params": {"input": {}}}),
+            )
+            .expect("missing input array contains no product context");
+        missing_input
+            .write_json_line(
+                &mut Vec::new(),
+                &json!({"method": "turn/start", "params": {"input": [{}]}}),
+            )
+            .expect("missing text contains no product context");
+
+        let empty_workspace = RuntimeBoundaryAudit::new(Path::new(""));
+        assert!(empty_workspace.repository_markers.is_empty());
+        let duplicate_workspace = RuntimeBoundaryAudit::new(Path::new("repository"));
+        assert_eq!(duplicate_workspace.repository_markers.len(), 1);
+        assert_eq!(count_byte_occurrences(b"", b""), 0);
+        assert_eq!(count_byte_occurrences(b"a", b"long"), 0);
+        assert_eq!(count_byte_occurrences(b"abab", b"ab"), 2);
+    }
 
     #[test]
     fn turn_and_readiness_share_the_closed_no_effect_runtime_arguments() {
@@ -3174,6 +3158,15 @@ mod tests {
         }
 
         for event in [
+            json!({
+                "method": "remoteControl/status/changed",
+                "emittedAtMs": 1
+            }),
+            json!({
+                "method": "remoteControl/status/changed",
+                "params": [],
+                "emittedAtMs": 1
+            }),
             json!({
                 "method": "remoteControl/status/changed",
                 "params": {"installationId": "redacted", "status": "disabled"},
@@ -3554,398 +3547,103 @@ mod tests {
     }
 
     #[test]
-    fn disposable_runtime_home_rejects_invalid_auth_and_recovers_each_swap_boundary() {
+    fn runtime_directory_recovery_uses_exact_process_start_identity() {
         let fixture = Fixture::new();
-        let installation_id = fixture.home.join(CODEX_INSTALLATION_ID);
-
-        fs::remove_file(&installation_id).expect("remove installation identity");
-        let missing_destination = fixture.root.join("missing-auth-destination");
-        fs::create_dir(&missing_destination).expect("missing-auth destination");
-        assert_eq!(
-            copy_auth_identity(&fixture.home, &missing_destination),
-            Err(())
-        );
-
-        fs::create_dir(&installation_id).expect("directory installation identity");
-        let directory_destination = fixture.root.join("directory-auth-destination");
-        fs::create_dir(&directory_destination).expect("directory-auth destination");
-        assert_eq!(
-            copy_auth_identity(&fixture.home, &directory_destination),
-            Err(())
-        );
-        fs::remove_dir(&installation_id).expect("remove directory installation identity");
-
-        for (name, contents, mode) in [
-            ("empty", Vec::new(), 0o600),
-            ("oversized", vec![b'x'; 4097], 0o600),
-            ("writable", b"installation".to_vec(), 0o666),
-        ] {
-            fs::write(&installation_id, contents).expect("invalid installation identity");
-            fs::set_permissions(&installation_id, fs::Permissions::from_mode(mode))
-                .expect("invalid installation permissions");
-            let destination = fixture.root.join(format!("{name}-destination"));
-            fs::create_dir(&destination).expect("invalid-auth destination");
-            assert_eq!(copy_auth_identity(&fixture.home, &destination), Err(()));
-        }
-
-        fs::write(&installation_id, b"installation").expect("valid installation identity");
-        fs::set_permissions(&installation_id, fs::Permissions::from_mode(0o600))
-            .expect("valid installation permissions");
-        let installation_metadata =
-            fs::symlink_metadata(&installation_id).expect("installation metadata");
-        assert!(!valid_auth_identity_metadata(
-            &installation_metadata,
-            effective_user_id().wrapping_add(1)
-        ));
-        assert!(!private_owned_directory(&installation_id));
-        assert!(!private_owned_directory_metadata(
-            &fs::symlink_metadata(&fixture.work).expect("work metadata"),
-            effective_user_id().wrapping_add(1)
-        ));
-        assert!(!protected_directory_chain(&installation_id));
-        let destination = fixture.root.join("valid-auth-destination");
-        fs::create_dir(&destination).expect("valid-auth destination");
-        copy_auth_identity(&fixture.home, &destination).expect("copy installation identity");
-        assert_eq!(
-            fs::read(destination.join(CODEX_INSTALLATION_ID)).expect("copied identity"),
-            b"installation"
-        );
-
-        let turn_directory = fixture.work.join("turn-1-1");
-        fs::create_dir(&turn_directory).expect("turn directory");
-        fs::set_permissions(&turn_directory, fs::Permissions::from_mode(0o700))
-            .expect("private turn directory");
-        let retained_collision = fixture.root.join(".keiko-retained-home-turn-1-1");
-        fs::create_dir(&retained_collision).expect("retained collision");
-        assert!(DisposableRuntimeHome::stage(&fixture.home, &turn_directory).is_err());
-        fs::remove_dir(&retained_collision).expect("remove retained collision");
-
-        let mut staged =
-            DisposableRuntimeHome::stage(&fixture.home, &turn_directory).expect("stage home");
-        assert!(staged.restore());
-        assert!(staged.restore());
-
-        let failed_turn_directory = fixture.work.join("turn-1-2");
-        fs::create_dir(&failed_turn_directory).expect("failed turn directory");
-        let mut missing_retained =
-            DisposableRuntimeHome::stage(&fixture.home, &failed_turn_directory)
-                .expect("stage missing-retained home");
-        fs::set_permissions(
-            &missing_retained.retained_home,
-            fs::Permissions::from_mode(0o700),
-        )
-        .expect("unlock retained home");
-        fs::remove_dir_all(&missing_retained.retained_home).expect("remove retained home");
-        assert!(!missing_retained.restore());
-
-        let missing_persistent_turn = fixture.work.join("turn-1-3");
-        fs::create_dir(&missing_persistent_turn).expect("missing-persistent turn directory");
-        let mut missing_persistent =
-            DisposableRuntimeHome::stage(&fixture.home, &missing_persistent_turn)
-                .expect("stage missing-persistent home");
-        fs::remove_dir_all(&missing_persistent.persistent_home)
-            .expect("remove disposable persistent home");
-        assert!(!missing_persistent.restore());
-
-        let same_path = fixture.root.join("same-path-home");
-        fs::create_dir(&same_path).expect("same-path home");
-        let mut rollback = DisposableRuntimeHome {
-            discarded_home: fixture.root.join("same-path-discarded"),
-            persistent_home: same_path.clone(),
-            restore_on_drop: true,
-            restored: false,
-            retained_home: same_path.clone(),
+        let owner = process_identity(std::process::id() as i32).expect("test process identity");
+        let reused_pid = ProcessIdentity {
+            started_seconds: owner.started_seconds.saturating_add(1),
+            ..owner
         };
-        assert!(!rollback.restore());
-        assert!(same_path.exists());
-    }
+        let dead = ProcessIdentity {
+            process_id: i32::MAX,
+            started_seconds: 1,
+            started_microseconds: 0,
+        };
 
-    #[test]
-    fn interrupted_runtime_home_swaps_restore_persistent_state_before_binding() {
-        let fixture = Fixture::new();
-        fs::write(fixture.home.join("persistent-only"), b"keep").expect("persistent state");
-        let turn_directory = fixture.work.join("turn-41-1");
-        fs::create_dir(&turn_directory).expect("turn directory");
-        fs::set_permissions(&turn_directory, fs::Permissions::from_mode(0o700))
-            .expect("private turn directory");
-        let staged = DisposableRuntimeHome::stage(&fixture.home, &turn_directory)
-            .expect("stage disposable home");
-        fs::write(fixture.home.join("provider-output"), b"discard").expect("provider output");
-        std::mem::forget(staged);
-
-        recover_interrupted_runtime_home(&fixture.home, &fixture.work)
-            .expect("recover active swap");
-        assert_eq!(
-            fs::read(fixture.home.join("persistent-only")).expect("restored persistent state"),
-            b"keep"
-        );
-        assert!(!fixture.home.join("provider-output").exists());
-        assert!(!turn_directory.exists());
-
-        let second_turn = fixture.work.join("turn-41-2");
-        fs::create_dir(&second_turn).expect("second turn directory");
-        fs::set_permissions(&second_turn, fs::Permissions::from_mode(0o700))
-            .expect("private second turn directory");
-        let mut staged = DisposableRuntimeHome::stage(&fixture.home, &second_turn)
-            .expect("stage second disposable home");
-        fs::rename(&staged.persistent_home, &staged.discarded_home)
-            .expect("begin interrupted restore");
-        fs::set_permissions(&staged.retained_home, fs::Permissions::from_mode(0o700))
-            .expect("unlock retained home");
-        fs::rename(&staged.retained_home, &staged.persistent_home)
-            .expect("restore persistent home before cleanup");
-        staged.restored = true;
-        std::mem::forget(staged);
-
-        recover_interrupted_runtime_home(&fixture.home, &fixture.work)
-            .expect("recover post-restore discard");
-        assert!(!second_turn.exists());
-        assert!(fixture.home.join("persistent-only").exists());
+        let live = fixture
+            .work
+            .join(runtime_work_directory_name("readiness", owner, 1));
+        let reused = fixture
+            .work
+            .join(runtime_work_directory_name("readiness", reused_pid, 2));
+        let orphaned_turn = fixture
+            .work
+            .join(runtime_work_directory_name("turn", dead, 3));
+        create_private_readiness_directory(&live, owner, 1).expect("live runtime directory");
+        create_private_readiness_directory(&reused, reused_pid, 2)
+            .expect("reused runtime directory");
+        create_private_turn_directory(&orphaned_turn, dead, 3).expect("orphaned runtime directory");
+        let unrelated = fixture.work.join("unrelated");
+        fs::create_dir(&unrelated).expect("unrelated directory");
+        recover_orphaned_runtime_directories(&fixture.work).expect("recover stale runtime work");
+        assert!(live.exists());
         assert!(
-            fs::read_dir(&fixture.root)
-                .expect("fixture entries")
-                .all(|entry| !entry
-                    .expect("fixture entry")
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(".keiko-discarded-home-"))
+            !reused.exists(),
+            "same PID with a different start must be stale"
         );
-    }
+        assert!(!orphaned_turn.exists());
+        assert!(unrelated.exists());
+        fs::remove_dir_all(&live).expect("remove live fixture");
 
-    #[test]
-    fn runtime_home_recovery_rejects_ambiguous_or_unsafe_state() {
-        let fixture = Fixture::new();
+        for invalid in [
+            "other-1-1",
+            "turn-",
+            "turn-x-1",
+            "turn-1-x",
+            "turn-1-1-extra",
+            "turn-0-1",
+            "turn-1-0",
+        ] {
+            assert!(
+                runtime_work_directory_coordinates(invalid, "turn").is_none(),
+                "{invalid}"
+            );
+        }
         assert_eq!(
-            recover_interrupted_runtime_home(Path::new("relative-home"), &fixture.work),
+            runtime_work_directory_coordinates("turn-1-1", "turn").map(|value| value.1),
+            Some(1)
+        );
+        assert!(
+            runtime_work_directory_name("readiness", owner, 1).len() <= 32,
+            "runtime-owned names must leave room for staged runtime state"
+        );
+
+        let malformed = fixture.work.join("readiness-invalid");
+        fs::create_dir(&malformed).expect("malformed runtime directory");
+        fs::set_permissions(&malformed, fs::Permissions::from_mode(0o700))
+            .expect("private malformed directory");
+        assert_eq!(
+            recover_orphaned_runtime_directories(&fixture.work),
             Err(RuntimeReadinessState::ContainmentFailed)
         );
+        fs::remove_dir(&malformed).expect("remove malformed fixture");
+
+        let unsafe_directory = fixture
+            .work
+            .join(runtime_work_directory_name("turn", dead, 4));
+        create_private_turn_directory(&unsafe_directory, dead, 4)
+            .expect("unsafe runtime directory");
+        fs::set_permissions(&unsafe_directory, fs::Permissions::from_mode(0o755))
+            .expect("unsafe runtime permissions");
         assert_eq!(
-            recover_interrupted_runtime_home(Path::new("/"), &fixture.work),
+            recover_orphaned_runtime_directories(&fixture.work),
             Err(RuntimeReadinessState::ContainmentFailed)
         );
-        let non_utf8_home = fixture.root.join(std::ffi::OsString::from_vec(vec![
-            b'h', b'o', b'm', b'e', 0xff,
-        ]));
-        assert_eq!(
-            recover_interrupted_runtime_home(&non_utf8_home, &fixture.work),
-            Err(RuntimeReadinessState::ContainmentFailed)
-        );
+        fs::set_permissions(&unsafe_directory, fs::Permissions::from_mode(0o700))
+            .expect("restore unsafe fixture permissions");
+        fs::remove_dir_all(&unsafe_directory).expect("remove unsafe fixture");
 
-        let invalid_name = fixture.root.join(".keiko-retained-home-invalid");
-        fs::create_dir(&invalid_name).expect("invalid marker name");
-        assert_eq!(
-            recover_interrupted_runtime_home(&fixture.home, &fixture.work),
-            Err(RuntimeReadinessState::ContainmentFailed)
-        );
-        fs::remove_dir(&invalid_name).expect("remove invalid marker name");
-
-        let first = fixture.root.join(".keiko-retained-home-turn-51-1");
-        let second = fixture.root.join(".keiko-retained-home-turn-51-2");
-        fs::create_dir(&first).expect("first duplicate marker");
-        fs::create_dir(&second).expect("second duplicate marker");
-        fs::set_permissions(&first, fs::Permissions::from_mode(0o700))
-            .expect("first marker permissions");
-        fs::set_permissions(&second, fs::Permissions::from_mode(0o700))
-            .expect("second marker permissions");
-        assert_eq!(
-            recover_interrupted_runtime_home(&fixture.home, &fixture.work),
-            Err(RuntimeReadinessState::ContainmentFailed)
-        );
-        fs::remove_dir(&first).expect("remove first duplicate marker");
-        fs::remove_dir(&second).expect("remove second duplicate marker");
-
-        let marker_file = fixture.root.join(".keiko-retained-home-turn-51-3");
-        fs::write(&marker_file, b"not a directory").expect("marker file");
-        assert_eq!(
-            recover_interrupted_runtime_home(&fixture.home, &fixture.work),
-            Err(RuntimeReadinessState::ContainmentFailed)
-        );
-        fs::remove_file(&marker_file).expect("remove marker file");
-
-        let writable_marker = fixture.root.join(".keiko-retained-home-turn-51-4");
-        fs::create_dir(&writable_marker).expect("writable marker");
-        fs::set_permissions(&writable_marker, fs::Permissions::from_mode(0o755))
-            .expect("writable marker permissions");
-        assert_eq!(
-            recover_interrupted_runtime_home(&fixture.home, &fixture.work),
-            Err(RuntimeReadinessState::ContainmentFailed)
-        );
-        fs::remove_dir(&writable_marker).expect("remove writable marker");
-
-        let retained = fixture.root.join(".keiko-retained-home-turn-51-5");
-        let mismatched = fixture.root.join(".keiko-discarded-home-turn-51-6");
-        fs::create_dir(&retained).expect("retained marker");
-        fs::create_dir(&mismatched).expect("mismatched discarded marker");
-        fs::set_permissions(&retained, fs::Permissions::from_mode(0o000))
-            .expect("lock retained marker");
-        fs::set_permissions(&mismatched, fs::Permissions::from_mode(0o700))
-            .expect("discarded marker permissions");
-        assert_eq!(
-            recover_interrupted_runtime_home(&fixture.home, &fixture.work),
-            Err(RuntimeReadinessState::ContainmentFailed)
-        );
-        fs::set_permissions(&retained, fs::Permissions::from_mode(0o700))
-            .expect("unlock retained marker");
-        fs::remove_dir(&retained).expect("remove retained marker");
-        fs::remove_dir(&mismatched).expect("remove mismatched marker");
-
-        let retained = fixture.root.join(".keiko-retained-home-turn-51-7");
-        let discarded = fixture.root.join(".keiko-discarded-home-turn-51-7");
-        fs::create_dir(&retained).expect("matching retained marker");
-        fs::create_dir(&discarded).expect("matching discarded marker");
-        fs::set_permissions(&retained, fs::Permissions::from_mode(0o700))
-            .expect("matching retained permissions");
-        fs::set_permissions(&discarded, fs::Permissions::from_mode(0o700))
-            .expect("matching discarded permissions");
-        assert_eq!(
-            recover_interrupted_runtime_home(&fixture.home, &fixture.work),
-            Err(RuntimeReadinessState::ContainmentFailed)
-        );
-        fs::remove_dir(&retained).expect("remove matching retained marker");
-        fs::remove_dir(&discarded).expect("remove matching discarded marker");
-
-        let retained = fixture.root.join(".keiko-retained-home-turn-51-8");
-        fs::create_dir(&retained).expect("marker for unsafe persistent home");
-        fs::set_permissions(&retained, fs::Permissions::from_mode(0o700))
-            .expect("marker permissions");
-        fs::set_permissions(&fixture.home, fs::Permissions::from_mode(0o777))
-            .expect("unsafe persistent home permissions");
-        assert_eq!(
-            recover_interrupted_runtime_home(&fixture.home, &fixture.work),
-            Err(RuntimeReadinessState::ContainmentFailed)
-        );
-        fs::set_permissions(&fixture.home, fs::Permissions::from_mode(0o700))
-            .expect("restore persistent home permissions");
-        fs::remove_dir(&retained).expect("remove marker for unsafe persistent home");
-
-        assert!(!valid_turn_directory_name("invalid"));
-        assert!(!valid_turn_directory_name("turn--1"));
-        assert!(!valid_turn_directory_name("turn-1-"));
-        assert!(!valid_turn_directory_name("turn-x-1"));
-        assert!(!valid_turn_directory_name("turn-1-x"));
-        assert!(valid_turn_directory_name("turn-51-9"));
-
-        let read_only = Fixture::new();
-        let retained = read_only.root.join(".keiko-retained-home-turn-55-1");
-        fs::create_dir(&retained).expect("read-only retained marker");
-        fs::set_permissions(&retained, fs::Permissions::from_mode(0o000))
-            .expect("lock read-only retained marker");
-        fs::set_permissions(&read_only.root, fs::Permissions::from_mode(0o500))
-            .expect("read-only home parent");
-        assert_eq!(
-            recover_interrupted_runtime_home(&read_only.home, &read_only.work),
-            Err(RuntimeReadinessState::ContainmentFailed)
-        );
-        fs::set_permissions(&read_only.root, fs::Permissions::from_mode(0o700))
-            .expect("restore home parent permissions");
-        fs::set_permissions(&retained, fs::Permissions::from_mode(0o700))
-            .expect("unlock read-only retained marker");
-        fs::remove_dir(&retained).expect("remove read-only retained marker");
-    }
-
-    #[test]
-    fn runtime_home_recovery_handles_missing_paths_and_rejects_unsafe_cleanup() {
-        let fixture = Fixture::new();
-        let retained = fixture.root.join(".keiko-retained-home-turn-52-1");
-        fs::rename(&fixture.home, &retained).expect("retain persistent home");
-        fs::set_permissions(&retained, fs::Permissions::from_mode(0o000))
-            .expect("lock retained home");
-        recover_interrupted_runtime_home(&fixture.home, &fixture.work)
-            .expect("recover missing persistent path");
-        assert!(fixture.home.exists());
-
-        let discarded = fixture.root.join(".keiko-discarded-home-turn-52-2");
-        fs::rename(&fixture.home, &discarded).expect("discard persistent home");
-        assert_eq!(
-            recover_interrupted_runtime_home(&fixture.home, &fixture.work),
-            Err(RuntimeReadinessState::ContainmentFailed)
-        );
-        fs::rename(&discarded, &fixture.home).expect("restore discarded home");
-
-        let retained = fixture.root.join(".keiko-retained-home-turn-52-3");
-        fs::rename(&fixture.home, &retained).expect("retain original home");
-        fs::set_permissions(&retained, fs::Permissions::from_mode(0o000))
-            .expect("lock original home");
-        fs::create_dir(&fixture.home).expect("disposable home");
-        fs::set_permissions(&fixture.home, fs::Permissions::from_mode(0o700))
-            .expect("private disposable home");
-        let unsafe_turn = fixture.work.join("turn-52-3");
-        fs::create_dir(&unsafe_turn).expect("unsafe turn directory");
-        fs::set_permissions(&unsafe_turn, fs::Permissions::from_mode(0o755))
-            .expect("unsafe turn permissions");
-        assert_eq!(
-            recover_interrupted_runtime_home(&fixture.home, &fixture.work),
-            Err(RuntimeReadinessState::ContainmentFailed)
-        );
-        assert!(fixture.home.join(CODEX_INSTALLATION_ID).exists());
-        fs::set_permissions(&unsafe_turn, fs::Permissions::from_mode(0o700))
-            .expect("restore turn permissions");
-        fs::remove_dir(&unsafe_turn).expect("remove unsafe turn directory");
-
-        let blocked = Fixture::new();
-        let retained = blocked.root.join(".keiko-retained-home-turn-53-1");
-        fs::rename(&blocked.home, &retained).expect("retain blocked home");
-        fs::set_permissions(&retained, fs::Permissions::from_mode(0o000))
-            .expect("lock blocked home");
-        fs::set_permissions(&blocked.work, fs::Permissions::from_mode(0o000))
-            .expect("block work lookup");
-        assert_eq!(
-            recover_interrupted_runtime_home(&blocked.home, &blocked.work),
-            Err(RuntimeReadinessState::ContainmentFailed)
-        );
-        fs::set_permissions(&blocked.work, fs::Permissions::from_mode(0o700))
-            .expect("restore blocked work root");
-
-        let unwritable = Fixture::new();
-        let retained = unwritable.root.join(".keiko-retained-home-turn-54-1");
-        fs::rename(&unwritable.home, &retained).expect("retain unwritable home");
-        fs::set_permissions(&retained, fs::Permissions::from_mode(0o000))
-            .expect("lock unwritable home");
-        let turn = unwritable.work.join("turn-54-1");
-        fs::create_dir(&turn).expect("unwritable cleanup turn");
-        fs::set_permissions(&turn, fs::Permissions::from_mode(0o700))
-            .expect("private unwritable cleanup turn");
-        fs::set_permissions(&unwritable.work, fs::Permissions::from_mode(0o500))
-            .expect("unwritable work root");
-        assert_eq!(
-            recover_interrupted_runtime_home(&unwritable.home, &unwritable.work),
-            Err(RuntimeReadinessState::ContainmentFailed)
-        );
-        fs::set_permissions(&unwritable.work, fs::Permissions::from_mode(0o700))
-            .expect("restore unwritable work root");
-        fs::remove_dir(&turn).expect("remove unwritable cleanup turn");
-
-        let restore_blocked = Fixture::new();
-        let retained = restore_blocked.root.join(".keiko-retained-home-turn-56-1");
-        fs::rename(&restore_blocked.home, &retained).expect("retain restore-blocked home");
-        fs::set_permissions(&retained, fs::Permissions::from_mode(0o000))
-            .expect("lock restore-blocked home");
-        fs::set_permissions(&restore_blocked.root, fs::Permissions::from_mode(0o500))
-            .expect("block retained restore rename");
-        assert_eq!(
-            recover_interrupted_runtime_home(&restore_blocked.home, &restore_blocked.work),
-            Err(RuntimeReadinessState::ContainmentFailed)
-        );
-        fs::set_permissions(&restore_blocked.root, fs::Permissions::from_mode(0o700))
-            .expect("restore retained parent permissions");
-        fs::set_permissions(&retained, fs::Permissions::from_mode(0o700))
-            .expect("unlock restore-blocked home");
-        fs::rename(&retained, &restore_blocked.home).expect("restore blocked persistent home");
-
-        let discard_blocked = Fixture::new();
-        let discarded = discard_blocked.root.join(".keiko-discarded-home-turn-57-1");
-        fs::create_dir(&discarded).expect("discard-blocked marker");
-        fs::set_permissions(&discarded, fs::Permissions::from_mode(0o700))
-            .expect("discard-blocked marker permissions");
-        fs::set_permissions(&discard_blocked.root, fs::Permissions::from_mode(0o500))
-            .expect("block discard removal");
-        assert_eq!(
-            recover_interrupted_runtime_home(&discard_blocked.home, &discard_blocked.work),
-            Err(RuntimeReadinessState::ContainmentFailed)
-        );
-        fs::set_permissions(&discard_blocked.root, fs::Permissions::from_mode(0o700))
-            .expect("restore discard parent permissions");
-        fs::remove_dir(&discarded).expect("remove discard-blocked marker");
+        let removal_blocked = fixture
+            .work
+            .join(runtime_work_directory_name("turn", dead, 5));
+        create_private_turn_directory(&removal_blocked, dead, 5)
+            .expect("removal-blocked runtime directory");
+        fs::set_permissions(&fixture.work, fs::Permissions::from_mode(0o500))
+            .expect("block work removal");
+        let blocked = recover_orphaned_runtime_directories(&fixture.work);
+        fs::set_permissions(&fixture.work, fs::Permissions::from_mode(0o700))
+            .expect("restore work permissions");
+        assert_eq!(blocked, Err(RuntimeReadinessState::ContainmentFailed));
     }
 
     #[test]
@@ -4149,87 +3847,14 @@ mod tests {
             RuntimeReadinessState::Cancelled
         );
 
+        let owner = process_identity(std::process::id() as i32).expect("test process identity");
         let collision = fixture
             .work
-            .join(format!("readiness-{}-1", std::process::id()));
-        fs::create_dir(&collision).expect("collision");
-        fs::set_permissions(&collision, fs::Permissions::from_mode(0o700))
-            .expect("private collision");
+            .join(runtime_work_directory_name("readiness", owner, 1));
+        create_private_readiness_directory(&collision, owner, 1).expect("collision");
         assert_eq!(
             host.check("collision", None).state,
             RuntimeReadinessState::Unavailable
-        );
-    }
-
-    #[test]
-    fn readiness_recovery_removes_only_owned_orphaned_directories() {
-        let fixture = Fixture::new();
-        for invalid in [
-            "turn-1-1",
-            "readiness--1",
-            "readiness-1-",
-            "readiness-x-1",
-            "readiness-1-x",
-            "readiness-0-1",
-            "readiness-2147483648-1",
-        ] {
-            assert_eq!(readiness_owner_process(invalid), None, "{invalid}");
-        }
-        assert_eq!(readiness_owner_process("readiness-51-9"), Some(51));
-
-        let orphan = fixture.work.join("readiness-2147483647-1");
-        fs::create_dir(&orphan).expect("orphaned readiness directory");
-        fs::set_permissions(&orphan, fs::Permissions::from_mode(0o700))
-            .expect("private orphaned readiness directory");
-        fs::write(orphan.join("provider-state"), b"ephemeral").expect("orphaned state");
-
-        let live = fixture
-            .work
-            .join(format!("readiness-{}-2", std::process::id()));
-        fs::create_dir(&live).expect("live readiness directory");
-        fs::set_permissions(&live, fs::Permissions::from_mode(0o700))
-            .expect("private live readiness directory");
-        let unrelated = fixture.work.join("turn-51-9");
-        fs::create_dir(&unrelated).expect("unrelated work directory");
-
-        recover_orphaned_readiness_directories(&fixture.work)
-            .expect("recover orphaned readiness state");
-        assert!(!orphan.exists());
-        assert!(live.exists());
-        assert!(unrelated.exists());
-        fs::remove_dir(&live).expect("remove live fixture");
-        fs::remove_dir(&unrelated).expect("remove unrelated fixture");
-
-        let malformed = fixture.work.join("readiness-invalid");
-        fs::create_dir(&malformed).expect("malformed readiness directory");
-        fs::set_permissions(&malformed, fs::Permissions::from_mode(0o700))
-            .expect("private malformed readiness directory");
-        assert_eq!(
-            recover_orphaned_readiness_directories(&fixture.work),
-            Err(RuntimeReadinessState::ContainmentFailed)
-        );
-        fs::remove_dir(&malformed).expect("remove malformed readiness directory");
-
-        let unsafe_mode = fixture.work.join("readiness-2147483647-3");
-        fs::create_dir(&unsafe_mode).expect("unsafe readiness directory");
-        assert_eq!(
-            recover_orphaned_readiness_directories(&fixture.work),
-            Err(RuntimeReadinessState::ContainmentFailed)
-        );
-        fs::remove_dir(&unsafe_mode).expect("remove unsafe readiness directory");
-
-        let removal_blocked = fixture.work.join("readiness-2147483647-4");
-        fs::create_dir(&removal_blocked).expect("removal-blocked readiness directory");
-        fs::set_permissions(&removal_blocked, fs::Permissions::from_mode(0o700))
-            .expect("private removal-blocked readiness directory");
-        fs::set_permissions(&fixture.work, fs::Permissions::from_mode(0o500))
-            .expect("block readiness removal");
-        let blocked_result = recover_orphaned_readiness_directories(&fixture.work);
-        fs::set_permissions(&fixture.work, fs::Permissions::from_mode(0o700))
-            .expect("restore work-root permissions");
-        assert_eq!(
-            blocked_result,
-            Err(RuntimeReadinessState::ContainmentFailed)
         );
     }
 
@@ -4425,7 +4050,11 @@ mod tests {
         let retained = fixture.work.join("turn-42-1");
         fs::create_dir(&retained).expect("retained work directory");
         let active = ActiveRuntime::default();
-        retain_work_directory(&active, &retained);
+        fs::set_permissions(&fixture.work, fs::Permissions::from_mode(0o500))
+            .expect("block retained work removal");
+        assert!(!cleanup_or_retain_work_directory(&active, &retained));
+        fs::set_permissions(&fixture.work, fs::Permissions::from_mode(0o700))
+            .expect("restore work permissions");
 
         assert!(
             active
@@ -5274,7 +4903,7 @@ printf '%s\n' '{"method":"item/tool/call","id":7,"params":{"path":"/private/secr
     }
 
     #[test]
-    fn fake_turn_uses_disposable_sqlite_home_streams_and_cleans_every_descendant() {
+    fn fake_turn_preserves_authenticated_home_uses_disposable_sqlite_and_cleans_descendants() {
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -5286,7 +4915,7 @@ printf '%s\n' '{"method":"item/tool/call","id":7,"params":{"path":"/private/secr
             b"must not enter provider home",
         )
         .expect("retained-only home state");
-        let home = fixture.home.to_string_lossy();
+        let codex_home = r#"'"$CODEX_HOME"'"#;
         let script = format!(
             r#"#!/bin/sh
 set -eu
@@ -5294,11 +4923,10 @@ work=$(/bin/pwd -P)
 test "$CODEX_SQLITE_HOME" = "$work"
 test "$(/usr/bin/stat -f '%Lp' "$work")" = "700"
 test -f "$CODEX_HOME/installation_id"
-test ! -e "$CODEX_HOME/retained-only"
+test -e "$CODEX_HOME/retained-only"
 printf 'transient provider state' > "$CODEX_SQLITE_HOME/logs_2.sqlite"
-printf 'provider task state' > "$CODEX_HOME/provider-output"
 read -r initialize
-printf '%s\n' '{{"id":1,"result":{{"userAgent":"codex_cli_rs/0.145.0","codexHome":"{home}","platformFamily":"unix","platformOs":"macos"}}}}'
+printf '%s\n' '{{"id":1,"result":{{"userAgent":"codex_cli_rs/0.145.0","codexHome":"{codex_home}","platformFamily":"unix","platformOs":"macos"}}}}'
 read -r initialized
 read -r account
 printf '%s\n' '{{"id":2,"result":{{"account":{{"type":"chatgpt","email":"redacted","planType":"plus"}},"requiresOpenaiAuth":true}}}}'
@@ -5332,9 +4960,8 @@ wait
         assert!(outcome.cleaned);
         assert!(outcome.provider_thread_established);
         assert!(outcome.provider_turn_established);
-        assert!(!fixture.home.join("provider-output").exists());
         assert_eq!(
-            fs::read(fixture.home.join("retained-only")).expect("retained state restored"),
+            fs::read(fixture.home.join("retained-only")).expect("profile state preserved"),
             b"must not enter provider home"
         );
         assert!(updates.contains(&TurnRuntimeUpdate::StreamingStarted));
@@ -5620,83 +5247,6 @@ while :; do /bin/sleep 1; done
     }
 
     #[test]
-    fn shutdown_and_workspace_change_reconcile_retained_term_resistant_processes() {
-        let _process_guard = PROCESS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for workspace_change in [false, true] {
-            let fixture = Fixture::new();
-            fs::write(fixture.home.join("persistent-only"), b"persistent")
-                .expect("persistent-only state");
-            let retained_work = fixture.work.join(if workspace_change {
-                "turn-71-1"
-            } else {
-                "turn-72-1"
-            });
-            fs::create_dir(&retained_work).expect("retained turn directory");
-            fs::set_permissions(&retained_work, fs::Permissions::from_mode(0o700))
-                .expect("private retained turn directory");
-            let staged_home = DisposableRuntimeHome::stage(&fixture.home, &retained_work)
-                .expect("stage retained runtime home");
-            let ready = fixture.root.join("retained-cleanup-ready");
-            let mut child = Command::new("/bin/sh")
-                .arg("-c")
-                .arg(format!(
-                    "trap '' TERM; : > '{}'; while :; do /bin/sleep 1; done",
-                    ready.to_string_lossy()
-                ))
-                .process_group(0)
-                .spawn()
-                .expect("retained process fixture");
-            let process_group = child.id() as i32;
-            let wait_deadline = Instant::now() + Duration::from_secs(2);
-            while !ready.is_file() && Instant::now() < wait_deadline {
-                thread::sleep(Duration::from_millis(5));
-            }
-            assert!(ready.is_file(), "retained process did not become ready");
-
-            let host = RuntimeHost::unavailable_for_test();
-            retain_runtime_home(&host.active, staged_home);
-            retain_work_directory(&host.active, &retained_work);
-            assert!(!fixture.home.join("persistent-only").exists());
-            *host
-                .active
-                .process_group
-                .lock()
-                .expect("process-group state") = Some(process_group);
-            register_owned_process(&host.active, process_group);
-            assert!(!host.active.claim_request("blocked-before-home-restore"));
-            assert!(!fixture.home.join("persistent-only").exists());
-            let cleaned = if workspace_change {
-                host.cancel_for_workspace_change_and_wait(1)
-            } else {
-                host.cancel_for_app_shutdown_and_wait()
-            };
-            let residual = process_group_exists(process_group);
-            if residual {
-                signal_process_group(process_group, SIGKILL);
-            }
-            let _ = child.wait();
-
-            assert!(cleaned, "cleanup did not reconcile retained ownership");
-            assert!(!residual, "retained process group survived cleanup");
-            assert_eq!(*host.active.process_group.lock().unwrap(), None);
-            assert_eq!(
-                fs::read(fixture.home.join("persistent-only")).expect("restored persistent state"),
-                b"persistent"
-            );
-            assert!(!retained_work.exists());
-            assert!(
-                host.active
-                    .retained_runtime_homes
-                    .lock()
-                    .expect("retained runtime homes")
-                    .is_empty()
-            );
-        }
-    }
-
-    #[test]
     fn retained_child_reaping_requires_an_exited_owned_child() {
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
@@ -5722,7 +5272,8 @@ while :; do /bin/sleep 1; done
     fn turn_directory_permission_failure_reports_proven_cleanup() {
         let fixture = Fixture::new();
         let work_directory = fixture.work.join("partial-turn");
-        let outcome = create_private_turn_directory_with(&work_directory, |path| {
+        let owner = process_identity(std::process::id() as i32).expect("test process identity");
+        let outcome = create_private_turn_directory_with(&work_directory, owner, 1, |path| {
             fs::write(path.join("owned"), b"partial").expect("partial owned entry");
             Err(io::Error::new(io::ErrorKind::PermissionDenied, "fixture"))
         })
@@ -5737,15 +5288,136 @@ while :; do /bin/sleep 1; done
     #[test]
     fn readiness_directory_is_created_private_and_owned() {
         let fixture = Fixture::new();
-        let work_directory = fixture.work.join("private-readiness");
+        let owner = process_identity(std::process::id() as i32).expect("test process identity");
+        let work_directory = fixture
+            .work
+            .join(runtime_work_directory_name("readiness", owner, 1));
 
-        create_private_readiness_directory(&work_directory).expect("private readiness directory");
+        create_private_readiness_directory(&work_directory, owner, 1)
+            .expect("private readiness directory");
 
         let metadata = fs::symlink_metadata(&work_directory).expect("readiness metadata");
         assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
         // SAFETY: geteuid has no arguments or mutable memory effects.
         assert_eq!(metadata.uid(), unsafe { keiko_geteuid() });
-        fs::remove_dir(&work_directory).expect("remove readiness fixture");
+        assert_eq!(
+            runtime_work_directory_identity(&work_directory, "readiness"),
+            Some((owner, 1))
+        );
+        fs::remove_dir_all(&work_directory).expect("remove readiness fixture");
+    }
+
+    #[test]
+    fn runtime_owner_record_rejects_each_metadata_and_identity_drift() {
+        let fixture = Fixture::new();
+        let owner = process_identity(std::process::id() as i32).expect("test process identity");
+        let raw_record = |generation: u64, contents: &[u8], mode: u32| {
+            let directory = fixture
+                .work
+                .join(runtime_work_directory_name("turn", owner, generation));
+            fs::DirBuilder::new()
+                .mode(0o700)
+                .create(&directory)
+                .expect("raw runtime directory");
+            let record = directory.join(RUNTIME_OWNER_RECORD);
+            fs::write(&record, contents).expect("raw owner record");
+            fs::set_permissions(&record, fs::Permissions::from_mode(mode))
+                .expect("raw owner record mode");
+            directory
+        };
+
+        let invalid_prefix = fixture.work.join("other-1-1");
+        fs::create_dir(&invalid_prefix).expect("invalid prefix directory");
+        assert!(write_runtime_owner_record(&invalid_prefix, owner, 1).is_err());
+
+        let mismatched_name = fixture
+            .work
+            .join(runtime_work_directory_name("turn", owner, 40));
+        fs::create_dir(&mismatched_name).expect("mismatched name directory");
+        assert!(write_runtime_owner_record(&mismatched_name, owner, 41).is_err());
+
+        let valid_contents = format!(
+            "{}:{}:{}:42\n",
+            owner.process_id, owner.started_seconds, owner.started_microseconds
+        );
+        let wrong_owner = raw_record(42, valid_contents.as_bytes(), 0o600);
+        let metadata = fs::symlink_metadata(wrong_owner.join(RUNTIME_OWNER_RECORD))
+            .expect("owner record metadata");
+        assert!(valid_runtime_owner_record_metadata(
+            &metadata,
+            effective_user_id()
+        ));
+        assert!(!valid_runtime_owner_record_metadata(
+            &metadata,
+            effective_user_id().wrapping_add(1)
+        ));
+
+        let directory_record = fixture
+            .work
+            .join(runtime_work_directory_name("turn", owner, 43));
+        fs::create_dir(&directory_record).expect("directory owner fixture");
+        fs::create_dir(directory_record.join(RUNTIME_OWNER_RECORD))
+            .expect("directory owner record");
+        assert!(runtime_work_directory_identity(&directory_record, "turn").is_none());
+
+        for (generation, contents, mode) in [
+            (
+                44,
+                valid_contents.replace(":42\n", ":44\n").into_bytes(),
+                0o644,
+            ),
+            (45, Vec::new(), 0o600),
+            (46, vec![b'x'; 129], 0o600),
+            (
+                47,
+                format!(
+                    "{}:{}:{}:47:extra\n",
+                    owner.process_id, owner.started_seconds, owner.started_microseconds
+                )
+                .into_bytes(),
+                0o600,
+            ),
+            (
+                48,
+                format!(
+                    "{}:{}:{}:48\n",
+                    owner.process_id.saturating_add(1),
+                    owner.started_seconds,
+                    owner.started_microseconds
+                )
+                .into_bytes(),
+                0o600,
+            ),
+            (
+                49,
+                format!(
+                    "{}:{}:{}:50\n",
+                    owner.process_id, owner.started_seconds, owner.started_microseconds
+                )
+                .into_bytes(),
+                0o600,
+            ),
+            (
+                50,
+                format!("{}:0:{}:50\n", owner.process_id, owner.started_microseconds).into_bytes(),
+                0o600,
+            ),
+            (
+                51,
+                format!(
+                    "{}:{}:1000000:51\n",
+                    owner.process_id, owner.started_seconds
+                )
+                .into_bytes(),
+                0o600,
+            ),
+        ] {
+            let directory = raw_record(generation, &contents, mode);
+            assert!(
+                runtime_work_directory_identity(&directory, "turn").is_none(),
+                "generation {generation}"
+            );
+        }
     }
 
     #[test]
@@ -5766,8 +5438,10 @@ while :; do /bin/sleep 1; done
         let fixture = Fixture::new();
         let work_directory = fixture.work.join("existing-turn");
         fs::create_dir(&work_directory).expect("existing turn collision");
+        let owner = process_identity(std::process::id() as i32).expect("test process identity");
 
-        let outcome = create_private_turn_directory(&work_directory).expect_err("collision");
+        let outcome =
+            create_private_turn_directory(&work_directory, owner, 1).expect_err("collision");
 
         assert_eq!(outcome.state, TurnState::Failed);
         assert_eq!(outcome.reason, Some(TurnReason::RuntimeUnavailable));
@@ -5779,7 +5453,8 @@ while :; do /bin/sleep 1; done
     fn turn_directory_substitution_never_claims_unproven_cleanup() {
         let fixture = Fixture::new();
         let work_directory = fixture.work.join("replaced-partial-turn");
-        let outcome = create_private_turn_directory_with(&work_directory, |path| {
+        let owner = process_identity(std::process::id() as i32).expect("test process identity");
+        let outcome = create_private_turn_directory_with(&work_directory, owner, 1, |path| {
             fs::remove_dir(path).expect("remove partial directory");
             fs::write(path, b"replacement").expect("replace directory with file");
             Ok(())
@@ -6102,6 +5777,78 @@ while :; do /bin/sleep 1; done
         assert_eq!(
             *active.process_group.lock().expect("process-group state"),
             None
+        );
+        assert!(!process_group_exists(process_group));
+    }
+
+    #[test]
+    fn cleanup_allows_stdin_eof_to_exit_before_signalling_term() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let term_marker = fixture.root.join("term-marker");
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!(
+                "trap 'printf term > {}' TERM; while read -r line; do :; done",
+                term_marker.display()
+            ))
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("EOF-aware process group");
+        let process_group = child.id() as i32;
+        let active = ActiveRuntime::default();
+        *active.process_group.lock().expect("process-group state") = Some(process_group);
+        drop(child.stdin.take());
+
+        assert!(stop_process_group_with_term_grace(
+            &mut child,
+            process_group,
+            &active,
+            Instant::now() + Duration::from_secs(1),
+            Some(Duration::from_millis(200)),
+        ));
+        assert!(!term_marker.exists());
+        assert!(!process_group_exists(process_group));
+    }
+
+    #[test]
+    fn cleanup_reaps_a_process_that_exits_during_term_grace() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let term_marker = fixture.root.join("term-marker");
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!(
+                "trap 'printf term > {}; exit 0' TERM; printf 'ready\\n'; while :; do /bin/sleep 1; done",
+                term_marker.display()
+            ))
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("TERM-aware process group");
+        let process_group = child.id() as i32;
+        let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+        let mut ready = String::new();
+        stdout.read_line(&mut ready).expect("readiness handshake");
+        assert_eq!(ready, "ready\n");
+        let active = ActiveRuntime::default();
+        *active.process_group.lock().expect("process-group state") = Some(process_group);
+
+        assert!(stop_process_group_with_term_grace(
+            &mut child,
+            process_group,
+            &active,
+            Instant::now() + Duration::from_secs(1),
+            Some(Duration::from_millis(20)),
+        ));
+        assert_eq!(
+            fs::read_to_string(term_marker).expect("TERM marker"),
+            "term"
         );
         assert!(!process_group_exists(process_group));
     }

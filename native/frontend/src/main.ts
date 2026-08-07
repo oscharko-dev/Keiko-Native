@@ -149,14 +149,18 @@ export async function startRenderer(
   };
   runtimeController = {
     checkRuntime: async () => {
+      const workspaceGeneration = workspaceState.generation;
       runtimeState = {
         state: "checking",
         quarantinedEvents: 0,
       };
       present(currentView);
       try {
-        runtimeState = (await port.runtimeReadiness()).result.state;
+        const readiness = (await port.runtimeReadiness()).result.state;
+        if (workspaceState.generation !== workspaceGeneration) return;
+        runtimeState = readiness;
       } catch {
+        if (workspaceState.generation !== workspaceGeneration) return;
         runtimeState = {
           state: "unavailable",
           quarantinedEvents: 0,

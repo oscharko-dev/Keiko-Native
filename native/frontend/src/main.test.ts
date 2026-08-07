@@ -236,6 +236,107 @@ describe("production renderer composition", () => {
     );
   });
 
+  it("discards readiness that resolves after a different workspace is selected", async () => {
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: { getElementById: () => ({}) },
+    });
+    const { startRenderer } = await import("./main");
+    let resolveReadiness!: (value: string) => void;
+    const readiness = new Promise<string>((resolve) => {
+      resolveReadiness = resolve;
+    });
+    let selectedGeneration = 2;
+    let readinessRequestId = "";
+    const deferredInvoke = vi.fn<Invoke>(async (command, arguments_) => {
+      const request = JSON.parse(arguments_.request) as {
+        requestId: string;
+        operation: { kind: string };
+      };
+      if (
+        command === "workspace_request" &&
+        request.operation.kind === "workspace-select"
+      ) {
+        selectedGeneration += 1;
+        return JSON.stringify({
+          schemaVersion: 1,
+          requestId: request.requestId,
+          result: {
+            kind: "workspace",
+            state: {
+              kind: "bound",
+              generation: selectedGeneration,
+              displayLabel: `Repository ${selectedGeneration}`,
+            },
+          },
+        });
+      }
+      if (command === "runtime_request") {
+        readinessRequestId = request.requestId;
+        return readiness;
+      }
+      return invoke(command, arguments_);
+    });
+    render.mockClear();
+    await startRenderer(deferredInvoke, async () => authority);
+
+    const all = (
+      value: unknown,
+    ): Array<{ type: unknown; props: Record<string, unknown> }> => {
+      if (Array.isArray(value)) return value.flatMap(all);
+      if (typeof value !== "object" || value === null) return [];
+      const props = Reflect.get(value, "props") as
+        Record<string, unknown> | undefined;
+      if (props === undefined) return [];
+      return [
+        { type: Reflect.get(value, "type"), props },
+        ...all(props.children),
+      ];
+    };
+    const click = (label: string) => {
+      const button = all(render.mock.calls.at(-1)?.[0]).find(
+        ({ type, props }) => type === "button" && props.children === label,
+      );
+      (button?.props.onClick as () => void)();
+    };
+
+    click("Foundation öffnen");
+    for (let index = 0; index < 6; index += 1) await Promise.resolve();
+    click("Repository auswählen");
+    for (let index = 0; index < 6; index += 1) await Promise.resolve();
+    click("Codex-Bereitschaft prüfen");
+    await Promise.resolve();
+    click("Anderes Repository auswählen");
+    for (let index = 0; index < 6; index += 1) await Promise.resolve();
+    resolveReadiness(
+      JSON.stringify({
+        schemaVersion: 1,
+        requestId: readinessRequestId,
+        result: {
+          kind: "runtime-readiness",
+          state: {
+            state: "ready",
+            quarantinedEvents: 0,
+            descriptor: {
+              version: "0.145.0",
+              artifactSha256:
+                "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
+              containmentProfile: "keiko-codex-readiness-v1",
+              freshStartRequired: true,
+            },
+          },
+        },
+      }),
+    );
+    for (let index = 0; index < 8; index += 1) await Promise.resolve();
+
+    const rendered = JSON.stringify(render.mock.calls.at(-1)?.[0]);
+    expect(rendered).toContain("Repository 4");
+    expect(rendered).toContain("Codex-Bereitschaft prüfen");
+    expect(rendered).toContain('data-runtime-state":"unchecked"');
+    expect(rendered).not.toContain("Codex 0.145.0 ist protokollbereit");
+  });
+
   it("renders a redacted recoverable welcome substate when the host is unavailable", async () => {
     Object.defineProperty(globalThis, "document", {
       configurable: true,
@@ -359,6 +460,7 @@ describe("production renderer composition", () => {
             messageBytes: 20,
             quarantinedEvents: 0,
             acceptedEffects: 0,
+            repositoryContextBytesToRuntime: 0,
             cleanupComplete: true,
             terminalState: "completed",
           },
@@ -454,6 +556,7 @@ describe("production renderer composition", () => {
           messageBytes: 0,
           quarantinedEvents: 0,
           acceptedEffects: 0,
+          repositoryContextBytesToRuntime: 0,
           cleanupComplete: true,
           terminalState: "failed",
         },
@@ -593,6 +696,7 @@ describe("production renderer composition", () => {
           messageBytes: 0,
           quarantinedEvents: 0,
           acceptedEffects: 0,
+          repositoryContextBytesToRuntime: 0,
           cleanupComplete: false,
           terminalState: "preflighting",
         },
@@ -660,6 +764,7 @@ describe("production renderer composition", () => {
         messageBytes: 0,
         quarantinedEvents: 0,
         acceptedEffects: 0,
+        repositoryContextBytesToRuntime: 0,
         cleanupComplete: true,
         terminalState: "failed",
       },
@@ -730,6 +835,7 @@ describe("production renderer composition", () => {
           messageBytes: 0,
           quarantinedEvents: 0,
           acceptedEffects: 0,
+          repositoryContextBytesToRuntime: 0,
           cleanupComplete: false,
           terminalState: "preflighting",
         },
@@ -809,6 +915,7 @@ describe("production renderer composition", () => {
         messageBytes: 0,
         quarantinedEvents: 0,
         acceptedEffects: 0,
+        repositoryContextBytesToRuntime: 0,
         cleanupComplete: true,
         terminalState: "cancelled",
       },

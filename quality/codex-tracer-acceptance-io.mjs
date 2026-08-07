@@ -1,16 +1,14 @@
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { constants as fileConstants } from "node:fs";
 import {
   chmod,
+  lstat,
   mkdir,
   mkdtemp,
-  open,
   readFile,
   readlink,
   readdir,
   realpath,
-  rename,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -60,6 +58,19 @@ const physicalObservationPath = join(
   tmpdir(),
   "keiko-native-codex-tracer-104-observation.json",
 );
+const providerLocalProfilePaths = Object.freeze([
+  "models_cache.json",
+  "tmp/arg0",
+]);
+const providerArg0EntryNames = Object.freeze([
+  ".lock",
+  "apply_patch",
+  "applypatch",
+  "codex-execve-wrapper",
+]);
+const providerArg0DirectoryPattern = /^codex-arg0[A-Za-z0-9]{6}$/u;
+const providerArg0MaxDirectories = 64;
+const providerModelCacheMaxBytes = 1_048_576;
 const acceptanceProcessEnvironmentKeys = Object.freeze([
   "HOME",
   "LANG",
@@ -410,7 +421,8 @@ async function inspectPackage(sourceRevision) {
   return { ...inspected, containmentMarkers };
 }
 
-export async function snapshotDirectory(root) {
+export async function snapshotDirectory(root, options = {}) {
+  const excludedRelativePaths = new Set(options.excludedRelativePaths ?? []);
   const digest = createHash("sha256");
   let bytes = 0;
   let entries = 0;
@@ -421,6 +433,7 @@ export async function snapshotDirectory(root) {
     for (const child of children) {
       const relativePath =
         prefix === "" ? child.name : `${prefix}/${child.name}`;
+      if (excludedRelativePaths.has(relativePath)) continue;
       digest.update(relativePath, "utf8");
       digest.update("\0", "utf8");
       entries += 1;
@@ -447,80 +460,88 @@ export async function snapshotDirectory(root) {
   return { bytes, entries, sha256: digest.digest("hex") };
 }
 
-export async function stageDisposableRuntimeHome(runtimeHome, runRoot) {
-  const disposableHome = join(runRoot, "disposable-codex-home");
-  const retainedHome = join(runRoot, "retained-codex-home");
-  await mkdir(disposableHome, { mode: 0o700 });
-  const source = await open(
-    join(runtimeHome, "installation_id"),
-    fileConstants.O_RDONLY | fileConstants.O_NOFOLLOW,
-  );
+async function optionalEntry(path) {
   try {
-    const metadata = await source.stat();
-    if (
-      !metadata.isFile() ||
-      metadata.uid !== process.geteuid() ||
-      (metadata.mode & 0o022) !== 0 ||
-      metadata.size < 1 ||
-      metadata.size > 4096
-    ) {
-      throw new Error("acceptance-auth-identity-invalid");
-    }
-    const identity = await source.readFile();
-    if (identity.length !== metadata.size)
-      throw new Error("acceptance-auth-identity-drift");
-    const destination = await open(
-      join(disposableHome, "installation_id"),
-      fileConstants.O_WRONLY | fileConstants.O_CREAT | fileConstants.O_EXCL,
-      0o600,
-    );
-    try {
-      await destination.writeFile(identity);
-      await destination.sync();
-    } finally {
-      await destination.close();
-    }
-  } finally {
-    await source.close();
-  }
-  let retained = false;
-  try {
-    await rename(runtimeHome, retainedHome);
-    retained = true;
-    await rename(disposableHome, runtimeHome);
+    return await lstat(path);
   } catch (error) {
-    if (retained) await rename(retainedHome, runtimeHome);
+    if (error?.code === "ENOENT") return null;
     throw error;
   }
-  return retainedHome;
 }
 
-export async function restorePersistentRuntimeHome({
-  retainedHome,
-  runRoot,
-  runtimeHome,
-}) {
-  const discardedHome = join(runRoot, "discarded-codex-home");
-  await rename(runtimeHome, discardedHome);
-  try {
-    await rename(retainedHome, runtimeHome);
-  } catch (error) {
-    await rename(discardedHome, runtimeHome);
-    throw error;
+async function validateProviderArg0(root, expectedRuntimeBinary) {
+  const arg0Path = join(root, "tmp/arg0");
+  const arg0Entry = await optionalEntry(arg0Path);
+  if (arg0Entry === null) return;
+  if (!arg0Entry.isDirectory())
+    throw new Error("acceptance-runtime-profile-arg0-invalid");
+
+  const directories = (
+    await readdir(arg0Path, { withFileTypes: true })
+  ).toSorted((left, right) => compareCodeUnits(left.name, right.name));
+  if (directories.length > providerArg0MaxDirectories)
+    throw new Error("acceptance-runtime-profile-arg0-invalid");
+  const canonicalRuntimeBinary = await realpath(expectedRuntimeBinary);
+  for (const directory of directories) {
+    if (
+      !directory.isDirectory() ||
+      !providerArg0DirectoryPattern.test(directory.name)
+    ) {
+      throw new Error("acceptance-runtime-profile-arg0-invalid");
+    }
+    const directoryPath = join(arg0Path, directory.name);
+    const entries = (
+      await readdir(directoryPath, { withFileTypes: true })
+    ).toSorted((left, right) => compareCodeUnits(left.name, right.name));
+    if (
+      JSON.stringify(entries.map(({ name }) => name)) !==
+      JSON.stringify(providerArg0EntryNames)
+    ) {
+      throw new Error("acceptance-runtime-profile-arg0-invalid");
+    }
+    const lock = entries[0];
+    const lockEntry = await lstat(join(directoryPath, lock.name));
+    if (!lock.isFile() || lockEntry.size !== 0)
+      throw new Error("acceptance-runtime-profile-arg0-invalid");
+    for (const alias of entries.slice(1)) {
+      if (
+        !alias.isSymbolicLink() ||
+        (await realpath(join(directoryPath, alias.name))) !==
+          canonicalRuntimeBinary
+      ) {
+        throw new Error("acceptance-runtime-profile-arg0-invalid");
+      }
+    }
   }
-  await rm(discardedHome, { force: true, recursive: true });
+}
+
+export async function snapshotProtectedRuntimeProfile(root, options = {}) {
+  const cachePath = join(root, "models_cache.json");
+  const cacheEntry = await optionalEntry(cachePath);
+  if (cacheEntry !== null) {
+    if (!cacheEntry.isFile() || cacheEntry.size > providerModelCacheMaxBytes)
+      throw new Error("acceptance-runtime-profile-cache-invalid");
+    try {
+      const cache = JSON.parse(await readFile(cachePath, "utf8"));
+      if (typeof cache !== "object" || cache === null || Array.isArray(cache))
+        throw new Error("acceptance-runtime-profile-cache-invalid");
+    } catch {
+      throw new Error("acceptance-runtime-profile-cache-invalid");
+    }
+  }
+
+  await validateProviderArg0(
+    root,
+    options.expectedRuntimeBinary ?? runtimeBinary,
+  );
+
+  return snapshotDirectory(root, {
+    excludedRelativePaths: providerLocalProfilePaths,
+  });
 }
 
 export async function cleanupAcceptanceFixture(prepared, dependencies = {}) {
   const internal = prepared.internal;
-  const restoreRuntimeHome =
-    dependencies.restoreRuntimeHome ??
-    (() =>
-      restorePersistentRuntimeHome({
-        retainedHome: internal.retainedRuntimeHome,
-        runRoot: internal.runRoot,
-        runtimeHome: internal.runtimeHome,
-      }));
   const actions = [
     dependencies.chmodDeniedWorkspace ??
       (() => chmod(internal.deniedWorkspaceRoot, 0o700).catch(() => undefined)),
@@ -531,28 +552,13 @@ export async function cleanupAcceptanceFixture(prepared, dependencies = {}) {
         rm(internal.deniedWorkspaceRoot, { force: true, recursive: true })),
     dependencies.removeObservation ??
       (() => rm(physicalObservationPath, { force: true })),
+    dependencies.removeRunRoot ??
+      (() => rm(internal.runRoot, { force: true, recursive: true })),
   ];
   let firstFailure;
-  let homeRestored = false;
-  try {
-    await restoreRuntimeHome();
-    homeRestored = true;
-  } catch (error) {
-    firstFailure = error;
-  }
   for (const action of actions) {
     try {
       await action();
-    } catch (error) {
-      firstFailure ??= error;
-    }
-  }
-  if (homeRestored) {
-    try {
-      await (
-        dependencies.removeRunRoot ??
-        (() => rm(internal.runRoot, { force: true, recursive: true }))
-      )();
     } catch (error) {
       firstFailure ??= error;
     }
@@ -566,6 +572,7 @@ export function observedSafeguards({
   homeBefore,
   journey,
   packageInspection,
+  repositoryEvidenceCanaries,
   residualProcesses,
   runtimeAfter,
   runtimeBefore,
@@ -574,7 +581,6 @@ export function observedSafeguards({
 }) {
   const journeyRows = journey.timings.map(({ action }) => action);
   const serializedJourney = JSON.stringify(journey);
-  const repositoryContextBytes = Buffer.byteLength(serializedJourney, "utf8");
   const fixedJourneyRows = 36;
   const cleanRuntime = conditionsMet(
     runtimeBefore.entries === 0,
@@ -625,11 +631,9 @@ export function observedSafeguards({
     redactionMatches: redactionMatches(serializedJourney).length,
     repositoryBytesInEvidence: repositoryEvidenceBytes(
       serializedJourney,
-      repositoryContextBytes,
+      repositoryEvidenceCanaries,
     ),
-    repositoryContextBytesToRuntime: unchangedWorkspace
-      ? 0
-      : workspaceAfter.bytes,
+    repositoryContextBytesToRuntime: journey.repositoryContextBytesToRuntime,
     residualProcesses,
     unquarantinedProviderEvents: failureCount(
       journey.status === "passed",
@@ -646,10 +650,16 @@ function conditionsMet(...conditions) {
   return conditions.every(Boolean);
 }
 
-function repositoryEvidenceBytes(serializedJourney, bytes) {
-  return bytes > 0 && !serializedJourney.includes("KeikoAcceptanceIdentity104")
-    ? 0
-    : bytes;
+function repositoryEvidenceBytes(serializedJourney, canaries) {
+  return canaries.reduce((bytes, canary) => {
+    if (canary.length === 0) return bytes;
+    return (
+      bytes +
+      serializedJourney.split(canary).length *
+        Buffer.byteLength(canary, "utf8") -
+      Buffer.byteLength(canary, "utf8")
+    );
+  }, 0);
 }
 
 function processExists(pid) {
@@ -774,6 +784,11 @@ async function createIdentityWorkspace(prefix) {
   const root = await mkdtemp(join(homedir(), "Documents", prefix));
   await chmod(root, 0o700);
   await mkdir(join(root, ".git"), { mode: 0o700 });
+  await writeFile(
+    join(root, "repository-context-canary.txt"),
+    "KeikoRepositoryContextCanary104",
+    { encoding: "utf8", mode: 0o600 },
+  );
   return root;
 }
 
@@ -850,14 +865,9 @@ export function createCodexTracerAcceptanceIo() {
         await mkdtemp(join(tmpdir(), "keiko-native-codex-tracer-104-")),
       );
       await chmod(runRoot, 0o700);
-      let retainedRuntimeHome;
       let workspaceRoot;
       let deniedWorkspaceRoot;
       try {
-        retainedRuntimeHome = await stageDisposableRuntimeHome(
-          runtime.home,
-          runRoot,
-        );
         const environment = await inspectEnvironment(runtime);
         if (acceptanceEnvironmentFailures(environment).length > 0)
           throw new Error("acceptance-environment-invalid");
@@ -910,7 +920,12 @@ export function createCodexTracerAcceptanceIo() {
             packageExecutable,
             packageRoot,
             deniedWorkspaceRoot,
-            retainedRuntimeHome,
+            persistentRuntimeHome: runtime.home,
+            repositoryEvidenceCanaries: [
+              workspaceRoot,
+              basename(workspaceRoot),
+              "KeikoRepositoryContextCanary104",
+            ],
             runRoot,
             runtimeBinary: runtime.binary,
             runtimeHome: runtime.home,
@@ -928,21 +943,14 @@ export function createCodexTracerAcceptanceIo() {
           await chmod(deniedWorkspaceRoot, 0o700).catch(() => undefined);
           await rm(deniedWorkspaceRoot, { force: true, recursive: true });
         }
-        if (retainedRuntimeHome !== undefined) {
-          await restorePersistentRuntimeHome({
-            retainedHome: retainedRuntimeHome,
-            runRoot,
-            runtimeHome: runtime.home,
-          });
-        }
         await rm(runRoot, { force: true, recursive: true });
         throw new Error("acceptance-workspace-fixture-unavailable");
       }
     },
     async runProductionJourney(prepared) {
       return {
-        homeBefore: await snapshotDirectory(
-          prepared.internal.retainedRuntimeHome,
+        homeBefore: await snapshotProtectedRuntimeProfile(
+          prepared.internal.persistentRuntimeHome,
         ),
         runtimeBefore: await snapshotDirectory(
           prepared.internal.runtimeWorkRoot,
@@ -1023,7 +1031,9 @@ export function createCodexTracerAcceptanceIo() {
         const cleanupMs = Math.round(performance.now() - cleanupStartedAt);
         cleaned = true;
         const [homeAfter, runtimeAfter, workspaceAfter] = await Promise.all([
-          snapshotDirectory(prepared.internal.retainedRuntimeHome),
+          snapshotProtectedRuntimeProfile(
+            prepared.internal.persistentRuntimeHome,
+          ),
           snapshotDirectory(prepared.internal.runtimeWorkRoot),
           snapshotDirectory(prepared.internal.workspaceRoot),
         ]);
@@ -1060,6 +1070,8 @@ export function createCodexTracerAcceptanceIo() {
             homeBefore: production.homeBefore,
             journey,
             packageInspection: prepared.packageInspection,
+            repositoryEvidenceCanaries:
+              prepared.internal.repositoryEvidenceCanaries,
             residualProcesses: processExists(child.pid) ? 1 : 0,
             runtimeAfter,
             runtimeBefore: production.runtimeBefore,

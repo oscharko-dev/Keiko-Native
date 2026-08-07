@@ -181,6 +181,7 @@ describe("rendered Foundation accessibility", () => {
         messageBytes: 7,
         quarantinedEvents: 0,
         acceptedEffects: 0,
+        repositoryContextBytesToRuntime: 0,
         cleanupComplete: false,
         terminalState: "streaming",
       },

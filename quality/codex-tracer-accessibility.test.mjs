@@ -139,6 +139,7 @@ test("the action boundary accepts only the frozen task and bounded workspace ide
     { prompted: false, reasonCode: null, status: "passed" },
   );
   assert.equal(invocation[2].input, acceptedPrompt);
+  assert.equal(invocation[2].timeout, 5_000);
 });
 
 test("bounded semantic waits retry only missing targets and stop on permission denial", async () => {
@@ -154,7 +155,10 @@ test("bounded semantic waits retry only missing targets and stop on permission d
   const passed = await waitForTracerAccessibilityAction({
     action: "observe-completed",
     binary: "/bounded/adapter",
-    execute: () => results.shift(),
+    execute: (request) => {
+      assert.equal(request.timeoutMs, 500 - now);
+      return results.shift();
+    },
     monotonicNow: () => now,
     pid: 42,
     timeoutMs: 500,
@@ -190,7 +194,7 @@ test("bounded semantic waits retry only missing targets and stop on permission d
   assert.equal(denied.reasonCode, "accessibility-permission-denied");
 });
 
-test("the packaged journey drives only the fixed semantic sequence", async () => {
+test("the packaged journey drives the fixed sequence and excludes observer startup", async () => {
   const calls = [];
   let now = 0;
   const result = await runPackagedTracerJourney({
@@ -261,8 +265,8 @@ test("the packaged journey drives only the fixed semantic sequence", async () =>
     calls.find(({ action }) => action === "set-task").input,
     acceptedPrompt,
   );
-  assert.equal(result.cancellationProjectionMs, 80);
-  assert.equal(result.localProjectionP95Ms, 80);
+  assert.equal(result.cancellationProjectionMs, 70);
+  assert.equal(result.localProjectionP95Ms, 70);
   assert.equal(result.localProjectionSamples, 5);
   assert.equal(result.status, "passed");
   assert.equal(result.turnDurationMs, 30);

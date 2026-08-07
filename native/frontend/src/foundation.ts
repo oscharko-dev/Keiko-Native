@@ -522,6 +522,13 @@ function turnResult(turn: TurnView | null): ReactElement | null {
             : "Der Lauf wurde ohne Akzeptanz oder Auslieferung beendet. Ein neuer Versuch erzeugt neue Identitäten.",
         )
       : null,
+    terminal
+      ? createElement(
+          "p",
+          { className: "hint" },
+          `Repository-Kontext an Codex: ${turn.evidence.repositoryContextBytesToRuntime} Byte.`,
+        )
+      : null,
   );
 }
 

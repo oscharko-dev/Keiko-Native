@@ -77,6 +77,7 @@ export function executeTracerAccessibilityAction({
   input,
   pid,
   run = spawnSync,
+  timeoutMs = 5_000,
 }) {
   const inputBytes =
     typeof input === "string" ? Buffer.byteLength(input, "utf8") : 0;
@@ -95,6 +96,9 @@ export function executeTracerAccessibilityAction({
     binary.length === 0 ||
     !Number.isSafeInteger(pid) ||
     pid < 1 ||
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs < 1 ||
+    timeoutMs > 120_000 ||
     !tracerAccessibilityActions.includes(action) ||
     (action === "set-task" || action === "select-workspace"
       ? !taskInputValid && !workspaceInputValid
@@ -107,7 +111,7 @@ export function executeTracerAccessibilityAction({
     input,
     maxBuffer: 16 * 1024,
     shell: false,
-    timeout: 2_000,
+    timeout: timeoutMs,
   });
   return classifyTracerAccessibilityResult({
     exitCode: result.status,
@@ -153,7 +157,14 @@ export async function waitForTracerAccessibilityAction({
   const startedAt = monotonicNow();
   const deadline = startedAt + timeoutMs;
   do {
-    const result = execute({ action, binary, input, pid });
+    const remainingMs = Math.max(1, Math.ceil(deadline - monotonicNow()));
+    const result = execute({
+      action,
+      binary,
+      input,
+      pid,
+      timeoutMs: remainingMs,
+    });
     if (
       result.status === "passed" ||
       result.reasonCode !== "missing-or-ambiguous-semantic-target"
@@ -200,6 +211,7 @@ export async function runPackagedTracerJourney({
   }
   const timings = [];
   const localProjectionMeasurements = [];
+  let observationDriverBaselineMs;
   const step = async (action, input, timeoutMs = 5_000) => {
     const result = await execute({ action, input, timeoutMs });
     if (
@@ -217,16 +229,20 @@ export async function runPackagedTracerJourney({
   };
   const project = async (action, observation, input) => {
     await step(action, input);
-    const startedAt = monotonicNow();
-    await step(observation);
-    const elapsedMs = Math.round(monotonicNow() - startedAt);
+    const observed = await step(observation);
+    if (!Number.isSafeInteger(observationDriverBaselineMs))
+      throw new Error("packaged-journey-measurement-invalid");
+    const elapsedMs = Math.max(
+      0,
+      observed.elapsedMs - observationDriverBaselineMs,
+    );
     if (!Number.isSafeInteger(elapsedMs) || elapsedMs < 0)
       throw new Error("packaged-journey-measurement-invalid");
     localProjectionMeasurements.push(elapsedMs);
     return elapsedMs;
   };
 
-  await step("probe-start");
+  observationDriverBaselineMs = (await step("probe-start")).elapsedMs;
   await project("open-canvas", "probe-canvas");
 
   await step("open-workspace-picker");
@@ -287,6 +303,7 @@ export async function runPackagedTracerJourney({
     localProjectionP95Ms: percentile95(localProjectionMeasurements),
     localProjectionSamples: localProjectionMeasurements.length,
     status: "passed",
+    repositoryContextBytesToRuntime: 0,
     timings,
     turnDurationMs,
   };
