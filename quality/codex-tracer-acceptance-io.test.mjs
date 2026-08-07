@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import {
@@ -12,6 +14,7 @@ import {
   cleanupAcceptanceFixture,
   measureFirstVisibleP95,
   observedSafeguards,
+  packageAcceptance,
   packageArtifactFailures,
   physicalObservationFailures,
   runAcceptanceSubprocess,
@@ -175,6 +178,27 @@ test("first-visible p95 permits one bounded cold-launch outlier", async () => {
   );
 });
 
+test("a launched app is rejected when ownership authentication fails", async () => {
+  const child = { pid: 41 };
+  const rejected = [];
+  await assert.rejects(
+    measureFirstVisibleP95(
+      {},
+      "/bounded/adapter",
+      {},
+      {
+        authenticate: async () => {
+          throw new Error("authentication failed");
+        },
+        launch: () => child,
+        reject: async (candidate) => rejected.push(candidate),
+      },
+    ),
+    /authentication failed/u,
+  );
+  assert.deepEqual(rejected, [child]);
+});
+
 test("crash recovery selects only one exact staged runtime owned by the app", () => {
   const appPid = 42;
   const runtimeWorkRoot = "/private/tmp/keiko-runtime-work";
@@ -330,36 +354,111 @@ test("the exact auth probe reads the CLI status stream without merging output", 
   assert.throws(() => selectCommandOutput(result, "combined"));
 });
 
-test("acceptance subprocesses fail closed on their explicit deadline", () => {
+test("acceptance subprocess deadlines retire the isolated process tree", async () => {
+  const child = new EventEmitter();
+  child.pid = 41;
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
   let observedOptions;
-  const timedOut = (_command, _args, options) => {
-    observedOptions = options;
-    return {
-      error: { code: "ETIMEDOUT" },
-      signal: "SIGKILL",
-      status: null,
-      stderr: "",
-      stdout: "",
-    };
+  let observedTimeout;
+  const signals = [];
+  const dependencies = {
+    clearDeadline: () => undefined,
+    groupExists: () => false,
+    launch: (_command, _args, options) => {
+      observedOptions = options;
+      return child;
+    },
+    scheduleDeadline: (callback, milliseconds) => {
+      observedTimeout = milliseconds;
+      queueMicrotask(() => {
+        callback();
+        child.emit("close", null, "SIGKILL");
+      });
+      return 1;
+    },
+    signalGroup: (processGroupId, signal) =>
+      signals.push([processGroupId, signal]),
+    waitForTurn: async () => undefined,
   };
 
-  assert.throws(
-    () =>
-      runAcceptanceSubprocess(
-        "/usr/bin/true",
-        [],
-        { timeoutMs: 1_234 },
-        timedOut,
-      ),
+  await assert.rejects(
+    runAcceptanceSubprocess(
+      "/usr/bin/true",
+      [],
+      { timeoutMs: 1_234 },
+      dependencies,
+    ),
     /acceptance-subprocess-timed-out/u,
   );
-  assert.equal(observedOptions.timeout, 1_234);
-  assert.equal(observedOptions.killSignal, "SIGKILL");
-  assert.throws(
-    () =>
-      runAcceptanceSubprocess("/usr/bin/true", [], { timeoutMs: 0 }, timedOut),
+  assert.equal(observedTimeout, 1_234);
+  assert.equal(observedOptions.detached, true);
+  assert.deepEqual(observedOptions.stdio, ["ignore", "pipe", "pipe"]);
+  assert.deepEqual(signals, [
+    [41, "SIGKILL"],
+    [41, "SIGKILL"],
+  ]);
+  await assert.rejects(
+    runAcceptanceSubprocess(
+      "/usr/bin/true",
+      [],
+      { timeoutMs: 0 },
+      dependencies,
+    ),
     /acceptance-subprocess-timeout-invalid/u,
   );
+});
+
+test("a successful subprocess cannot leave descendants in its owned group", async () => {
+  const child = new EventEmitter();
+  child.pid = 51;
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  let groupExists = true;
+  const signals = [];
+  const result = runAcceptanceSubprocess(
+    "/usr/bin/true",
+    [],
+    { timeoutMs: 1_000 },
+    {
+      clearDeadline: () => undefined,
+      groupExists: () => groupExists,
+      launch: () => {
+        queueMicrotask(() => child.emit("close", 0, null));
+        return child;
+      },
+      monotonicNow: () => 0,
+      scheduleDeadline: () => 1,
+      signalGroup: (processGroupId, signal) => {
+        signals.push([processGroupId, signal]);
+        groupExists = false;
+      },
+      waitForTurn: async () => undefined,
+    },
+  );
+
+  await assert.rejects(result, /acceptance-subprocess-failed/u);
+  assert.deepEqual(signals, [[51, "SIGKILL"]]);
+});
+
+test("package acceptance waits for the authoritative package gate", async () => {
+  let finish;
+  let settled = false;
+  const gate = new Promise((resolve) => {
+    finish = resolve;
+  });
+  const result = packageAcceptance({
+    npmExecPath: "/fixture/npm-cli.js",
+    run: async () => gate,
+  }).then(() => {
+    settled = true;
+  });
+
+  await Promise.resolve();
+  assert.equal(settled, false);
+  finish();
+  await result;
+  assert.equal(settled, true);
 });
 
 test("the external environment is the exact authoritative toolchain, runtime, prompt, and auth class", () => {

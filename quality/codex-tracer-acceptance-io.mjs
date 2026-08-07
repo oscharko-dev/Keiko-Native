@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
   chmod,
   lstat,
@@ -37,7 +37,9 @@ import {
 import {
   authenticateOwnedProcessGroup,
   compileProcessGroupInspector,
+  establishOwnedProcess,
   processCleanupDependencies,
+  rejectUnauthenticatedLauncher,
   terminateOwnedProcess,
 } from "./macos-accessibility-driver-harness.mjs";
 
@@ -318,39 +320,138 @@ export function acceptanceProcessEnvironment(
   return selected;
 }
 
-export function runAcceptanceSubprocess(
+function defaultAcceptanceSubprocessDependencies() {
+  return {
+    clearDeadline: clearTimeout,
+    groupExists(processGroupId) {
+      try {
+        process.kill(-processGroupId, 0);
+        return true;
+      } catch (error) {
+        if (error?.code === "ESRCH") return false;
+        throw error;
+      }
+    },
+    launch: spawn,
+    monotonicNow: () => performance.now(),
+    scheduleDeadline: setTimeout,
+    signalGroup(processGroupId, signal) {
+      process.kill(-processGroupId, signal);
+    },
+    waitForTurn: (milliseconds) =>
+      new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  };
+}
+
+async function stopAcceptanceSubprocessTree(processGroupId, dependencies) {
+  try {
+    dependencies.signalGroup(processGroupId, "SIGKILL");
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+  }
+  const deadline = dependencies.monotonicNow() + 5_000;
+  while (dependencies.monotonicNow() < deadline) {
+    if (!dependencies.groupExists(processGroupId)) return;
+    await dependencies.waitForTurn(10);
+  }
+  if (dependencies.groupExists(processGroupId))
+    throw new Error("acceptance-subprocess-cleanup-failed");
+}
+
+export async function runAcceptanceSubprocess(
   command,
   args,
   options = {},
-  spawnProcess = spawnSync,
+  providedDependencies = {},
 ) {
   if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0)
     throw new TypeError("acceptance-subprocess-timeout-invalid");
+  const dependencies = {
+    ...defaultAcceptanceSubprocessDependencies(),
+    ...providedDependencies,
+  };
   const environment =
     options.inheritEnvironment === false
       ? acceptanceProcessEnvironment(process.env, options.env)
       : { ...process.env, ...options.env };
-  const result = spawnProcess(command, args, {
+  const child = dependencies.launch(command, args, {
     cwd: options.cwd ?? repositoryRoot,
-    encoding: "utf8",
+    detached: true,
     env: noReplaceGitEnvironment(environment),
-    maxBuffer: 50 * 1024 * 1024,
     shell: false,
-    timeout: options.timeoutMs,
-    killSignal: "SIGKILL",
+    stdio: ["ignore", "pipe", "pipe"],
   });
-  if (result.error?.code === "ETIMEDOUT")
-    throw new Error("acceptance-subprocess-timed-out");
-  if (result.status !== 0 || result.error)
+  if (!Number.isSafeInteger(child.pid) || child.pid <= 0) {
+    child.once?.("error", () => undefined);
     throw new Error("acceptance-subprocess-failed");
-  return selectCommandOutput(result, options.output);
+  }
+  let stdout = "";
+  let stderr = "";
+  let outputExceeded = false;
+  let treeSignalFailed = false;
+  const signalOwnedGroup = () => {
+    try {
+      dependencies.signalGroup(child.pid, "SIGKILL");
+    } catch (error) {
+      if (error?.code === "ESRCH") return;
+      treeSignalFailed = true;
+      child.kill?.("SIGKILL");
+    }
+  };
+  const append = (channel, chunk) => {
+    if (outputExceeded) return channel;
+    const next = channel + chunk.toString("utf8");
+    if (Buffer.byteLength(next, "utf8") > 50 * 1024 * 1024) {
+      outputExceeded = true;
+      signalOwnedGroup();
+      return channel;
+    }
+    return next;
+  };
+  child.stdout?.on("data", (chunk) => {
+    stdout = append(stdout, chunk);
+  });
+  child.stderr?.on("data", (chunk) => {
+    stderr = append(stderr, chunk);
+  });
+  let timedOut = false;
+  const completion = new Promise((resolve) => {
+    child.once("error", (error) => resolve({ error, status: null }));
+    child.once("close", (status, signal) => resolve({ signal, status }));
+  });
+  const deadline = dependencies.scheduleDeadline(() => {
+    timedOut = true;
+    signalOwnedGroup();
+  }, options.timeoutMs);
+  const result = await completion;
+  dependencies.clearDeadline(deadline);
+  const groupRemains = dependencies.groupExists(child.pid);
+  if (
+    timedOut ||
+    outputExceeded ||
+    treeSignalFailed ||
+    result.status !== 0 ||
+    result.error ||
+    groupRemains
+  )
+    await stopAcceptanceSubprocessTree(child.pid, dependencies);
+  if (timedOut) throw new Error("acceptance-subprocess-timed-out");
+  if (
+    outputExceeded ||
+    treeSignalFailed ||
+    result.status !== 0 ||
+    result.error ||
+    groupRemains
+  )
+    throw new Error("acceptance-subprocess-failed");
+  return selectCommandOutput({ stderr, stdout }, options.output);
 }
 
-function run(command, args, options = {}) {
+async function run(command, args, options = {}) {
   return runAcceptanceSubprocess(command, args, options);
 }
 
-function exactNpmVersion() {
+async function exactNpmVersion() {
   const npmExecPath = process.env.npm_execpath;
   if (typeof npmExecPath !== "string" || npmExecPath.length === 0)
     throw new Error("acceptance-npm-unavailable");
@@ -359,47 +460,53 @@ function exactNpmVersion() {
   });
 }
 
-function packageAcceptance() {
-  const npmExecPath = process.env.npm_execpath;
+export async function packageAcceptance(dependencies = {}) {
+  const npmExecPath = dependencies.npmExecPath ?? process.env.npm_execpath;
   if (typeof npmExecPath !== "string" || npmExecPath.length === 0)
     throw new Error("acceptance-npm-unavailable");
-  run(process.execPath, [npmExecPath, "run", "--silent", "acceptance:macos"], {
-    timeoutMs: acceptanceSubprocessTimeouts.acceptance,
-  });
+  await (dependencies.run ?? run)(
+    process.execPath,
+    [npmExecPath, "run", "--silent", "acceptance:macos"],
+    { timeoutMs: acceptanceSubprocessTimeouts.acceptance },
+  );
 }
 
 async function inspectEnvironment({ binary, home }) {
-  const [runtimeBytes, promptBytes] = await Promise.all([
-    readFile(binary),
-    readFile(
-      join(
-        repositoryRoot,
-        "quality/fixtures/codex-tracer/no-effect-prompt.txt",
+  const [runtimeBytes, promptBytes, authStatus, npmVersion, runtimeVersion] =
+    await Promise.all([
+      readFile(binary),
+      readFile(
+        join(
+          repositoryRoot,
+          "quality/fixtures/codex-tracer/no-effect-prompt.txt",
+        ),
       ),
-    ),
-  ]);
+      run(
+        binary,
+        ["-c", 'cli_auth_credentials_store="keyring"', "login", "status"],
+        {
+          env: { CODEX_HOME: home },
+          inheritEnvironment: false,
+          output: "stderr",
+          timeoutMs: acceptanceSubprocessTimeouts.inspection,
+        },
+      ),
+      exactNpmVersion(),
+      run(binary, ["--version"], {
+        inheritEnvironment: false,
+        timeoutMs: acceptanceSubprocessTimeouts.inspection,
+      }),
+    ]);
   return {
     architecture: process.arch,
-    authStatus: run(
-      binary,
-      ["-c", 'cli_auth_credentials_store="keyring"', "login", "status"],
-      {
-        env: { CODEX_HOME: home },
-        inheritEnvironment: false,
-        output: "stderr",
-        timeoutMs: acceptanceSubprocessTimeouts.inspection,
-      },
-    ),
+    authStatus,
     nodeVersion: process.versions.node,
-    npmVersion: exactNpmVersion(),
+    npmVersion,
     platform: process.platform,
     promptBytes: promptBytes.byteLength,
     promptSha256: sha256(promptBytes),
     runtimeSha256: sha256(runtimeBytes),
-    runtimeVersion: run(binary, ["--version"], {
-      inheritEnvironment: false,
-      timeoutMs: acceptanceSubprocessTimeouts.inspection,
-    }),
+    runtimeVersion,
   };
 }
 
@@ -776,9 +883,11 @@ async function authenticateOwnedStagedRuntime({
   expectedRuntimeSha256,
   runtimeWorkRoot,
 }) {
-  const processes = run("/bin/ps", ["-axo", "pid=,ppid=,pgid=,command="], {
-    timeoutMs: acceptanceSubprocessTimeouts.inspection,
-  })
+  const processes = (
+    await run("/bin/ps", ["-axo", "pid=,ppid=,pgid=,command="], {
+      timeoutMs: acceptanceSubprocessTimeouts.inspection,
+    })
+  )
     .split("\n")
     .map(parseProcessRow)
     .filter(Boolean);
@@ -843,6 +952,7 @@ export async function measureFirstVisibleP95(
   const monotonicNow = dependencies.monotonicNow ?? (() => performance.now());
   const observe = dependencies.observe ?? waitForTracerAccessibilityAction;
   const terminate = dependencies.terminate ?? terminateOwnedProcess;
+  const reject = dependencies.reject ?? rejectUnauthenticatedLauncher;
   const waitForExit = dependencies.waitForExit ?? waitForProcessExit;
   const observations = [];
   for (
@@ -851,8 +961,11 @@ export async function measureFirstVisibleP95(
     repetition += 1
   ) {
     const startedAt = monotonicNow();
-    const child = launch(internal);
-    const ownership = await authenticate(child, cleanupDependencies);
+    const { child, ownership } = await establishOwnedProcess({
+      authenticate: (candidate) => authenticate(candidate, cleanupDependencies),
+      launch: () => launch(internal),
+      reject,
+    });
     try {
       const visible = await observe({
         action: "probe-start",
@@ -898,14 +1011,14 @@ export function createCodexTracerAcceptanceIo() {
         const environment = await inspectEnvironment(runtime);
         if (acceptanceEnvironmentFailures(environment).length > 0)
           throw new Error("acceptance-environment-invalid");
-        const sourceRevision = run(
+        const sourceRevision = await run(
           "git",
           hardenedGitArguments(["rev-parse", "HEAD"]),
           { timeoutMs: acceptanceSubprocessTimeouts.inspection },
         );
         if (!REVISION_PATTERN.test(sourceRevision))
           throw new Error("acceptance-source-revision-invalid");
-        packageAcceptance();
+        await packageAcceptance();
         const inspected = await inspectPackage(sourceRevision);
         const runtimeWorkRoot = join(runRoot, "runtime-work");
         await mkdir(runtimeWorkRoot, { mode: 0o700 });
@@ -1012,11 +1125,12 @@ export function createCodexTracerAcceptanceIo() {
         adapter.binary,
         cleanupDependencies,
       );
-      const child = launchPackagedApp(prepared.internal);
-      const ownership = await authenticateOwnedProcessGroup(
-        child,
-        cleanupDependencies,
-      );
+      const { child, ownership } = await establishOwnedProcess({
+        authenticate: (candidate) =>
+          authenticateOwnedProcessGroup(candidate, cleanupDependencies),
+        launch: () => launchPackagedApp(prepared.internal),
+        reject: rejectUnauthenticatedLauncher,
+      });
       const runtimeOwnerships = [];
       let cleaned = false;
       try {

@@ -64,6 +64,8 @@ const WORK_ROOT_ENV: &str = "KEIKO_CODEX_0_145_0_WORK_ROOT";
 #[cfg(test)]
 const CODEX_INSTALLATION_ID: &str = "installation_id";
 const RUNTIME_OWNER_RECORD: &str = ".keiko-runtime-owner";
+const RUNTIME_PROCESS_RECORD: &str = ".keiko-runtime-process";
+const ORPHANED_RUNTIME_CLEANUP_TIMEOUT: Duration = Duration::from_secs(1);
 const STDIN_EOF_GRACE: Duration = Duration::from_millis(100);
 const CANCEL_TERM_GRACE: Duration = Duration::from_millis(500);
 const DESCENDANT_REAP_GRACE: Duration = Duration::from_millis(100);
@@ -713,7 +715,7 @@ fn perform_check(
         return RuntimeReadinessView::terminal(state, 0);
     }
     let outcome = run_protocol(&mut verified, &work_directory, active, deadline);
-    let work_cleaned = cleanup_or_retain_work_directory(active, &work_directory);
+    let work_cleaned = finalize_readiness_work(active, &work_directory, &outcome);
     if !outcome.cleaned || !work_cleaned {
         RuntimeReadinessView::terminal(
             RuntimeReadinessState::CleanupFailed,
@@ -721,6 +723,19 @@ fn perform_check(
         )
     } else {
         RuntimeReadinessView::terminal(outcome.state, outcome.quarantined_events)
+    }
+}
+
+fn finalize_readiness_work(
+    active: &ActiveRuntime,
+    work_directory: &Path,
+    outcome: &ProtocolOutcome,
+) -> bool {
+    if outcome.cleaned {
+        cleanup_or_retain_work_directory(active, work_directory)
+    } else {
+        retain_work_directory(active, work_directory);
+        false
     }
 }
 
@@ -788,7 +803,7 @@ fn perform_turn(
     let mut outcome = run_turn_protocol(
         &mut verified,
         &work_directory,
-        selected_workspace.path(),
+        selected_workspace,
         task,
         active,
         deadline,
@@ -839,7 +854,7 @@ fn reconcile_retained_work_directories(active: &ActiveRuntime) -> bool {
 fn run_turn_protocol(
     configuration: &mut VerifiedConfiguration,
     work_directory: &Path,
-    selected_workspace: &Path,
+    selected_workspace: &WorkspaceRuntimeBinding,
     task: &str,
     active: &ActiveRuntime,
     deadline: Instant,
@@ -871,7 +886,7 @@ fn run_turn_protocol(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
-    let mut child = match spawn_verified_runtime(&mut command) {
+    let mut child = match spawn_verified_runtime(&mut command, work_directory) {
         Ok(child) => child,
         Err(error) => {
             return if error.kind() == io::ErrorKind::PermissionDenied {
@@ -911,7 +926,7 @@ fn run_turn_protocol(
     let (sender, receiver) = mpsc::sync_channel(MAX_QUEUE_FRAMES);
     spawn_stdout_reader(stdout, sender, Arc::clone(&queued_bytes));
     spawn_stderr_reader(stderr, Arc::clone(&stderr_saturated));
-    let mut boundary_audit = RuntimeBoundaryAudit::new(selected_workspace);
+    let mut boundary_audit = RuntimeBoundaryAudit::new(selected_workspace.path());
     if boundary_audit
         .write_json_line(
             &mut stdin,
@@ -1017,6 +1032,9 @@ fn run_turn_protocol(
                         }
                     }
                     TurnProjectionAction::SendTurnStart(thread_id) => {
+                        if !selected_workspace.remains_current() {
+                            break (TurnState::Failed, TurnReason::StaleWorkspace);
+                        }
                         if boundary_audit
                             .write_json_line(
                                 &mut stdin,
@@ -1328,12 +1346,21 @@ fn private_directory_is_owned(work_directory: &Path) -> bool {
 }
 
 #[cfg(test)]
-fn spawn_verified_runtime(command: &mut Command) -> io::Result<Child> {
-    command.spawn()
+fn spawn_verified_runtime(command: &mut Command, work_directory: &Path) -> io::Result<Child> {
+    let mut child = command.spawn()?;
+    if write_runtime_process_record(work_directory, child.id() as i32).is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "runtime process ownership",
+        ));
+    }
+    Ok(child)
 }
 
 #[cfg(not(test))]
-fn spawn_verified_runtime(command: &mut Command) -> io::Result<Child> {
+fn spawn_verified_runtime(command: &mut Command, work_directory: &Path) -> io::Result<Child> {
     // SAFETY: the child makes only the async-signal-safe PT_TRACE_ME syscall
     // before exec. The kernel then stops it at the exec boundary, before the
     // selected image can execute its first instruction.
@@ -1375,6 +1402,18 @@ fn spawn_verified_runtime(command: &mut Command) -> io::Result<Child> {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "runtime executable identity",
+        ));
+    }
+    if write_runtime_process_record(work_directory, process).is_err() {
+        // SAFETY: the exact direct child is still stopped at its authenticated
+        // exec boundary, so it cannot outlive a failed ownership publication.
+        unsafe {
+            keiko_ptrace(PT_KILL, process, std::ptr::null_mut(), 0);
+        }
+        let _ = child.wait();
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "runtime process ownership",
         ));
     }
     // SAFETY: address 1 requests continuation from the current instruction;
@@ -1489,10 +1528,24 @@ fn recover_orphaned_runtime_directories(work_root: &Path) -> Result<(), RuntimeR
         if !private_owned_directory_metadata(&metadata, effective_user_id()) {
             return Err(RuntimeReadinessState::ContainmentFailed);
         }
-        if process_identity(owner.process_id) != Some(owner)
-            && fs::remove_dir_all(entry.path()).is_err()
-        {
-            return Err(RuntimeReadinessState::ContainmentFailed);
+        if process_identity(owner.process_id) != Some(owner) {
+            match fs::symlink_metadata(entry.path().join(RUNTIME_PROCESS_RECORD)) {
+                Ok(_) => {
+                    let Some(runtime) = runtime_process_record(&entry.path()) else {
+                        return Err(RuntimeReadinessState::ContainmentFailed);
+                    };
+                    if process_identity(runtime.process_id) == Some(runtime)
+                        && !reconcile_orphaned_runtime_process_group(runtime)
+                    {
+                        return Err(RuntimeReadinessState::ContainmentFailed);
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(_) => return Err(RuntimeReadinessState::ContainmentFailed),
+            }
+            if fs::remove_dir_all(entry.path()).is_err() {
+                return Err(RuntimeReadinessState::ContainmentFailed);
+            }
         }
     }
     Ok(())
@@ -1550,6 +1603,86 @@ fn write_runtime_owner_record(
     file.write_all(record.as_bytes())?;
     file.sync_all()?;
     Ok(())
+}
+
+fn write_runtime_process_record(work_directory: &Path, process: i32) -> io::Result<()> {
+    let information =
+        process_information(process).ok_or_else(|| io::Error::other("runtime process identity"))?;
+    let identity = identity_from_information(process, &information)
+        .ok_or_else(|| io::Error::other("runtime process identity"))?;
+    if information.process_group != process as u32 {
+        return Err(io::Error::other("runtime process group"));
+    }
+    let record = format!(
+        "{}:{}:{}\n",
+        identity.process_id, identity.started_seconds, identity.started_microseconds
+    );
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(work_directory.join(RUNTIME_PROCESS_RECORD))?;
+    file.write_all(record.as_bytes())?;
+    file.sync_all()
+}
+
+fn runtime_process_record(work_directory: &Path) -> Option<ProcessIdentity> {
+    let record_path = work_directory.join(RUNTIME_PROCESS_RECORD);
+    let path_metadata = fs::symlink_metadata(&record_path).ok()?;
+    if !valid_runtime_owner_record_metadata(&path_metadata, effective_user_id()) {
+        return None;
+    }
+    let mut file = File::open(record_path).ok()?;
+    let file_metadata = file.metadata().ok()?;
+    if FileIdentity::from_metadata(&path_metadata) != FileIdentity::from_metadata(&file_metadata) {
+        return None;
+    }
+    let mut record = String::new();
+    file.read_to_string(&mut record).ok()?;
+    let mut fields = record.strip_suffix('\n')?.split(':');
+    let process_id = fields.next()?.parse::<i32>().ok()?;
+    let started_seconds = fields.next()?.parse::<u64>().ok()?;
+    let started_microseconds = fields.next()?.parse::<u64>().ok()?;
+    if fields.next().is_some()
+        || process_id <= 0
+        || started_seconds == 0
+        || started_microseconds >= 1_000_000
+    {
+        return None;
+    }
+    Some(ProcessIdentity {
+        process_id,
+        started_microseconds,
+        started_seconds,
+    })
+}
+
+fn reconcile_orphaned_runtime_process_group(runtime: ProcessIdentity) -> bool {
+    let Some(information) = process_information(runtime.process_id) else {
+        return true;
+    };
+    if identity_from_information(runtime.process_id, &information) != Some(runtime)
+        || information.process_group != runtime.process_id as u32
+    {
+        return false;
+    }
+    signal_process_group(runtime.process_id, SIGKILL);
+    let deadline = Instant::now() + ORPHANED_RUNTIME_CLEANUP_TIMEOUT;
+    while Instant::now() < deadline {
+        if recovered_process_group_stopped(runtime) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    recovered_process_group_stopped(runtime)
+}
+
+fn recovered_process_group_stopped(runtime: ProcessIdentity) -> bool {
+    if process_identity(runtime.process_id) == Some(runtime) {
+        return false;
+    }
+    !process_group_has_live_descendants(runtime.process_id, runtime.process_id)
+        .unwrap_or_else(|_| process_group_exists(runtime.process_id))
 }
 
 fn valid_runtime_owner_record_metadata(metadata: &fs::Metadata, owner: u32) -> bool {
@@ -1667,7 +1800,7 @@ fn run_protocol(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
-    let mut child = match spawn_verified_runtime(&mut command) {
+    let mut child = match spawn_verified_runtime(&mut command, work_directory) {
         Ok(child) => child,
         Err(error) => {
             return ProtocolOutcome {
@@ -2984,6 +3117,18 @@ fn child_exited_without_reaping(child: i32) -> io::Result<bool> {
 }
 
 fn process_group_has_descendants(process_group: i32, leader: i32) -> io::Result<bool> {
+    Ok(process_group_members(process_group)?
+        .into_iter()
+        .any(|process| process != leader))
+}
+
+fn process_group_has_live_descendants(process_group: i32, leader: i32) -> io::Result<bool> {
+    Ok(process_group_members(process_group)?
+        .into_iter()
+        .any(|process| process != leader && process_identity(process).is_some()))
+}
+
+fn process_group_members(process_group: i32) -> io::Result<Vec<i32>> {
     let mut members = [0_i32; 512];
     let buffer_size = i32::try_from(std::mem::size_of_val(&members))
         .map_err(|_| io::Error::other("process group buffer"))?;
@@ -3005,11 +3150,13 @@ fn process_group_has_descendants(process_group: i32, leader: i32) -> io::Result<
         return Err(io::Error::other("process group result"));
     }
     if member_count == members.len() {
-        return Ok(true);
+        return Err(io::Error::other("process group result"));
     }
     Ok(members[..member_count]
         .iter()
-        .any(|process| *process > 0 && *process != leader))
+        .copied()
+        .filter(|process| *process > 0)
+        .collect())
 }
 
 fn signal_process_group(process_group: i32, signal: i32) {
@@ -3717,6 +3864,140 @@ mod tests {
         fs::set_permissions(&fixture.work, fs::Permissions::from_mode(0o700))
             .expect("restore work permissions");
         assert_eq!(blocked, Err(RuntimeReadinessState::ContainmentFailed));
+    }
+
+    #[test]
+    fn runtime_directory_recovery_stops_an_exact_crash_survivor_before_removal() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let active = ActiveRuntime::default();
+        let dead_owner = ProcessIdentity {
+            process_id: i32::MAX,
+            started_seconds: 1,
+            started_microseconds: 0,
+        };
+        let work_directory = fixture
+            .work
+            .join(runtime_work_directory_name("turn", dead_owner, 1));
+        create_private_turn_directory(&active, &work_directory, dead_owner, 1)
+            .expect("crashed host work directory");
+        let mut survivor = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("trap '' TERM; /bin/sleep 30 & printf 'ready\\n'; wait")
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("crash-surviving runtime");
+        let survivor_pid = survivor.id() as i32;
+        let mut ready = String::new();
+        BufReader::new(survivor.stdout.take().expect("survivor stdout"))
+            .read_line(&mut ready)
+            .expect("survivor readiness");
+        assert_eq!(ready, "ready\n");
+        assert!(
+            process_group_has_live_descendants(survivor_pid, survivor_pid)
+                .expect("live runtime descendants")
+        );
+        write_runtime_process_record(&work_directory, survivor_pid)
+            .expect("persist runtime identity");
+        let survivor_identity =
+            runtime_process_record(&work_directory).expect("persisted runtime process identity");
+
+        recover_orphaned_runtime_directories(&fixture.work)
+            .expect("reconcile crash-surviving runtime");
+
+        assert!(!work_directory.exists());
+        assert_ne!(
+            process_identity(survivor_pid),
+            Some(survivor_identity),
+            "the persisted runtime identity must no longer be live"
+        );
+        let _ = survivor.wait();
+    }
+
+    #[test]
+    fn runtime_directory_recovery_rejects_malformed_and_ignores_reused_process_records() {
+        let fixture = Fixture::new();
+        let active = ActiveRuntime::default();
+        let dead_owner = ProcessIdentity {
+            process_id: i32::MAX,
+            started_seconds: 1,
+            started_microseconds: 0,
+        };
+        let reused_directory = fixture
+            .work
+            .join(runtime_work_directory_name("turn", dead_owner, 1));
+        create_private_turn_directory(&active, &reused_directory, dead_owner, 1)
+            .expect("reused process directory");
+        let current = process_identity(std::process::id() as i32).expect("current identity");
+        fs::write(
+            reused_directory.join(RUNTIME_PROCESS_RECORD),
+            format!(
+                "{}:{}:{}\n",
+                current.process_id,
+                current.started_seconds.saturating_add(1),
+                current.started_microseconds
+            ),
+        )
+        .expect("reused process record");
+        fs::set_permissions(
+            reused_directory.join(RUNTIME_PROCESS_RECORD),
+            fs::Permissions::from_mode(0o600),
+        )
+        .expect("private reused record");
+        recover_orphaned_runtime_directories(&fixture.work)
+            .expect("ignore reused process identity");
+        assert!(!reused_directory.exists());
+
+        let malformed_directory =
+            fixture
+                .work
+                .join(runtime_work_directory_name("readiness", dead_owner, 2));
+        create_private_readiness_directory(&active, &malformed_directory, dead_owner, 2)
+            .expect("malformed process directory");
+        fs::write(
+            malformed_directory.join(RUNTIME_PROCESS_RECORD),
+            b"malformed\n",
+        )
+        .expect("malformed process record");
+        fs::set_permissions(
+            malformed_directory.join(RUNTIME_PROCESS_RECORD),
+            fs::Permissions::from_mode(0o600),
+        )
+        .expect("private malformed record");
+        assert_eq!(
+            recover_orphaned_runtime_directories(&fixture.work),
+            Err(RuntimeReadinessState::ContainmentFailed)
+        );
+    }
+
+    #[test]
+    fn runtime_process_publication_rejects_a_nonleader_and_dead_identity_is_already_reconciled() {
+        let fixture = Fixture::new();
+        let mut child = Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("nonleader runtime");
+        let child_identity =
+            process_identity(child.id() as i32).expect("nonleader runtime identity");
+        assert!(
+            write_runtime_process_record(&fixture.work, child.id() as i32).is_err(),
+            "a process outside its own group cannot become runtime ownership"
+        );
+        assert!(!reconcile_orphaned_runtime_process_group(child_identity));
+        assert!(!reconcile_orphaned_runtime_process_group(ProcessIdentity {
+            started_microseconds: child_identity.started_microseconds.wrapping_add(1),
+            ..child_identity
+        }));
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(reconcile_orphaned_runtime_process_group(ProcessIdentity {
+            process_id: i32::MAX,
+            started_seconds: 1,
+            started_microseconds: 0,
+        }));
     }
 
     #[test]
@@ -5504,6 +5785,54 @@ while :; do /bin/sleep 1; done
     }
 
     #[test]
+    fn runtime_process_record_rejects_each_metadata_and_field_drift() {
+        let fixture = Fixture::new();
+        let raw_record = |name: &str, contents: &[u8], mode: u32| {
+            let directory = fixture.work.join(name);
+            fs::DirBuilder::new()
+                .mode(0o700)
+                .create(&directory)
+                .expect("raw process-record directory");
+            let record = directory.join(RUNTIME_PROCESS_RECORD);
+            fs::write(&record, contents).expect("raw process record");
+            fs::set_permissions(&record, fs::Permissions::from_mode(mode))
+                .expect("raw process-record mode");
+            directory
+        };
+        let valid = raw_record("process-valid", b"41:2:3\n", 0o600);
+        assert_eq!(
+            runtime_process_record(&valid),
+            Some(ProcessIdentity {
+                process_id: 41,
+                started_seconds: 2,
+                started_microseconds: 3,
+            })
+        );
+
+        for (name, contents, mode) in [
+            ("process-public", b"41:2:3\n".as_slice(), 0o644),
+            ("process-empty", b"".as_slice(), 0o600),
+            ("process-no-newline", b"41:2:3".as_slice(), 0o600),
+            ("process-zero-pid", b"0:2:3\n".as_slice(), 0o600),
+            ("process-zero-start", b"41:0:3\n".as_slice(), 0o600),
+            ("process-microseconds", b"41:2:1000000\n".as_slice(), 0o600),
+            ("process-extra", b"41:2:3:4\n".as_slice(), 0o600),
+            ("process-malformed", b"x:y:z\n".as_slice(), 0o600),
+        ] {
+            let directory = raw_record(name, contents, mode);
+            assert!(runtime_process_record(&directory).is_none(), "{name}");
+        }
+
+        let oversized = raw_record("process-oversized", &[b'x'; 129], 0o600);
+        assert!(runtime_process_record(&oversized).is_none());
+        let directory_record = fixture.work.join("process-directory-record");
+        fs::create_dir(&directory_record).expect("process-record fixture");
+        fs::create_dir(directory_record.join(RUNTIME_PROCESS_RECORD))
+            .expect("directory process record");
+        assert!(runtime_process_record(&directory_record).is_none());
+    }
+
+    #[test]
     fn private_directory_rejects_post_creation_permission_drift() {
         let fixture = Fixture::new();
         let work_directory = fixture.work.join("permission-drift");
@@ -5667,6 +5996,58 @@ exit 0
         assert_eq!(outcome.state, TurnState::Failed);
         assert_eq!(outcome.reason, Some(TurnReason::StaleWorkspace));
         assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
+    }
+
+    #[test]
+    fn workspace_identity_is_revalidated_immediately_before_turn_submission() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let repository = fixture.root.join("repository");
+        fs::create_dir(&repository).expect("repository identity");
+        fs::create_dir(repository.join(".git")).expect("repository marker");
+        let binding = WorkspaceRuntimeBinding::inspect(&repository).expect("workspace binding");
+        let replaced = fixture.root.join("replaced-at-submission");
+        let turn_received = fixture.root.join("turn-start-received");
+        let script = format!(
+            r#"#!/bin/sh
+set -eu
+read -r initialize
+printf '%s\n' '{{"id":1,"result":{{"userAgent":"codex_cli_rs/0.145.0","codexHome":"'"$CODEX_HOME"'","platformFamily":"unix","platformOs":"macos"}}}}'
+read -r initialized
+read -r account
+printf '%s\n' '{{"id":2,"result":{{"account":{{"type":"chatgpt","email":"redacted","planType":"plus"}},"requiresOpenaiAuth":true}}}}'
+read -r thread
+/bin/mv '{repository}' '{replaced}'
+/bin/mkdir '{repository}'
+/bin/mkdir '{repository}/.git'
+printf '%s\n' '{{"id":3,"result":{{"thread":{{"id":"thread-1","ephemeral":true,"path":null,"gitInfo":null,"parentThreadId":null,"cwd":"'"$PWD"'","canAcceptDirectInput":true}},"runtimeWorkspaceRoots":[],"instructionSources":[],"approvalPolicy":"never","approvalsReviewer":"user","activePermissionProfile":null,"multiAgentMode":"explicitRequestOnly","cwd":"'"$PWD"'"}}}}'
+printf '%s\n' '{{"method":"thread/started","params":{{"thread":{{"id":"thread-1"}}}}}}'
+if read -r turn; then : > '{turn_received}'; fi
+"#,
+            repository = repository.to_string_lossy(),
+            replaced = replaced.to_string_lossy(),
+            turn_received = turn_received.to_string_lossy(),
+        );
+        let host = fixture.scripted_host(&script);
+
+        let outcome = host.run_turn(
+            "request-final-workspace-fence",
+            1,
+            &binding,
+            "Bounded task.",
+            Duration::from_secs(3),
+            |_| {},
+        );
+
+        assert_eq!(outcome.state, TurnState::Failed);
+        assert_eq!(outcome.reason, Some(TurnReason::StaleWorkspace));
+        assert!(outcome.cleaned);
+        assert!(
+            !turn_received.exists(),
+            "turn/start crossed the stale fence"
+        );
     }
 
     #[test]
@@ -5874,6 +6255,29 @@ while :; do /bin/sleep 1; done
         );
         assert_eq!(result.state, RuntimeReadinessState::TimedOut);
         assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
+    }
+
+    #[test]
+    fn readiness_work_is_retained_until_runtime_exit_is_proven() {
+        let fixture = Fixture::new();
+        let active = ActiveRuntime::default();
+        let work_directory = fixture.work.join("retained-readiness-work");
+        fs::create_dir(&work_directory).expect("readiness work");
+        let outcome = ProtocolOutcome {
+            state: RuntimeReadinessState::TimedOut,
+            quarantined_events: 0,
+            cleaned: false,
+        };
+
+        assert!(!finalize_readiness_work(&active, &work_directory, &outcome));
+        assert!(work_directory.exists());
+        assert!(
+            active
+                .retained_work_directories
+                .lock()
+                .expect("retained readiness work")
+                .contains(&work_directory)
+        );
     }
 
     #[test]
