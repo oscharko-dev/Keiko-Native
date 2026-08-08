@@ -3,11 +3,11 @@
   "phase": "denied",
   "predecessor": {
     "phase": "allowed",
-    "sha256": "8fcdf26b50f9160a078008c3405589cbe9d30c4d9b90e58dca2da47109915a3c"
+    "sha256": "25ec325617069d81ba2cc9ed11a40f69b10666a7254d72904a623f6bc548c1c6"
   },
   "prepared": {
     "schemaVersion": "keiko-native-macos-accessibility-driver-prepared/v1",
-    "sourceHead": "63aa80103021af14a0b7a89d67e0127c07dcc6d4",
+    "sourceHead": "63a561577bdfbad7c04b7d8c2d613639eaebc7bb",
     "sourceDigest": "8a1631f2ae7ecdaf7847681ef039c2cc31d01c9cd4a93466da1fce2bb8b0e608",
     "bundleIdentifier": "dev.oscharko.keiko-native.evaluation.accessibility",
     "representativePackageSha256": "9221319c3d37bdd7c2e36c0558f039d60d1aa3b3223f49668c3b4fa7aedf3e0c",
@@ -53,7 +53,7 @@
     "axuielement": [
       {
         "checkpoints": [],
-        "elapsedMs": 27,
+        "elapsedMs": 33,
         "repetition": 1
       }
     ],
