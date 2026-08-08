@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -271,8 +271,8 @@ test("the packaged journey drives the fixed sequence and excludes observer start
     calls.find(({ action }) => action === "set-task").input,
     acceptedPrompt,
   );
-  assert.equal(result.cancellationProjectionMs, 80);
-  assert.equal(result.localProjectionP95Ms, 80);
+  assert.equal(result.cancellationProjectionMs, 90);
+  assert.equal(result.localProjectionP95Ms, 90);
   assert.equal(result.localProjectionSamples, 5);
   assert.equal(result.status, "passed");
   assert.equal(result.turnDurationMs, 30);
@@ -298,3 +298,22 @@ macArm64Test(
     }
   },
 );
+
+test("the accessibility compiler requires a bounded subprocess runner", async () => {
+  const root = await mkdtemp(join(tmpdir(), "keiko-tracer-ax-runner-"));
+  try {
+    let invocation;
+    await compileTracerAccessibility(root, async (command, args, options) => {
+      invocation = { command, args, options };
+      await writeFile(join(root, "KeikoTracerAX"), "compiled", {
+        mode: 0o700,
+      });
+      return { error: undefined, status: 0 };
+    });
+    assert.equal(invocation.command, "/usr/bin/xcrun");
+    assert.equal(invocation.options.timeoutMs, 10_000);
+    assert.equal(invocation.options.shell, false);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});

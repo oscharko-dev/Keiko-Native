@@ -337,6 +337,166 @@ describe("production renderer composition", () => {
     expect(rendered).not.toContain("Codex 0.145.0 ist protokollbereit");
   });
 
+  it("preserves an active turn when workspace reselection is rejected", async () => {
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: { getElementById: () => ({}) },
+    });
+    const { startRenderer } = await import("./main");
+    let selections = 0;
+    let turnRequestId = "";
+    let turnChannel: { onmessage: (value: TurnView) => void } | undefined;
+    let resolveTurn: ((value: string) => void) | undefined;
+    const rejectingReselection = vi.fn<Invoke>(async (command, arguments_) => {
+      const request = JSON.parse(arguments_.request) as {
+        requestId: string;
+        operation: { kind: string; workspaceGeneration?: number };
+      };
+      if (
+        command === "workspace_request" &&
+        request.operation.kind === "workspace-select"
+      ) {
+        selections += 1;
+        if (selections > 1) throw new Error("cleanup could not be proven");
+        return JSON.stringify({
+          schemaVersion: 1,
+          requestId: request.requestId,
+          result: {
+            kind: "workspace",
+            state: {
+              kind: "bound",
+              generation: 3,
+              displayLabel: "Retained Repository",
+            },
+          },
+        });
+      }
+      if (command !== "codex_turn_request") {
+        return invoke(command, arguments_);
+      }
+      turnRequestId = request.requestId;
+      turnChannel = arguments_.onEvent;
+      const streaming: TurnView = {
+        taskId: "task-0000000000000007-0000000000000001",
+        runId: "run-0000000000000007-0000000000000001",
+        workspaceGeneration: request.operation.workspaceGeneration ?? 0,
+        state: "streaming",
+        agentText: "Bounded answer.",
+        providerThreadEstablished: true,
+        providerTurnEstablished: true,
+        evidence: {
+          runtimeVersion: "0.145.0",
+          runtimeArtifactSha256:
+            "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
+          containmentProfile: "keiko-codex-readiness-v1",
+          authorityProfile: "keiko-codex-no-effect-v1",
+          messageBytes: 15,
+          quarantinedEvents: 0,
+          acceptedEffects: 0,
+          repositoryContextBytesToRuntime: 0,
+          cleanupComplete: false,
+          terminalState: "streaming",
+        },
+      };
+      arguments_.onEvent?.onmessage({
+        ...streaming,
+        state: "preflighting",
+        agentText: "",
+        providerThreadEstablished: false,
+        providerTurnEstablished: false,
+        evidence: {
+          ...streaming.evidence,
+          messageBytes: 0,
+          terminalState: "preflighting",
+        },
+      });
+      arguments_.onEvent?.onmessage(streaming);
+      return new Promise<string>((resolve) => {
+        resolveTurn = resolve;
+      });
+    });
+    const all = (
+      value: unknown,
+    ): Array<{ type: unknown; props: Record<string, unknown> }> => {
+      if (Array.isArray(value)) return value.flatMap(all);
+      if (typeof value !== "object" || value === null) return [];
+      const props = Reflect.get(value, "props") as
+        Record<string, unknown> | undefined;
+      if (props === undefined) return [];
+      return [
+        { type: Reflect.get(value, "type"), props },
+        ...all(props.children),
+      ];
+    };
+    const click = async (label: string) => {
+      const button = all(render.mock.calls.at(-1)?.[0]).find(
+        ({ type, props }) => type === "button" && props.children === label,
+      );
+      (button?.props.onClick as () => void)();
+      for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    };
+
+    render.mockClear();
+    await startRenderer(rejectingReselection, async () => authority);
+    await click("Foundation öffnen");
+    await click("Repository auswählen");
+    await click("Codex-Bereitschaft prüfen");
+    const elements = all(render.mock.calls.at(-1)?.[0]);
+    const task = elements.find(({ props }) => props.id === "codex-task")?.props;
+    const submit = elements.find(
+      ({ type, props }) =>
+        type === "button" && props.children === "Begrenzten Auftrag starten",
+    )?.props;
+    const taskNode = { disabled: false, value: "Bounded task." };
+    const submitNode = { disabled: true };
+    (task?.ref as (node: typeof taskNode) => void)(taskNode);
+    (submit?.ref as (node: typeof submitNode) => void)(submitNode);
+    (task?.onInput as () => void)();
+    (submit?.onClick as () => void)();
+    for (let index = 0; index < 8; index += 1) await Promise.resolve();
+
+    await click("Anderes Repository auswählen");
+
+    const retained = JSON.stringify(render.mock.calls.at(-1)?.[0]);
+    expect(retained).toContain("Retained Repository");
+    expect(retained).toContain("Codex antwortet");
+    expect(retained).toContain("Codex-Lauf abbrechen");
+    expect(retained).toContain("Codex 0.145.0 ist protokollbereit");
+
+    const cancelled: TurnView = {
+      taskId: "task-0000000000000007-0000000000000001",
+      runId: "run-0000000000000007-0000000000000001",
+      workspaceGeneration: 3,
+      state: "cancelled",
+      reason: "user-cancelled",
+      agentText: "Bounded answer.",
+      providerThreadEstablished: true,
+      providerTurnEstablished: true,
+      evidence: {
+        runtimeVersion: "0.145.0",
+        runtimeArtifactSha256:
+          "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
+        containmentProfile: "keiko-codex-readiness-v1",
+        authorityProfile: "keiko-codex-no-effect-v1",
+        messageBytes: 15,
+        quarantinedEvents: 0,
+        acceptedEffects: 0,
+        repositoryContextBytesToRuntime: 0,
+        cleanupComplete: true,
+        terminalState: "cancelled",
+      },
+    };
+    turnChannel?.onmessage(cancelled);
+    resolveTurn?.(
+      JSON.stringify({
+        schemaVersion: 1,
+        requestId: turnRequestId,
+        result: { kind: "codex-turn", state: cancelled },
+      }),
+    );
+    await Promise.resolve();
+  });
+
   it("renders a redacted recoverable welcome substate when the host is unavailable", async () => {
     Object.defineProperty(globalThis, "document", {
       configurable: true,

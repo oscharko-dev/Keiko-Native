@@ -227,9 +227,10 @@ export async function runPackagedTracerJourney({
     return result;
   };
   const project = async (action, observation, input) => {
+    const startedAt = monotonicNow();
     await step(action, input);
-    const observed = await step(observation);
-    const elapsedMs = observed.elapsedMs;
+    await step(observation);
+    const elapsedMs = Math.round(monotonicNow() - startedAt);
     if (!Number.isSafeInteger(elapsedMs) || elapsedMs < 0)
       throw new Error("packaged-journey-measurement-invalid");
     localProjectionMeasurements.push(elapsedMs);
@@ -303,7 +304,14 @@ export async function runPackagedTracerJourney({
   };
 }
 
-export async function compileTracerAccessibility(root) {
+export async function compileTracerAccessibility(
+  root,
+  runCompiler = (command, args, options) =>
+    spawnSync(command, args, {
+      ...options,
+      timeout: options.timeoutMs,
+    }),
+) {
   await mkdir(root, { recursive: true });
   const source = join(root, "KeikoTracerAX.m");
   const binary = join(root, "KeikoTracerAX");
@@ -311,7 +319,7 @@ export async function compileTracerAccessibility(root) {
     encoding: "utf8",
     mode: 0o600,
   });
-  const result = spawnSync(
+  const result = await runCompiler(
     "/usr/bin/xcrun",
     [
       "clang",
@@ -326,7 +334,7 @@ export async function compileTracerAccessibility(root) {
       "-o",
       binary,
     ],
-    { encoding: "utf8", shell: false },
+    { encoding: "utf8", shell: false, timeoutMs: 10_000 },
   );
   if (result.status !== 0 || result.error)
     throw new Error("adapter-compile-failed");

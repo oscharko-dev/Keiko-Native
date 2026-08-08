@@ -121,18 +121,27 @@ export async function startRenderer(
   };
   workspaceController = {
     selectWorkspace: async () => {
+      const previousWorkspace = workspaceState;
       presentWorkspace({
         kind: "selecting",
-        generation: Math.max(1, workspaceState.generation + 1),
+        generation:
+          previousWorkspace.kind === "bound"
+            ? previousWorkspace.generation
+            : Math.max(1, previousWorkspace.generation + 1),
       });
       try {
         presentWorkspace((await port.selectWorkspace()).result.state);
       } catch {
-        presentWorkspace({
-          kind: "closed",
-          generation: workspaceState.generation,
-          reason: "unavailable",
-        });
+        if (previousWorkspace.kind === "bound") {
+          workspaceState = previousWorkspace;
+          present(currentView);
+        } else {
+          presentWorkspace({
+            kind: "closed",
+            generation: workspaceState.generation,
+            reason: "unavailable",
+          });
+        }
       }
     },
     clearWorkspace: async () => {

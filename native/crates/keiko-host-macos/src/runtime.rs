@@ -217,6 +217,8 @@ struct ProcessIdentity {
 #[derive(Debug, Default)]
 struct ActiveRuntime {
     process_group: Mutex<Option<ProcessIdentity>>,
+    #[cfg(test)]
+    process_group_observer: Mutex<Option<SyncSender<ProcessIdentity>>>,
     owned_processes: Mutex<HashSet<ProcessIdentity>>,
     retained_work_directories: Mutex<HashSet<PathBuf>>,
     control: Mutex<RuntimeControl>,
@@ -280,6 +282,27 @@ impl RuntimeCancellation {
 }
 
 impl ActiveRuntime {
+    #[cfg(test)]
+    fn observe_next_process_group(&self) -> mpsc::Receiver<ProcessIdentity> {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        *self
+            .process_group_observer
+            .lock()
+            .expect("process-group observer") = Some(sender);
+        receiver
+    }
+
+    #[cfg(test)]
+    fn notify_process_group_observer(&self) {
+        let identity = self.process_group.lock().ok().and_then(|group| *group);
+        if let Some(identity) = identity
+            && let Ok(mut observer) = self.process_group_observer.lock()
+            && let Some(observer) = observer.take()
+        {
+            let _ = observer.send(identity);
+        }
+    }
+
     fn claim_request(&self, request_id: &str) -> bool {
         let Ok(process_group) = self.process_group.lock() else {
             return false;
@@ -1020,6 +1043,8 @@ fn run_turn_protocol(
                         {
                             break (TurnState::ContainmentFailed, TurnReason::ProtocolRejected);
                         }
+                        #[cfg(test)]
+                        active.notify_process_group_observer();
                     }
                     TurnProjectionAction::SendThreadStart => {
                         let work = work_directory.to_string_lossy();
@@ -1939,6 +1964,8 @@ fn run_protocol(
                         {
                             break RuntimeReadinessState::Incompatible;
                         }
+                        #[cfg(test)]
+                        active.notify_process_group_observer();
                     }
                     ProjectionAction::Terminal(state) => break state,
                 }
@@ -1986,7 +2013,6 @@ fn write_json_line(writer: &mut impl Write, value: &Value) -> io::Result<()> {
 
 #[derive(Debug)]
 struct RuntimeBoundaryAudit {
-    repository_name_marker: Option<Vec<u8>>,
     repository_path_marker: Option<Vec<u8>>,
     repository_context_bytes_to_runtime: u64,
 }
@@ -1997,14 +2023,7 @@ impl RuntimeBoundaryAudit {
             .is_absolute()
             .then(|| selected_workspace.to_string_lossy().as_bytes().to_vec())
             .filter(|marker| !marker.is_empty());
-        let repository_name_marker = selected_workspace
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map(str::as_bytes)
-            .map(<[u8]>::to_vec)
-            .filter(|marker| !marker.is_empty());
         Self {
-            repository_name_marker,
             repository_path_marker,
             repository_context_bytes_to_runtime: 0,
         }
@@ -2026,8 +2045,6 @@ impl RuntimeBoundaryAudit {
         let leaked_bytes = repository_context_occurrences(
             &structural_value,
             self.repository_path_marker.as_deref(),
-            self.repository_name_marker.as_deref(),
-            false,
         ) as u64;
         if leaked_bytes > 0 {
             self.repository_context_bytes_to_runtime = self
@@ -2042,42 +2059,21 @@ impl RuntimeBoundaryAudit {
     }
 }
 
-fn repository_context_occurrences(
-    value: &Value,
-    path_marker: Option<&[u8]>,
-    name_marker: Option<&[u8]>,
-    contextual_field: bool,
-) -> usize {
+fn repository_context_occurrences(value: &Value, path_marker: Option<&[u8]>) -> usize {
     match value {
         Value::String(text) => {
             let bytes = text.as_bytes();
-            let path_bytes = path_marker
+            path_marker
                 .map(|marker| count_byte_occurrences(bytes, marker) * marker.len())
-                .unwrap_or_default();
-            let name_bytes = if contextual_field || text.contains('/') {
-                name_marker
-                    .map(|marker| count_byte_occurrences(bytes, marker) * marker.len())
-                    .unwrap_or_default()
-            } else {
-                0
-            };
-            path_bytes.saturating_add(name_bytes)
+                .unwrap_or_default()
         }
         Value::Array(values) => values
             .iter()
-            .map(|entry| {
-                repository_context_occurrences(entry, path_marker, name_marker, contextual_field)
-            })
+            .map(|entry| repository_context_occurrences(entry, path_marker))
             .sum(),
         Value::Object(object) => object
-            .iter()
-            .map(|(key, entry)| {
-                let normalized = key.to_ascii_lowercase();
-                let contextual = ["cwd", "path", "repository", "root", "workspace"]
-                    .iter()
-                    .any(|token| normalized.contains(token));
-                repository_context_occurrences(entry, path_marker, name_marker, contextual)
-            })
+            .values()
+            .map(|entry| repository_context_occurrences(entry, path_marker))
             .sum(),
         _ => 0,
     }
@@ -3356,6 +3352,7 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     static PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
+    static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     fn unavailable_process_identity(process_id: i32) -> ProcessIdentity {
         ProcessIdentity {
@@ -3428,23 +3425,10 @@ mod tests {
 
         let empty_workspace = RuntimeBoundaryAudit::new(Path::new(""));
         assert!(empty_workspace.repository_path_marker.is_none());
-        assert!(empty_workspace.repository_name_marker.is_none());
-        let duplicate_workspace = RuntimeBoundaryAudit::new(Path::new("repository"));
-        assert!(duplicate_workspace.repository_path_marker.is_none());
-        assert_eq!(
-            duplicate_workspace.repository_name_marker.as_deref(),
-            Some(b"repository".as_slice())
-        );
-        let mut contextual_name = RuntimeBoundaryAudit::new(Path::new("repository"));
-        assert_eq!(
-            contextual_name
-                .write_json_line(
-                    &mut Vec::new(),
-                    &json!({"params": {"workspace": "repository"}}),
-                )
-                .expect_err("contextual basename must fail")
-                .kind(),
-            io::ErrorKind::PermissionDenied
+        assert!(
+            RuntimeBoundaryAudit::new(Path::new("repository"))
+                .repository_path_marker
+                .is_none()
         );
         assert_eq!(count_byte_occurrences(b"", b""), 0);
         assert_eq!(count_byte_occurrences(b"a", b"long"), 0);
@@ -3477,6 +3461,23 @@ mod tests {
             assert!(!writer.is_empty());
             assert_eq!(audit.repository_context_bytes_to_runtime, 0);
         }
+    }
+
+    #[test]
+    fn runtime_boundary_does_not_match_a_basename_inside_an_unrelated_path() {
+        let mut audit = RuntimeBoundaryAudit::new(Path::new("/private/var/selected-workspace"));
+        let mut writer = Vec::new();
+        audit
+            .write_json_line(
+                &mut writer,
+                &json!({
+                    "method": "thread/start",
+                    "params": {"cwd": "/private/tmp/selected-workspace"}
+                }),
+            )
+            .expect("unrelated path is not repository provenance");
+        assert!(!writer.is_empty());
+        assert_eq!(audit.repository_context_bytes_to_runtime, 0);
     }
 
     #[test]
@@ -5775,28 +5776,17 @@ printf '%s\n' '{"method":"effect/requested","params":{}}'
         let fixture = Fixture::new();
         let host = fixture.scripted_host(
             r#"#!/bin/sh
+trap '' TERM
 read -r initialize
+printf '%s\n' '{"id":1,"result":{"userAgent":"codex_cli_rs/0.145.0","codexHome":"'"$CODEX_HOME"'","platformFamily":"unix","platformOs":"macos"}}'
 while :; do /bin/sleep 1; done
 "#,
         );
+        let published = host.active.observe_next_process_group();
         let checking_host = host.clone();
         let pending = thread::spawn(move || checking_host.check("request-cancel", None));
-        let wait_deadline = Instant::now() + Duration::from_secs(2);
-        while host
-            .active
-            .process_group
-            .lock()
-            .expect("process-group state")
-            .is_none()
-            && Instant::now() < wait_deadline
-        {
-            thread::sleep(Duration::from_millis(5));
-        }
-        let process_group = host
-            .active
-            .process_group
-            .lock()
-            .expect("process-group state")
+        let process_group = published
+            .recv_timeout(Duration::from_secs(10))
             .expect("active process group");
         assert!(process_group_exists(process_group.process_id));
         host.cancel_request("request-cancel");
@@ -5819,11 +5809,12 @@ while :; do /bin/sleep 1; done
         let host = fixture.scripted_host(
             r#"#!/bin/sh
 trap '' TERM
-: > cancel-ready
 read -r initialize
+printf '%s\n' '{"id":1,"result":{"userAgent":"codex_cli_rs/0.145.0","codexHome":"'"$CODEX_HOME"'","platformFamily":"unix","platformOs":"macos"}}'
 while :; do /bin/sleep 1; done
 "#,
         );
+        let published = host.active.observe_next_process_group();
         let running_host = host.clone();
         let pending = thread::spawn(move || {
             let mut updates = Vec::new();
@@ -5837,29 +5828,9 @@ while :; do /bin/sleep 1; done
             );
             (outcome, updates)
         });
-        let wait_deadline = Instant::now() + Duration::from_secs(2);
-        let cancellation_ready = || {
-            fs::read_dir(&fixture.work).is_ok_and(|entries| {
-                entries
-                    .filter_map(Result::ok)
-                    .any(|entry| entry.path().join("cancel-ready").is_file())
-            })
-        };
-        while (!cancellation_ready()
-            || host
-                .active
-                .process_group
-                .lock()
-                .expect("process-group state")
-                .is_none())
-            && Instant::now() < wait_deadline
-        {
-            thread::sleep(Duration::from_millis(5));
-        }
-        assert!(
-            cancellation_ready(),
-            "stubborn runtime did not become ready"
-        );
+        published
+            .recv_timeout(Duration::from_secs(10))
+            .expect("active turn process group");
 
         let stopping_started = Instant::now();
         host.cancel_request("request-cancel-turn");
@@ -5891,11 +5862,13 @@ while :; do /bin/sleep 1; done
         fs::create_dir(&repository).expect("repository identity");
         let host = fixture.scripted_host(
             r#"#!/bin/sh
-: > shutdown-ready
+trap '' TERM
 read -r initialize
+printf '%s\n' '{"id":1,"result":{"userAgent":"codex_cli_rs/0.145.0","codexHome":"'"$CODEX_HOME"'","platformFamily":"unix","platformOs":"macos"}}'
 while :; do /bin/sleep 1; done
 "#,
         );
+        let published = host.active.observe_next_process_group();
         let running_host = host.clone();
         let pending = thread::spawn(move || {
             running_host.run_turn(
@@ -5907,21 +5880,9 @@ while :; do /bin/sleep 1; done
                 |_| {},
             )
         });
-        let wait_deadline = Instant::now() + Duration::from_secs(2);
-        let shutdown_ready = || {
-            fs::read_dir(&fixture.work).is_ok_and(|entries| {
-                entries
-                    .filter_map(Result::ok)
-                    .any(|entry| entry.path().join("shutdown-ready").is_file())
-            })
-        };
-        while !shutdown_ready() && Instant::now() < wait_deadline {
-            thread::sleep(Duration::from_millis(5));
-        }
-        assert!(
-            shutdown_ready(),
-            "runtime did not become ready for shutdown"
-        );
+        published
+            .recv_timeout(Duration::from_secs(10))
+            .expect("shutdown process group");
 
         assert!(host.cancel_for_app_shutdown_and_wait());
         assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
@@ -6222,23 +6183,23 @@ while :; do /bin/sleep 1; done
         let fixture = Fixture::new();
         let repository = fixture.root.join("repository");
         fs::create_dir(&repository).expect("repository identity");
-        let first_started = fixture.root.join("workspace-change-first-started");
         let retry_started = fixture.root.join("workspace-change-retry-started");
         let host = fixture.scripted_host(&format!(
             r#"#!/bin/sh
-if [ ! -f '{first_started}' ]; then
-: > '{first_started}'
-: > workspace-change-ready
-read -r initialize
+case "$PWD" in
+*-1)
 trap '' TERM
+read -r initialize
+printf '%s\n' '{{"id":1,"result":{{"userAgent":"codex_cli_rs/0.145.0","codexHome":"'"$CODEX_HOME"'","platformFamily":"unix","platformOs":"macos"}}}}'
 while :; do /bin/sleep 1; done
-fi
+;;
+esac
 : > '{retry_started}'
 exit 0
 "#,
-            first_started = first_started.to_string_lossy(),
             retry_started = retry_started.to_string_lossy(),
         ));
+        let published = host.active.observe_next_process_group();
         let running_host = host.clone();
         let pending = thread::spawn(move || {
             running_host.run_turn(
@@ -6250,18 +6211,9 @@ exit 0
                 |_| {},
             )
         });
-        let wait_deadline = Instant::now() + Duration::from_secs(2);
-        let runtime_ready = || {
-            fs::read_dir(&fixture.work).is_ok_and(|entries| {
-                entries
-                    .filter_map(Result::ok)
-                    .any(|entry| entry.path().join("workspace-change-ready").is_file())
-            })
-        };
-        while !runtime_ready() && Instant::now() < wait_deadline {
-            thread::sleep(Duration::from_millis(5));
-        }
-        assert!(runtime_ready(), "runtime did not become ready");
+        published
+            .recv_timeout(Duration::from_secs(10))
+            .expect("workspace-change process group");
 
         let cancellation_started = Instant::now();
         assert!(host.cancel_for_workspace_change_and_wait(1));
@@ -6807,10 +6759,7 @@ while :; do /bin/sleep 1; done
             let root = std::env::temp_dir().join(format!(
                 "keiko-runtime-test-{}-{}",
                 std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .expect("time")
-                    .as_nanos()
+                FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed),
             ));
             fs::create_dir_all(&root).expect("root");
             let root = fs::canonicalize(root).expect("canonical root");

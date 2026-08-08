@@ -9,7 +9,6 @@ import {
   opendir,
   readFile,
   readlink,
-  readdir,
   realpath,
   rm,
   writeFile,
@@ -1167,6 +1166,11 @@ export function createCodexTracerAcceptanceIo() {
         processCleanupDependencies(processInspectorRoot);
       const adapter = await compileTracerAccessibility(
         join(prepared.internal.runRoot, "accessibility"),
+        (command, args, options) =>
+          runAcceptanceSubprocess(command, args, {
+            output: "stdout",
+            timeoutMs: options.timeoutMs,
+          }).then(() => ({ error: undefined, status: 0 })),
       );
       const prompt = await readFile(
         join(
