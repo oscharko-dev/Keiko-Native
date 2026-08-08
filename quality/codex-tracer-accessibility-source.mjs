@@ -41,6 +41,7 @@ export const tracerAccessibilityActivatingActions = Object.freeze([
 export const tracerAccessibilitySource = String.raw`#import <ApplicationServices/ApplicationServices.h>
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
+#import <time.h>
 #import <unistd.h>
 
 static const NSUInteger kMaximumElements = 2048;
@@ -939,20 +940,42 @@ static BOOL ProjectionIsVisible(
   return NO;
 }
 
+static double MonotonicSeconds(void) {
+  struct timespec value;
+  if (clock_gettime(CLOCK_MONOTONIC, &value) != 0) return -1.0;
+  return (double)value.tv_sec + (double)value.tv_nsec / 1000000000.0;
+}
+
+static BOOL WaitForUnique(
+    AXUIElementRef application, CFStringRef expected) {
+  const double startedAt = MonotonicSeconds();
+  if (startedAt < 0.0) return NO;
+  const double deadline = startedAt + 5.0;
+  while (YES) {
+    if (HasUnique(application, expected)) return YES;
+    usleep(5 * 1000);
+    double now = MonotonicSeconds();
+    if (now < 0.0 || now >= deadline) return NO;
+  }
+}
+
 static BOOL WaitForProjection(
     AXUIElementRef application,
     NSString *observation,
-    CFAbsoluteTime startedAt,
+    double startedAt,
     NSUInteger *projectedMs) {
-  const CFAbsoluteTime deadline = startedAt + 5.0;
-  do {
+  const double deadline = startedAt + 5.0;
+  while (YES) {
     if (ProjectionIsVisible(application, observation)) {
-      CFAbsoluteTime elapsed = CFAbsoluteTimeGetCurrent() - startedAt;
+      double elapsed = MonotonicSeconds() - startedAt;
+      if (elapsed < 0.0) return NO;
       *projectedMs = (NSUInteger)(MAX(0.0, elapsed) * 1000.0 + 0.5);
       return YES;
     }
     usleep(5 * 1000);
-  } while (CFAbsoluteTimeGetCurrent() < deadline);
+    double now = MonotonicSeconds();
+    if (now < 0.0 || now >= deadline) break;
+  }
   return NO;
 }
 
@@ -1020,16 +1043,32 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
     }
     AXUIElementRef application = AXUIElementCreateApplication(pid);
     BOOL passed = NO;
-    CFAbsoluteTime projectionStartedAt = 0.0;
+    double projectionStartedAt = 0.0;
     if ([action isEqualToString:@"probe-start"]) {
       BOOL welcome = HasUnique(application, CFSTR("Foundation öffnen"));
       BOOL canvas = HasUnique(application, CFSTR("codex-task"));
-      passed = (welcome || canvas) &&
+      BOOL navigation =
+          HasUnique(application, CFSTR("ÜBER DIESE VERSION")) ||
+          HasUnique(application, CFSTR("UPDATE-STATUS"));
+      passed = (welcome || canvas || navigation) &&
           HasUnique(application, CFSTR("Keiko Native beenden"));
     } else if ([action isEqualToString:@"open-canvas"]) {
-      passed = HasUnique(application, CFSTR("codex-task"));
-      projectionStartedAt = CFAbsoluteTimeGetCurrent();
-      if (!passed) passed = Press(application, CFSTR("Foundation öffnen"));
+      BOOL welcome = HasUnique(application, CFSTR("Foundation öffnen"));
+      BOOL navigation =
+          HasUnique(application, CFSTR("ÜBER DIESE VERSION")) ||
+          HasUnique(application, CFSTR("UPDATE-STATUS"));
+      if (!welcome && !navigation &&
+          HasUnique(application, CFSTR("codex-task"))) {
+        navigation =
+            Press(application, CFSTR("Über Keiko Native")) &&
+            WaitForUnique(application, CFSTR("ÜBER DIESE VERSION"));
+      }
+      if (welcome || navigation) {
+        projectionStartedAt = MonotonicSeconds();
+        passed = welcome
+            ? Press(application, CFSTR("Foundation öffnen"))
+            : Press(application, CFSTR("Leere Fläche"));
+      }
     } else if ([action isEqualToString:@"probe-canvas"]) {
       const CFStringRef expected[] = {
         CFSTR("ime-harness"),
@@ -1060,15 +1099,15 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
         passed = NO;
         for (NSUInteger attempt = 0; attempt < 20 && !passed; attempt += 1) {
           usleep(50 * 1000);
-          projectionStartedAt = CFAbsoluteTimeGetCurrent();
+          projectionStartedAt = MonotonicSeconds();
           passed = PressPickerControl(application, CFSTR("OKButton"));
         }
       }
     } else if ([action isEqualToString:@"cancel-workspace-picker"]) {
-      projectionStartedAt = CFAbsoluteTimeGetCurrent();
+      projectionStartedAt = MonotonicSeconds();
       passed = PressPickerControl(application, CFSTR("CancelButton"));
       if (!passed) {
-        projectionStartedAt = CFAbsoluteTimeGetCurrent();
+        projectionStartedAt = MonotonicSeconds();
         passed = PressEither(application, CFSTR("Cancel"), CFSTR("Abbrechen"));
       }
     } else if ([action isEqualToString:@"observe-workspace-selected"]) {
@@ -1098,7 +1137,7 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
     } else if ([action isEqualToString:@"submit-task"]) {
       passed = Press(application, CFSTR("Begrenzten Auftrag starten"));
     } else if ([action isEqualToString:@"cancel-turn"]) {
-      projectionStartedAt = CFAbsoluteTimeGetCurrent();
+      projectionStartedAt = MonotonicSeconds();
       passed = Press(application, CFSTR("Codex-Lauf abbrechen"));
     } else if ([action isEqualToString:@"set-unicode"]) {
       passed = SetValue(

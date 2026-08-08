@@ -14,6 +14,7 @@ import {
   budgetEvidenceFailures,
   identityBindingFailures,
   journeyEvidenceFailures,
+  referenceEnvironmentFailures,
   runCodexTracerAcceptance,
   safeguardEvidenceFailures,
   validateAcceptanceInvocation,
@@ -33,7 +34,14 @@ function validEvidence() {
         cleanupMs: 4_000,
         firstVisibleKeikoOverheadP95Ms: 1_500,
         localProjectionP95Ms: 90,
-        nativePickerCancellationP95Ms: 600,
+        nativePickerCancellationMeasurements: Array.from(
+          { length: 20 },
+          (_, index) => ({
+            launch: index + 1,
+            projectedMs: index === 0 ? 1_055 : 539,
+          }),
+        ),
+        nativePickerCancellationP95Ms: 539,
         turnCancellationProjectionMs: 80,
         turnDurationMs: 110_000,
       },
@@ -45,6 +53,15 @@ function validEvidence() {
         runner: "local-macos",
       },
       redaction: "closed",
+      referenceEnvironment: {
+        display: "built-in-main-3024x1964-120hz",
+        hardware: "apple-m4-16-gib-mac16-1",
+        operatingSystem: "macos-26.5.1-25f80",
+        power: "battery-power-standard",
+        referenceClass: "owner-m4-16gib-macos26",
+        scaling: "logical-1512x982-2x-default",
+        thermal: "nominal",
+      },
       safeguards: structuredClone(acceptanceSafeguardContract),
       schemaVersion: "keiko-native-codex-tracer-acceptance/v2",
       status: "complete",
@@ -182,12 +199,20 @@ test("journey evidence requires every accepted scenario and AXUIElement checkpoi
 });
 
 test("numeric evidence enforces every accepted performance and resource budget", () => {
+  const nativePickerCancellationMeasurements = Array.from(
+    { length: 20 },
+    (_, index) => ({
+      launch: index + 1,
+      projectedMs: index === 0 ? 1_055 : 539,
+    }),
+  );
   const budgets = {
     ...acceptanceBudgetLimits,
     cleanupMs: 4_000,
     firstVisibleKeikoOverheadP95Ms: 1_500,
     localProjectionP95Ms: 90,
-    nativePickerCancellationP95Ms: 600,
+    nativePickerCancellationMeasurements,
+    nativePickerCancellationP95Ms: 539,
     turnCancellationProjectionMs: 80,
     turnDurationMs: 110_000,
   };
@@ -212,12 +237,73 @@ test("numeric evidence enforces every accepted performance and resource budget",
     { ...budgets, localProjectionP95Ms: 101 },
     { ...budgets, nativePickerCancellationP95Ms: 751 },
     { ...budgets, nativePickerCancellationSamples: 19 },
+    {
+      ...budgets,
+      nativePickerCancellationMeasurements:
+        nativePickerCancellationMeasurements.slice(1),
+    },
+    {
+      ...budgets,
+      nativePickerCancellationMeasurements:
+        nativePickerCancellationMeasurements.map((sample, index) =>
+          index === 1 ? { ...sample, launch: 1 } : sample,
+        ),
+    },
+    {
+      ...budgets,
+      nativePickerCancellationMeasurements:
+        nativePickerCancellationMeasurements.map((sample, index) =>
+          index === 0 ? { ...sample, projectedMs: 5_001 } : sample,
+        ),
+    },
+    {
+      ...budgets,
+      nativePickerCancellationMeasurements:
+        nativePickerCancellationMeasurements.map((sample, index) =>
+          index === 0 ? { ...sample, projectedMs: 1.5 } : sample,
+        ),
+    },
+    {
+      ...budgets,
+      nativePickerCancellationMeasurements:
+        nativePickerCancellationMeasurements.map((sample, index) =>
+          index === 0 ? { ...sample, extra: 0 } : sample,
+        ),
+    },
+    { ...budgets, nativePickerCancellationP95Ms: 538 },
     { ...budgets, firstVisibleKeikoOverheadP95Ms: 2_001 },
     { ...budgets, turnCancellationProjectionMs: 101 },
     { ...budgets, cleanupMs: 5_001 },
     { ...budgets, providerLatencyExcluded: false },
   ]) {
     assert.ok(budgetEvidenceFailures(changed).length > 0);
+  }
+});
+
+test("reference environment evidence is closed, normalized, and bound to the declared Mac", () => {
+  const referenceEnvironment = validEvidence().evidence.referenceEnvironment;
+
+  assert.deepEqual(referenceEnvironmentFailures(referenceEnvironment), []);
+  for (const key of Object.keys(referenceEnvironment)) {
+    const partial = structuredClone(referenceEnvironment);
+    delete partial[key];
+    assert.ok(
+      referenceEnvironmentFailures(partial).length > 0,
+      `missing ${key}`,
+    );
+  }
+  for (const changed of [
+    null,
+    [],
+    { ...referenceEnvironment, extra: "private" },
+    { ...referenceEnvironment, hardware: "unknown" },
+    { ...referenceEnvironment, operatingSystem: "macos-current" },
+    { ...referenceEnvironment, display: "external" },
+    { ...referenceEnvironment, scaling: "unknown" },
+    { ...referenceEnvironment, power: "unknown" },
+    { ...referenceEnvironment, thermal: "warning" },
+  ]) {
+    assert.ok(referenceEnvironmentFailures(changed).length > 0);
   }
 });
 
@@ -311,6 +397,7 @@ test("the orchestrator runs package, production, physical, validation, and persi
           budgets: evidence.budgets,
           journey: evidence.journey,
           physical: evidence.physical,
+          referenceEnvironment: evidence.referenceEnvironment,
           safeguards: acceptanceSafeguardContract,
         };
       },
