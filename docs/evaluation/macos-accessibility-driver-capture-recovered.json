@@ -3,11 +3,11 @@
   "phase": "recovered",
   "predecessor": {
     "phase": "revoked",
-    "sha256": "9816243d55f040c53c0710fb67b4532e1db1ff7c6442e66c0d1f832c4284b5ef"
+    "sha256": "cc63e307e9e401dcf91d15eef98f7e9e0fdd3ee2458d9ec1a7e1fffb6fb4b9f1"
   },
   "prepared": {
     "schemaVersion": "keiko-native-macos-accessibility-driver-prepared/v1",
-    "sourceHead": "a8e718e2f85ace049da085d84ceb32e68ed950f9",
+    "sourceHead": "63aa80103021af14a0b7a89d67e0127c07dcc6d4",
     "sourceDigest": "8a1631f2ae7ecdaf7847681ef039c2cc31d01c9cd4a93466da1fce2bb8b0e608",
     "bundleIdentifier": "dev.oscharko.keiko-native.evaluation.accessibility",
     "representativePackageSha256": "9221319c3d37bdd7c2e36c0558f039d60d1aa3b3223f49668c3b4fa7aedf3e0c",
@@ -55,86 +55,86 @@
         "checkpoints": [
           {
             "checkpoint": "workspace-select",
-            "elapsedMs": 848,
+            "elapsedMs": 322,
             "status": "passed"
           },
           {
             "checkpoint": "workspace-cancel",
-            "elapsedMs": 162,
+            "elapsedMs": 156,
             "status": "passed"
           },
           {
             "checkpoint": "workspace-permission-deny",
-            "elapsedMs": 147,
+            "elapsedMs": 151,
             "status": "passed"
           },
           {
             "checkpoint": "task-submit",
-            "elapsedMs": 170,
+            "elapsedMs": 181,
             "status": "passed"
           },
           {
             "checkpoint": "streaming",
-            "elapsedMs": 46,
+            "elapsedMs": 50,
             "status": "passed"
           },
           {
             "checkpoint": "normal-completion",
-            "elapsedMs": 146,
+            "elapsedMs": 148,
             "status": "passed"
           },
           {
             "checkpoint": "run-cancellation",
-            "elapsedMs": 183,
+            "elapsedMs": 212,
             "status": "passed"
           },
           {
             "checkpoint": "crash-recovery",
-            "elapsedMs": 804,
+            "elapsedMs": 817,
             "status": "passed"
           },
           {
             "checkpoint": "terminal-summary",
-            "elapsedMs": 65,
+            "elapsedMs": 62,
             "status": "passed"
           },
           {
             "checkpoint": "keyboard-focus",
-            "elapsedMs": 46,
-            "status": "passed"
-          },
-          {
-            "checkpoint": "voiceover-semantics",
-            "elapsedMs": 44,
-            "status": "passed"
-          },
-          {
-            "checkpoint": "appearance-contrast",
-            "elapsedMs": 351,
-            "status": "passed"
-          },
-          {
-            "checkpoint": "reduce-motion-applicability",
-            "elapsedMs": 275,
-            "status": "passed"
-          },
-          {
-            "checkpoint": "scaling",
-            "elapsedMs": 63,
-            "status": "passed"
-          },
-          {
-            "checkpoint": "unicode-ime",
             "elapsedMs": 43,
             "status": "passed"
           },
           {
+            "checkpoint": "voiceover-semantics",
+            "elapsedMs": 42,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "appearance-contrast",
+            "elapsedMs": 357,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "reduce-motion-applicability",
+            "elapsedMs": 271,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "scaling",
+            "elapsedMs": 60,
+            "status": "passed"
+          },
+          {
+            "checkpoint": "unicode-ime",
+            "elapsedMs": 52,
+            "status": "passed"
+          },
+          {
             "checkpoint": "quit-zero-descendants",
-            "elapsedMs": 321,
+            "elapsedMs": 314,
             "status": "passed"
           }
         ],
-        "elapsedMs": 3872,
+        "elapsedMs": 3362,
         "repetition": 1
       }
     ],
