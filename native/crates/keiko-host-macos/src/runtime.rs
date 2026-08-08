@@ -1735,11 +1735,16 @@ fn runtime_work_directory_identity(
     ))
 }
 
+fn protected_directory_component(mode: u32, owner: u32, effective_user: u32) -> bool {
+    mode & 0o022 == 0 || mode & 0o1000 != 0 && (owner == 0 || owner == effective_user)
+}
+
 fn protected_directory_chain(path: &Path) -> bool {
+    let effective_user = effective_user_id();
     path.ancestors().all(|ancestor| {
         fs::symlink_metadata(ancestor).is_ok_and(|metadata| {
             let mode = metadata.permissions().mode();
-            metadata.is_dir() && (mode & 0o022 == 0 || mode & 0o1000 != 0)
+            metadata.is_dir() && protected_directory_component(mode, metadata.uid(), effective_user)
         })
     })
 }
@@ -1949,31 +1954,26 @@ fn write_json_line(writer: &mut impl Write, value: &Value) -> io::Result<()> {
 
 #[derive(Debug)]
 struct RuntimeBoundaryAudit {
-    repository_markers: Vec<Vec<u8>>,
+    repository_name_marker: Option<Vec<u8>>,
+    repository_path_marker: Option<Vec<u8>>,
     repository_context_bytes_to_runtime: u64,
 }
 
 impl RuntimeBoundaryAudit {
     fn new(selected_workspace: &Path) -> Self {
-        let mut repository_markers: Vec<Vec<u8>> = Vec::new();
-        for marker in [
-            selected_workspace.to_string_lossy().as_bytes(),
-            selected_workspace
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default()
-                .as_bytes(),
-        ] {
-            if !marker.is_empty()
-                && !repository_markers
-                    .iter()
-                    .any(|existing| existing.as_slice() == marker)
-            {
-                repository_markers.push(marker.to_vec());
-            }
-        }
+        let repository_path_marker = selected_workspace
+            .is_absolute()
+            .then(|| selected_workspace.to_string_lossy().as_bytes().to_vec())
+            .filter(|marker| !marker.is_empty());
+        let repository_name_marker = selected_workspace
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::as_bytes)
+            .map(<[u8]>::to_vec)
+            .filter(|marker| !marker.is_empty());
         Self {
-            repository_markers,
+            repository_name_marker,
+            repository_path_marker,
             repository_context_bytes_to_runtime: 0,
         }
     }
@@ -1991,12 +1991,12 @@ impl RuntimeBoundaryAudit {
                 }
             }
         }
-        let structural_bytes = serde_json::to_vec(&structural_value)?;
-        let leaked_bytes = self
-            .repository_markers
-            .iter()
-            .map(|marker| count_byte_occurrences(&structural_bytes, marker) * marker.len())
-            .sum::<usize>() as u64;
+        let leaked_bytes = repository_context_occurrences(
+            &structural_value,
+            self.repository_path_marker.as_deref(),
+            self.repository_name_marker.as_deref(),
+            false,
+        ) as u64;
         if leaked_bytes > 0 {
             self.repository_context_bytes_to_runtime = self
                 .repository_context_bytes_to_runtime
@@ -2007,6 +2007,47 @@ impl RuntimeBoundaryAudit {
             ));
         }
         write_json_line(writer, value)
+    }
+}
+
+fn repository_context_occurrences(
+    value: &Value,
+    path_marker: Option<&[u8]>,
+    name_marker: Option<&[u8]>,
+    contextual_field: bool,
+) -> usize {
+    match value {
+        Value::String(text) => {
+            let bytes = text.as_bytes();
+            let path_bytes = path_marker
+                .map(|marker| count_byte_occurrences(bytes, marker) * marker.len())
+                .unwrap_or_default();
+            let name_bytes = if contextual_field || text.contains('/') {
+                name_marker
+                    .map(|marker| count_byte_occurrences(bytes, marker) * marker.len())
+                    .unwrap_or_default()
+            } else {
+                0
+            };
+            path_bytes.saturating_add(name_bytes)
+        }
+        Value::Array(values) => values
+            .iter()
+            .map(|entry| {
+                repository_context_occurrences(entry, path_marker, name_marker, contextual_field)
+            })
+            .sum(),
+        Value::Object(object) => object
+            .iter()
+            .map(|(key, entry)| {
+                let normalized = key.to_ascii_lowercase();
+                let contextual = ["cwd", "path", "repository", "root", "workspace"]
+                    .iter()
+                    .any(|token| normalized.contains(token));
+                repository_context_occurrences(entry, path_marker, name_marker, contextual)
+            })
+            .sum(),
+        _ => 0,
     }
 }
 
@@ -3253,12 +3294,70 @@ mod tests {
             .expect("missing text contains no product context");
 
         let empty_workspace = RuntimeBoundaryAudit::new(Path::new(""));
-        assert!(empty_workspace.repository_markers.is_empty());
+        assert!(empty_workspace.repository_path_marker.is_none());
+        assert!(empty_workspace.repository_name_marker.is_none());
         let duplicate_workspace = RuntimeBoundaryAudit::new(Path::new("repository"));
-        assert_eq!(duplicate_workspace.repository_markers.len(), 1);
+        assert!(duplicate_workspace.repository_path_marker.is_none());
+        assert_eq!(
+            duplicate_workspace.repository_name_marker.as_deref(),
+            Some(b"repository".as_slice())
+        );
+        let mut contextual_name = RuntimeBoundaryAudit::new(Path::new("repository"));
+        assert_eq!(
+            contextual_name
+                .write_json_line(
+                    &mut Vec::new(),
+                    &json!({"params": {"workspace": "repository"}}),
+                )
+                .expect_err("contextual basename must fail")
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
         assert_eq!(count_byte_occurrences(b"", b""), 0);
         assert_eq!(count_byte_occurrences(b"a", b"long"), 0);
         assert_eq!(count_byte_occurrences(b"abab", b"ab"), 2);
+    }
+
+    #[test]
+    fn runtime_boundary_ignores_protocol_tokens_that_match_repository_names() {
+        for repository_name in ["method", "params", "text"] {
+            let mut audit = RuntimeBoundaryAudit::new(Path::new(repository_name));
+            let mut writer = Vec::new();
+            audit
+                .write_json_line(
+                    &mut writer,
+                    &json!({
+                        "method": "turn/start",
+                        "id": 4,
+                        "params": {
+                            "threadId": "thread-1",
+                            "input": [{
+                                "type": "text",
+                                "text": "repository-independent task",
+                                "text_elements": []
+                            }],
+                            "runtimeWorkspaceRoots": []
+                        }
+                    }),
+                )
+                .expect("protocol vocabulary is not repository context");
+            assert!(!writer.is_empty());
+            assert_eq!(audit.repository_context_bytes_to_runtime, 0);
+        }
+    }
+
+    #[test]
+    fn writable_sticky_ancestors_require_a_trusted_owner() {
+        let effective_user = 501;
+        assert!(protected_directory_component(0o755, 900, effective_user));
+        assert!(protected_directory_component(0o1777, 0, effective_user));
+        assert!(protected_directory_component(
+            0o1777,
+            effective_user,
+            effective_user
+        ));
+        assert!(!protected_directory_component(0o1777, 900, effective_user));
+        assert!(!protected_directory_component(0o0777, 0, effective_user));
     }
 
     #[test]

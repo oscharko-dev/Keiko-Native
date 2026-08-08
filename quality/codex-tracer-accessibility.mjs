@@ -211,7 +211,6 @@ export async function runPackagedTracerJourney({
   }
   const timings = [];
   const localProjectionMeasurements = [];
-  let observationDriverBaselineMs;
   const step = async (action, input, timeoutMs = 5_000) => {
     const result = await execute({ action, input, timeoutMs });
     if (
@@ -230,19 +229,14 @@ export async function runPackagedTracerJourney({
   const project = async (action, observation, input) => {
     await step(action, input);
     const observed = await step(observation);
-    if (!Number.isSafeInteger(observationDriverBaselineMs))
-      throw new Error("packaged-journey-measurement-invalid");
-    const elapsedMs = Math.max(
-      0,
-      observed.elapsedMs - observationDriverBaselineMs,
-    );
+    const elapsedMs = observed.elapsedMs;
     if (!Number.isSafeInteger(elapsedMs) || elapsedMs < 0)
       throw new Error("packaged-journey-measurement-invalid");
     localProjectionMeasurements.push(elapsedMs);
     return elapsedMs;
   };
 
-  observationDriverBaselineMs = (await step("probe-start")).elapsedMs;
+  await step("probe-start");
   await project("open-canvas", "probe-canvas");
 
   await step("open-workspace-picker");

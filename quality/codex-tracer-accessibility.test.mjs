@@ -201,9 +201,15 @@ test("the packaged journey drives the fixed sequence and excludes observer start
     deniedWorkspaceLabel: "KeikoAcceptanceIdentity104DeniedABC123",
     execute: async (request) => {
       calls.push({ action: request.action, input: request.input });
-      now += request.action === "observe-stopping" ? 80 : 10;
+      const elapsedMs =
+        request.action === "probe-start"
+          ? 1_000
+          : request.action === "observe-stopping"
+            ? 80
+            : 10;
+      now += elapsedMs;
       return {
-        elapsedMs: request.action === "observe-stopping" ? 80 : 10,
+        elapsedMs,
         prompted: false,
         reasonCode: null,
         status: "passed",
@@ -265,8 +271,8 @@ test("the packaged journey drives the fixed sequence and excludes observer start
     calls.find(({ action }) => action === "set-task").input,
     acceptedPrompt,
   );
-  assert.equal(result.cancellationProjectionMs, 70);
-  assert.equal(result.localProjectionP95Ms, 70);
+  assert.equal(result.cancellationProjectionMs, 80);
+  assert.equal(result.localProjectionP95Ms, 80);
   assert.equal(result.localProjectionSamples, 5);
   assert.equal(result.status, "passed");
   assert.equal(result.turnDurationMs, 30);
