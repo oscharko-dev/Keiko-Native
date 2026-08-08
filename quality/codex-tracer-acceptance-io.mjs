@@ -28,6 +28,7 @@ import {
   acceptanceJourneyContract,
   acceptancePackageInspectionContract,
   acceptancePhysicalContract,
+  referenceEnvironmentFailures,
 } from "./codex-tracer-acceptance.mjs";
 import {
   compileTracerAccessibility,
@@ -84,6 +85,21 @@ const acceptanceSubprocessTimeouts = Object.freeze({
   acceptance: 10 * 60 * 1_000,
   inspection: 10_000,
 });
+const referenceEnvironmentCommands = Object.freeze([
+  [
+    "/usr/sbin/sysctl",
+    ["-n", "machdep.cpu.brand_string", "hw.memsize", "hw.model"],
+  ],
+  ["/usr/bin/sw_vers", ["-productVersion"]],
+  ["/usr/bin/sw_vers", ["-buildVersion"]],
+  [
+    "/usr/sbin/system_profiler",
+    ["SPDisplaysDataType", "-json", "-detailLevel", "mini"],
+  ],
+  ["/usr/bin/pmset", ["-g", "batt"]],
+  ["/usr/bin/pmset", ["-g", "custom"]],
+  ["/usr/bin/pmset", ["-g", "therm"]],
+]);
 const acceptanceProcessEnvironmentKeys = Object.freeze([
   "HOME",
   "LANG",
@@ -373,6 +389,14 @@ export async function runAcceptanceSubprocess(
 ) {
   if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0)
     throw new TypeError("acceptance-subprocess-timeout-invalid");
+  const maxOutputBytes = options.maxOutputBytes ?? 50 * 1024 * 1024;
+  if (
+    !Number.isSafeInteger(maxOutputBytes) ||
+    maxOutputBytes < 1 ||
+    maxOutputBytes > 50 * 1024 * 1024
+  ) {
+    throw new TypeError("acceptance-subprocess-output-bound-invalid");
+  }
   const dependencies = {
     ...defaultAcceptanceSubprocessDependencies(),
     ...providedDependencies,
@@ -408,7 +432,7 @@ export async function runAcceptanceSubprocess(
   const append = (channel, chunk) => {
     if (outputExceeded) return channel;
     const next = channel + chunk.toString("utf8");
-    if (Buffer.byteLength(next, "utf8") > 50 * 1024 * 1024) {
+    if (Buffer.byteLength(next, "utf8") > maxOutputBytes) {
       outputExceeded = true;
       signalOwnedGroup();
       return channel;
@@ -1008,33 +1032,35 @@ export async function measureFirstVisibleP95(
   const terminate = dependencies.terminate ?? terminateOwnedProcess;
   const reject = dependencies.reject ?? rejectUnauthenticatedLauncher;
   const waitForExit = dependencies.waitForExit ?? waitForProcessExit;
-  return measureFreshLaunchP95({
-    adapterBinary,
-    authenticate,
-    cleanupDependencies,
-    internal,
-    launch,
-    measure: async ({ child, startedAt }) => {
-      const visible = await observe({
-        action: "probe-start",
-        binary: adapterBinary,
-        pid: child.pid,
-        timeoutMs: 5_000,
-      });
-      if (visible.status !== "passed")
-        throw new Error("acceptance-first-visible-failed");
-      return Math.round(monotonicNow() - startedAt);
-    },
-    monotonicNow,
-    observe,
-    reject,
-    samples: acceptanceBudgetLimits.firstVisibleKeikoOverheadSamples,
-    terminate,
-    waitForExit,
-  });
+  return percentile95(
+    await measureFreshLaunches({
+      adapterBinary,
+      authenticate,
+      cleanupDependencies,
+      internal,
+      launch,
+      measure: async ({ child, startedAt }) => {
+        const visible = await observe({
+          action: "probe-start",
+          binary: adapterBinary,
+          pid: child.pid,
+          timeoutMs: 5_000,
+        });
+        if (visible.status !== "passed")
+          throw new Error("acceptance-first-visible-failed");
+        return Math.round(monotonicNow() - startedAt);
+      },
+      monotonicNow,
+      observe,
+      reject,
+      samples: acceptanceBudgetLimits.firstVisibleKeikoOverheadSamples,
+      terminate,
+      waitForExit,
+    }),
+  );
 }
 
-async function measureFreshLaunchP95({
+async function measureFreshLaunches({
   adapterBinary,
   authenticate,
   cleanupDependencies,
@@ -1073,10 +1099,10 @@ async function measureFreshLaunchP95({
       await terminate(ownership, cleanupDependencies);
     }
   }
-  return percentile95(observations);
+  return observations;
 }
 
-export async function measureNativePickerCancellationP95(
+export async function measureNativePickerCancellationDistribution(
   internal,
   adapterBinary,
   cleanupDependencies,
@@ -1093,7 +1119,7 @@ export async function measureNativePickerCancellationP95(
       throw new Error("acceptance-picker-cancellation-failed");
     return result;
   };
-  return measureFreshLaunchP95({
+  const measurements = await measureFreshLaunches({
     adapterBinary,
     authenticate: dependencies.authenticate ?? authenticateOwnedProcessGroup,
     cleanupDependencies,
@@ -1121,6 +1147,100 @@ export async function measureNativePickerCancellationP95(
     terminate: dependencies.terminate ?? terminateOwnedProcess,
     waitForExit: dependencies.waitForExit ?? waitForProcessExit,
   });
+  return {
+    measurements: measurements.map((projectedMs, index) => ({
+      launch: index + 1,
+      projectedMs,
+    })),
+    p95Ms: percentile95(measurements),
+  };
+}
+
+function normalizedDisplay(serialized) {
+  try {
+    const profile = JSON.parse(serialized);
+    const displays = profile?.SPDisplaysDataType?.flatMap(
+      ({ spdisplays_ndrvs: drivers }) => drivers ?? [],
+    );
+    if (!Array.isArray(displays) || displays.length !== 1) return null;
+    const display = displays[0];
+    if (
+      display?.spdisplays_connection_type !== "spdisplays_internal" ||
+      display?.spdisplays_main !== "spdisplays_yes" ||
+      display?._spdisplays_pixels !== "3024 x 1964" ||
+      display?._spdisplays_resolution !== "1512 x 982 @ 120.00Hz"
+    ) {
+      return null;
+    }
+    return {
+      display: "built-in-main-3024x1964-120hz",
+      scaling: "logical-1512x982-2x-default",
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function inspectReferenceEnvironment(runCommand = run) {
+  const options = {
+    inheritEnvironment: false,
+    maxOutputBytes: 64 * 1024,
+    timeoutMs: acceptanceSubprocessTimeouts.inspection,
+  };
+  const outputs = await Promise.all(
+    referenceEnvironmentCommands.map(([command, args]) =>
+      runCommand(command, args, options),
+    ),
+  );
+  const environment = normalizedReferenceEnvironment(outputs);
+  if (referenceEnvironmentFailures(environment).length > 0)
+    throw new Error("acceptance-reference-environment-invalid");
+  return environment;
+}
+
+function normalizedReferenceEnvironment([
+  hardware,
+  version,
+  build,
+  displayOutput,
+  powerOutput,
+  powerProfiles,
+  thermalOutput,
+]) {
+  const display = normalizedDisplay(displayOutput);
+  const powerMatch = /^Now drawing from '(AC|Battery) Power'(?:\n|$)/u.exec(
+    powerOutput,
+  );
+  const activePower = powerMatch?.[1];
+  const activeProfile = new RegExp(
+    `(?:^|\\n)${activePower} Power:\\n([\\s\\S]*?)(?=\\n(?:AC|Battery) Power:|$)`,
+    "u",
+  ).exec(powerProfiles)?.[1];
+  const lowPowerMode = /(?:^|\n)\s*lowpowermode\s+([01])(?:\n|$)/u.exec(
+    activeProfile ?? "",
+  )?.[1];
+  const nominalThermal = [
+    "Note: No thermal warning level has been recorded",
+    "Note: No performance warning level has been recorded",
+    "Note: No CPU power status has been recorded",
+  ].join("\n");
+  return {
+    ...display,
+    hardware:
+      hardware === "Apple M4\n17179869184\nMac16,1"
+        ? "apple-m4-16-gib-mac16-1"
+        : null,
+    operatingSystem:
+      version === "26.5.1" && build === "25F80" ? "macos-26.5.1-25f80" : null,
+    power:
+      lowPowerMode === "0" && activePower === "AC"
+        ? "ac-power-standard"
+        : lowPowerMode === "0" && activePower === "Battery"
+          ? "battery-power-standard"
+          : null,
+    referenceClass: "owner-m4-16gib-macos26",
+    thermal: thermalOutput === nominalThermal ? "nominal" : null,
+  };
 }
 
 export function createCodexTracerAcceptanceIo() {
@@ -1259,8 +1379,9 @@ export function createCodexTracerAcceptanceIo() {
         adapter.binary,
         cleanupDependencies,
       );
-      const nativePickerCancellationP95Ms =
-        await measureNativePickerCancellationP95(
+      const referenceEnvironment = await inspectReferenceEnvironment();
+      const nativePickerCancellation =
+        await measureNativePickerCancellationDistribution(
           prepared.internal,
           adapter.binary,
           cleanupDependencies,
@@ -1335,7 +1456,9 @@ export function createCodexTracerAcceptanceIo() {
             firstVisibleKeikoOverheadP95Ms,
             localProjectionP95Ms: journey.localProjectionP95Ms,
             localProjectionSamples: journey.localProjectionSamples,
-            nativePickerCancellationP95Ms,
+            nativePickerCancellationMeasurements:
+              nativePickerCancellation.measurements,
+            nativePickerCancellationP95Ms: nativePickerCancellation.p95Ms,
             turnCancellationProjectionMs: journey.turnCancellationProjectionMs,
             turnDurationMs: journey.turnDurationMs,
           },
@@ -1347,6 +1470,7 @@ export function createCodexTracerAcceptanceIo() {
               ? `${process.env.ImageOS}-${process.env.ImageVersion ?? "current"}`
               : "local-macos",
           },
+          referenceEnvironment,
           safeguards: observedSafeguards({
             containmentMarkers: prepared.internal.containmentMarkers,
             homeAfter,

@@ -1,4 +1,5 @@
 import { checkpointBehaviorContract } from "./macos-accessibility-driver-harness.mjs";
+import { percentile95 } from "./codex-tracer-accessibility.mjs";
 import { compareCodeUnits } from "./deterministic-order.mjs";
 import { redactionMatches } from "./native-contract.mjs";
 
@@ -124,6 +125,19 @@ const budgetMeasurementLimits = Object.freeze({
   turnDurationMs: 120_000,
 });
 
+const referenceEnvironmentContract = Object.freeze({
+  display: "built-in-main-3024x1964-120hz",
+  hardware: "apple-m4-16-gib-mac16-1",
+  operatingSystem: "macos-26.5.1-25f80",
+  referenceClass: "owner-m4-16gib-macos26",
+  scaling: "logical-1512x982-2x-default",
+  thermal: "nominal",
+});
+const acceptedPowerConditions = new Set([
+  "ac-power-standard",
+  "battery-power-standard",
+]);
+
 const identityBindingKeys = Object.freeze(
   [
     ...Object.keys(acceptanceIdentityContract),
@@ -189,6 +203,7 @@ export function budgetEvidenceFailures(budgets) {
   const expectedKeys = [
     ...Object.keys(acceptanceBudgetLimits),
     ...Object.keys(budgetMeasurementLimits),
+    "nativePickerCancellationMeasurements",
   ].toSorted(compareCodeUnits);
   if (
     typeof budgets !== "object" ||
@@ -208,6 +223,72 @@ export function budgetEvidenceFailures(budgets) {
       failures.push(`budget-${key}`);
     }
   }
+  failures.push(
+    ...nativePickerMeasurementFailures(
+      budgets?.nativePickerCancellationMeasurements,
+      budgets?.nativePickerCancellationP95Ms,
+    ),
+  );
+  return failures;
+}
+
+function nativePickerMeasurementFailures(measurements, reportedP95Ms) {
+  const failures = [];
+  if (
+    !Array.isArray(measurements) ||
+    measurements.length !==
+      acceptanceBudgetLimits.nativePickerCancellationSamples
+  ) {
+    failures.push("budget-native-picker-measurements");
+  } else {
+    for (const [index, measurement] of measurements.entries()) {
+      if (
+        typeof measurement !== "object" ||
+        measurement === null ||
+        Array.isArray(measurement) ||
+        JSON.stringify(Object.keys(measurement).toSorted(compareCodeUnits)) !==
+          JSON.stringify(["launch", "projectedMs"]) ||
+        measurement.launch !== index + 1 ||
+        !Number.isSafeInteger(measurement.projectedMs) ||
+        measurement.projectedMs < 0 ||
+        measurement.projectedMs > 5_000
+      ) {
+        failures.push("budget-native-picker-measurements");
+        break;
+      }
+    }
+    if (
+      failures.length === 0 &&
+      percentile95(measurements.map(({ projectedMs }) => projectedMs)) !==
+        reportedP95Ms
+    ) {
+      failures.push("budget-native-picker-p95-consistency");
+    }
+  }
+  return failures;
+}
+
+export function referenceEnvironmentFailures(environment) {
+  const failures = [];
+  const expectedKeys = [
+    ...Object.keys(referenceEnvironmentContract),
+    "power",
+  ].toSorted(compareCodeUnits);
+  if (
+    typeof environment !== "object" ||
+    environment === null ||
+    Array.isArray(environment) ||
+    JSON.stringify(Object.keys(environment).toSorted(compareCodeUnits)) !==
+      JSON.stringify(expectedKeys)
+  ) {
+    failures.push("reference-environment-fields");
+  }
+  for (const [key, value] of Object.entries(referenceEnvironmentContract)) {
+    if (environment?.[key] !== value)
+      failures.push(`reference-environment-${key}`);
+  }
+  if (!acceptedPowerConditions.has(environment?.power))
+    failures.push("reference-environment-power");
   return failures;
 }
 
@@ -296,6 +377,7 @@ export function acceptanceEvidenceFailures(evidence, expected) {
     "packageInspection",
     "physical",
     "redaction",
+    "referenceEnvironment",
     "safeguards",
     "schemaVersion",
     "status",
@@ -319,6 +401,7 @@ export function acceptanceEvidenceFailures(evidence, expected) {
     ...journeyEvidenceFailures(evidence?.journey),
     ...packageInspectionFailures(evidence?.packageInspection),
     ...physicalEvidenceFailures(evidence?.physical, expected),
+    ...referenceEnvironmentFailures(evidence?.referenceEnvironment),
     ...safeguardEvidenceFailures(evidence?.safeguards),
   );
   if (redactionMatches(JSON.stringify(evidence)).length > 0)
@@ -353,6 +436,7 @@ export async function runCodexTracerAcceptance({ args, io }) {
       packageInspection: prepared.packageInspection,
       physical: physical.physical,
       redaction: "closed",
+      referenceEnvironment: physical.referenceEnvironment,
       safeguards: { ...production.safeguards, ...physical.safeguards },
       schemaVersion: SCHEMA_VERSION,
       status: "complete",
