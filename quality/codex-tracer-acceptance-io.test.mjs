@@ -13,6 +13,7 @@ import {
   canonicalRuntimeResources,
   cleanupAcceptanceFixture,
   measureFirstVisibleP95,
+  measureNativePickerCancellationP95,
   observedSafeguards,
   packageAcceptance,
   packageArtifactFailures,
@@ -200,6 +201,48 @@ test("first-visible p95 permits one bounded cold-launch outlier", async () => {
     observed
       .filter(({ action }) => action === "probe-start")
       .every(({ timeoutMs }) => timeoutMs === 5_000),
+  );
+});
+
+test("native picker cancellation p95 uses twenty fresh packaged-app launches", async () => {
+  let launches = 0;
+  const observations = [];
+  const p95 = await measureNativePickerCancellationP95(
+    {},
+    "/bounded/adapter",
+    {},
+    {
+      authenticate: async ({ pid }) => ({ pid }),
+      launch: () => ({ pid: (launches += 1) }),
+      observe: async (request) => {
+        observations.push(request);
+        return {
+          ...(request.observation === "observe-workspace-cancelled"
+            ? { projectedMs: request.pid === 1 ? 1_055 : 539 }
+            : {}),
+          prompted: false,
+          reasonCode: null,
+          status: "passed",
+        };
+      },
+      terminate: async () => undefined,
+      waitForExit: async () => true,
+    },
+  );
+
+  assert.equal(p95, 539);
+  assert.equal(launches, 20);
+  assert.equal(
+    observations.filter(({ action }) => action === "probe-start").length,
+    20,
+  );
+  assert.equal(
+    observations.filter(
+      ({ action, observation }) =>
+        action === "cancel-workspace-picker" &&
+        observation === "observe-workspace-cancelled",
+    ).length,
+    20,
   );
 });
 

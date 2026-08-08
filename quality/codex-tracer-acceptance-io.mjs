@@ -1008,19 +1008,13 @@ export async function measureFirstVisibleP95(
   const terminate = dependencies.terminate ?? terminateOwnedProcess;
   const reject = dependencies.reject ?? rejectUnauthenticatedLauncher;
   const waitForExit = dependencies.waitForExit ?? waitForProcessExit;
-  const observations = [];
-  for (
-    let repetition = 0;
-    repetition < acceptanceBudgetLimits.firstVisibleKeikoOverheadSamples;
-    repetition += 1
-  ) {
-    const startedAt = monotonicNow();
-    const { child, ownership } = await establishOwnedProcess({
-      authenticate: (candidate) => authenticate(candidate, cleanupDependencies),
-      launch: () => launch(internal),
-      reject,
-    });
-    try {
+  return measureFreshLaunchP95({
+    adapterBinary,
+    authenticate,
+    cleanupDependencies,
+    internal,
+    launch,
+    measure: async ({ child, startedAt }) => {
       const visible = await observe({
         action: "probe-start",
         binary: adapterBinary,
@@ -1029,9 +1023,43 @@ export async function measureFirstVisibleP95(
       });
       if (visible.status !== "passed")
         throw new Error("acceptance-first-visible-failed");
-      const elapsedMs = Math.round(monotonicNow() - startedAt);
+      return Math.round(monotonicNow() - startedAt);
+    },
+    monotonicNow,
+    observe,
+    reject,
+    samples: acceptanceBudgetLimits.firstVisibleKeikoOverheadSamples,
+    terminate,
+    waitForExit,
+  });
+}
+
+async function measureFreshLaunchP95({
+  adapterBinary,
+  authenticate,
+  cleanupDependencies,
+  internal,
+  launch,
+  measure,
+  monotonicNow,
+  observe,
+  reject,
+  samples,
+  terminate,
+  waitForExit,
+}) {
+  const observations = [];
+  for (let repetition = 0; repetition < samples; repetition += 1) {
+    const startedAt = monotonicNow();
+    const { child, ownership } = await establishOwnedProcess({
+      authenticate: (candidate) => authenticate(candidate, cleanupDependencies),
+      launch: () => launch(internal),
+      reject,
+    });
+    try {
+      const elapsedMs = await measure({ child, startedAt });
       if (!Number.isSafeInteger(elapsedMs) || elapsedMs < 0)
-        throw new Error("acceptance-first-visible-measurement-invalid");
+        throw new Error("acceptance-projection-measurement-invalid");
       observations.push(elapsedMs);
       const quit = await observe({
         action: "quit",
@@ -1046,6 +1074,53 @@ export async function measureFirstVisibleP95(
     }
   }
   return percentile95(observations);
+}
+
+export async function measureNativePickerCancellationP95(
+  internal,
+  adapterBinary,
+  cleanupDependencies,
+  dependencies = {},
+) {
+  const observe = dependencies.observe ?? waitForTracerAccessibilityAction;
+  const passed = async (request) => {
+    const result = await observe({
+      ...request,
+      binary: adapterBinary,
+      timeoutMs: 5_000,
+    });
+    if (result.status !== "passed")
+      throw new Error("acceptance-picker-cancellation-failed");
+    return result;
+  };
+  return measureFreshLaunchP95({
+    adapterBinary,
+    authenticate: dependencies.authenticate ?? authenticateOwnedProcessGroup,
+    cleanupDependencies,
+    internal,
+    launch: dependencies.launch ?? launchPackagedApp,
+    measure: async ({ child }) => {
+      await passed({ action: "probe-start", pid: child.pid });
+      await passed({
+        action: "open-canvas",
+        observation: "probe-canvas",
+        pid: child.pid,
+      });
+      await passed({ action: "open-workspace-picker", pid: child.pid });
+      const cancelled = await passed({
+        action: "cancel-workspace-picker",
+        observation: "observe-workspace-cancelled",
+        pid: child.pid,
+      });
+      return cancelled.projectedMs;
+    },
+    monotonicNow: dependencies.monotonicNow ?? (() => performance.now()),
+    observe,
+    reject: dependencies.reject ?? rejectUnauthenticatedLauncher,
+    samples: acceptanceBudgetLimits.nativePickerCancellationSamples,
+    terminate: dependencies.terminate ?? terminateOwnedProcess,
+    waitForExit: dependencies.waitForExit ?? waitForProcessExit,
+  });
 }
 
 export function createCodexTracerAcceptanceIo() {
@@ -1096,11 +1171,11 @@ export function createCodexTracerAcceptanceIo() {
             experimentalSchemaSha256:
               "46c4414f08cdbb20e66ce4153ee1edcb865ed5fda67e59511a78939ddb7a82d1",
             issueReadinessFingerprint:
-              "54a50110230af03db88acc3d503f038cb2e4a9557094fcff48ab19c01ee0af24",
+              "575633addc61bf373aa1c5bd0186e311c809f47172540cd7c9c7fbffde970502",
             packageExecutableSha256: inspected.executableSha256,
             packageManifestSha256: inspected.packageManifestSha256,
             parentReadinessFingerprint:
-              "ff404fd8d0f7b336b997da77e55c5a5abc8c8cab1639b8e708f0b5792c283347",
+              "0cee8b235cab06bc3e47a3601ec7f996afbaa431eba9500b65c74a9845e3253f",
             promptSha256: acceptedEnvironment.promptSha256,
             runtimeArtifactSha256: acceptedEnvironment.runtimeSha256,
             runtimePackage: "@openai/codex",
@@ -1184,6 +1259,12 @@ export function createCodexTracerAcceptanceIo() {
         adapter.binary,
         cleanupDependencies,
       );
+      const nativePickerCancellationP95Ms =
+        await measureNativePickerCancellationP95(
+          prepared.internal,
+          adapter.binary,
+          cleanupDependencies,
+        );
       const { child, ownership } = await establishOwnedProcess({
         authenticate: (candidate) =>
           authenticateOwnedProcessGroup(candidate, cleanupDependencies),
@@ -1250,11 +1331,12 @@ export function createCodexTracerAcceptanceIo() {
         return {
           budgets: {
             ...acceptanceBudgetLimits,
-            cancellationProjectionMs: journey.cancellationProjectionMs,
             cleanupMs,
             firstVisibleKeikoOverheadP95Ms,
             localProjectionP95Ms: journey.localProjectionP95Ms,
             localProjectionSamples: journey.localProjectionSamples,
+            nativePickerCancellationP95Ms,
+            turnCancellationProjectionMs: journey.turnCancellationProjectionMs,
             turnDurationMs: journey.turnDurationMs,
           },
           journey: structuredClone(acceptanceJourneyContract),

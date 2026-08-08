@@ -91,6 +91,13 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
     assert.match(tracerAccessibilitySource, new RegExp(attribute, "u"));
   }
   assert.match(tracerAccessibilitySource, /CFArrayContainsValue/u);
+  assert.match(tracerAccessibilitySource, /ProjectionPairIsAllowed/u);
+  assert.match(tracerAccessibilitySource, /WaitForProjection/u);
+  assert.match(
+    tracerAccessibilitySource,
+    /projectionStartedAt = CFAbsoluteTimeGetCurrent\(\);[\s\S]*?PressPickerControl\(application, CFSTR\("OKButton"\)\)/u,
+  );
+  assert.match(tracerAccessibilitySource, /\\"projectedMs\\":%lu/u);
   assert.match(tracerAccessibilitySource, /kAXTextFieldRole/u);
   assert.match(tracerAccessibilitySource, /kAXMenuItemRole/u);
   assert.match(tracerAccessibilitySource, /CFSTR\("ListView"\)/u);

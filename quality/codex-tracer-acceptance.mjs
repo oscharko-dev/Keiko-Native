@@ -2,7 +2,7 @@ import { checkpointBehaviorContract } from "./macos-accessibility-driver-harness
 import { compareCodeUnits } from "./deterministic-order.mjs";
 import { redactionMatches } from "./native-contract.mjs";
 
-const SCHEMA_VERSION = "keiko-native-codex-tracer-acceptance/v1";
+const SCHEMA_VERSION = "keiko-native-codex-tracer-acceptance/v2";
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const REVISION_PATTERN = /^[0-9a-f]{40}$/u;
 
@@ -13,9 +13,9 @@ export const acceptanceIdentityContract = Object.freeze({
   experimentalSchemaSha256:
     "46c4414f08cdbb20e66ce4153ee1edcb865ed5fda67e59511a78939ddb7a82d1",
   issueReadinessFingerprint:
-    "54a50110230af03db88acc3d503f038cb2e4a9557094fcff48ab19c01ee0af24",
+    "575633addc61bf373aa1c5bd0186e311c809f47172540cd7c9c7fbffde970502",
   parentReadinessFingerprint:
-    "ff404fd8d0f7b336b997da77e55c5a5abc8c8cab1639b8e708f0b5792c283347",
+    "0cee8b235cab06bc3e47a3601ec7f996afbaa431eba9500b65c74a9845e3253f",
   promptSha256:
     "e1a92579b1ca673135331829beb97792c1289a6bccdfe0303302256c546960f6",
   runtimeArtifactSha256:
@@ -50,7 +50,8 @@ export const acceptanceJourneyContract = Object.freeze({
 export const acceptanceBudgetLimits = Object.freeze({
   firstVisibleKeikoOverheadSamples: 20,
   frameMaxBytes: 1_048_576,
-  localProjectionSamples: 5,
+  localProjectionSamples: 4,
+  nativePickerCancellationSamples: 20,
   providerLatencyExcluded: true,
   queueMaxBytes: 4_194_304,
   queueMaxFrames: 256,
@@ -115,10 +116,11 @@ export const acceptancePhysicalContract = Object.freeze({
 });
 
 const budgetMeasurementLimits = Object.freeze({
-  cancellationProjectionMs: 100,
   cleanupMs: 5_000,
   firstVisibleKeikoOverheadP95Ms: 2_000,
   localProjectionP95Ms: 100,
+  nativePickerCancellationP95Ms: 750,
+  turnCancellationProjectionMs: 100,
   turnDurationMs: 120_000,
 });
 
