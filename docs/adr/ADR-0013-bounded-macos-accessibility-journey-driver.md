@@ -23,8 +23,8 @@ The retained evaluation uses one fixed profile with 16 semantic checkpoints:
 The external AXUIElement adapter completed 20 clean allowed repetitions against the generated
 representative package. It passed 320 of 320 checkpoint operations, used two-second per-checkpoint
 subprocess bounds plus a separate bounded five-second natural-quit observation, produced zero
-unexplained failures, and left zero owned descendants. The journeys took 3009–3392 ms (3192 ms
-mean), with an 838 ms maximum checkpoint observation. AXUIElement also failed closed under denied
+unexplained failures, and left zero owned descendants. The journeys took 3208–3583 ms (3269.05 ms
+mean), with an 844 ms maximum checkpoint observation. AXUIElement also failed closed under denied
 and revoked Accessibility permission and recovered through a fresh process after permission was
 restored.
 
@@ -126,23 +126,23 @@ Its principal bindings are:
 
 - issue #111 contract v3 readiness fingerprint
   `6d95dc95700c17a2d29850d1f517ad45c53df4a95318e3ae482f7d32d5dc75d7`;
-- evaluation head `a8e718e2f85ace049da085d84ceb32e68ed950f9`;
+- evaluation head `b53eceb9dc97e9d25b54486853895e67734d3c2a`;
 - evaluation source SHA-256
   `8a1631f2ae7ecdaf7847681ef039c2cc31d01c9cd4a93466da1fce2bb8b0e608`;
 - prepared evidence SHA-256
-  `e9fbf3912ae24ed62b063bb518ca7a1cdeb1931a7ed253920d4061467cbe99cf`;
+  `cfe6724e99dfa9655f91fcfc76af6bc20b3a408a93f8922e6019e6b66a4ada40`;
 - allowed capture SHA-256
-  `56dc0f902cbf429deab00755685c82d2c4bdd47febc9747cdf64a4c6d90851ae`;
+  `fd956ea36b14a389d8ed861698f81c98377d028a9ea7b993d50b14f64ee95994`;
 - denied capture SHA-256
-  `134109c8355c9da8396e3e39d92c3629122793c927daa53b57d9530c37f23353`;
+  `563d973cd62c2b843bcc96869518bd3731da692024db419de8824ede9876c68a`;
 - revoked capture SHA-256
-  `9816243d55f040c53c0710fb67b4532e1db1ff7c6442e66c0d1f832c4284b5ef`;
+  `27f40e7115b57029c9c25a196bfb47f24e1e8c5c055c56e40e3b7a7de51cef7e`;
 - recovered capture SHA-256
-  `506e8fbcf9445632e818272b2589ac40adc9fd215fcd5a18971883020bef0396`;
+  `e5a737d9cd7125e1ce13b8b40fbae908fda985685e9b24ae03f27fca434ed0a4`;
 - Foundation acceptance evidence SHA-256
-  `134ee23883a3b12ae30a1f93e08ac264e7ccc04947c63def0cd52aea69053900`;
+  `38e18e251fbf955cf56ed4ecbb5e19ad340a80d4679e73a0dbcf3165893dcfda`;
 - Foundation package-manifest SHA-256
-  `27760ea25a962ada62e2c23b78fa490a9486ff456a0a181e513f8c589e582d52`;
+  `52cae3c8756918a95613843ef6daab6fe1f010502ae2963f70de5b2e1d05d909`;
   and
 - representative package SHA-256
   `9221319c3d37bdd7c2e36c0558f039d60d1aa3b3223f49668c3b4fa7aedf3e0c`.
