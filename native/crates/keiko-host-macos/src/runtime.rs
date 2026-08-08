@@ -216,7 +216,7 @@ struct ProcessIdentity {
 
 #[derive(Debug, Default)]
 struct ActiveRuntime {
-    process_group: Mutex<Option<i32>>,
+    process_group: Mutex<Option<ProcessIdentity>>,
     owned_processes: Mutex<HashSet<ProcessIdentity>>,
     retained_work_directories: Mutex<HashSet<PathBuf>>,
     control: Mutex<RuntimeControl>,
@@ -241,6 +241,13 @@ enum RuntimeCancellation {
     AppShutdown = 3,
     ContainmentFailure = 4,
     WorkspaceChanged = 5,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RetainedProcessIdentityStatus {
+    Current,
+    Reused,
+    Unavailable,
 }
 
 impl RuntimeCancellation {
@@ -385,6 +392,11 @@ impl RuntimeHost {
             }),
             _ => None,
         };
+        Self::from_configuration(configuration)
+    }
+
+    fn from_configuration(configuration: Option<RuntimeConfiguration>) -> Self {
+        let configuration = configuration.filter(reconcile_startup_configuration);
         Self {
             configuration,
             active: Arc::new(ActiveRuntime::default()),
@@ -501,7 +513,7 @@ impl RuntimeHost {
             .process_group
             .lock()
             .ok()
-            .and_then(|active| *active);
+            .and_then(|active| active.map(|identity| identity.process_id));
         if let Some(process_group) = process_group {
             signal_active_process_group(&self.active, process_group, SIGTERM);
         }
@@ -900,8 +912,13 @@ fn run_turn_protocol(
         }
     };
     let process_group = child.id() as i32;
-    if let Ok(mut active_group) = active.process_group.lock() {
-        *active_group = Some(process_group);
+    if !publish_active_process_group(active, process_group) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return TurnRuntimeOutcome::terminal(
+            TurnState::ContainmentFailed,
+            TurnReason::ProtocolRejected,
+        );
     }
     register_owned_process(active, process_group);
     let Some(((mut stdin, stdout), stderr)) = child
@@ -1493,6 +1510,15 @@ fn bind_configuration(
     Ok(verified)
 }
 
+fn reconcile_startup_configuration(configuration: &RuntimeConfiguration) -> bool {
+    let Ok(work_root) = canonical_existing(&configuration.work_root, true) else {
+        return false;
+    };
+    private_owned_directory(&work_root)
+        && protected_directory_chain(&work_root)
+        && recover_orphaned_runtime_directories(&work_root).is_ok()
+}
+
 fn effective_user_id() -> u32 {
     // SAFETY: geteuid has no arguments and no memory-safety preconditions.
     unsafe { keiko_geteuid() }
@@ -1820,8 +1846,14 @@ fn run_protocol(
         }
     };
     let process_group = child.id() as i32;
-    if let Ok(mut active_group) = active.process_group.lock() {
-        *active_group = Some(process_group);
+    if !publish_active_process_group(active, process_group) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return ProtocolOutcome {
+            state: RuntimeReadinessState::ContainmentFailed,
+            quarantined_events: 0,
+            cleaned: true,
+        };
     }
     register_owned_process(active, process_group);
     let Some(((mut stdin, stdout), stderr)) = child
@@ -2839,6 +2871,15 @@ fn stop_process_group_with_term_grace(
     deadline: Instant,
     term_grace: Option<Duration>,
 ) -> bool {
+    if child
+        .try_wait()
+        .ok()
+        .flatten()
+        .is_some_and(|_| authenticated_owned_processes_stopped(active))
+    {
+        retire_active_process_group(active, process_group);
+        return true;
+    }
     let cleanup_started = Instant::now();
     let remaining = deadline.saturating_duration_since(cleanup_started);
     let grace = term_grace.unwrap_or(remaining / 3);
@@ -2891,8 +2932,20 @@ fn stop_process_group_with_term_grace(
     false
 }
 
+fn authenticated_owned_processes_stopped(active: &ActiveRuntime) -> bool {
+    active.owned_processes.lock().is_ok_and(|mut owned| {
+        owned.retain(|identity| process_identity(identity.process_id) == Some(*identity));
+        owned.is_empty()
+    })
+}
+
 fn reconcile_retained_process_group(active: &ActiveRuntime, deadline: Instant) -> bool {
-    let Some(process_group) = active.process_group.lock().ok().and_then(|group| *group) else {
+    let Some(process_group) = active
+        .process_group
+        .lock()
+        .ok()
+        .and_then(|group| group.map(|identity| identity.process_id))
+    else {
         return true;
     };
     let _ = refresh_owned_processes(active);
@@ -2915,6 +2968,15 @@ fn reconcile_retained_process_group(active: &ActiveRuntime, deadline: Instant) -
 }
 
 fn retire_retained_process_group_if_stopped(active: &ActiveRuntime, process_group: i32) -> bool {
+    if active
+        .process_group
+        .lock()
+        .ok()
+        .and_then(|group| group.map(|identity| identity.process_id))
+        != Some(process_group)
+    {
+        return true;
+    }
     let _ = refresh_owned_processes(active);
     let owned_alive = active.owned_processes.lock().map_or(true, |mut owned| {
         owned.retain(|identity| process_identity(identity.process_id) == Some(*identity));
@@ -2946,8 +3008,20 @@ fn signal_active_process_group(active: &ActiveRuntime, process_group: i32, signa
     let Ok(active_group) = active.process_group.lock() else {
         return false;
     };
-    if *active_group != Some(process_group) {
+    let Some(identity) = *active_group else {
         return false;
+    };
+    if identity.process_id != process_group {
+        return false;
+    }
+    match retained_process_identity_status(identity) {
+        RetainedProcessIdentityStatus::Current => {}
+        RetainedProcessIdentityStatus::Reused => {
+            drop(active_group);
+            retire_active_process_group(active, process_group);
+            return false;
+        }
+        RetainedProcessIdentityStatus::Unavailable => return false,
     }
     signal_process_group(process_group, signal);
     if let Ok(owned) = active.owned_processes.lock() {
@@ -2966,8 +3040,20 @@ fn signal_active_descendants(active: &ActiveRuntime, process_group: i32, signal:
     let Ok(active_group) = active.process_group.lock() else {
         return false;
     };
-    if *active_group != Some(process_group) {
+    let Some(identity) = *active_group else {
         return false;
+    };
+    if identity.process_id != process_group {
+        return false;
+    }
+    match retained_process_identity_status(identity) {
+        RetainedProcessIdentityStatus::Current => {}
+        RetainedProcessIdentityStatus::Reused => {
+            drop(active_group);
+            retire_active_process_group(active, process_group);
+            return false;
+        }
+        RetainedProcessIdentityStatus::Unavailable => return false,
     }
     let Ok(owned) = active.owned_processes.lock() else {
         return false;
@@ -2986,7 +3072,7 @@ fn signal_active_descendants(active: &ActiveRuntime, process_group: i32, signal:
 
 fn retire_active_process_group(active: &ActiveRuntime, process_group: i32) {
     if let Ok(mut active_group) = active.process_group.lock()
-        && *active_group == Some(process_group)
+        && active_group.is_some_and(|identity| identity.process_id == process_group)
     {
         *active_group = None;
         if let Ok(mut owned) = active.owned_processes.lock() {
@@ -3006,16 +3092,35 @@ fn ready_to_reap(child: i32, process_group: i32, active: &ActiveRuntime) -> bool
 
 fn register_owned_process(active: &ActiveRuntime, process: i32) {
     debug_assert_eq!(
-        active.process_group.lock().ok().and_then(|group| *group),
+        active
+            .process_group
+            .lock()
+            .ok()
+            .and_then(|group| group.map(|identity| identity.process_id)),
         Some(process)
     );
     let _ = refresh_owned_processes(active);
 }
 
-fn refresh_owned_processes(active: &ActiveRuntime) -> bool {
-    let Some(leader) = active.process_group.lock().ok().and_then(|group| *group) else {
+fn publish_active_process_group(active: &ActiveRuntime, process: i32) -> bool {
+    let Some(identity) = process_identity(process) else {
         return false;
     };
+    let Ok(mut active_group) = active.process_group.lock() else {
+        return false;
+    };
+    *active_group = Some(identity);
+    true
+}
+
+fn refresh_owned_processes(active: &ActiveRuntime) -> bool {
+    let Some(leader_identity) = active.process_group.lock().ok().and_then(|group| *group) else {
+        return false;
+    };
+    if retained_process_identity_status(leader_identity) != RetainedProcessIdentityStatus::Current {
+        return false;
+    }
+    let leader = leader_identity.process_id;
     let Ok(mut owned) = active.owned_processes.lock() else {
         return false;
     };
@@ -3048,6 +3153,26 @@ fn refresh_owned_processes(active: &ActiveRuntime) -> bool {
 fn process_identity(process: i32) -> Option<ProcessIdentity> {
     let information = process_information(process)?;
     identity_from_information(process, &information)
+}
+
+fn process_start_identity(process: i32) -> Option<ProcessIdentity> {
+    let information = process_information(process)?;
+    Some(ProcessIdentity {
+        process_id: process,
+        started_microseconds: information.started_microseconds,
+        started_seconds: information.started_seconds,
+    })
+}
+
+fn retained_process_identity_status(identity: ProcessIdentity) -> RetainedProcessIdentityStatus {
+    match process_start_identity(identity.process_id) {
+        Some(current) if current == identity => RetainedProcessIdentityStatus::Current,
+        Some(_) => RetainedProcessIdentityStatus::Reused,
+        None if child_exited_without_reaping(identity.process_id).unwrap_or(false) => {
+            RetainedProcessIdentityStatus::Current
+        }
+        None => RetainedProcessIdentityStatus::Unavailable,
+    }
 }
 
 fn identity_from_information(
@@ -3231,6 +3356,14 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     static PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn unavailable_process_identity(process_id: i32) -> ProcessIdentity {
+        ProcessIdentity {
+            process_id,
+            started_microseconds: 0,
+            started_seconds: 1,
+        }
+    }
 
     #[test]
     fn runtime_boundary_counts_and_rejects_structural_repository_context() {
@@ -4017,6 +4150,54 @@ mod tests {
     }
 
     #[test]
+    fn startup_reconciles_a_crash_survivor_before_constructing_the_host() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let active = ActiveRuntime::default();
+        let dead_owner = ProcessIdentity {
+            process_id: i32::MAX,
+            started_seconds: 1,
+            started_microseconds: 0,
+        };
+        let work_directory = fixture
+            .work
+            .join(runtime_work_directory_name("turn", dead_owner, 1));
+        create_private_turn_directory(&active, &work_directory, dead_owner, 1)
+            .expect("crashed host work directory");
+        let mut survivor = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("trap '' TERM; /bin/sleep 30 & printf 'ready\\n'; wait")
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("crash-surviving runtime");
+        let survivor_pid = survivor.id() as i32;
+        let mut ready = String::new();
+        BufReader::new(survivor.stdout.take().expect("survivor stdout"))
+            .read_line(&mut ready)
+            .expect("survivor readiness");
+        assert_eq!(ready, "ready\n");
+        write_runtime_process_record(&work_directory, survivor_pid)
+            .expect("persist runtime identity");
+        let survivor_identity =
+            runtime_process_record(&work_directory).expect("persisted runtime process identity");
+
+        let host = RuntimeHost::from_configuration(Some(RuntimeConfiguration {
+            binary: fixture.binary.clone(),
+            codex_home: fixture.home.clone(),
+            work_root: fixture.work.clone(),
+            expected_sha256: sha256_file(&fixture.binary).expect("runtime digest"),
+        }));
+
+        assert!(host.configuration.is_some());
+        assert!(!work_directory.exists());
+        assert_ne!(process_identity(survivor_pid), Some(survivor_identity));
+        let _ = survivor.wait();
+    }
+
+    #[test]
     fn runtime_directory_recovery_rejects_malformed_and_ignores_reused_process_records() {
         let fixture = Fixture::new();
         let active = ActiveRuntime::default();
@@ -4276,7 +4457,7 @@ mod tests {
             .active
             .process_group
             .lock()
-            .expect("process-group state") = Some(i32::MAX);
+            .expect("process-group state") = Some(unavailable_process_identity(i32::MAX));
         host.cancel_for_renderer_loss();
         *host
             .active
@@ -4352,11 +4533,12 @@ mod tests {
     #[test]
     fn retired_process_group_refuses_every_late_signal() {
         let active = ActiveRuntime::default();
-        *active.process_group.lock().expect("process-group state") = Some(i32::MAX);
+        let unavailable = unavailable_process_identity(i32::MAX);
+        *active.process_group.lock().expect("process-group state") = Some(unavailable);
         retire_active_process_group(&active, i32::MAX - 1);
         assert_eq!(
             *active.process_group.lock().expect("process-group state"),
-            Some(i32::MAX)
+            Some(unavailable)
         );
         retire_active_process_group(&active, i32::MAX);
         assert!(!signal_active_process_group(&active, i32::MAX, SIGTERM));
@@ -4383,7 +4565,8 @@ mod tests {
         *poisoned_owned
             .process_group
             .lock()
-            .expect("process group before owned poisoning") = Some(i32::MAX);
+            .expect("process group before owned poisoning") =
+            Some(unavailable_process_identity(i32::MAX));
         let poison_target = Arc::clone(&poisoned_owned);
         let _ = thread::spawn(move || {
             let _guard = poison_target
@@ -4399,6 +4582,27 @@ mod tests {
             i32::MAX,
             SIGKILL
         ));
+    }
+
+    #[test]
+    fn reused_retained_process_group_identity_is_retired_without_signalling() {
+        let active = ActiveRuntime::default();
+        let current = process_identity(std::process::id() as i32).expect("current identity");
+        let reused = ProcessIdentity {
+            started_microseconds: current.started_microseconds.wrapping_add(1),
+            ..current
+        };
+        *active.process_group.lock().expect("process-group state") = Some(reused);
+
+        assert!(!signal_active_process_group(
+            &active,
+            current.process_id,
+            SIGTERM
+        ));
+        assert_eq!(
+            *active.process_group.lock().expect("process-group state"),
+            None
+        );
     }
 
     #[test]
@@ -4478,7 +4682,7 @@ mod tests {
             .active
             .process_group
             .lock()
-            .expect("process-group state") = Some(i32::MAX);
+            .expect("process-group state") = Some(unavailable_process_identity(i32::MAX));
 
         assert_eq!(
             host.check("blocked-readiness", None).state,
@@ -4499,7 +4703,7 @@ mod tests {
                 .process_group
                 .lock()
                 .expect("process-group state"),
-            Some(i32::MAX)
+            Some(unavailable_process_identity(i32::MAX))
         );
         assert!(!host.active.running.load(Ordering::Acquire));
     }
@@ -5573,7 +5777,7 @@ while :; do /bin/sleep 1; done
             .lock()
             .expect("process-group state")
             .expect("active process group");
-        assert!(process_group_exists(process_group));
+        assert!(process_group_exists(process_group.process_id));
         host.cancel_request("request-cancel");
         let cancelled = pending.join().expect("check thread");
         assert_eq!(cancelled.state, RuntimeReadinessState::Cancelled);
@@ -6318,7 +6522,7 @@ while :; do /bin/sleep 1; done
         assert_eq!(ready, "ready\n");
 
         let active = ActiveRuntime::default();
-        *active.process_group.lock().expect("process-group state") = Some(process_group);
+        assert!(publish_active_process_group(&active, process_group));
         let outcome = cleanup_after(
             child,
             process_group,
@@ -6398,7 +6602,7 @@ while :; do /bin/sleep 1; done
         assert_eq!(ready, "ready\n");
 
         let active = ActiveRuntime::default();
-        *active.process_group.lock().expect("process-group state") = Some(process_group);
+        assert!(publish_active_process_group(&active, process_group));
         assert!(stop_process_group(
             &mut child,
             process_group,
@@ -6431,7 +6635,7 @@ while :; do /bin/sleep 1; done
             .expect("EOF-aware process group");
         let process_group = child.id() as i32;
         let active = ActiveRuntime::default();
-        *active.process_group.lock().expect("process-group state") = Some(process_group);
+        assert!(publish_active_process_group(&active, process_group));
         drop(child.stdin.take());
 
         assert!(stop_process_group_with_term_grace(
@@ -6468,7 +6672,7 @@ while :; do /bin/sleep 1; done
         stdout.read_line(&mut ready).expect("readiness handshake");
         assert_eq!(ready, "ready\n");
         let active = ActiveRuntime::default();
-        *active.process_group.lock().expect("process-group state") = Some(process_group);
+        assert!(publish_active_process_group(&active, process_group));
 
         assert!(stop_process_group_with_term_grace(
             &mut child,
@@ -6497,7 +6701,8 @@ while :; do /bin/sleep 1; done
             .expect("owned process group");
         let process_group = child.id() as i32;
         let active = ActiveRuntime::default();
-        *active.process_group.lock().expect("process-group state") = Some(process_group);
+        assert!(publish_active_process_group(&active, process_group));
+        let process_identity = process_identity(process_group).expect("process-group identity");
 
         assert!(!stop_process_group(
             &mut child,
@@ -6507,7 +6712,7 @@ while :; do /bin/sleep 1; done
         ));
         assert_eq!(
             *active.process_group.lock().expect("retained ownership"),
-            Some(process_group)
+            Some(process_identity)
         );
         assert!(stop_process_group(
             &mut child,
@@ -6533,7 +6738,7 @@ while :; do /bin/sleep 1; done
             .expect("independent descendant fixture");
         let active = ActiveRuntime::default();
         let leader = std::process::id() as i32;
-        *active.process_group.lock().expect("process-group state") = Some(leader);
+        assert!(publish_active_process_group(&active, leader));
         assert_eq!(owned_descendants_alive(&active, leader), Some(true));
         let escaped_identity = process_identity(escaped.id() as i32).expect("escaped identity");
         let reused = ProcessIdentity {

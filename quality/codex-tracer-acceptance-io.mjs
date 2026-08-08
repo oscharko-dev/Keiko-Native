@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
+import { createReadStream } from "node:fs";
 import {
   chmod,
   lstat,
   mkdir,
   mkdtemp,
+  opendir,
   readFile,
   readlink,
   readdir,
@@ -73,6 +75,12 @@ const providerArg0EntryNames = Object.freeze([
 const providerArg0DirectoryPattern = /^codex-arg0[A-Za-z0-9]{6}$/u;
 const providerArg0MaxDirectories = 64;
 const providerModelCacheMaxBytes = 1_048_576;
+const providerProfileSnapshotLimits = Object.freeze({
+  maxBytes: 8 * 1_048_576,
+  maxDepth: 16,
+  maxEntries: 2_048,
+  timeoutMs: 5_000,
+});
 const acceptanceSubprocessTimeouts = Object.freeze({
   acceptance: 10 * 60 * 1_000,
   inspection: 10_000,
@@ -555,31 +563,69 @@ async function inspectPackage(sourceRevision) {
 
 export async function snapshotDirectory(root, options = {}) {
   const excludedRelativePaths = new Set(options.excludedRelativePaths ?? []);
+  const maxBytes = options.maxBytes ?? Number.POSITIVE_INFINITY;
+  const maxDepth = options.maxDepth ?? Number.POSITIVE_INFINITY;
+  const maxEntries = options.maxEntries ?? Number.POSITIVE_INFINITY;
+  const timeoutMs = options.timeoutMs ?? Number.POSITIVE_INFINITY;
+  if (maxBytes < 0 || maxDepth < 0 || maxEntries < 0 || timeoutMs <= 0) {
+    throw new Error("acceptance-snapshot-bounds-exceeded");
+  }
   const digest = createHash("sha256");
+  const startedAt = performance.now();
   let bytes = 0;
   let entries = 0;
-  async function visit(directory, prefix = "") {
-    const children = (
-      await readdir(directory, { withFileTypes: true })
-    ).toSorted((left, right) => compareCodeUnits(left.name, right.name));
+  function enforceBounds(depth) {
+    if (
+      bytes > maxBytes ||
+      entries > maxEntries ||
+      depth > maxDepth ||
+      performance.now() - startedAt >= timeoutMs
+    ) {
+      throw new Error("acceptance-snapshot-bounds-exceeded");
+    }
+  }
+  async function digestFile(path, depth) {
+    const stream = createReadStream(path, { highWaterMark: 64 * 1_024 });
+    try {
+      for await (const chunk of stream) {
+        bytes += chunk.byteLength;
+        enforceBounds(depth);
+        digest.update(chunk);
+      }
+    } finally {
+      stream.destroy();
+    }
+  }
+  async function visit(directory, prefix = "", depth = 0) {
+    enforceBounds(depth);
+    const children = [];
+    const handle = await opendir(directory);
+    for await (const child of handle) {
+      children.push(child);
+      if (entries + children.length > maxEntries)
+        throw new Error("acceptance-snapshot-bounds-exceeded");
+      enforceBounds(depth);
+    }
+    children.sort((left, right) => compareCodeUnits(left.name, right.name));
     for (const child of children) {
+      enforceBounds(depth);
       const relativePath =
         prefix === "" ? child.name : `${prefix}/${child.name}`;
       if (excludedRelativePaths.has(relativePath)) continue;
       digest.update(relativePath, "utf8");
       digest.update("\0", "utf8");
       entries += 1;
+      enforceBounds(depth);
       if (child.isDirectory()) {
         digest.update("directory\0", "utf8");
-        await visit(join(directory, child.name), relativePath);
+        await visit(join(directory, child.name), relativePath, depth + 1);
       } else if (child.isFile()) {
-        const content = await readFile(join(directory, child.name));
-        bytes += content.length;
         digest.update("file\0", "utf8");
-        digest.update(content);
+        await digestFile(join(directory, child.name), depth);
       } else if (child.isSymbolicLink()) {
         const target = await readlink(join(directory, child.name), "buffer");
         bytes += target.length;
+        enforceBounds(depth);
         digest.update("symlink\0", "utf8");
         digest.update(target);
       } else {
@@ -608,11 +654,14 @@ async function validateProviderArg0(root, expectedRuntimeBinary) {
   if (!arg0Entry.isDirectory())
     throw new Error("acceptance-runtime-profile-arg0-invalid");
 
-  const directories = (
-    await readdir(arg0Path, { withFileTypes: true })
-  ).toSorted((left, right) => compareCodeUnits(left.name, right.name));
-  if (directories.length > providerArg0MaxDirectories)
-    throw new Error("acceptance-runtime-profile-arg0-invalid");
+  const directories = [];
+  const arg0Handle = await opendir(arg0Path);
+  for await (const directory of arg0Handle) {
+    directories.push(directory);
+    if (directories.length > providerArg0MaxDirectories)
+      throw new Error("acceptance-runtime-profile-arg0-invalid");
+  }
+  directories.sort((left, right) => compareCodeUnits(left.name, right.name));
   const canonicalRuntimeBinary = await realpath(expectedRuntimeBinary);
   for (const directory of directories) {
     if (
@@ -622,9 +671,14 @@ async function validateProviderArg0(root, expectedRuntimeBinary) {
       throw new Error("acceptance-runtime-profile-arg0-invalid");
     }
     const directoryPath = join(arg0Path, directory.name);
-    const entries = (
-      await readdir(directoryPath, { withFileTypes: true })
-    ).toSorted((left, right) => compareCodeUnits(left.name, right.name));
+    const entries = [];
+    const directoryHandle = await opendir(directoryPath);
+    for await (const entry of directoryHandle) {
+      entries.push(entry);
+      if (entries.length > providerArg0EntryNames.length)
+        throw new Error("acceptance-runtime-profile-arg0-invalid");
+    }
+    entries.sort((left, right) => compareCodeUnits(left.name, right.name));
     if (
       JSON.stringify(entries.map(({ name }) => name)) !==
       JSON.stringify(providerArg0EntryNames)
@@ -669,6 +723,7 @@ export async function snapshotProtectedRuntimeProfile(root, options = {}) {
 
   return snapshotDirectory(root, {
     excludedRelativePaths: providerLocalProfilePaths,
+    ...providerProfileSnapshotLimits,
   });
 }
 

@@ -48,6 +48,31 @@ test("directory snapshots bind symlink targets without following them", async (t
   assert.notEqual(before.sha256, after.sha256);
 });
 
+test("directory snapshots fail closed on byte entry depth and time bounds", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "keiko-bounded-snapshot-"));
+  t.after(() => rm(root, { force: true, recursive: true }));
+  await writeFile(join(root, "first"), "first", "utf8");
+  await writeFile(join(root, "second"), "second", "utf8");
+  await mkdir(join(root, "nested/deeper"), { recursive: true });
+
+  await assert.rejects(
+    snapshotDirectory(root, { maxBytes: 4 }),
+    /acceptance-snapshot-bounds-exceeded/u,
+  );
+  await assert.rejects(
+    snapshotDirectory(root, { maxEntries: 1 }),
+    /acceptance-snapshot-bounds-exceeded/u,
+  );
+  await assert.rejects(
+    snapshotDirectory(root, { maxDepth: 1 }),
+    /acceptance-snapshot-bounds-exceeded/u,
+  );
+  await assert.rejects(
+    snapshotDirectory(root, { timeoutMs: 0 }),
+    /acceptance-snapshot-bounds-exceeded/u,
+  );
+});
+
 test("protected runtime profile permits only bounded provider-local cache state", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "keiko-profile-snapshot-"));
   t.after(() => rm(root, { force: true, recursive: true }));
