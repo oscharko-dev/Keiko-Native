@@ -4198,6 +4198,27 @@ mod tests {
     }
 
     #[test]
+    fn startup_reconciliation_rejects_missing_and_non_private_work_roots() {
+        let fixture = Fixture::new();
+        let configuration = |work_root| RuntimeConfiguration {
+            binary: fixture.binary.clone(),
+            codex_home: fixture.home.clone(),
+            work_root,
+            expected_sha256: sha256_file(&fixture.binary).expect("runtime digest"),
+        };
+
+        assert!(!reconcile_startup_configuration(&configuration(
+            fixture.root.join("missing-work-root"),
+        )));
+
+        fs::set_permissions(&fixture.work, fs::Permissions::from_mode(0o755))
+            .expect("make work root non-private");
+        assert!(!reconcile_startup_configuration(&configuration(
+            fixture.work.clone(),
+        )));
+    }
+
+    #[test]
     fn runtime_directory_recovery_rejects_malformed_and_ignores_reused_process_records() {
         let fixture = Fixture::new();
         let active = ActiveRuntime::default();
@@ -6614,6 +6635,24 @@ while :; do /bin/sleep 1; done
             None
         );
         assert!(!process_group_exists(process_group));
+    }
+
+    #[test]
+    fn process_group_publication_requires_a_live_identity_and_available_ownership() {
+        let active = ActiveRuntime::default();
+        assert!(!publish_active_process_group(&active, i32::MAX));
+
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = active
+                .process_group
+                .lock()
+                .expect("initial process-group ownership lock");
+            panic!("poison process-group ownership lock");
+        });
+        assert!(!publish_active_process_group(
+            &active,
+            std::process::id() as i32,
+        ));
     }
 
     #[test]
