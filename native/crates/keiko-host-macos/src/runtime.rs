@@ -2867,13 +2867,7 @@ fn stop_process_group_with_term_grace(
     deadline: Instant,
     term_grace: Option<Duration>,
 ) -> bool {
-    if child
-        .try_wait()
-        .ok()
-        .flatten()
-        .is_some_and(|_| authenticated_owned_processes_stopped(active))
-    {
-        retire_active_process_group(active, process_group);
+    if reconcile_stopped_process_group(child, process_group, active) {
         return true;
     }
     let cleanup_started = Instant::now();
@@ -2884,18 +2878,16 @@ fn stop_process_group_with_term_grace(
     // stdin has already been closed by every caller. Give app-server a bounded
     // chance to run its own destructors before TERM/KILL escalation.
     while Instant::now() < graceful_deadline {
-        if ready_to_reap(child.id() as i32, process_group, active) {
-            retire_active_process_group(active, process_group);
-            return child.wait().is_ok();
+        if reconcile_stopped_process_group(child, process_group, active) {
+            return true;
         }
         thread::sleep(Duration::from_millis(10));
     }
     signal_active_process_group(active, process_group, SIGTERM);
     let term_deadline = deadline.min(Instant::now() + grace);
     while Instant::now() < term_deadline {
-        if ready_to_reap(child.id() as i32, process_group, active) {
-            retire_active_process_group(active, process_group);
-            return child.wait().is_ok();
+        if reconcile_stopped_process_group(child, process_group, active) {
+            return true;
         }
         thread::sleep(Duration::from_millis(10));
     }
@@ -2909,23 +2901,20 @@ fn stop_process_group_with_term_grace(
             DESCENDANT_REAP_GRACE.min(deadline.saturating_duration_since(descendant_started) / 2);
         let descendant_deadline = deadline.min(descendant_started + descendant_grace);
         while Instant::now() < descendant_deadline {
-            if ready_to_reap(child.id() as i32, process_group, active) {
-                retire_active_process_group(active, process_group);
-                return child.wait().is_ok();
+            if reconcile_stopped_process_group(child, process_group, active) {
+                return true;
             }
             thread::sleep(Duration::from_millis(10));
         }
     }
     signal_active_process_group(active, process_group, SIGKILL);
     while Instant::now() < deadline {
-        if ready_to_reap(child.id() as i32, process_group, active) {
-            retire_active_process_group(active, process_group);
-            return child.wait().is_ok();
+        if reconcile_stopped_process_group(child, process_group, active) {
+            return true;
         }
         thread::sleep(Duration::from_millis(10));
     }
-    let _ = child.try_wait();
-    false
+    reconcile_stopped_process_group(child, process_group, active)
 }
 
 fn authenticated_owned_processes_stopped(active: &ActiveRuntime) -> bool {
@@ -3084,6 +3073,21 @@ fn ready_to_reap(child: i32, process_group: i32, active: &ActiveRuntime) -> bool
     exited.unwrap_or(false)
         && !descendants.unwrap_or(true)
         && owned_descendants.is_some_and(|alive| !alive)
+}
+
+fn reconcile_stopped_process_group(
+    child: &mut Child,
+    process_group: i32,
+    active: &ActiveRuntime,
+) -> bool {
+    if !ready_to_reap(child.id() as i32, process_group, active) || child.wait().is_err() {
+        return false;
+    }
+    if process_group_exists(process_group) || !authenticated_owned_processes_stopped(active) {
+        return false;
+    }
+    retire_active_process_group(active, process_group);
+    true
 }
 
 fn register_owned_process(active: &ActiveRuntime, process: i32) {
@@ -6508,10 +6512,96 @@ while :; do /bin/sleep 1; done
             *active.process_group.lock().expect("process-group state"),
             None
         );
+        assert!(!process_group_exists(process_group));
+    }
+
+    #[test]
+    fn descendant_kill_allows_term_resistant_parent_to_wait_and_reap() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(
+                "trap '' TERM; /bin/sh -c \"trap '' TERM; printf 'ready\\n'; while :; do read -r line; done\" <&0 & wait; printf 'reaped\\n'",
+            )
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("TERM-resistant parent and descendant");
+        let process_group = child.id() as i32;
+        let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+        let mut ready = String::new();
+        stdout.read_line(&mut ready).expect("readiness handshake");
+        assert_eq!(ready, "ready\n");
+
+        let active = ActiveRuntime::default();
+        assert!(publish_active_process_group(&active, process_group));
+        assert!(refresh_owned_processes(&active));
+        assert!(signal_active_process_group(&active, process_group, SIGTERM));
+        assert!(process_group_exists(process_group));
+        assert!(
+            process_group_has_descendants(process_group, process_group)
+                .expect("TERM-resistant descendant state")
+        );
+        assert!(signal_active_descendants(&active, process_group, SIGKILL));
+        let reap_deadline = Instant::now() + Duration::from_secs(5);
+        while !reconcile_stopped_process_group(&mut child, process_group, &active) {
+            assert!(
+                Instant::now() < reap_deadline,
+                "parent did not reap descendant"
+            );
+            thread::yield_now();
+        }
+        assert_eq!(
+            *active.process_group.lock().expect("process-group state"),
+            None
+        );
         let mut reaped = String::new();
         stdout.read_line(&mut reaped).expect("parent reap marker");
         assert_eq!(reaped, "reaped\n");
         assert!(!process_group_exists(process_group));
+    }
+
+    #[test]
+    fn final_cleanup_reconciliation_reaps_an_exited_absent_process_group() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("printf 'ready\\n'; read -r line")
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("reconciliation process");
+        let process_group = child.id() as i32;
+        let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+        let mut ready = String::new();
+        stdout.read_line(&mut ready).expect("readiness handshake");
+        assert_eq!(ready, "ready\n");
+
+        let active = ActiveRuntime::default();
+        assert!(publish_active_process_group(&active, process_group));
+        drop(child.stdin.take());
+        let exit_deadline = Instant::now() + Duration::from_secs(1);
+        while !child_exited_without_reaping(process_group).expect("direct-child exit state") {
+            assert!(Instant::now() < exit_deadline, "direct child did not exit");
+            thread::yield_now();
+        }
+        assert!(!process_group_exists(process_group));
+
+        assert!(reconcile_stopped_process_group(
+            &mut child,
+            process_group,
+            &active,
+        ));
+        assert_eq!(
+            *active.process_group.lock().expect("process-group state"),
+            None
+        );
     }
 
     #[test]
