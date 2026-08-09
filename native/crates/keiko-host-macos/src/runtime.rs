@@ -75,7 +75,8 @@ const READINESS_CLEANUP_RESERVE: Duration = Duration::from_millis(300);
 const READINESS_MAX_TERM_GRACE: Duration = Duration::from_millis(100);
 const TURN_TERMINAL_BUDGET: Duration = Duration::from_secs(5);
 const TURN_TERMINAL_PROJECTION_RESERVE: Duration = Duration::from_millis(500);
-const TURN_CLEANUP_RESERVE: Duration = Duration::from_millis(4_500);
+const TURN_CLEANUP_RESERVE: Duration =
+    TURN_TERMINAL_BUDGET.saturating_sub(TURN_TERMINAL_PROJECTION_RESERVE);
 const CODEX_CONTAINMENT_ARGUMENTS: &[&str] = &[
     "-c",
     "features.multi_agent=false",
