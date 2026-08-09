@@ -147,10 +147,7 @@ const referenceEnvironmentContract = Object.freeze({
   scaling: "logical-1512x982-2x-default",
   thermal: "nominal",
 });
-const acceptedPowerConditions = new Set([
-  "ac-power-standard",
-  "battery-power-standard",
-]);
+const acceptedPowerConditions = new Set(["ac-power-standard"]);
 
 const identityBindingKeys = Object.freeze(
   [

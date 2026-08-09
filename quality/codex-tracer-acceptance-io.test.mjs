@@ -283,7 +283,7 @@ test("reference Mac inspection emits only normalized closed reproducibility meta
     ],
     [
       "/usr/bin/pmset\0-g\0batt",
-      "Now drawing from 'Battery Power'\n -InternalBattery-0 85%; discharging",
+      "Now drawing from 'AC Power'\n -InternalBattery-0 85%; charging",
     ],
     [
       "/usr/bin/pmset\0-g\0custom",
@@ -305,7 +305,7 @@ test("reference Mac inspection emits only normalized closed reproducibility meta
     display: "built-in-main-3024x1964-120hz",
     hardware: "apple-m4-16-gib-mac16-1",
     operatingSystem: "macos-26.5.1-25f80",
-    power: "battery-power-standard",
+    power: "ac-power-standard",
     referenceClass: "owner-m4-16gib-macos26",
     scaling: "logical-1512x982-2x-default",
     thermal: "nominal",
@@ -321,8 +321,22 @@ test("reference Mac inspection emits only normalized closed reproducibility meta
     ),
   );
   outputs.set(
+    "/usr/bin/pmset\0-g\0batt",
+    "Now drawing from 'Battery Power'\n -InternalBattery-0 85%; discharging",
+  );
+  await assert.rejects(
+    inspectReferenceEnvironment(async (command, args) =>
+      outputs.get([command, ...args].join("\0")),
+    ),
+    /acceptance-reference-environment-invalid/u,
+  );
+  outputs.set(
+    "/usr/bin/pmset\0-g\0batt",
+    "Now drawing from 'AC Power'\n -InternalBattery-0 85%; charging",
+  );
+  outputs.set(
     "/usr/bin/pmset\0-g\0custom",
-    "Battery Power:\n lowpowermode 1\nAC Power:\n lowpowermode 0",
+    "Battery Power:\n lowpowermode 0\nAC Power:\n lowpowermode 1",
   );
   await assert.rejects(
     inspectReferenceEnvironment(async (command, args) =>
