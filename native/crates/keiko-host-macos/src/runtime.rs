@@ -6497,6 +6497,8 @@ while :; do /bin/sleep 1; done
 
         let active = ActiveRuntime::default();
         assert!(publish_active_process_group(&active, process_group));
+        let fixture_process_identity =
+            process_identity(process_group).expect("TERM-resistant readiness identity");
         let outcome = cleanup_after(
             child,
             process_group,
@@ -6505,6 +6507,52 @@ while :; do /bin/sleep 1; done
             &active,
             Instant::now() + READINESS_CLEANUP_RESERVE,
         );
+
+        let active_retired = *active.process_group.lock().expect("process-group state") == None;
+        let marker_exact =
+            fs::read_to_string(&reaped_marker).is_ok_and(|marker| marker == "reaped");
+        let group_absent = !process_group_exists(process_group);
+        if !outcome.cleaned || !active_retired || !marker_exact || !group_absent {
+            let diagnostic_deadline = Instant::now() + Duration::from_secs(1);
+            if !group_absent
+                && !signal_active_process_group(&active, process_group, SIGKILL)
+                && process_identity(process_group) == Some(fixture_process_identity)
+            {
+                signal_process_group(process_group, SIGKILL);
+            }
+            while Instant::now() < diagnostic_deadline && process_group_exists(process_group) {
+                if child_exited_without_reaping(process_group).unwrap_or(false)
+                    && process_group_has_descendants(process_group, process_group)
+                        .is_ok_and(|has_descendants| !has_descendants)
+                {
+                    let _ = reap_child(process_group);
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            let diagnostic_cleaned = !process_group_exists(process_group)
+                || (!active_retired
+                    && reconcile_retained_process_group(
+                        &active,
+                        Instant::now() + Duration::from_secs(1),
+                    ));
+            if diagnostic_cleaned {
+                retire_active_process_group(&active, process_group);
+            }
+            let _ = fs::remove_dir_all(&fixture.root);
+            let mut diagnostic = io::stderr().lock();
+            let _ = writeln!(
+                diagnostic,
+                "K101:C{}A{}M{}G{}R{}",
+                u8::from(outcome.cleaned),
+                u8::from(active_retired),
+                u8::from(marker_exact),
+                u8::from(group_absent),
+                u8::from(diagnostic_cleaned),
+            );
+            let _ = diagnostic.flush();
+            drop(diagnostic);
+            std::process::exit(101);
+        }
 
         assert_eq!(outcome.state, RuntimeReadinessState::TimedOut);
         assert!(outcome.cleaned);
