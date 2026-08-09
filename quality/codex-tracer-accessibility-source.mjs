@@ -305,6 +305,35 @@ static BOOL HasAnyUniqueValue(
   return found;
 }
 
+static NSInteger UniqueValueIndex(
+    AXUIElementRef application,
+    const CFStringRef *expected,
+    NSUInteger expectedCount) {
+  if (expectedCount < 1 || expectedCount > 8) return -1;
+  const CFStringRef attributes[] = {kAXValueAttribute};
+  NSUInteger counts[8] = {0};
+  NSUInteger visited = 0;
+  CollectExpectedMatches(
+      application,
+      expected,
+      expectedCount,
+      attributes,
+      sizeof(attributes) / sizeof(attributes[0]),
+      YES,
+      0,
+      counts,
+      &visited);
+  NSInteger found = -1;
+  for (NSUInteger index = 0; index < expectedCount; index += 1) {
+    if (counts[index] > 1) return -1;
+    if (counts[index] == 1) {
+      if (found >= 0) return -1;
+      found = (NSInteger)index;
+    }
+  }
+  return found;
+}
+
 static AXUIElementRef FindPickerPanel(AXUIElementRef application) {
   CFTypeRef value = NULL;
   if (AXUIElementCopyAttributeValue(
@@ -741,6 +770,15 @@ static BOOL HasCancellationProjection(AXUIElementRef application) {
       application, expected, sizeof(expected) / sizeof(expected[0]));
 }
 
+static NSInteger CancellationTerminal(AXUIElementRef application) {
+  const CFStringRef expected[] = {
+    CFSTR("Der Codex-Lauf wurde abgebrochen und vollständig beendet."),
+    CFSTR("Die Laufzeit konnte nicht vollständig bereinigt werden. Beenden Sie Keiko Native."),
+  };
+  return UniqueValueIndex(
+      application, expected, sizeof(expected) / sizeof(expected[0]));
+}
+
 static BOOL Perform(
     AXUIElementRef application,
     CFStringRef expected,
@@ -1035,9 +1073,13 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
     } else if ([action isEqualToString:@"observe-stopping"]) {
       passed = HasCancellationProjection(application);
     } else if ([action isEqualToString:@"observe-cancelled"]) {
-      passed = HasUnique(
-          application,
-          CFSTR("Der Codex-Lauf wurde abgebrochen und vollständig beendet."));
+      NSInteger terminal = CancellationTerminal(application);
+      if (terminal == 1) {
+        CFRelease(application);
+        Emit(NO, "cleanup-failed");
+        return 1;
+      }
+      passed = terminal == 0;
     } else if ([action isEqualToString:@"observe-failed"]) {
       passed = HasUnique(
           application,

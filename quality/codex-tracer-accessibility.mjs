@@ -13,6 +13,7 @@ const reasonCodes = new Set([
   "accessibility-permission-denied",
   "adapter-output-invalid",
   "bounded-wait-expired",
+  "cleanup-failed",
   "invalid-invocation",
   "missing-or-ambiguous-semantic-target",
 ]);

@@ -73,7 +73,9 @@ const DESCENDANT_REAP_GRACE: Duration = Duration::from_millis(100);
 // validation after the verified runtime has been staged.
 const READINESS_CLEANUP_RESERVE: Duration = Duration::from_millis(300);
 const READINESS_MAX_TERM_GRACE: Duration = Duration::from_millis(100);
-const TURN_CLEANUP_RESERVE: Duration = Duration::from_secs(5);
+const TURN_TERMINAL_BUDGET: Duration = Duration::from_secs(5);
+const TURN_TERMINAL_PROJECTION_RESERVE: Duration = Duration::from_millis(500);
+const TURN_CLEANUP_RESERVE: Duration = Duration::from_millis(4_500);
 const CODEX_CONTAINMENT_ARGUMENTS: &[&str] = &[
     "-c",
     "features.multi_agent=false",
@@ -513,7 +515,7 @@ impl RuntimeHost {
     }
 
     fn cancel_and_wait(&self, reason: RuntimeCancellation) -> bool {
-        let deadline = Instant::now() + TURN_CLEANUP_RESERVE;
+        let deadline = Instant::now() + TURN_TERMINAL_BUDGET;
         self.cancel_with_reason(reason);
         if !self
             .active
@@ -1161,7 +1163,7 @@ fn cleanup_turn(
     active: &ActiveRuntime,
     deadline: Instant,
 ) -> TurnRuntimeOutcome {
-    let cleanup_deadline = deadline.min(Instant::now() + TURN_CLEANUP_RESERVE);
+    let cleanup_deadline = turn_cleanup_deadline(Instant::now(), deadline);
     outcome.cleaned = stop_process_group_with_term_grace(
         &mut child,
         process_group,
@@ -1171,6 +1173,14 @@ fn cleanup_turn(
         DescendantReapPolicy::AllowParentReap,
     );
     outcome
+}
+
+fn turn_cleanup_deadline(cleanup_started: Instant, request_deadline: Instant) -> Instant {
+    request_deadline.min(
+        cleanup_started
+            .checked_add(TURN_CLEANUP_RESERVE)
+            .unwrap_or(cleanup_started),
+    )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -6479,6 +6489,22 @@ while :; do /bin/sleep 1; done
             started.elapsed()
         );
         assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
+    }
+
+    #[test]
+    fn turn_cleanup_reserves_terminal_projection_within_the_shared_budget() {
+        let stopping_projected_at = Instant::now();
+        let request_deadline = stopping_projected_at + Duration::from_secs(120);
+        let cleanup_deadline = turn_cleanup_deadline(stopping_projected_at, request_deadline);
+
+        assert_eq!(
+            cleanup_deadline.duration_since(stopping_projected_at),
+            TURN_TERMINAL_BUDGET - TURN_TERMINAL_PROJECTION_RESERVE
+        );
+        assert_eq!(
+            cleanup_deadline + TURN_TERMINAL_PROJECTION_RESERVE,
+            stopping_projected_at + TURN_TERMINAL_BUDGET
+        );
     }
 
     #[test]

@@ -65,6 +65,20 @@ test("adapter results accept only one closed semantic outcome", () => {
       status: "failed",
     },
   );
+  assert.deepEqual(
+    classifyTracerAccessibilityResult({
+      exitCode: 1,
+      stdout:
+        '{"status":"failed","reasonCode":"cleanup-failed","prompted":false}\n',
+      stderr: "",
+      timedOut: false,
+    }),
+    {
+      prompted: false,
+      reasonCode: "cleanup-failed",
+      status: "failed",
+    },
+  );
   for (const hostile of [
     { exitCode: 0, stdout: "not-json", stderr: "", timedOut: false },
     {
@@ -192,6 +206,26 @@ test("bounded semantic waits retry only missing targets and stop on permission d
   });
   assert.equal(attempts, 1);
   assert.equal(denied.reasonCode, "accessibility-permission-denied");
+
+  const cleanupFailed = await waitForTracerAccessibilityAction({
+    action: "observe-cancelled",
+    binary: "/bounded/adapter",
+    execute: () => ({
+      prompted: false,
+      reasonCode: "cleanup-failed",
+      status: "failed",
+    }),
+    monotonicNow: () => 0,
+    pid: 42,
+    timeoutMs: 5_000,
+    wait: async () => assert.fail("must not retry a truthful terminal"),
+  });
+  assert.deepEqual(cleanupFailed, {
+    elapsedMs: 0,
+    prompted: false,
+    reasonCode: "cleanup-failed",
+    status: "failed",
+  });
 });
 
 test("the packaged journey drives the fixed sequence and excludes observer startup", async () => {

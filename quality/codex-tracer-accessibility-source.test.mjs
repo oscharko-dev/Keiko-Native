@@ -193,6 +193,29 @@ test("the cancellation probe checks alternative terminal states in one traversal
   assert.doesNotMatch(cancellationProbe ?? "", /HasUnique\(/u);
 });
 
+test("the cancellation terminal probe distinguishes incomplete cleanup", () => {
+  const terminalProbe = tracerAccessibilitySource.match(
+    /else if \(\[action isEqualToString:@"observe-cancelled"\]\) \{[\s\S]*?\n    \} else if/u,
+  )?.[0];
+
+  assert.match(terminalProbe ?? "", /Emit\(NO, "cleanup-failed"\)/u);
+  assert.match(terminalProbe ?? "", /return 1;/u);
+  assert.match(terminalProbe ?? "", /CancellationTerminal\(application\)/u);
+  assert.doesNotMatch(terminalProbe ?? "", /HasUnique\(/u);
+  const cancellationTerminal = tracerAccessibilitySource.match(
+    /static NSInteger CancellationTerminal\([\s\S]*?\n\}/u,
+  )?.[0];
+  assert.match(
+    cancellationTerminal ?? "",
+    /Der Codex-Lauf wurde abgebrochen und vollständig beendet\./u,
+  );
+  assert.match(
+    cancellationTerminal ?? "",
+    /Die Laufzeit konnte nicht vollständig bereinigt werden\./u,
+  );
+  assert.match(cancellationTerminal ?? "", /UniqueValueIndex\(/u);
+});
+
 const macArm64Test =
   process.platform === "darwin" && process.arch === "arm64"
     ? test
