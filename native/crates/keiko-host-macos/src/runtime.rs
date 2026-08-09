@@ -6506,7 +6506,11 @@ while :; do /bin/sleep 1; done
             Instant::now() + READINESS_CLEANUP_RESERVE,
         );
 
-        let active_retired = *active.process_group.lock().expect("process-group state") == None;
+        let active_retired = active
+            .process_group
+            .lock()
+            .expect("process-group state")
+            .is_none();
         let marker_exact = fs::read_to_string(&reaped_marker).unwrap_or_default() == "reaped";
         let group_absent = !process_group_exists(process_group);
         let mut diagnostic = io::stderr().lock();
