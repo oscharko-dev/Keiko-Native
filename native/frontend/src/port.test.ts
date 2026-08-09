@@ -1149,6 +1149,76 @@ describe("closed streamed Codex turn port", () => {
     );
   });
 
+  it("rejects a terminal channel event that contradicts accepted cancellation", async () => {
+    const updates: TurnView[] = [];
+    const preflight = turn("preflighting");
+    const completed = turn("completed", "Late completion.");
+    const cancelled: TurnView = {
+      ...completed,
+      state: "cancelled",
+      reason: "user-cancelled",
+      evidence: { ...completed.evidence, terminalState: "cancelled" },
+    };
+    const channel = { onmessage: (_value: TurnView) => undefined };
+    let resolveTurn: ((value: string) => void) | undefined;
+    let requestId = "";
+    const invoke = vi.fn(
+      (command: string, arguments_: { request: string }): Promise<string> => {
+        if (command === "application_cancel") {
+          const cancellation = JSON.parse(arguments_.request) as {
+            requestId: string;
+          };
+          return Promise.resolve(
+            JSON.stringify({
+              schemaVersion: 1,
+              requestId: cancellation.requestId,
+              result: { kind: "application-cancel", status: "cancelled" },
+            }),
+          );
+        }
+        requestId = (JSON.parse(arguments_.request) as { requestId: string })
+          .requestId;
+        channel.onmessage(preflight);
+        return new Promise((resolve) => {
+          resolveTurn = resolve;
+        });
+      },
+    );
+    const cancellation = new AbortController();
+    const pending = createRendererPort(
+      invoke,
+      async () => authority,
+      () => channel,
+    ).codexTurn(
+      3,
+      "Bounded.",
+      (update) => updates.push(update),
+      cancellation.signal,
+    );
+    await Promise.resolve();
+    cancellation.abort();
+    await drainCancellationDispatch();
+    expect(updates.map(({ state }) => state)).toEqual([
+      "preflighting",
+      "stopping",
+    ]);
+
+    channel.onmessage(completed);
+    resolveTurn?.(
+      JSON.stringify({
+        schemaVersion: 1,
+        requestId,
+        result: { kind: "codex-turn", state: cancelled },
+      }),
+    );
+
+    await expect(pending).rejects.toThrow("codex-turn-failed");
+    expect(updates.map(({ state }) => state)).toEqual([
+      "preflighting",
+      "stopping",
+    ]);
+  });
+
   it.each([
     ["malformed", () => Promise.resolve("{}")],
     ["rejected", () => Promise.reject(new Error("ipc unavailable"))],

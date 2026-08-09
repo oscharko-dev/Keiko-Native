@@ -77,8 +77,7 @@ pub fn turn_request(
     let Some(selected_workspace) = selected_workspace else {
         let _ = session.fail(TurnState::Failed, TurnReason::StaleWorkspace);
         let _ = session.settle_cleanup(true);
-        update(session.view());
-        return finish_turn(lifecycle, accepted, session.view());
+        return finish_turn(lifecycle, accepted, session.view(), &mut update);
     };
 
     let mut projection_failed = false;
@@ -108,8 +107,7 @@ pub fn turn_request(
         },
     );
     settle_session(&mut session, outcome, projection_failed);
-    update(session.view());
-    finish_turn(lifecycle, accepted, session.view())
+    finish_turn(lifecycle, accepted, session.view(), &mut update)
 }
 
 fn settle_session(session: &mut TurnSession, outcome: TurnRuntimeOutcome, projection_failed: bool) {
@@ -146,11 +144,20 @@ fn finish_turn(
     lifecycle: &Mutex<HostLifecycle>,
     accepted: AcceptedRequest,
     state: TurnView,
+    update: &mut impl FnMut(TurnView),
 ) -> TurnRequestOutput {
-    let encoded = lifecycle.lock().map_or_else(
-        |_| encode_error("unknown-request", ReasonCode::InternalFailure),
-        |mut lifecycle| lifecycle.complete_turn_request(accepted, state),
+    let (encoded, authoritative_state) = lifecycle.lock().map_or_else(
+        |_| {
+            (
+                encode_error("unknown-request", ReasonCode::InternalFailure),
+                None,
+            )
+        },
+        |mut lifecycle| lifecycle.complete_turn_request_with_state(accepted, state),
     );
+    if let Some(state) = authoritative_state {
+        update(state);
+    }
     TurnRequestOutput { encoded }
 }
 
@@ -442,6 +449,37 @@ mod tests {
         assert!(encoded.contains(r#""reason":"user-cancelled""#));
         assert!(encoded.contains(r#""cleanupComplete":true"#));
         assert!(!encoded.contains(r#""state":"completed""#));
+
+        let (projected_lifecycle, projected_sender) = session();
+        let projected_request = request(projected_sender.generation, 3, "Bounded task.");
+        let projected_accepted = projected_lifecycle
+            .lock()
+            .unwrap()
+            .begin_application_request(&projected_sender, projected_request.as_bytes())
+            .unwrap();
+        let projected_cancellation = serde_json::to_vec(&json!({
+            "schemaVersion": 1,
+            "requestId": canonical_request_id(projected_sender.generation, 1).unwrap()
+        }))
+        .unwrap();
+        assert!(
+            projected_lifecycle
+                .lock()
+                .unwrap()
+                .cancel_application_request(&projected_sender, &projected_cancellation)
+                .contains("cancelled")
+        );
+        let mut projected_updates = Vec::new();
+        let projected = finish_turn(
+            &projected_lifecycle,
+            projected_accepted,
+            raced.view(),
+            &mut |view| projected_updates.push(view),
+        );
+        assert!(projected.encoded.contains(r#""state":"cancelled""#));
+        assert_eq!(projected_updates.len(), 1);
+        assert_eq!(projected_updates[0].state, TurnState::Cancelled);
+        assert_eq!(projected_updates[0].reason, Some(TurnReason::UserCancelled));
 
         let (settled_lifecycle, settled_sender) = session();
         let settled_request = request(settled_sender.generation, 3, "Bounded task.");

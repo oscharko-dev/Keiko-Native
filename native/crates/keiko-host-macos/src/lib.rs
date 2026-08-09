@@ -300,12 +300,21 @@ impl HostLifecycle {
         self.complete_foundation_request_with_availability(accepted, encoded, quit_requested, true)
     }
 
-    fn complete_turn_request(&mut self, accepted: AcceptedRequest, mut state: TurnView) -> String {
+    #[cfg(test)]
+    fn complete_turn_request(&mut self, accepted: AcceptedRequest, state: TurnView) -> String {
+        self.complete_turn_request_with_state(accepted, state).0
+    }
+
+    fn complete_turn_request_with_state(
+        &mut self,
+        accepted: AcceptedRequest,
+        mut state: TurnView,
+    ) -> (String, Option<TurnView>) {
         let completed_at_ms = self.clock.now_ms();
         let (request_id, _, _) = request_metadata(&accepted.request);
         let request_id = request_id.to_owned();
         let Some(in_flight) = self.in_flight.remove(&request_id) else {
-            return encode_error(&request_id, ReasonCode::InternalFailure);
+            return (encode_error(&request_id, ReasonCode::InternalFailure), None);
         };
         // Turn shutdown first records AppShutdown on every in-flight request.
         // Treating completion as unavailable here would erase that precise
@@ -338,13 +347,16 @@ impl HostLifecycle {
                         state.evidence.terminal_state = TurnState::TimedOut;
                     }
                 }
-                Some(reason) => return encode_error(&request_id, reason),
+                Some(reason) => return (encode_error(&request_id, reason), None),
             }
         }
-        encode_success(&application_response(
+        let encoded = encode_success(&application_response(
             &request_id,
-            ApplicationResult::CodexTurn { state },
-        ))
+            ApplicationResult::CodexTurn {
+                state: state.clone(),
+            },
+        ));
+        (encoded, Some(state))
     }
 
     fn complete_runtime_request(
