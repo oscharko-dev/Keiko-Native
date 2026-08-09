@@ -74,6 +74,38 @@ const DESCENDANT_REAP_GRACE: Duration = Duration::from_millis(100);
 const READINESS_CLEANUP_RESERVE: Duration = Duration::from_millis(300);
 const READINESS_MAX_TERM_GRACE: Duration = Duration::from_millis(100);
 const TURN_CLEANUP_RESERVE: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const CLEANUP_DIAGNOSTIC_PHASE_MASK: u16 = 0xf000;
+#[cfg(test)]
+const CLEANUP_DIAGNOSTIC_ACTIVE: u16 = 1 << 0;
+#[cfg(test)]
+const CLEANUP_DIAGNOSTIC_CHILD_EXITED: u16 = 1 << 1;
+#[cfg(test)]
+const CLEANUP_DIAGNOSTIC_DESCENDANTS_ABSENT: u16 = 1 << 2;
+#[cfg(test)]
+const CLEANUP_DIAGNOSTIC_OWNED_EMPTY: u16 = 1 << 3;
+#[cfg(test)]
+const CLEANUP_DIAGNOSTIC_WAIT_ATTEMPTED: u16 = 1 << 4;
+#[cfg(test)]
+const CLEANUP_DIAGNOSTIC_WAIT_SUCCEEDED: u16 = 1 << 5;
+#[cfg(test)]
+const CLEANUP_DIAGNOSTIC_GROUP_ABSENT: u16 = 1 << 6;
+#[cfg(test)]
+const CLEANUP_DIAGNOSTIC_POST_WAIT_OWNED_EMPTY: u16 = 1 << 7;
+#[cfg(test)]
+const CLEANUP_DIAGNOSTIC_RETIRED: u16 = 1 << 8;
+#[cfg(test)]
+const CLEANUP_DIAGNOSTIC_DESCENDANT_KILL: u16 = 1 << 12;
+#[cfg(test)]
+const CLEANUP_DIAGNOSTIC_GROUP_KILL: u16 = 1 << 13;
+#[cfg(test)]
+const CLEANUP_DIAGNOSTIC_GROUP_KILL_AFTER_DEADLINE: u16 = 1 << 14;
+#[cfg(test)]
+const CLEANUP_DIAGNOSTIC_FINAL_RECONCILIATION: u16 = 1 << 15;
+#[cfg(test)]
+std::thread_local! {
+    static CLEANUP_DIAGNOSTIC: std::cell::Cell<u16> = const { std::cell::Cell::new(0) };
+}
 const CODEX_CONTAINMENT_ARGUMENTS: &[&str] = &[
     "-c",
     "features.multi_agent=false",
@@ -2896,6 +2928,8 @@ fn stop_process_group_with_term_grace(
     // zombies that outlive this request's cleanup deadline.
     let _ = refresh_owned_processes(active);
     if signal_active_descendants(active, process_group, SIGKILL) {
+        #[cfg(test)]
+        record_cleanup_diagnostic_phase(CLEANUP_DIAGNOSTIC_DESCENDANT_KILL);
         let descendant_started = Instant::now();
         let descendant_grace =
             DESCENDANT_REAP_GRACE.min(deadline.saturating_duration_since(descendant_started) / 2);
@@ -2907,6 +2941,16 @@ fn stop_process_group_with_term_grace(
             thread::sleep(Duration::from_millis(10));
         }
     }
+    #[cfg(test)]
+    {
+        let phase = CLEANUP_DIAGNOSTIC_GROUP_KILL
+            | if Instant::now() >= deadline {
+                CLEANUP_DIAGNOSTIC_GROUP_KILL_AFTER_DEADLINE
+            } else {
+                0
+            };
+        record_cleanup_diagnostic_phase(phase);
+    }
     signal_active_process_group(active, process_group, SIGKILL);
     while Instant::now() < deadline {
         if reconcile_stopped_process_group(child, process_group, active) {
@@ -2914,7 +2958,31 @@ fn stop_process_group_with_term_grace(
         }
         thread::sleep(Duration::from_millis(10));
     }
+    #[cfg(test)]
+    record_cleanup_diagnostic_phase(CLEANUP_DIAGNOSTIC_FINAL_RECONCILIATION);
     reconcile_stopped_process_group(child, process_group, active)
+}
+
+#[cfg(test)]
+fn reset_cleanup_diagnostic() {
+    CLEANUP_DIAGNOSTIC.with(|diagnostic| diagnostic.set(0));
+}
+
+#[cfg(test)]
+fn record_cleanup_diagnostic_phase(phase: u16) {
+    CLEANUP_DIAGNOSTIC.with(|diagnostic| diagnostic.set(diagnostic.get() | phase));
+}
+
+#[cfg(test)]
+fn reset_cleanup_reconciliation_diagnostic() {
+    CLEANUP_DIAGNOSTIC.with(|diagnostic| {
+        diagnostic.set(diagnostic.get() & CLEANUP_DIAGNOSTIC_PHASE_MASK);
+    });
+}
+
+#[cfg(test)]
+fn cleanup_diagnostic() -> u16 {
+    CLEANUP_DIAGNOSTIC.with(std::cell::Cell::get)
 }
 
 fn authenticated_owned_processes_stopped(active: &ActiveRuntime) -> bool {
@@ -3071,6 +3139,18 @@ fn ready_to_reap(child: i32, process_group: i32, active: &ActiveRuntime) -> bool
     let exited = child_exited_without_reaping(child);
     let descendants = process_group_has_descendants(process_group, child);
     let owned_descendants = owned_descendants_alive(active, child);
+    #[cfg(test)]
+    {
+        if exited.as_ref().is_ok_and(|exited| *exited) {
+            record_cleanup_diagnostic_phase(CLEANUP_DIAGNOSTIC_CHILD_EXITED);
+        }
+        if descendants.as_ref().is_ok_and(|descendants| !*descendants) {
+            record_cleanup_diagnostic_phase(CLEANUP_DIAGNOSTIC_DESCENDANTS_ABSENT);
+        }
+        if owned_descendants.is_some_and(|alive| !alive) {
+            record_cleanup_diagnostic_phase(CLEANUP_DIAGNOSTIC_OWNED_EMPTY);
+        }
+    }
     exited.unwrap_or(false)
         && !descendants.unwrap_or(true)
         && owned_descendants.is_some_and(|alive| !alive)
@@ -3081,6 +3161,8 @@ fn reconcile_stopped_process_group(
     process_group: i32,
     active: &ActiveRuntime,
 ) -> bool {
+    #[cfg(test)]
+    reset_cleanup_reconciliation_diagnostic();
     let active_identity = active.process_group.lock().ok().and_then(|active_group| {
         active_group.filter(|identity| {
             identity.process_id == process_group
@@ -3091,13 +3173,35 @@ fn reconcile_stopped_process_group(
     let Some(active_identity) = active_identity else {
         return false;
     };
-    if !ready_to_reap(child.id() as i32, process_group, active) || child.wait().is_err() {
+    #[cfg(test)]
+    record_cleanup_diagnostic_phase(CLEANUP_DIAGNOSTIC_ACTIVE);
+    let ready = ready_to_reap(child.id() as i32, process_group, active);
+    if !ready {
         return false;
     }
-    if process_group_exists(process_group) || !authenticated_owned_processes_stopped(active) {
+    #[cfg(test)]
+    record_cleanup_diagnostic_phase(CLEANUP_DIAGNOSTIC_WAIT_ATTEMPTED);
+    if child.wait().is_err() {
         return false;
     }
-    retire_active_process_group(active, active_identity)
+    #[cfg(test)]
+    record_cleanup_diagnostic_phase(CLEANUP_DIAGNOSTIC_WAIT_SUCCEEDED);
+    if process_group_exists(process_group) {
+        return false;
+    }
+    #[cfg(test)]
+    record_cleanup_diagnostic_phase(CLEANUP_DIAGNOSTIC_GROUP_ABSENT);
+    if !authenticated_owned_processes_stopped(active) {
+        return false;
+    }
+    #[cfg(test)]
+    record_cleanup_diagnostic_phase(CLEANUP_DIAGNOSTIC_POST_WAIT_OWNED_EMPTY);
+    let retired = retire_active_process_group(active, active_identity);
+    #[cfg(test)]
+    if retired {
+        record_cleanup_diagnostic_phase(CLEANUP_DIAGNOSTIC_RETIRED);
+    }
+    retired
 }
 
 fn register_owned_process(active: &ActiveRuntime, process: i32) {
@@ -6512,6 +6616,7 @@ while :; do /bin/sleep 1; done
 
         let active = ActiveRuntime::default();
         assert!(publish_active_process_group(&active, process_group));
+        reset_cleanup_diagnostic();
         let outcome = cleanup_after(
             child,
             process_group,
@@ -6520,6 +6625,13 @@ while :; do /bin/sleep 1; done
             &active,
             Instant::now() + READINESS_CLEANUP_RESERVE,
         );
+        if !outcome.cleaned {
+            let mut diagnostic = io::stderr().lock();
+            let _ = writeln!(diagnostic, "K101R:{:04X}", cleanup_diagnostic());
+            let _ = diagnostic.flush();
+            drop(diagnostic);
+            std::process::exit(101);
+        }
         assert_eq!(outcome.state, RuntimeReadinessState::TimedOut);
         assert!(outcome.cleaned);
         assert_eq!(
