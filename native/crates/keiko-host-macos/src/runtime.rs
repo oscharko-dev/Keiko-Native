@@ -6476,14 +6476,11 @@ while :; do /bin/sleep 1; done
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let fixture = Fixture::new();
-        let reaped_marker = fixture.root.join("descendant-reaped");
         let mut child = Command::new("/bin/sh")
             .arg("-c")
-            .arg(format!(
-                "trap '' TERM; /bin/sh -c \"trap '' TERM; printf 'ready\\n'; while :; do read -r line; done\" <&0 & wait; printf reaped > {}",
-                reaped_marker.display()
-            ))
+            .arg(
+                "trap '' TERM; /bin/sh -c \"trap '' TERM; printf 'ready\\n'; while :; do read -r line; done\" <&0 & wait; printf 'reaped\\n'",
+            )
             .process_group(0)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -6505,43 +6502,15 @@ while :; do /bin/sleep 1; done
             &active,
             Instant::now() + READINESS_CLEANUP_RESERVE,
         );
-
-        let active_retired = active
-            .process_group
-            .lock()
-            .expect("process-group state")
-            .is_none();
-        let marker_exact = fs::read_to_string(&reaped_marker).unwrap_or_default() == "reaped";
-        let group_absent = !process_group_exists(process_group);
-        let diagnostic_flags = u8::from(outcome.cleaned)
-            | u8::from(active_retired) << 1
-            | u8::from(marker_exact) << 2
-            | u8::from(group_absent) << 3;
-        if diagnostic_flags != 0b1111 {
-            let mut diagnostic = io::stderr().lock();
-            let _ = writeln!(
-                diagnostic,
-                "K101:C{}A{}M{}G{}",
-                u8::from(outcome.cleaned),
-                u8::from(active_retired),
-                u8::from(marker_exact),
-                u8::from(group_absent),
-            );
-            let _ = diagnostic.flush();
-            drop(diagnostic);
-            std::process::exit(101);
-        }
-
         assert_eq!(outcome.state, RuntimeReadinessState::TimedOut);
         assert!(outcome.cleaned);
         assert_eq!(
             *active.process_group.lock().expect("process-group state"),
             None
         );
-        assert_eq!(
-            fs::read_to_string(reaped_marker).expect("parent reaped descendant"),
-            "reaped"
-        );
+        let mut reaped = String::new();
+        stdout.read_line(&mut reaped).expect("parent reap marker");
+        assert_eq!(reaped, "reaped\n");
         assert!(!process_group_exists(process_group));
     }
 
