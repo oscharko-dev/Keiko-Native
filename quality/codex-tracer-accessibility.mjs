@@ -32,6 +32,7 @@ function sha256(value) {
 
 export function classifyTracerAccessibilityResult({
   exitCode,
+  nativeAction = false,
   projected = false,
   stderr,
   stdout,
@@ -59,7 +60,13 @@ export function classifyTracerAccessibilityResult({
     }
     const expectedKeys =
       projected && exitCode === 0
-        ? ["projectedMs", "prompted", "reasonCode", "status"]
+        ? [
+            ...(nativeAction ? ["nativeActionMs"] : []),
+            "projectedMs",
+            "prompted",
+            "reasonCode",
+            "status",
+          ]
         : ["prompted", "reasonCode", "status"];
     if (
       JSON.stringify(Object.keys(parsed).toSorted(compareCodeUnits)) !==
@@ -74,7 +81,11 @@ export function classifyTracerAccessibilityResult({
       (!projected ||
         (Number.isSafeInteger(parsed.projectedMs) &&
           parsed.projectedMs >= 0 &&
-          parsed.projectedMs <= 5_000))
+          parsed.projectedMs <= 5_000)) &&
+      (!nativeAction ||
+        (Number.isSafeInteger(parsed.nativeActionMs) &&
+          parsed.nativeActionMs >= 0 &&
+          parsed.nativeActionMs <= 5_000))
     ) {
       return parsed;
     }
@@ -144,6 +155,9 @@ export function executeTracerAccessibilityAction({
   );
   return classifyTracerAccessibilityResult({
     exitCode: result.status,
+    nativeAction:
+      action === "select-workspace" &&
+      observation === "observe-workspace-selected",
     projected: observation !== undefined,
     stderr: String(result.stderr ?? ""),
     stdout: String(result.stdout ?? ""),
@@ -269,37 +283,46 @@ export async function runPackagedTracerJourney({
       throw new Error("packaged-journey-measurement-invalid");
     }
     timings.push({ action: observation, elapsedMs });
-    return elapsedMs;
+    return projected;
+  };
+  const recordLocalProjection = async (action, observation, input) => {
+    const projected = await project(action, observation, input);
+    localProjectionMeasurements.push({
+      action,
+      observation,
+      projectedMs: projected.projectedMs,
+    });
+    return projected;
   };
 
   await step("probe-start");
-  localProjectionMeasurements.push(
-    await project("open-canvas", "probe-canvas"),
+  await recordLocalProjection("open-canvas", "probe-canvas");
+
+  await step("open-workspace-picker");
+  const nativePickerCancellationProjectionMs = (
+    await project("cancel-workspace-picker", "observe-workspace-cancelled")
+  ).projectedMs;
+
+  await step("open-workspace-picker");
+  await recordLocalProjection(
+    "select-workspace",
+    "observe-workspace-permission-denied",
+    deniedWorkspaceLabel,
   );
 
   await step("open-workspace-picker");
-  const nativePickerCancellationProjectionMs = await project(
-    "cancel-workspace-picker",
-    "observe-workspace-cancelled",
+  const workspaceSelection = await recordLocalProjection(
+    "select-workspace",
+    "observe-workspace-selected",
+    workspaceLabel,
   );
-
-  await step("open-workspace-picker");
-  localProjectionMeasurements.push(
-    await project(
-      "select-workspace",
-      "observe-workspace-permission-denied",
-      deniedWorkspaceLabel,
-    ),
-  );
-
-  await step("open-workspace-picker");
-  localProjectionMeasurements.push(
-    await project(
-      "select-workspace",
-      "observe-workspace-selected",
-      workspaceLabel,
-    ),
-  );
+  if (
+    !Number.isSafeInteger(workspaceSelection.nativeActionMs) ||
+    workspaceSelection.nativeActionMs < 0 ||
+    workspaceSelection.nativeActionMs > 5_000
+  ) {
+    throw new Error("packaged-journey-measurement-invalid");
+  }
 
   await step("check-runtime");
   await step("observe-runtime-ready");
@@ -320,11 +343,9 @@ export async function runPackagedTracerJourney({
   await step("submit-task");
   await step("observe-streaming", undefined, 120_000);
   await observeRuntime();
-  const turnCancellationProjectionMs = await project(
-    "cancel-turn",
-    "observe-stopping",
-  );
-  localProjectionMeasurements.push(turnCancellationProjectionMs);
+  const turnCancellationProjectionMs = (
+    await recordLocalProjection("cancel-turn", "observe-stopping")
+  ).projectedMs;
   await step("observe-cancelled");
 
   await step("focus-task");
@@ -339,7 +360,10 @@ export async function runPackagedTracerJourney({
   await step("quit");
 
   return {
-    localProjectionP95Ms: percentile95(localProjectionMeasurements),
+    localProjectionMeasurements,
+    localProjectionP95Ms: percentile95(
+      localProjectionMeasurements.map(({ projectedMs }) => projectedMs),
+    ),
     localProjectionSamples: localProjectionMeasurements.length,
     nativePickerCancellationProjectionMs,
     status: "passed",
@@ -347,6 +371,7 @@ export async function runPackagedTracerJourney({
     timings,
     turnCancellationProjectionMs,
     turnDurationMs,
+    workspaceSelectionNativeActionMs: workspaceSelection.nativeActionMs,
   };
 }
 

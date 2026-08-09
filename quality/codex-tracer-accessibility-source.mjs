@@ -621,6 +621,29 @@ static BOOL PressPickerControl(
   return error == kAXErrorSuccess;
 }
 
+static double MonotonicSeconds(void);
+
+static BOOL PressPickerControlWithProjectionTiming(
+    AXUIElementRef application,
+    CFStringRef identifier,
+    NSUInteger *nativeActionMs,
+    double *projectionStartedAt) {
+  AXUIElementRef panel = FindPickerPanel(application);
+  if (panel == NULL) return NO;
+  AXUIElementRef control = FindDescendantByIdentifier(panel, identifier);
+  CFRelease(panel);
+  if (control == NULL) return NO;
+  double actionStartedAt = MonotonicSeconds();
+  AXError error = AXUIElementPerformAction(control, kAXPressAction);
+  double actionReturnedAt = MonotonicSeconds();
+  CFRelease(control);
+  if (error != kAXErrorSuccess) return NO;
+  *nativeActionMs = (NSUInteger)(
+      MAX(0.0, actionReturnedAt - actionStartedAt) * 1000.0 + 0.5);
+  *projectionStartedAt = actionReturnedAt;
+  return YES;
+}
+
 static AXUIElementRef FindMenuItem(
     AXUIElementRef application, CFStringRef expected) {
   CFMutableArrayRef queue =
@@ -1000,6 +1023,21 @@ static void EmitProjection(
   }
 }
 
+static void EmitWorkspaceProjection(
+    BOOL passed,
+    const char *reasonCode,
+    NSUInteger projectedMs,
+    NSUInteger nativeActionMs) {
+  if (passed) {
+    printf(
+        "{\"status\":\"passed\",\"reasonCode\":null,\"prompted\":false,\"projectedMs\":%lu,\"nativeActionMs\":%lu}\n",
+        (unsigned long)projectedMs,
+        (unsigned long)nativeActionMs);
+  } else {
+    Emit(NO, reasonCode);
+  }
+}
+
 int main(int argc, const char *argv[]) {
   @autoreleasepool {
     NSDictionary *options = @{
@@ -1044,6 +1082,7 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
     AXUIElementRef application = AXUIElementCreateApplication(pid);
     BOOL passed = NO;
     double projectionStartedAt = 0.0;
+    NSUInteger nativeActionMs = 0;
     if ([action isEqualToString:@"probe-start"]) {
       BOOL welcome = HasUnique(application, CFSTR("Foundation öffnen"));
       BOOL canvas = HasUnique(application, CFSTR("codex-task"));
@@ -1099,8 +1138,16 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
         passed = NO;
         for (NSUInteger attempt = 0; attempt < 20 && !passed; attempt += 1) {
           usleep(50 * 1000);
-          projectionStartedAt = MonotonicSeconds();
-          passed = PressPickerControl(application, CFSTR("OKButton"));
+          if ([observation isEqualToString:@"observe-workspace-selected"]) {
+            passed = PressPickerControlWithProjectionTiming(
+                application,
+                CFSTR("OKButton"),
+                &nativeActionMs,
+                &projectionStartedAt);
+          } else {
+            projectionStartedAt = MonotonicSeconds();
+            passed = PressPickerControl(application, CFSTR("OKButton"));
+          }
         }
       }
     } else if ([action isEqualToString:@"cancel-workspace-picker"]) {
@@ -1176,8 +1223,16 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
           WaitForProjection(
               application, observation, projectionStartedAt, &projectedMs);
       CFRelease(application);
-      EmitProjection(
-          passed, "missing-or-ambiguous-semantic-target", projectedMs);
+      if ([observation isEqualToString:@"observe-workspace-selected"]) {
+        EmitWorkspaceProjection(
+            passed,
+            "missing-or-ambiguous-semantic-target",
+            projectedMs,
+            nativeActionMs);
+      } else {
+        EmitProjection(
+            passed, "missing-or-ambiguous-semantic-target", projectedMs);
+      }
       return passed ? 0 : 1;
     }
     CFRelease(application);

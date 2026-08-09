@@ -20,6 +20,31 @@ import {
   validateAcceptanceInvocation,
 } from "./codex-tracer-acceptance.mjs";
 
+function localProjectionMeasurements() {
+  return [
+    {
+      action: "open-canvas",
+      observation: "probe-canvas",
+      projectedMs: 40,
+    },
+    {
+      action: "select-workspace",
+      observation: "observe-workspace-permission-denied",
+      projectedMs: 70,
+    },
+    {
+      action: "select-workspace",
+      observation: "observe-workspace-selected",
+      projectedMs: 90,
+    },
+    {
+      action: "cancel-turn",
+      observation: "observe-stopping",
+      projectedMs: 80,
+    },
+  ];
+}
+
 function validEvidence() {
   const expected = {
     packageExecutableSha256: "b".repeat(64),
@@ -33,6 +58,7 @@ function validEvidence() {
         ...acceptanceBudgetLimits,
         cleanupMs: 4_000,
         firstVisibleKeikoOverheadP95Ms: 1_500,
+        localProjectionMeasurements: localProjectionMeasurements(),
         localProjectionP95Ms: 90,
         nativePickerCancellationMeasurements: Array.from(
           { length: 20 },
@@ -44,6 +70,7 @@ function validEvidence() {
         nativePickerCancellationP95Ms: 539,
         turnCancellationProjectionMs: 80,
         turnDurationMs: 110_000,
+        workspaceSelectionNativeActionMs: 102,
       },
       journey: structuredClone(acceptanceJourneyContract),
       packageInspection: structuredClone(acceptancePackageInspectionContract),
@@ -136,11 +163,11 @@ test("identity evidence is closed and binds the exact accepted composition", () 
   assert.deepEqual(identityBindingFailures(bindings, expected), []);
   assert.equal(
     acceptanceIdentityContract.issueReadinessFingerprint,
-    "575633addc61bf373aa1c5bd0186e311c809f47172540cd7c9c7fbffde970502",
+    "1a0be864b3855b81c649c5843e936828ebaeb27477463ccf0af86f9da61d3391",
   );
   assert.equal(
     acceptanceIdentityContract.parentReadinessFingerprint,
-    "0cee8b235cab06bc3e47a3601ec7f996afbaa431eba9500b65c74a9845e3253f",
+    "261b5711a21e76f79987d955960a7c7fbf46561c8ff34188ed38f54eec19d7b5",
   );
 
   for (const key of Object.keys(bindings)) {
@@ -210,11 +237,13 @@ test("numeric evidence enforces every accepted performance and resource budget",
     ...acceptanceBudgetLimits,
     cleanupMs: 4_000,
     firstVisibleKeikoOverheadP95Ms: 1_500,
+    localProjectionMeasurements: localProjectionMeasurements(),
     localProjectionP95Ms: 90,
     nativePickerCancellationMeasurements,
     nativePickerCancellationP95Ms: 539,
     turnCancellationProjectionMs: 80,
     turnDurationMs: 110_000,
+    workspaceSelectionNativeActionMs: 102,
   };
 
   assert.deepEqual(budgetEvidenceFailures(budgets), []);
@@ -235,6 +264,33 @@ test("numeric evidence enforces every accepted performance and resource budget",
     { ...budgets, turnDeadlineMs: 120_001 },
     { ...budgets, turnDurationMs: 120_001 },
     { ...budgets, localProjectionP95Ms: 101 },
+    {
+      ...budgets,
+      localProjectionMeasurements: budgets.localProjectionMeasurements.slice(1),
+    },
+    {
+      ...budgets,
+      localProjectionMeasurements: budgets.localProjectionMeasurements.map(
+        (sample, index) =>
+          index === 2 ? { ...sample, projectedMs: 101 } : sample,
+      ),
+    },
+    {
+      ...budgets,
+      localProjectionMeasurements: budgets.localProjectionMeasurements.map(
+        (sample, index) =>
+          index === 2
+            ? { ...sample, observation: "observe-workspace-cancelled" }
+            : sample,
+      ),
+    },
+    {
+      ...budgets,
+      localProjectionMeasurements: budgets.localProjectionMeasurements.map(
+        (sample, index) =>
+          index === 2 ? { ...sample, projectedMs: 89 } : sample,
+      ),
+    },
     { ...budgets, nativePickerCancellationP95Ms: 751 },
     { ...budgets, nativePickerCancellationSamples: 19 },
     {
@@ -273,6 +329,7 @@ test("numeric evidence enforces every accepted performance and resource budget",
     { ...budgets, nativePickerCancellationP95Ms: 538 },
     { ...budgets, firstVisibleKeikoOverheadP95Ms: 2_001 },
     { ...budgets, turnCancellationProjectionMs: 101 },
+    { ...budgets, workspaceSelectionNativeActionMs: 5_001 },
     { ...budgets, cleanupMs: 5_001 },
     { ...budgets, providerLatencyExcluded: false },
   ]) {

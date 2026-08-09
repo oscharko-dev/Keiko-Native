@@ -1291,11 +1291,11 @@ export function createCodexTracerAcceptanceIo() {
             experimentalSchemaSha256:
               "46c4414f08cdbb20e66ce4153ee1edcb865ed5fda67e59511a78939ddb7a82d1",
             issueReadinessFingerprint:
-              "575633addc61bf373aa1c5bd0186e311c809f47172540cd7c9c7fbffde970502",
+              "1a0be864b3855b81c649c5843e936828ebaeb27477463ccf0af86f9da61d3391",
             packageExecutableSha256: inspected.executableSha256,
             packageManifestSha256: inspected.packageManifestSha256,
             parentReadinessFingerprint:
-              "0cee8b235cab06bc3e47a3601ec7f996afbaa431eba9500b65c74a9845e3253f",
+              "261b5711a21e76f79987d955960a7c7fbf46561c8ff34188ed38f54eec19d7b5",
             promptSha256: acceptedEnvironment.promptSha256,
             runtimeArtifactSha256: acceptedEnvironment.runtimeSha256,
             runtimePackage: "@openai/codex",
@@ -1454,6 +1454,7 @@ export function createCodexTracerAcceptanceIo() {
             ...acceptanceBudgetLimits,
             cleanupMs,
             firstVisibleKeikoOverheadP95Ms,
+            localProjectionMeasurements: journey.localProjectionMeasurements,
             localProjectionP95Ms: journey.localProjectionP95Ms,
             localProjectionSamples: journey.localProjectionSamples,
             nativePickerCancellationMeasurements:
@@ -1461,6 +1462,8 @@ export function createCodexTracerAcceptanceIo() {
             nativePickerCancellationP95Ms: nativePickerCancellation.p95Ms,
             turnCancellationProjectionMs: journey.turnCancellationProjectionMs,
             turnDurationMs: journey.turnDurationMs,
+            workspaceSelectionNativeActionMs:
+              journey.workspaceSelectionNativeActionMs,
           },
           journey: structuredClone(acceptanceJourneyContract),
           physical: {

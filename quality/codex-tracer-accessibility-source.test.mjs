@@ -95,9 +95,16 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
   assert.match(tracerAccessibilitySource, /WaitForProjection/u);
   assert.match(tracerAccessibilitySource, /clock_gettime\(CLOCK_MONOTONIC/u);
   assert.doesNotMatch(tracerAccessibilitySource, /CFAbsoluteTimeGetCurrent/u);
+  const timedPickerAction = tracerAccessibilitySource.match(
+    /static BOOL PressPickerControlWithProjectionTiming\([\s\S]*?\n\}\n\nstatic/u,
+  )?.[0];
   assert.match(
-    tracerAccessibilitySource,
-    /projectionStartedAt = MonotonicSeconds\(\);[\s\S]*?PressPickerControl\(application, CFSTR\("OKButton"\)\)/u,
+    timedPickerAction ?? "",
+    /actionStartedAt = MonotonicSeconds\(\);[\s\S]*?AXUIElementPerformAction\(control, kAXPressAction\);[\s\S]*?actionReturnedAt = MonotonicSeconds\(\);[\s\S]*?\*projectionStartedAt = actionReturnedAt/u,
+  );
+  assert.match(
+    timedPickerAction ?? "",
+    /\*nativeActionMs = \(NSUInteger\)\([\s\S]*?MAX\(0\.0, actionReturnedAt - actionStartedAt\) \* 1000\.0 \+ 0\.5\)/u,
   );
   assert.match(tracerAccessibilitySource, /\\"projectedMs\\":%lu/u);
   assert.match(tracerAccessibilitySource, /kAXTextFieldRole/u);
@@ -128,8 +135,12 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
     /OpenPickerItem\(\s*application,\s*\(__bridge CFStringRef\)label\)/u,
   );
   assert.match(
+    selectWorkspace ?? "",
+    /\[observation isEqualToString:@"observe-workspace-selected"\][\s\S]*?PressPickerControlWithProjectionTiming\([\s\S]*?&nativeActionMs,[\s\S]*?&projectionStartedAt\)[\s\S]*?else[\s\S]*?projectionStartedAt = MonotonicSeconds\(\);[\s\S]*?PressPickerControl\(application, CFSTR\("OKButton"\)\)/u,
+  );
+  assert.match(
     tracerAccessibilitySource,
-    /PressPickerControl\(application, CFSTR\("OKButton"\)\)/u,
+    /PressPickerControlWithProjectionTiming\(/u,
   );
   assert.match(
     tracerAccessibilitySource,

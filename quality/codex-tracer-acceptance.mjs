@@ -14,9 +14,9 @@ export const acceptanceIdentityContract = Object.freeze({
   experimentalSchemaSha256:
     "46c4414f08cdbb20e66ce4153ee1edcb865ed5fda67e59511a78939ddb7a82d1",
   issueReadinessFingerprint:
-    "575633addc61bf373aa1c5bd0186e311c809f47172540cd7c9c7fbffde970502",
+    "1a0be864b3855b81c649c5843e936828ebaeb27477463ccf0af86f9da61d3391",
   parentReadinessFingerprint:
-    "0cee8b235cab06bc3e47a3601ec7f996afbaa431eba9500b65c74a9845e3253f",
+    "261b5711a21e76f79987d955960a7c7fbf46561c8ff34188ed38f54eec19d7b5",
   promptSha256:
     "e1a92579b1ca673135331829beb97792c1289a6bccdfe0303302256c546960f6",
   runtimeArtifactSha256:
@@ -123,7 +123,21 @@ const budgetMeasurementLimits = Object.freeze({
   nativePickerCancellationP95Ms: 750,
   turnCancellationProjectionMs: 100,
   turnDurationMs: 120_000,
+  workspaceSelectionNativeActionMs: 5_000,
 });
+
+const localProjectionContract = Object.freeze([
+  Object.freeze({ action: "open-canvas", observation: "probe-canvas" }),
+  Object.freeze({
+    action: "select-workspace",
+    observation: "observe-workspace-permission-denied",
+  }),
+  Object.freeze({
+    action: "select-workspace",
+    observation: "observe-workspace-selected",
+  }),
+  Object.freeze({ action: "cancel-turn", observation: "observe-stopping" }),
+]);
 
 const referenceEnvironmentContract = Object.freeze({
   display: "built-in-main-3024x1964-120hz",
@@ -203,6 +217,7 @@ export function budgetEvidenceFailures(budgets) {
   const expectedKeys = [
     ...Object.keys(acceptanceBudgetLimits),
     ...Object.keys(budgetMeasurementLimits),
+    "localProjectionMeasurements",
     "nativePickerCancellationMeasurements",
   ].toSorted(compareCodeUnits);
   if (
@@ -224,11 +239,51 @@ export function budgetEvidenceFailures(budgets) {
     }
   }
   failures.push(
+    ...localProjectionMeasurementFailures(
+      budgets?.localProjectionMeasurements,
+      budgets?.localProjectionP95Ms,
+    ),
     ...nativePickerMeasurementFailures(
       budgets?.nativePickerCancellationMeasurements,
       budgets?.nativePickerCancellationP95Ms,
     ),
   );
+  return failures;
+}
+
+function localProjectionMeasurementFailures(measurements, reportedP95Ms) {
+  const failures = [];
+  if (
+    !Array.isArray(measurements) ||
+    measurements.length !== acceptanceBudgetLimits.localProjectionSamples
+  ) {
+    return ["budget-local-projection-measurements"];
+  }
+  for (const [index, measurement] of measurements.entries()) {
+    const expected = localProjectionContract[index];
+    if (
+      typeof measurement !== "object" ||
+      measurement === null ||
+      Array.isArray(measurement) ||
+      JSON.stringify(Object.keys(measurement).toSorted(compareCodeUnits)) !==
+        JSON.stringify(["action", "observation", "projectedMs"]) ||
+      measurement.action !== expected?.action ||
+      measurement.observation !== expected?.observation ||
+      !Number.isSafeInteger(measurement.projectedMs) ||
+      measurement.projectedMs < 0 ||
+      measurement.projectedMs > budgetMeasurementLimits.localProjectionP95Ms
+    ) {
+      failures.push("budget-local-projection-measurements");
+      break;
+    }
+  }
+  if (
+    failures.length === 0 &&
+    percentile95(measurements.map(({ projectedMs }) => projectedMs)) !==
+      reportedP95Ms
+  ) {
+    failures.push("budget-local-projection-p95-consistency");
+  }
   return failures;
 }
 
