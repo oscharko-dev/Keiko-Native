@@ -6513,17 +6513,24 @@ while :; do /bin/sleep 1; done
             .is_none();
         let marker_exact = fs::read_to_string(&reaped_marker).unwrap_or_default() == "reaped";
         let group_absent = !process_group_exists(process_group);
-        let mut diagnostic = io::stderr().lock();
-        let _ = writeln!(
-            diagnostic,
-            "K101:C{}A{}M{}G{}",
-            u8::from(outcome.cleaned),
-            u8::from(active_retired),
-            u8::from(marker_exact),
-            u8::from(group_absent),
-        );
-        let _ = diagnostic.flush();
-        drop(diagnostic);
+        let diagnostic_flags = u8::from(outcome.cleaned)
+            | u8::from(active_retired) << 1
+            | u8::from(marker_exact) << 2
+            | u8::from(group_absent) << 3;
+        if diagnostic_flags != 0b1111 {
+            let mut diagnostic = io::stderr().lock();
+            let _ = writeln!(
+                diagnostic,
+                "K101:C{}A{}M{}G{}",
+                u8::from(outcome.cleaned),
+                u8::from(active_retired),
+                u8::from(marker_exact),
+                u8::from(group_absent),
+            );
+            let _ = diagnostic.flush();
+            drop(diagnostic);
+            std::process::exit(101);
+        }
 
         assert_eq!(outcome.state, RuntimeReadinessState::TimedOut);
         assert!(outcome.cleaned);
