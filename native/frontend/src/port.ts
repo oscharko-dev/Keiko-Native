@@ -1046,7 +1046,9 @@ function validTurnProgression(
     (previous.state === "streaming" &&
       (next.state === "stopping" || isTerminalTurn(next))) ||
     (previous.state === "stopping" &&
-      (next.state === "cancelled" || next.state === "cleanup-failed"))
+      (next.state === "cancelled" ||
+        next.state === "containment-failed" ||
+        next.state === "cleanup-failed"))
   );
 }
 

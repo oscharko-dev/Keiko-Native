@@ -1219,6 +1219,76 @@ describe("closed streamed Codex turn port", () => {
     ]);
   });
 
+  it("projects an authoritative containment failure after accepted cancellation", async () => {
+    const updates: TurnView[] = [];
+    const preflight = turn("preflighting");
+    const containmentFailed = turn(
+      "containment-failed",
+      "",
+      "protocol-rejected",
+    );
+    const channel = { onmessage: (_value: TurnView) => undefined };
+    let resolveTurn: ((value: string) => void) | undefined;
+    let requestId = "";
+    const invoke = vi.fn(
+      (command: string, arguments_: { request: string }): Promise<string> => {
+        if (command === "application_cancel") {
+          const cancellation = JSON.parse(arguments_.request) as {
+            requestId: string;
+          };
+          return Promise.resolve(
+            JSON.stringify({
+              schemaVersion: 1,
+              requestId: cancellation.requestId,
+              result: { kind: "application-cancel", status: "cancelled" },
+            }),
+          );
+        }
+        requestId = (JSON.parse(arguments_.request) as { requestId: string })
+          .requestId;
+        channel.onmessage(preflight);
+        return new Promise((resolve) => {
+          resolveTurn = resolve;
+        });
+      },
+    );
+    const cancellation = new AbortController();
+    const pending = createRendererPort(
+      invoke,
+      async () => authority,
+      () => channel,
+    ).codexTurn(
+      3,
+      "Bounded.",
+      (update) => updates.push(update),
+      cancellation.signal,
+    );
+    await Promise.resolve();
+    cancellation.abort();
+    await drainCancellationDispatch();
+
+    channel.onmessage(containmentFailed);
+    resolveTurn?.(
+      JSON.stringify({
+        schemaVersion: 1,
+        requestId,
+        result: { kind: "codex-turn", state: containmentFailed },
+      }),
+    );
+
+    await expect(pending).resolves.toEqual(
+      expect.objectContaining({
+        result: { kind: "codex-turn", state: containmentFailed },
+      }),
+    );
+    expect(updates.map(({ state }) => state)).toEqual([
+      "preflighting",
+      "stopping",
+      "containment-failed",
+      "containment-failed",
+    ]);
+  });
+
   it.each([
     ["malformed", () => Promise.resolve("{}")],
     ["rejected", () => Promise.reject(new Error("ipc unavailable"))],
