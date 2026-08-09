@@ -1168,6 +1168,7 @@ fn cleanup_turn(
         active,
         cleanup_deadline,
         Some(CANCEL_TERM_GRACE),
+        DescendantReapPolicy::AllowParentReap,
     );
     outcome
 }
@@ -2842,6 +2843,7 @@ fn cleanup_after(
         active,
         deadline,
         Some(readiness_term_grace(cleanup_remaining)),
+        DescendantReapPolicy::PreserveFinalReconciliation,
     );
     ProtocolOutcome {
         state,
@@ -2857,7 +2859,35 @@ fn stop_process_group(
     active: &ActiveRuntime,
     deadline: Instant,
 ) -> bool {
-    stop_process_group_with_term_grace(child, process_group, active, deadline, None)
+    stop_process_group_with_term_grace(
+        child,
+        process_group,
+        active,
+        deadline,
+        None,
+        DescendantReapPolicy::AllowParentReap,
+    )
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DescendantReapPolicy {
+    PreserveFinalReconciliation,
+    AllowParentReap,
+}
+
+fn descendant_reap_deadline(
+    policy: DescendantReapPolicy,
+    descendant_started: Instant,
+    deadline: Instant,
+) -> Instant {
+    match policy {
+        DescendantReapPolicy::PreserveFinalReconciliation => descendant_started,
+        DescendantReapPolicy::AllowParentReap => {
+            let descendant_grace = DESCENDANT_REAP_GRACE
+                .min(deadline.saturating_duration_since(descendant_started) / 2);
+            deadline.min(descendant_started + descendant_grace)
+        }
+    }
 }
 
 fn stop_process_group_with_term_grace(
@@ -2866,6 +2896,7 @@ fn stop_process_group_with_term_grace(
     active: &ActiveRuntime,
     deadline: Instant,
     term_grace: Option<Duration>,
+    descendant_reap_policy: DescendantReapPolicy,
 ) -> bool {
     if reconcile_stopped_process_group(child, process_group, active) {
         return true;
@@ -2897,9 +2928,8 @@ fn stop_process_group_with_term_grace(
     let _ = refresh_owned_processes(active);
     if signal_active_descendants(active, process_group, SIGKILL) {
         let descendant_started = Instant::now();
-        let descendant_grace =
-            DESCENDANT_REAP_GRACE.min(deadline.saturating_duration_since(descendant_started) / 2);
-        let descendant_deadline = deadline.min(descendant_started + descendant_grace);
+        let descendant_deadline =
+            descendant_reap_deadline(descendant_reap_policy, descendant_started, deadline);
         while Instant::now() < descendant_deadline {
             if reconcile_stopped_process_group(child, process_group, active) {
                 return true;
@@ -6490,6 +6520,37 @@ while :; do /bin/sleep 1; done
     }
 
     #[test]
+    fn readiness_descendant_phase_preserves_final_reconciliation_budget() {
+        let descendant_started = Instant::now();
+        let deadline = descendant_started + Duration::from_millis(50);
+
+        assert_eq!(
+            descendant_reap_deadline(
+                DescendantReapPolicy::PreserveFinalReconciliation,
+                descendant_started,
+                deadline,
+            ),
+            descendant_started
+        );
+        assert_eq!(
+            descendant_reap_deadline(
+                DescendantReapPolicy::AllowParentReap,
+                descendant_started,
+                deadline,
+            ),
+            descendant_started + Duration::from_millis(25)
+        );
+        assert_eq!(
+            descendant_reap_deadline(
+                DescendantReapPolicy::AllowParentReap,
+                descendant_started,
+                descendant_started + Duration::from_secs(1),
+            ),
+            descendant_started + DESCENDANT_REAP_GRACE
+        );
+    }
+
+    #[test]
     fn readiness_cleanup_reaps_after_escalating_a_term_resistant_process() {
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
@@ -6827,6 +6888,7 @@ while :; do /bin/sleep 1; done
             &active,
             Instant::now() + Duration::from_secs(1),
             Some(Duration::from_millis(200)),
+            DescendantReapPolicy::AllowParentReap,
         ));
         assert!(!term_marker.exists());
         assert!(!process_group_exists(process_group));
@@ -6863,6 +6925,7 @@ while :; do /bin/sleep 1; done
             &active,
             Instant::now() + Duration::from_secs(1),
             Some(Duration::from_millis(20)),
+            DescendantReapPolicy::AllowParentReap,
         ));
         assert_eq!(
             fs::read_to_string(term_marker).expect("TERM marker"),
