@@ -6481,10 +6481,11 @@ while :; do /bin/sleep 1; done
         let mut child = Command::new("/bin/sh")
             .arg("-c")
             .arg(format!(
-                "trap '' TERM; /bin/sh -c \"trap '' TERM; printf 'ready\\n'; while :; do /bin/sleep 1; done\" & wait; printf reaped > {}",
+                "trap '' TERM; /bin/sh -c \"trap '' TERM; printf 'ready\\n'; while :; do read -r line; done\" & wait; printf reaped > {}",
                 reaped_marker.display()
             ))
             .process_group(0)
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
             .expect("TERM-resistant readiness process");
