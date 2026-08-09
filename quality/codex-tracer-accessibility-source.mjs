@@ -932,7 +932,9 @@ static BOOL ProjectionPairIsAllowed(NSString *action, NSString *observation) {
 }
 
 static BOOL ProjectionIsVisible(
-    AXUIElementRef application, NSString *observation) {
+    AXUIElementRef application,
+    NSString *observation,
+    NSString *exactWorkspaceProjection) {
   if ([observation isEqualToString:@"probe-canvas"]) {
     const CFStringRef expected[] = {
       CFSTR("ime-harness"),
@@ -944,8 +946,10 @@ static BOOL ProjectionIsVisible(
         application, expected, sizeof(expected) / sizeof(expected[0]));
   }
   if ([observation isEqualToString:@"observe-workspace-selected"]) {
-    return HasUniquePrefix(
-        application, CFSTR("Ausgewählt: KeikoAcceptanceIdentity104"));
+    return exactWorkspaceProjection != nil &&
+        HasUnique(
+            application,
+            (__bridge CFStringRef)exactWorkspaceProjection);
   }
   if ([observation isEqualToString:@"observe-workspace-cancelled"]) {
     return HasUnique(
@@ -985,11 +989,13 @@ static BOOL WaitForUnique(
 static BOOL WaitForProjection(
     AXUIElementRef application,
     NSString *observation,
+    NSString *exactWorkspaceProjection,
     double startedAt,
     NSUInteger *projectedMs) {
   const double deadline = startedAt + 5.0;
   while (YES) {
-    if (ProjectionIsVisible(application, observation)) {
+    if (ProjectionIsVisible(
+            application, observation, exactWorkspaceProjection)) {
       double elapsed = MonotonicSeconds() - startedAt;
       if (elapsed < 0.0) return NO;
       *projectedMs = (NSUInteger)(MAX(0.0, elapsed) * 1000.0 + 0.5);
@@ -1083,6 +1089,7 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
     BOOL passed = NO;
     double projectionStartedAt = 0.0;
     NSUInteger nativeActionMs = 0;
+    NSString *selectedWorkspaceProjection = nil;
     if ([action isEqualToString:@"probe-start"]) {
       BOOL welcome = HasUnique(application, CFSTR("Foundation öffnen"));
       BOOL canvas = HasUnique(application, CFSTR("codex-task"));
@@ -1129,6 +1136,10 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
           label != nil &&
           [label hasPrefix:@"KeikoAcceptanceIdentity104"] &&
           [label rangeOfCharacterFromSet:invalid].location == NSNotFound;
+      if (labelValid) {
+        selectedWorkspaceProjection =
+            [NSString stringWithFormat:@"Ausgewählt: %@", label];
+      }
       passed = labelValid &&
           (PickerIsAt(application, (__bridge CFStringRef)label) ||
            (EnsurePickerListView(application) &&
@@ -1221,7 +1232,11 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
       NSUInteger projectedMs = 0;
       passed = projectionStartedAt > 0.0 &&
           WaitForProjection(
-              application, observation, projectionStartedAt, &projectedMs);
+              application,
+              observation,
+              selectedWorkspaceProjection,
+              projectionStartedAt,
+              &projectedMs);
       CFRelease(application);
       if ([observation isEqualToString:@"observe-workspace-selected"]) {
         EmitWorkspaceProjection(

@@ -249,6 +249,21 @@ test("the cancellation probe checks alternative terminal states in one traversal
   assert.doesNotMatch(cancellationProbe ?? "", /HasUnique\(/u);
 });
 
+test("successful workspace projection rejects a stale accepted-prefix sibling", () => {
+  const selectedProjection = tracerAccessibilitySource.match(
+    /if \(\[observation isEqualToString:@"observe-workspace-selected"\]\) \{[\s\S]*?\n  \}/u,
+  )?.[0];
+  assert.match(
+    tracerAccessibilitySource,
+    /selectedWorkspaceProjection =\s*\[NSString stringWithFormat:@"Ausgewählt: %@", label\]/u,
+  );
+  assert.match(
+    selectedProjection ?? "",
+    /exactWorkspaceProjection != nil[\s\S]*?HasUnique\([\s\S]*?exactWorkspaceProjection/u,
+  );
+  assert.doesNotMatch(selectedProjection ?? "", /HasUniquePrefix/u);
+});
+
 const macArm64Test =
   process.platform === "darwin" && process.arch === "arm64"
     ? test
