@@ -6481,7 +6481,7 @@ while :; do /bin/sleep 1; done
         let mut child = Command::new("/bin/sh")
             .arg("-c")
             .arg(format!(
-                "trap '' TERM; /bin/sh -c \"trap '' TERM; while :; do :; done\" & printf 'ready\\n'; wait; printf reaped > {}",
+                "trap '' TERM; /bin/sh -c \"trap '' TERM; while :; do /bin/sleep 1; done\" & printf 'ready\\n'; wait; printf reaped > {}",
                 reaped_marker.display()
             ))
             .process_group(0)
