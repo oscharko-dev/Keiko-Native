@@ -2953,13 +2953,11 @@ fn reconcile_retained_process_group(active: &ActiveRuntime, deadline: Instant) -
 }
 
 fn retire_retained_process_group_if_stopped(active: &ActiveRuntime, process_group: i32) -> bool {
-    if active
-        .process_group
-        .lock()
-        .ok()
-        .and_then(|group| group.map(|identity| identity.process_id))
-        != Some(process_group)
-    {
+    let active_identity = active.process_group.lock().ok().and_then(|group| *group);
+    let Some(active_identity) = active_identity else {
+        return true;
+    };
+    if active_identity.process_id != process_group {
         return true;
     }
     let _ = refresh_owned_processes(active);
@@ -2977,8 +2975,7 @@ fn retire_retained_process_group_if_stopped(active: &ActiveRuntime, process_grou
     if group_exists && !reap_child(process_group) {
         return false;
     }
-    retire_active_process_group(active, process_group);
-    true
+    retire_active_process_group(active, active_identity)
 }
 
 fn reap_child(child: i32) -> bool {
@@ -3003,7 +3000,7 @@ fn signal_active_process_group(active: &ActiveRuntime, process_group: i32, signa
         RetainedProcessIdentityStatus::Current => {}
         RetainedProcessIdentityStatus::Reused => {
             drop(active_group);
-            retire_active_process_group(active, process_group);
+            retire_active_process_group(active, identity);
             return false;
         }
         RetainedProcessIdentityStatus::Unavailable => return false,
@@ -3035,7 +3032,7 @@ fn signal_active_descendants(active: &ActiveRuntime, process_group: i32, signal:
         RetainedProcessIdentityStatus::Current => {}
         RetainedProcessIdentityStatus::Reused => {
             drop(active_group);
-            retire_active_process_group(active, process_group);
+            retire_active_process_group(active, identity);
             return false;
         }
         RetainedProcessIdentityStatus::Unavailable => return false,
@@ -3055,15 +3052,19 @@ fn signal_active_descendants(active: &ActiveRuntime, process_group: i32, signal:
     signalled
 }
 
-fn retire_active_process_group(active: &ActiveRuntime, process_group: i32) {
-    if let Ok(mut active_group) = active.process_group.lock()
-        && active_group.is_some_and(|identity| identity.process_id == process_group)
-    {
-        *active_group = None;
-        if let Ok(mut owned) = active.owned_processes.lock() {
-            owned.clear();
-        }
+fn retire_active_process_group(active: &ActiveRuntime, identity: ProcessIdentity) -> bool {
+    let Ok(mut active_group) = active.process_group.lock() else {
+        return false;
+    };
+    if *active_group != Some(identity) {
+        return false;
     }
+    let Ok(mut owned) = active.owned_processes.lock() else {
+        return false;
+    };
+    *active_group = None;
+    owned.clear();
+    true
 }
 
 fn ready_to_reap(child: i32, process_group: i32, active: &ActiveRuntime) -> bool {
@@ -3080,14 +3081,23 @@ fn reconcile_stopped_process_group(
     process_group: i32,
     active: &ActiveRuntime,
 ) -> bool {
+    let active_identity = active.process_group.lock().ok().and_then(|active_group| {
+        active_group.filter(|identity| {
+            identity.process_id == process_group
+                && retained_process_identity_status(*identity)
+                    == RetainedProcessIdentityStatus::Current
+        })
+    });
+    let Some(active_identity) = active_identity else {
+        return false;
+    };
     if !ready_to_reap(child.id() as i32, process_group, active) || child.wait().is_err() {
         return false;
     }
     if process_group_exists(process_group) || !authenticated_owned_processes_stopped(active) {
         return false;
     }
-    retire_active_process_group(active, process_group);
-    true
+    retire_active_process_group(active, active_identity)
 }
 
 fn register_owned_process(active: &ActiveRuntime, process: i32) {
@@ -4561,12 +4571,16 @@ mod tests {
         let active = ActiveRuntime::default();
         let unavailable = unavailable_process_identity(i32::MAX);
         *active.process_group.lock().expect("process-group state") = Some(unavailable);
-        retire_active_process_group(&active, i32::MAX - 1);
+        let mismatched = ProcessIdentity {
+            started_seconds: unavailable.started_seconds.wrapping_add(1),
+            ..unavailable
+        };
+        assert!(!retire_active_process_group(&active, mismatched));
         assert_eq!(
             *active.process_group.lock().expect("process-group state"),
             Some(unavailable)
         );
-        retire_active_process_group(&active, i32::MAX);
+        assert!(retire_active_process_group(&active, unavailable));
         assert!(!signal_active_process_group(&active, i32::MAX, SIGTERM));
         assert!(!signal_active_process_group(&active, i32::MAX, SIGKILL));
         assert!(!signal_active_descendants(&active, i32::MAX, SIGKILL));
@@ -4585,7 +4599,7 @@ mod tests {
         assert!(!signal_active_descendants(&poisoned, i32::MAX, SIGKILL));
         assert!(!refresh_owned_processes(&poisoned));
         assert_eq!(owned_descendants_alive(&poisoned, i32::MAX), None);
-        retire_active_process_group(&poisoned, i32::MAX);
+        assert!(!retire_active_process_group(&poisoned, unavailable));
 
         let poisoned_owned = Arc::new(ActiveRuntime::default());
         *poisoned_owned
@@ -6597,6 +6611,98 @@ while :; do /bin/sleep 1; done
             &mut child,
             process_group,
             &active,
+        ));
+        assert_eq!(
+            *active.process_group.lock().expect("process-group state"),
+            None
+        );
+    }
+
+    #[test]
+    fn final_cleanup_reconciliation_rejects_a_mismatched_active_group() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut exited = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("printf 'ready\\n'; read -r line")
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("exited reconciliation process");
+        let exited_group = exited.id() as i32;
+        let mut stdout = BufReader::new(exited.stdout.take().expect("child stdout"));
+        let mut ready = String::new();
+        stdout.read_line(&mut ready).expect("readiness handshake");
+        assert_eq!(ready, "ready\n");
+        drop(exited.stdin.take());
+        let exit_deadline = Instant::now() + Duration::from_secs(1);
+        while !child_exited_without_reaping(exited_group).expect("direct-child exit state") {
+            assert!(Instant::now() < exit_deadline, "direct child did not exit");
+            thread::yield_now();
+        }
+        assert!(!process_group_exists(exited_group));
+
+        let mut live = Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .expect("live active process group");
+        let live_group = live.id() as i32;
+        let active = ActiveRuntime::default();
+        assert!(publish_active_process_group(&active, live_group));
+        let live_identity = process_identity(live_group).expect("live process-group identity");
+
+        let reconciled = reconcile_stopped_process_group(&mut exited, exited_group, &active);
+        let exited_still_reapable = child_exited_without_reaping(exited_group).unwrap_or(false);
+        let retained = *active.process_group.lock().expect("retained active group");
+        let live_group_exists = process_group_exists(live_group);
+        signal_process_group(live_group, SIGKILL);
+        let _ = live.wait();
+        let _ = exited.wait();
+
+        assert!(!reconciled);
+        assert!(exited_still_reapable);
+        assert_eq!(retained, Some(live_identity));
+        assert!(live_group_exists);
+    }
+
+    #[test]
+    fn retained_ownership_reconciles_after_the_direct_child_was_reaped() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("printf 'ready\\n'; read -r line")
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("retained reconciliation process");
+        let process_group = child.id() as i32;
+        let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+        let mut ready = String::new();
+        stdout.read_line(&mut ready).expect("readiness handshake");
+        assert_eq!(ready, "ready\n");
+
+        let active = ActiveRuntime::default();
+        assert!(publish_active_process_group(&active, process_group));
+        drop(child.stdin.take());
+        assert!(child.wait().is_ok());
+        assert!(!process_group_exists(process_group));
+        assert!(
+            active
+                .process_group
+                .lock()
+                .expect("retained process group")
+                .is_some()
+        );
+
+        assert!(reconcile_retained_process_group(
+            &active,
+            Instant::now() + Duration::from_secs(1),
         ));
         assert_eq!(
             *active.process_group.lock().expect("process-group state"),
