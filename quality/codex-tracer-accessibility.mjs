@@ -14,6 +14,7 @@ const reasonCodes = new Set([
   "adapter-output-invalid",
   "bounded-wait-expired",
   "cleanup-failed",
+  "containment-failed",
   "invalid-invocation",
   "missing-or-ambiguous-semantic-target",
 ]);

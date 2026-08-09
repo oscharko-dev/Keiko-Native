@@ -199,6 +199,7 @@ test("the cancellation terminal probe distinguishes incomplete cleanup", () => {
   )?.[0];
 
   assert.match(terminalProbe ?? "", /Emit\(NO, "cleanup-failed"\)/u);
+  assert.match(terminalProbe ?? "", /Emit\(NO, "containment-failed"\)/u);
   assert.match(terminalProbe ?? "", /return 1;/u);
   assert.match(terminalProbe ?? "", /CancellationTerminal\(application\)/u);
   assert.doesNotMatch(terminalProbe ?? "", /HasUnique\(/u);
@@ -212,6 +213,10 @@ test("the cancellation terminal probe distinguishes incomplete cleanup", () => {
   assert.match(
     cancellationTerminal ?? "",
     /Die Laufzeit konnte nicht vollständig bereinigt werden\./u,
+  );
+  assert.match(
+    cancellationTerminal ?? "",
+    /Eine nicht erlaubte Anbieteraktivität wurde abgefangen/u,
   );
   assert.match(cancellationTerminal ?? "", /UniqueValueIndex\(/u);
 });

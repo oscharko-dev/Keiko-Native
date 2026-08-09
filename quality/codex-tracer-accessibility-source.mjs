@@ -774,6 +774,7 @@ static NSInteger CancellationTerminal(AXUIElementRef application) {
   const CFStringRef expected[] = {
     CFSTR("Der Codex-Lauf wurde abgebrochen und vollständig beendet."),
     CFSTR("Die Laufzeit konnte nicht vollständig bereinigt werden. Beenden Sie Keiko Native."),
+    CFSTR("Eine nicht erlaubte Anbieteraktivität wurde abgefangen; die Laufzeit wurde beendet."),
   };
   return UniqueValueIndex(
       application, expected, sizeof(expected) / sizeof(expected[0]));
@@ -1077,6 +1078,11 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
       if (terminal == 1) {
         CFRelease(application);
         Emit(NO, "cleanup-failed");
+        return 1;
+      }
+      if (terminal == 2) {
+        CFRelease(application);
+        Emit(NO, "containment-failed");
         return 1;
       }
       passed = terminal == 0;
