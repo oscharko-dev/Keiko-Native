@@ -4379,6 +4379,35 @@ mod tests {
         false
     }
 
+    fn publish_blocked_fixture(
+        child: &mut Child,
+        process_group: i32,
+        active: &ActiveRuntime,
+    ) -> Option<ProcessIdentity> {
+        let captured_identity = process_identity(process_group);
+        let published = publish_active_process_group(active, process_group);
+        let stored_identity = active.process_group.lock().ok().and_then(|group| *group);
+        if published
+            && stored_identity == captured_identity
+            && stored_identity.is_some_and(|identity| {
+                retained_process_identity_status(identity) == RetainedProcessIdentityStatus::Current
+            })
+        {
+            return stored_identity;
+        }
+        let _ = child.kill();
+        let reaped = bounded_owned_child_exit(child);
+        let retired =
+            stored_identity.is_none_or(|identity| retire_active_process_group(active, identity));
+        let group_absent = !process_group_exists(process_group);
+        let ownership_absent = active
+            .process_group
+            .lock()
+            .is_ok_and(|group| group.is_none());
+        assert!(reaped && retired && group_absent && ownership_absent);
+        panic!("fixture process-group publication was not current");
+    }
+
     #[test]
     fn runtime_boundary_counts_and_rejects_structural_repository_context() {
         let workspace = Path::new("/private/KeikoRepositoryCanary");
@@ -9519,15 +9548,20 @@ exit 9
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut child = Command::new("/bin/sleep")
-            .arg("30")
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("read -r release; exec /bin/sleep 30")
             .process_group(0)
+            .stdin(Stdio::piped())
             .spawn()
             .expect("expired readiness cleanup process");
         let process_group = child.id() as i32;
         let active = ActiveRuntime::default();
-        let published = publish_active_process_group(&active, process_group);
-        let retained_identity = process_identity(process_group);
+        let retained_identity = publish_blocked_fixture(&mut child, process_group, &active);
+        let release = child
+            .stdin
+            .as_mut()
+            .is_some_and(|stdin| writeln!(stdin, "release").is_ok());
 
         let cleaned = stop_process_group_with_term_grace(
             &mut child,
@@ -9564,7 +9598,7 @@ exit 9
         let ownership_retired = active.process_group.lock().ok().and_then(|group| *group);
         let owned_stopped = authenticated_owned_processes_status(&active);
 
-        assert!(published);
+        assert!(release);
         assert!(!cleaned);
         assert!(!late_reconciled);
         assert_eq!(retained, retained_identity);
@@ -9583,11 +9617,10 @@ exit 9
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let fixture = Fixture::new();
         let work_directory = fixture.work.join("readiness-cleanup-smoke");
-        fs::create_dir(&work_directory).expect("readiness cleanup work");
         let mut child = Command::new("/bin/sh")
             .arg("-c")
             .arg(
-                "trap '' TERM; /bin/sh -c \"trap '' TERM; printf 'ready\\n'; while :; do read -r line; done\" <&0 & wait; printf 'reaped\\n'",
+                "trap '' TERM; read -r release; /bin/sh -c \"trap '' TERM; printf 'ready\\n'; while :; do read -r line; done\" <&0 & wait; printf 'reaped\\n'",
             )
             .process_group(0)
             .stdin(Stdio::piped())
@@ -9596,15 +9629,23 @@ exit 9
             .expect("TERM-resistant readiness process");
         let process_group = child.id() as i32;
         let mut stdout = child.stdout.take().map(BufReader::new);
-        let mut ready = String::new();
-        let readiness = stdout
-            .as_mut()
-            .ok_or_else(|| io::Error::other("child stdout"))
-            .and_then(|stdout| stdout.read_line(&mut ready));
-
         let active = ActiveRuntime::default();
-        let published = publish_active_process_group(&active, process_group);
-        let exact_identity = process_identity(process_group);
+        let exact_identity = publish_blocked_fixture(&mut child, process_group, &active);
+        let published = exact_identity.is_some();
+        fs::create_dir(&work_directory).expect("readiness cleanup work");
+        let release = child
+            .stdin
+            .as_mut()
+            .is_some_and(|stdin| writeln!(stdin, "release").is_ok());
+        let mut ready = String::new();
+        let readiness = release
+            .then(|| {
+                stdout
+                    .as_mut()
+                    .ok_or_else(|| io::Error::other("child stdout"))
+                    .and_then(|stdout| stdout.read_line(&mut ready))
+            })
+            .unwrap_or_else(|| Err(io::Error::other("release handshake")));
         let outcome = cleanup_after(
             child,
             process_group,
@@ -9699,7 +9740,7 @@ exit 9
         let mut child = Command::new("/bin/sh")
             .arg("-c")
             .arg(
-                "trap '' TERM; /bin/sh -c \"trap '' TERM; printf 'ready\\n'; while :; do read -r line; done\" <&0 & wait; printf 'reaped\\n'",
+                "trap '' TERM; read -r release; /bin/sh -c \"trap '' TERM; printf 'ready\\n'; while :; do read -r line; done\" <&0 & wait; printf 'reaped\\n'",
             )
             .process_group(0)
             .stdin(Stdio::piped())
@@ -9708,15 +9749,22 @@ exit 9
             .expect("TERM-resistant parent and descendant");
         let process_group = child.id() as i32;
         let mut stdout = child.stdout.take().map(BufReader::new);
-        let mut ready = String::new();
-        let readiness = stdout
-            .as_mut()
-            .ok_or_else(|| io::Error::other("child stdout"))
-            .and_then(|stdout| stdout.read_line(&mut ready));
-
         let active = ActiveRuntime::default();
-        let exact_identity = process_identity(process_group);
-        let published = publish_active_process_group(&active, process_group);
+        let exact_identity = publish_blocked_fixture(&mut child, process_group, &active);
+        let published = exact_identity.is_some();
+        let release = child
+            .stdin
+            .as_mut()
+            .is_some_and(|stdin| writeln!(stdin, "release").is_ok());
+        let mut ready = String::new();
+        let readiness = release
+            .then(|| {
+                stdout
+                    .as_mut()
+                    .ok_or_else(|| io::Error::other("child stdout"))
+                    .and_then(|stdout| stdout.read_line(&mut ready))
+            })
+            .unwrap_or_else(|| Err(io::Error::other("release handshake")));
         let refreshed = refresh_owned_processes(&active);
         let term_signalled = signal_active_process_group(&active, process_group, SIGTERM);
         let group_survived_term = process_group_exists(process_group);
@@ -9769,9 +9817,9 @@ exit 9
             Err(io::Error::other("fixture teardown was not proven"))
         };
 
+        assert!(release);
         assert!(readiness.is_ok());
         assert_eq!(ready, "ready\n");
-        assert!(exact_identity.is_some());
         assert!(published);
         assert!(refreshed);
         assert!(term_signalled);
@@ -10101,6 +10149,63 @@ exit 9
             &active,
             std::process::id() as i32,
         ));
+    }
+
+    #[test]
+    fn unavailable_readiness_publication_reaps_the_blocked_leader_without_release() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        struct ClearProcessGroupPoison<'a>(&'a Mutex<Option<ProcessIdentity>>);
+        impl Drop for ClearProcessGroupPoison<'_> {
+            fn drop(&mut self) {
+                self.0.clear_poison();
+            }
+        }
+        let fixture = Fixture::new();
+        let descendant_marker = fixture.work.join("descendant-released");
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("read -r release; printf released > \"$DESCENDANT_MARKER\"; /bin/sleep 30 & wait")
+            .env("DESCENDANT_MARKER", &descendant_marker)
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("blocked publication fixture");
+        let process_group = child.id() as i32;
+        let active = ActiveRuntime::default();
+        let clear_poison = ClearProcessGroupPoison(&active.process_group);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = active
+                .process_group
+                .lock()
+                .expect("publication ownership before poisoning");
+            panic!("make readiness publication unavailable");
+        }));
+        let published = publish_active_process_group(&active, process_group);
+        let _ = child.kill();
+        let reaped = bounded_owned_child_exit(&mut child);
+        let group_absent = !process_group_exists(process_group);
+        drop(clear_poison);
+        let ownership_absent = active
+            .process_group
+            .lock()
+            .is_ok_and(|group| group.is_none());
+        let owned_absent = active
+            .owned_processes
+            .lock()
+            .is_ok_and(|owned| owned.is_empty());
+        let work_absent = !descendant_marker.exists()
+            && active
+                .retained_work_directories
+                .lock()
+                .is_ok_and(|retained| retained.is_empty());
+
+        assert!(!published);
+        assert!(reaped);
+        assert!(group_absent);
+        assert!(ownership_absent && owned_absent);
+        assert!(work_absent, "publication failure released descendant work");
     }
 
     #[test]
