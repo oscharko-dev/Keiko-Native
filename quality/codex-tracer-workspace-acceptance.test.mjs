@@ -350,24 +350,26 @@ test("workspace acceptance cleans up and never persists partial evidence", async
 
 test("workspace diagnostics reject hostile checkpoints without reflecting them", async () => {
   const { prepared } = validWorkspaceFixture();
-  const result = await runCodexTracerWorkspaceAcceptance({
-    args: [],
-    io: {
-      cleanupWorkspacePackage() {},
-      prepareWorkspacePackage() {
-        return prepared;
+  for (const checkpoint of ["workspace:/Users/private/repository:1", null]) {
+    const result = await runCodexTracerWorkspaceAcceptance({
+      args: [],
+      io: {
+        cleanupWorkspacePackage() {},
+        prepareWorkspacePackage() {
+          return prepared;
+        },
+        runWorkspaceJourney(_value, reportProgress) {
+          reportProgress("started", checkpoint);
+        },
+        writeWorkspaceEvidence() {},
       },
-      runWorkspaceJourney(_value, reportProgress) {
-        reportProgress("started", "workspace:/Users/private/repository:1");
-      },
-      writeWorkspaceEvidence() {},
-    },
-  });
+    });
 
-  assert.deepEqual(result.diagnostic, {
-    lastCompleted: "prepare",
-    lastStarted: "workspace-journey",
-    status: "rejected",
-  });
-  assert.doesNotMatch(JSON.stringify(result), /Users|private|repository/iu);
+    assert.deepEqual(result.diagnostic, {
+      lastCompleted: "prepare",
+      lastStarted: "workspace-journey",
+      status: "rejected",
+    });
+    assert.doesNotMatch(JSON.stringify(result), /Users|private|repository/iu);
+  }
 });

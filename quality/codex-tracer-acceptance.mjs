@@ -717,7 +717,6 @@ function workspaceProgressTracker() {
   ]);
   const valid = (checkpoint) => {
     if (
-      checkpoint === null ||
       [
         "cleanup:application",
         "cleanup:fixture",
