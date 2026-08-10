@@ -4379,6 +4379,21 @@ mod tests {
         false
     }
 
+    fn finalize_exact_child_after_eof(identity: ProcessIdentity) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < deadline {
+            match child_exited_without_reaping(identity.process_id) {
+                Ok(true) if reap_child(identity.process_id) => break,
+                Ok(true) => thread::yield_now(),
+                Err(error) if error.raw_os_error() == Some(MACOS_ECHILD) => break,
+                Ok(false) | Err(_) => thread::yield_now(),
+            }
+        }
+        child_exited_without_reaping(identity.process_id)
+            .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD))
+            && process_group_presence(identity.process_id) == ProcessPresenceStatus::Absent
+    }
+
     fn publish_blocked_fixture(
         child: &mut Child,
         process_group: i32,
@@ -4399,8 +4414,8 @@ mod tests {
         let reaped = bounded_owned_child_exit(child);
         let initially_absent =
             reaped && process_group_presence(process_group) == ProcessPresenceStatus::Absent;
-        let recovered = initially_absent
-            || stored_identity.is_some_and(|identity| {
+        if !initially_absent {
+            let _ = stored_identity.is_some_and(|identity| {
                 retained_process_identity_status(identity) == RetainedProcessIdentityStatus::Current
                     && stop_process_group(
                         child,
@@ -4409,9 +4424,9 @@ mod tests {
                         Instant::now() + Duration::from_secs(5),
                     )
             });
+        }
         let group_absent = process_group_presence(process_group) == ProcessPresenceStatus::Absent;
-        let retired = recovered
-            && group_absent
+        let retired = group_absent
             && stored_identity.is_none_or(|identity| {
                 active
                     .process_group
@@ -4425,20 +4440,9 @@ mod tests {
             .process_group
             .lock()
             .is_ok_and(|group| group.is_none());
-        if !(reaped && recovered && group_absent && retired && ownership_absent)
-            && stored_identity.is_some_and(|identity| {
-                active.process_group.lock().ok().and_then(|group| *group) == Some(identity)
-                    && retained_process_identity_status(identity)
-                        == RetainedProcessIdentityStatus::Current
-            })
-        {
-            let _ = stop_process_group(
-                child,
-                process_group,
-                active,
-                Instant::now() + Duration::from_secs(5),
-            );
-        }
+        let direct_reaped = child_exited_without_reaping(process_group)
+            .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD));
+        assert!(direct_reaped && group_absent && retired && ownership_absent);
         None
     }
 
@@ -9584,7 +9588,7 @@ exit 9
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut child = Command::new("/bin/sh")
             .arg("-c")
-            .arg("read -r release || exit 0; exec /bin/sleep 30")
+            .arg("read -r release || exit 0; while read -r control; do :; done")
             .process_group(0)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -9597,14 +9601,18 @@ exit 9
             true
         });
         let active = ActiveRuntime::default();
-        let retained_identity = publish_blocked_fixture(&mut child, process_group, &active);
+        let Some(retained_identity) = publish_blocked_fixture(&mut child, process_group, &active)
+        else {
+            drop(child.stdin.take());
+            panic!("expired fixture publication failed after teardown");
+        };
         let release = child
             .stdin
             .as_mut()
             .is_some_and(|stdin| writeln!(stdin, "release").is_ok());
         let readiness_timeout = (release && stdout_available)
             .then(|| stdout_receiver.recv_timeout(Duration::from_millis(10)));
-        drop(child.stdin.take());
+        let control = child.stdin.take();
 
         let cleaned = stop_process_group_with_term_grace(
             &mut child,
@@ -9624,6 +9632,7 @@ exit 9
         );
         let retained = active.process_group.lock().ok().and_then(|group| *group);
         let still_running = process_group_exists(process_group);
+        drop(control);
         let mut recovered = stop_process_group(
             &mut child,
             process_group,
@@ -9636,8 +9645,7 @@ exit 9
                 reconcile_retained_process_group(&active, Instant::now() + Duration::from_secs(5));
         }
         let group_absent = !process_group_exists(process_group);
-        let direct_child_reaped = child_exited_without_reaping(process_group)
-            .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD));
+        let direct_child_reaped = finalize_exact_child_after_eof(retained_identity);
         let ownership_retired = active.process_group.lock().ok().and_then(|group| *group);
         let owned_stopped = authenticated_owned_processes_status(&active);
 
@@ -9648,7 +9656,7 @@ exit 9
         ));
         assert!(!cleaned);
         assert!(!late_reconciled);
-        assert_eq!(retained, retained_identity);
+        assert_eq!(retained, Some(retained_identity));
         assert!(still_running);
         assert!(recovered, "authenticated test recovery did not complete");
         assert!(group_absent);
@@ -9682,8 +9690,11 @@ exit 9
             true
         });
         let active = ActiveRuntime::default();
-        let exact_identity = publish_blocked_fixture(&mut child, process_group, &active);
-        let published = exact_identity.is_some();
+        let Some(exact_identity) = publish_blocked_fixture(&mut child, process_group, &active)
+        else {
+            drop(child.stdin.take());
+            panic!("smoke fixture publication failed after teardown");
+        };
         let release = child
             .stdin
             .as_mut()
@@ -9696,6 +9707,7 @@ exit 9
         if !ready {
             drop(child.stdin.take());
         }
+        let control = child.stdin.take();
         let outcome = cleanup_after(
             child,
             process_group,
@@ -9723,6 +9735,7 @@ exit 9
             .ok()
             .is_some_and(|retained| retained.contains(&work_directory));
 
+        drop(control);
         let mut process_recovered = original_cleaned;
         if !process_recovered {
             process_recovered =
@@ -9735,6 +9748,7 @@ exit 9
                 );
             }
         }
+        let eof_finalized = finalize_exact_child_after_eof(exact_identity);
         let work_recovered = reconcile_retained_work_directories(&active);
         let final_ownership = active.process_group.lock().ok().and_then(|group| *group);
         let final_group_presence = process_group_presence(process_group);
@@ -9749,6 +9763,7 @@ exit 9
                 .is_some_and(|retained| retained.is_empty());
         let teardown_proven = process_recovered
             && work_recovered
+            && eof_finalized
             && final_child_reaped
             && final_ownership.is_none()
             && final_group_presence == ProcessPresenceStatus::Absent
@@ -9756,8 +9771,6 @@ exit 9
             && final_work_absent;
 
         assert!(ready);
-        assert!(published);
-        assert!(exact_identity.is_some());
         match product_state {
             RuntimeReadinessState::TimedOut => {
                 assert!(original_cleaned);
@@ -9772,7 +9785,7 @@ exit 9
             RuntimeReadinessState::CleanupFailed => {
                 assert!(!original_cleaned);
                 assert!(!work_cleaned);
-                assert_eq!(product_ownership, exact_identity);
+                assert_eq!(product_ownership, Some(exact_identity));
                 assert!(product_work_exists);
                 assert!(product_retained_work);
             }
@@ -9803,8 +9816,11 @@ exit 9
             true
         });
         let active = ActiveRuntime::default();
-        let exact_identity = publish_blocked_fixture(&mut child, process_group, &active);
-        let published = exact_identity.is_some();
+        let Some(exact_identity) = publish_blocked_fixture(&mut child, process_group, &active)
+        else {
+            drop(child.stdin.take());
+            panic!("strict fixture publication failed after teardown");
+        };
         let release = child
             .stdin
             .as_mut()
@@ -9832,6 +9848,7 @@ exit 9
             thread::yield_now();
         }
 
+        drop(child.stdin.take());
         let recovered = product_reconciled
             || stop_process_group(
                 &mut child,
@@ -9849,8 +9866,7 @@ exit 9
         let retained = active.process_group.lock().ok().and_then(|group| *group);
         let owned_stopped = authenticated_owned_processes_status(&active);
         let group_presence = process_group_presence(process_group);
-        let direct_child_reaped = child_exited_without_reaping(process_group)
-            .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD));
+        let direct_child_reaped = finalize_exact_child_after_eof(exact_identity);
         let no_retained_work = active
             .retained_work_directories
             .lock()
@@ -9867,7 +9883,6 @@ exit 9
 
         assert!(release);
         assert!(ready);
-        assert!(published);
         assert!(refreshed);
         assert!(term_signalled);
         assert!(group_survived_term);
@@ -10258,6 +10273,29 @@ exit 9
         assert!(group_absent);
         assert!(ownership_absent && owned_absent);
         assert!(work_absent, "publication failure released descendant work");
+
+        let mut eof_child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("read -r release || exit 0; read -r control || exit 0")
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("EOF finalizer fixture");
+        let process_group = eof_child.id() as i32;
+        let eof_active = ActiveRuntime::default();
+        let Some(identity) = publish_blocked_fixture(&mut eof_child, process_group, &eof_active)
+        else {
+            drop(eof_child.stdin.take());
+            panic!("EOF fixture publication failed after teardown");
+        };
+        let released = eof_child
+            .stdin
+            .as_mut()
+            .is_some_and(|stdin| writeln!(stdin, "release").is_ok());
+        let retired = retire_active_process_group(&eof_active, identity);
+        drop(eof_child.stdin.take());
+        let finalized = finalize_exact_child_after_eof(identity);
+        assert!(released && retired && finalized);
     }
 
     #[test]
