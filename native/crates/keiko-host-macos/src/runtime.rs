@@ -40,6 +40,8 @@ const SIGTERM: i32 = 15;
 const WEXITED: i32 = 0x0000_0004;
 const WNOHANG: i32 = 0x0000_0001;
 const WNOWAIT: i32 = 0x0000_0020;
+const MACOS_ECHILD: i32 = 10;
+const MACOS_ESRCH: i32 = 3;
 #[cfg(not(test))]
 const PT_TRACE_ME: i32 = 0;
 #[cfg(not(test))]
@@ -249,6 +251,20 @@ enum RuntimeCancellation {
 enum RetainedProcessIdentityStatus {
     Current,
     Reused,
+    Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum KnownOwnedProcessStatus {
+    Alive,
+    Stopped,
+    Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProcessPresenceStatus {
+    Present,
+    Absent,
     Unavailable,
 }
 
@@ -1168,7 +1184,7 @@ fn cleanup_turn(
         active,
         cleanup_deadline,
         Some(CANCEL_TERM_GRACE),
-        DescendantReapPolicy::AllowParentReap,
+        CleanupPhasePolicy::AllowParentReap,
     );
     outcome
 }
@@ -2843,7 +2859,7 @@ fn cleanup_after(
         active,
         deadline,
         Some(readiness_term_grace(cleanup_remaining)),
-        DescendantReapPolicy::PreserveFinalReconciliation,
+        CleanupPhasePolicy::PreserveFinalReconciliation,
     );
     ProtocolOutcome {
         state,
@@ -2865,28 +2881,909 @@ fn stop_process_group(
         active,
         deadline,
         None,
-        DescendantReapPolicy::AllowParentReap,
+        CleanupPhasePolicy::AllowParentReap,
     )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DescendantReapPolicy {
+enum CleanupPhasePolicy {
     PreserveFinalReconciliation,
     AllowParentReap,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CleanupTerminal {
+    Cleaned,
+    Retained,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CleanupCommand {
+    ObserveActiveIdentity {
+        guard: Option<Instant>,
+    },
+    ObserveActiveIdentityStatus {
+        guard: Option<Instant>,
+        identity: ProcessIdentity,
+    },
+    ObserveChildExit {
+        guard: Option<Instant>,
+    },
+    ObserveDescendants {
+        guard: Option<Instant>,
+    },
+    ObserveOwnedDescendants {
+        guard: Option<Instant>,
+    },
+    WaitChild {
+        guard: Option<Instant>,
+    },
+    ObserveGroupPresence {
+        guard: Option<Instant>,
+    },
+    ObserveOwnedStopped {
+        guard: Option<Instant>,
+    },
+    RetireOwnership {
+        guard: Option<Instant>,
+        identity: ProcessIdentity,
+    },
+    Sleep {
+        guard: Option<Instant>,
+        duration: Duration,
+    },
+    SignalProcessGroup {
+        guard: Option<Instant>,
+        signal: i32,
+    },
+    RefreshOwned {
+        guard: Option<Instant>,
+    },
+    SignalDescendants {
+        guard: Option<Instant>,
+        signal: i32,
+    },
+}
+
+impl CleanupCommand {
+    fn guard(self) -> Option<Instant> {
+        match self {
+            Self::ObserveActiveIdentity { guard }
+            | Self::ObserveActiveIdentityStatus { guard, .. }
+            | Self::ObserveChildExit { guard }
+            | Self::ObserveDescendants { guard }
+            | Self::ObserveOwnedDescendants { guard }
+            | Self::WaitChild { guard }
+            | Self::ObserveGroupPresence { guard }
+            | Self::ObserveOwnedStopped { guard }
+            | Self::RetireOwnership { guard, .. }
+            | Self::Sleep { guard, .. }
+            | Self::SignalProcessGroup { guard, .. }
+            | Self::RefreshOwned { guard }
+            | Self::SignalDescendants { guard, .. } => guard,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CleanupObservation {
+    Begin {
+        observed_at: Instant,
+    },
+    ActiveIdentity {
+        started_at: Instant,
+        completed_at: Instant,
+        identity: Option<ProcessIdentity>,
+    },
+    ActiveIdentityStatus {
+        started_at: Instant,
+        completed_at: Instant,
+        status: RetainedProcessIdentityStatus,
+    },
+    ChildExit {
+        started_at: Instant,
+        completed_at: Instant,
+        exited: Option<bool>,
+    },
+    Descendants {
+        started_at: Instant,
+        completed_at: Instant,
+        alive: Option<bool>,
+    },
+    OwnedDescendants {
+        started_at: Instant,
+        completed_at: Instant,
+        alive: Option<bool>,
+    },
+    ChildWaited {
+        started_at: Instant,
+        completed_at: Instant,
+        reaped: bool,
+    },
+    GroupPresence {
+        started_at: Instant,
+        completed_at: Instant,
+        status: ProcessPresenceStatus,
+    },
+    OwnedStopped {
+        started_at: Instant,
+        completed_at: Instant,
+        stopped: Option<bool>,
+    },
+    OwnershipRetired {
+        started_at: Instant,
+        completed_at: Instant,
+        retired: bool,
+    },
+    Slept {
+        started_at: Instant,
+        completed_at: Instant,
+    },
+    ProcessGroupSignalled {
+        started_at: Instant,
+        completed_at: Instant,
+        signal: i32,
+    },
+    OwnedRefreshed {
+        started_at: Instant,
+        completed_at: Instant,
+        refreshed: bool,
+    },
+    DescendantsSignalled {
+        started_at: Instant,
+        completed_at: Instant,
+        signal: i32,
+        signalled: bool,
+    },
+    DeadlineClosed {
+        closed_at: Instant,
+    },
+}
+
+impl CleanupObservation {
+    fn started_at(self) -> Instant {
+        match self {
+            Self::Begin { observed_at } => observed_at,
+            Self::ActiveIdentity { started_at, .. }
+            | Self::ActiveIdentityStatus { started_at, .. }
+            | Self::ChildExit { started_at, .. }
+            | Self::Descendants { started_at, .. }
+            | Self::OwnedDescendants { started_at, .. }
+            | Self::ChildWaited { started_at, .. }
+            | Self::GroupPresence { started_at, .. }
+            | Self::OwnedStopped { started_at, .. }
+            | Self::OwnershipRetired { started_at, .. }
+            | Self::Slept { started_at, .. }
+            | Self::ProcessGroupSignalled { started_at, .. }
+            | Self::OwnedRefreshed { started_at, .. }
+            | Self::DescendantsSignalled { started_at, .. }
+            | Self::DeadlineClosed {
+                closed_at: started_at,
+            } => started_at,
+        }
+    }
+
+    fn completed_at(self) -> Instant {
+        match self {
+            Self::Begin { observed_at } => observed_at,
+            Self::ActiveIdentity { completed_at, .. }
+            | Self::ActiveIdentityStatus { completed_at, .. }
+            | Self::ChildExit { completed_at, .. }
+            | Self::Descendants { completed_at, .. }
+            | Self::OwnedDescendants { completed_at, .. }
+            | Self::ChildWaited { completed_at, .. }
+            | Self::GroupPresence { completed_at, .. }
+            | Self::OwnedStopped { completed_at, .. }
+            | Self::OwnershipRetired { completed_at, .. }
+            | Self::Slept { completed_at, .. }
+            | Self::ProcessGroupSignalled { completed_at, .. }
+            | Self::OwnedRefreshed { completed_at, .. }
+            | Self::DescendantsSignalled { completed_at, .. }
+            | Self::DeadlineClosed {
+                closed_at: completed_at,
+            } => completed_at,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CleanupProofStep {
+    ActiveIdentity,
+    ActiveIdentityStatus,
+    ChildExit,
+    Descendants,
+    OwnedDescendants,
+    WaitChild,
+    GroupPresence,
+    OwnedStopped,
+    RetireOwnership,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct CleanupProof {
+    identity: Option<ProcessIdentity>,
+    child_exited: Option<bool>,
+    descendants_alive: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CleanupAfterPoll {
+    SignalTerm,
+    RefreshOwned,
+    SignalGroupKill,
+    FinalReconciliation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CleanupContinuation {
+    Initial,
+    Poll {
+        phase_deadline: Instant,
+        after: CleanupAfterPoll,
+    },
+    Final,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CleanupEffect {
+    Sleep {
+        phase_deadline: Instant,
+        after: CleanupAfterPoll,
+    },
+    SignalTerm,
+    RefreshOwned,
+    SignalDescendants,
+    SignalGroupKill,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CleanupController {
+    policy: CleanupPhasePolicy,
+    process_group: i32,
+    deadline: Instant,
+    cleanup_started: Instant,
+    eof_grace: Duration,
+    term_grace: Duration,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CleanupState {
+    Initial {
+        policy: CleanupPhasePolicy,
+        process_group: i32,
+        deadline: Instant,
+        requested_term_grace: Option<Duration>,
+    },
+    Reconciling {
+        controller: CleanupController,
+        continuation: CleanupContinuation,
+        step: CleanupProofStep,
+        proof: CleanupProof,
+    },
+    AwaitingEffect {
+        controller: CleanupController,
+        effect: CleanupEffect,
+    },
+}
+
+impl CleanupState {
+    fn new(
+        policy: CleanupPhasePolicy,
+        process_group: i32,
+        deadline: Instant,
+        requested_term_grace: Option<Duration>,
+    ) -> Self {
+        Self::Initial {
+            policy,
+            process_group,
+            deadline,
+            requested_term_grace,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CleanupResult {
+    Command {
+        state: CleanupState,
+        command: CleanupCommand,
+    },
+    Terminal(CleanupTerminal),
+}
+
+fn cleanup_guard(controller: CleanupController) -> Option<Instant> {
+    (controller.policy == CleanupPhasePolicy::PreserveFinalReconciliation)
+        .then_some(controller.deadline)
+}
+
+fn cleanup_observation_open(controller: CleanupController, observed_at: Instant) -> bool {
+    controller.policy == CleanupPhasePolicy::AllowParentReap || observed_at < controller.deadline
+}
+
+fn cleanup_proof_command(
+    controller: CleanupController,
+    continuation: CleanupContinuation,
+    step: CleanupProofStep,
+    proof: CleanupProof,
+) -> CleanupResult {
+    let guard = cleanup_guard(controller);
+    let command = match step {
+        CleanupProofStep::ActiveIdentity => CleanupCommand::ObserveActiveIdentity { guard },
+        CleanupProofStep::ActiveIdentityStatus => CleanupCommand::ObserveActiveIdentityStatus {
+            guard,
+            identity: proof
+                .identity
+                .expect("identity proof step requires an identity"),
+        },
+        CleanupProofStep::ChildExit => CleanupCommand::ObserveChildExit { guard },
+        CleanupProofStep::Descendants => CleanupCommand::ObserveDescendants { guard },
+        CleanupProofStep::OwnedDescendants => CleanupCommand::ObserveOwnedDescendants { guard },
+        CleanupProofStep::WaitChild => CleanupCommand::WaitChild { guard },
+        CleanupProofStep::GroupPresence => CleanupCommand::ObserveGroupPresence { guard },
+        CleanupProofStep::OwnedStopped => CleanupCommand::ObserveOwnedStopped { guard },
+        CleanupProofStep::RetireOwnership => CleanupCommand::RetireOwnership {
+            guard,
+            identity: proof.identity.expect("retirement requires an identity"),
+        },
+    };
+    CleanupResult::Command {
+        state: CleanupState::Reconciling {
+            controller,
+            continuation,
+            step,
+            proof,
+        },
+        command,
+    }
+}
+
+fn start_cleanup_reconciliation(
+    controller: CleanupController,
+    continuation: CleanupContinuation,
+    observed_at: Instant,
+) -> CleanupResult {
+    if !cleanup_observation_open(controller, observed_at) {
+        return CleanupResult::Terminal(CleanupTerminal::Retained);
+    }
+    cleanup_proof_command(
+        controller,
+        continuation,
+        CleanupProofStep::ActiveIdentity,
+        CleanupProof::default(),
+    )
+}
+
+fn cleanup_effect_command(
+    controller: CleanupController,
+    effect: CleanupEffect,
+    observed_at: Instant,
+) -> CleanupResult {
+    if !cleanup_observation_open(controller, observed_at) {
+        return CleanupResult::Terminal(CleanupTerminal::Retained);
+    }
+    let guard = match effect {
+        CleanupEffect::Sleep { phase_deadline, .. }
+            if controller.policy == CleanupPhasePolicy::PreserveFinalReconciliation =>
+        {
+            Some(controller.deadline.min(phase_deadline))
+        }
+        _ => cleanup_guard(controller),
+    };
+    let command = match effect {
+        CleanupEffect::Sleep { .. } => CleanupCommand::Sleep {
+            guard,
+            duration: Duration::from_millis(10),
+        },
+        CleanupEffect::SignalTerm => CleanupCommand::SignalProcessGroup {
+            guard,
+            signal: SIGTERM,
+        },
+        CleanupEffect::RefreshOwned => CleanupCommand::RefreshOwned { guard },
+        CleanupEffect::SignalDescendants => CleanupCommand::SignalDescendants {
+            guard,
+            signal: SIGKILL,
+        },
+        CleanupEffect::SignalGroupKill => CleanupCommand::SignalProcessGroup {
+            guard,
+            signal: SIGKILL,
+        },
+    };
+    CleanupResult::Command {
+        state: CleanupState::AwaitingEffect { controller, effect },
+        command,
+    }
+}
+
+fn cleanup_after_poll(
+    controller: CleanupController,
+    after: CleanupAfterPoll,
+    observed_at: Instant,
+) -> CleanupResult {
+    match after {
+        CleanupAfterPoll::SignalTerm => {
+            cleanup_effect_command(controller, CleanupEffect::SignalTerm, observed_at)
+        }
+        CleanupAfterPoll::RefreshOwned => {
+            cleanup_effect_command(controller, CleanupEffect::RefreshOwned, observed_at)
+        }
+        CleanupAfterPoll::SignalGroupKill => {
+            cleanup_effect_command(controller, CleanupEffect::SignalGroupKill, observed_at)
+        }
+        CleanupAfterPoll::FinalReconciliation => {
+            start_cleanup_reconciliation(controller, CleanupContinuation::Final, observed_at)
+        }
+    }
+}
+
+fn start_cleanup_poll(
+    controller: CleanupController,
+    phase_deadline: Instant,
+    after: CleanupAfterPoll,
+    observed_at: Instant,
+) -> CleanupResult {
+    if observed_at < phase_deadline {
+        start_cleanup_reconciliation(
+            controller,
+            CleanupContinuation::Poll {
+                phase_deadline,
+                after,
+            },
+            observed_at,
+        )
+    } else {
+        cleanup_after_poll(controller, after, observed_at)
+    }
+}
+
+fn cleanup_reconciliation_failed(
+    controller: CleanupController,
+    continuation: CleanupContinuation,
+    observed_at: Instant,
+) -> CleanupResult {
+    match continuation {
+        CleanupContinuation::Initial => {
+            let graceful_deadline = controller
+                .deadline
+                .min(controller.cleanup_started + controller.eof_grace);
+            start_cleanup_poll(
+                controller,
+                graceful_deadline,
+                CleanupAfterPoll::SignalTerm,
+                observed_at,
+            )
+        }
+        CleanupContinuation::Poll {
+            phase_deadline,
+            after,
+        } if observed_at < phase_deadline
+            || controller.policy == CleanupPhasePolicy::AllowParentReap =>
+        {
+            cleanup_effect_command(
+                controller,
+                CleanupEffect::Sleep {
+                    phase_deadline,
+                    after,
+                },
+                observed_at,
+            )
+        }
+        CleanupContinuation::Poll { after, .. } => {
+            cleanup_after_poll(controller, after, observed_at)
+        }
+        CleanupContinuation::Final => CleanupResult::Terminal(CleanupTerminal::Retained),
+    }
+}
+
+fn reduce_cleanup_reconciliation(
+    controller: CleanupController,
+    continuation: CleanupContinuation,
+    step: CleanupProofStep,
+    mut proof: CleanupProof,
+    observation: CleanupObservation,
+) -> CleanupResult {
+    if matches!(observation, CleanupObservation::DeadlineClosed { .. })
+        || !cleanup_observation_open(controller, observation.started_at())
+    {
+        return CleanupResult::Terminal(CleanupTerminal::Retained);
+    }
+    if let (
+        CleanupProofStep::RetireOwnership,
+        CleanupObservation::OwnershipRetired { retired: true, .. },
+    ) = (step, observation)
+    {
+        return CleanupResult::Terminal(CleanupTerminal::Cleaned);
+    }
+    if !cleanup_observation_open(controller, observation.completed_at()) {
+        return CleanupResult::Terminal(CleanupTerminal::Retained);
+    }
+    let failed =
+        || cleanup_reconciliation_failed(controller, continuation, observation.completed_at());
+    let next = match (step, observation) {
+        (
+            CleanupProofStep::ActiveIdentity,
+            CleanupObservation::ActiveIdentity {
+                identity: Some(active_identity),
+                ..
+            },
+        ) if active_identity.process_id == controller.process_group => {
+            return cleanup_proof_command(
+                controller,
+                continuation,
+                CleanupProofStep::ActiveIdentityStatus,
+                CleanupProof {
+                    identity: Some(active_identity),
+                    ..CleanupProof::default()
+                },
+            );
+        }
+        (CleanupProofStep::ActiveIdentity, CleanupObservation::ActiveIdentity { .. }) => {
+            return failed();
+        }
+        (
+            CleanupProofStep::ActiveIdentityStatus,
+            CleanupObservation::ActiveIdentityStatus {
+                status: RetainedProcessIdentityStatus::Current,
+                ..
+            },
+        ) => CleanupProofStep::ChildExit,
+        (
+            CleanupProofStep::ActiveIdentityStatus,
+            CleanupObservation::ActiveIdentityStatus { .. },
+        ) => return failed(),
+        (CleanupProofStep::ChildExit, CleanupObservation::ChildExit { exited, .. }) => {
+            proof.child_exited = exited;
+            CleanupProofStep::Descendants
+        }
+        (CleanupProofStep::Descendants, CleanupObservation::Descendants { alive, .. }) => {
+            proof.descendants_alive = alive;
+            CleanupProofStep::OwnedDescendants
+        }
+        (
+            CleanupProofStep::OwnedDescendants,
+            CleanupObservation::OwnedDescendants {
+                alive: Some(false), ..
+            },
+        ) if proof.child_exited == Some(true) && proof.descendants_alive == Some(false) => {
+            CleanupProofStep::WaitChild
+        }
+        (CleanupProofStep::OwnedDescendants, CleanupObservation::OwnedDescendants { .. }) => {
+            return failed();
+        }
+        (CleanupProofStep::WaitChild, CleanupObservation::ChildWaited { reaped: true, .. }) => {
+            CleanupProofStep::GroupPresence
+        }
+        (CleanupProofStep::WaitChild, CleanupObservation::ChildWaited { .. }) => return failed(),
+        (
+            CleanupProofStep::GroupPresence,
+            CleanupObservation::GroupPresence {
+                status: ProcessPresenceStatus::Absent,
+                ..
+            },
+        ) => CleanupProofStep::OwnedStopped,
+        (CleanupProofStep::GroupPresence, CleanupObservation::GroupPresence { .. }) => {
+            return failed();
+        }
+        (
+            CleanupProofStep::OwnedStopped,
+            CleanupObservation::OwnedStopped {
+                stopped: Some(true),
+                ..
+            },
+        ) => CleanupProofStep::RetireOwnership,
+        (CleanupProofStep::OwnedStopped, CleanupObservation::OwnedStopped { .. }) => {
+            return failed();
+        }
+        (CleanupProofStep::RetireOwnership, CleanupObservation::OwnershipRetired { .. }) => {
+            return failed();
+        }
+        _ => return CleanupResult::Terminal(CleanupTerminal::Retained),
+    };
+    cleanup_proof_command(controller, continuation, next, proof)
+}
+
+fn reduce_cleanup_effect(
+    controller: CleanupController,
+    effect: CleanupEffect,
+    observation: CleanupObservation,
+) -> CleanupResult {
+    if matches!(observation, CleanupObservation::DeadlineClosed { .. })
+        || !cleanup_observation_open(controller, observation.started_at())
+        || !cleanup_observation_open(controller, observation.completed_at())
+    {
+        return CleanupResult::Terminal(CleanupTerminal::Retained);
+    }
+    match (effect, observation) {
+        (
+            CleanupEffect::Sleep {
+                phase_deadline,
+                after,
+            },
+            CleanupObservation::Slept { completed_at, .. },
+        ) => start_cleanup_poll(controller, phase_deadline, after, completed_at),
+        (
+            CleanupEffect::SignalTerm,
+            CleanupObservation::ProcessGroupSignalled {
+                completed_at,
+                signal: SIGTERM,
+                ..
+            },
+        ) => {
+            let term_deadline = cleanup_term_deadline(
+                controller.policy,
+                controller.cleanup_started,
+                completed_at,
+                controller.deadline,
+                controller.eof_grace,
+                controller.term_grace,
+            );
+            start_cleanup_poll(
+                controller,
+                term_deadline,
+                CleanupAfterPoll::RefreshOwned,
+                completed_at,
+            )
+        }
+        (CleanupEffect::RefreshOwned, CleanupObservation::OwnedRefreshed { completed_at, .. }) => {
+            cleanup_effect_command(controller, CleanupEffect::SignalDescendants, completed_at)
+        }
+        (
+            CleanupEffect::SignalDescendants,
+            CleanupObservation::DescendantsSignalled {
+                completed_at,
+                signal: SIGKILL,
+                signalled,
+                ..
+            },
+        ) => {
+            if signalled {
+                let descendant_deadline =
+                    descendant_reap_deadline(controller.policy, completed_at, controller.deadline);
+                start_cleanup_poll(
+                    controller,
+                    descendant_deadline,
+                    CleanupAfterPoll::SignalGroupKill,
+                    completed_at,
+                )
+            } else {
+                cleanup_effect_command(controller, CleanupEffect::SignalGroupKill, completed_at)
+            }
+        }
+        (
+            CleanupEffect::SignalGroupKill,
+            CleanupObservation::ProcessGroupSignalled {
+                completed_at,
+                signal: SIGKILL,
+                ..
+            },
+        ) => start_cleanup_poll(
+            controller,
+            controller.deadline,
+            CleanupAfterPoll::FinalReconciliation,
+            completed_at,
+        ),
+        _ => CleanupResult::Terminal(CleanupTerminal::Retained),
+    }
+}
+
+fn cleanup_reduce(state: CleanupState, observation: CleanupObservation) -> CleanupResult {
+    match state {
+        CleanupState::Initial {
+            policy,
+            process_group,
+            deadline,
+            requested_term_grace,
+        } => {
+            let CleanupObservation::Begin { observed_at } = observation else {
+                return CleanupResult::Terminal(CleanupTerminal::Retained);
+            };
+            let remaining = deadline.saturating_duration_since(observed_at);
+            let controller = CleanupController {
+                policy,
+                process_group,
+                deadline,
+                cleanup_started: observed_at,
+                eof_grace: STDIN_EOF_GRACE.min(remaining / 3),
+                term_grace: cleanup_term_grace(policy, requested_term_grace, remaining),
+            };
+            start_cleanup_reconciliation(controller, CleanupContinuation::Initial, observed_at)
+        }
+        CleanupState::Reconciling {
+            controller,
+            continuation,
+            step,
+            proof,
+        } => reduce_cleanup_reconciliation(controller, continuation, step, proof, observation),
+        CleanupState::AwaitingEffect { controller, effect } => {
+            reduce_cleanup_effect(controller, effect, observation)
+        }
+    }
+}
+
 fn descendant_reap_deadline(
-    policy: DescendantReapPolicy,
+    policy: CleanupPhasePolicy,
     descendant_started: Instant,
     deadline: Instant,
 ) -> Instant {
     match policy {
-        DescendantReapPolicy::PreserveFinalReconciliation => descendant_started,
-        DescendantReapPolicy::AllowParentReap => {
+        CleanupPhasePolicy::PreserveFinalReconciliation => descendant_started,
+        CleanupPhasePolicy::AllowParentReap => {
             let descendant_grace = DESCENDANT_REAP_GRACE
                 .min(deadline.saturating_duration_since(descendant_started) / 2);
             deadline.min(descendant_started + descendant_grace)
         }
+    }
+}
+
+fn cleanup_term_deadline(
+    policy: CleanupPhasePolicy,
+    cleanup_started: Instant,
+    observed_after_eof: Instant,
+    deadline: Instant,
+    eof_grace: Duration,
+    term_grace: Duration,
+) -> Instant {
+    match policy {
+        CleanupPhasePolicy::PreserveFinalReconciliation => {
+            deadline.min(cleanup_started + eof_grace + term_grace)
+        }
+        CleanupPhasePolicy::AllowParentReap => deadline.min(observed_after_eof + term_grace),
+    }
+}
+
+fn cleanup_term_grace(
+    policy: CleanupPhasePolicy,
+    requested: Option<Duration>,
+    remaining: Duration,
+) -> Duration {
+    let proportional_grace = remaining / 3;
+    match policy {
+        CleanupPhasePolicy::PreserveFinalReconciliation => requested
+            .unwrap_or(proportional_grace)
+            .min(proportional_grace),
+        CleanupPhasePolicy::AllowParentReap => requested.unwrap_or(proportional_grace),
+    }
+}
+
+struct RealCleanupExecutor<'a> {
+    child: &'a mut Child,
+    process_group: i32,
+    active: &'a ActiveRuntime,
+}
+
+impl RealCleanupExecutor<'_> {
+    fn execute(&mut self, command: CleanupCommand) -> CleanupObservation {
+        let started_at = Instant::now();
+        if command
+            .guard()
+            .is_some_and(|deadline| started_at >= deadline)
+        {
+            return CleanupObservation::DeadlineClosed {
+                closed_at: started_at,
+            };
+        }
+        match command {
+            CleanupCommand::ObserveActiveIdentity { .. } => {
+                let identity = self
+                    .active
+                    .process_group
+                    .lock()
+                    .ok()
+                    .and_then(|group| *group);
+                CleanupObservation::ActiveIdentity {
+                    started_at,
+                    completed_at: Instant::now(),
+                    identity,
+                }
+            }
+            CleanupCommand::ObserveActiveIdentityStatus { identity, .. } => {
+                let status = retained_process_identity_status(identity);
+                CleanupObservation::ActiveIdentityStatus {
+                    started_at,
+                    completed_at: Instant::now(),
+                    status,
+                }
+            }
+            CleanupCommand::ObserveChildExit { .. } => {
+                let exited = child_exited_without_reaping(self.child.id() as i32).ok();
+                CleanupObservation::ChildExit {
+                    started_at,
+                    completed_at: Instant::now(),
+                    exited,
+                }
+            }
+            CleanupCommand::ObserveDescendants { .. } => {
+                let alive =
+                    process_group_has_descendants(self.process_group, self.child.id() as i32).ok();
+                CleanupObservation::Descendants {
+                    started_at,
+                    completed_at: Instant::now(),
+                    alive,
+                }
+            }
+            CleanupCommand::ObserveOwnedDescendants { .. } => {
+                let alive = owned_descendants_alive(self.active, self.child.id() as i32);
+                CleanupObservation::OwnedDescendants {
+                    started_at,
+                    completed_at: Instant::now(),
+                    alive,
+                }
+            }
+            CleanupCommand::WaitChild { .. } => {
+                let reaped = self.child.wait().is_ok();
+                CleanupObservation::ChildWaited {
+                    started_at,
+                    completed_at: Instant::now(),
+                    reaped,
+                }
+            }
+            CleanupCommand::ObserveGroupPresence { .. } => {
+                let status = process_group_presence(self.process_group);
+                CleanupObservation::GroupPresence {
+                    started_at,
+                    completed_at: Instant::now(),
+                    status,
+                }
+            }
+            CleanupCommand::ObserveOwnedStopped { .. } => {
+                let stopped = authenticated_owned_processes_status(self.active);
+                CleanupObservation::OwnedStopped {
+                    started_at,
+                    completed_at: Instant::now(),
+                    stopped,
+                }
+            }
+            CleanupCommand::RetireOwnership { identity, .. } => {
+                let retired = retire_active_process_group(self.active, identity);
+                CleanupObservation::OwnershipRetired {
+                    started_at,
+                    completed_at: Instant::now(),
+                    retired,
+                }
+            }
+            CleanupCommand::Sleep { duration, .. } => {
+                thread::sleep(duration);
+                CleanupObservation::Slept {
+                    started_at,
+                    completed_at: Instant::now(),
+                }
+            }
+            CleanupCommand::SignalProcessGroup { signal, .. } => {
+                let _ = signal_active_process_group(self.active, self.process_group, signal);
+                CleanupObservation::ProcessGroupSignalled {
+                    started_at,
+                    completed_at: Instant::now(),
+                    signal,
+                }
+            }
+            CleanupCommand::RefreshOwned { .. } => {
+                let refreshed = refresh_owned_processes(self.active);
+                CleanupObservation::OwnedRefreshed {
+                    started_at,
+                    completed_at: Instant::now(),
+                    refreshed,
+                }
+            }
+            CleanupCommand::SignalDescendants { signal, .. } => {
+                let signalled = signal_active_descendants(self.active, self.process_group, signal);
+                CleanupObservation::DescendantsSignalled {
+                    started_at,
+                    completed_at: Instant::now(),
+                    signal,
+                    signalled,
+                }
+            }
+        }
+    }
+}
+
+fn drive_real_cleanup(executor: &mut RealCleanupExecutor<'_>, mut result: CleanupResult) -> bool {
+    loop {
+        result = match result {
+            CleanupResult::Command { state, command } => {
+                cleanup_reduce(state, executor.execute(command))
+            }
+            CleanupResult::Terminal(terminal) => return terminal == CleanupTerminal::Cleaned,
+        };
     }
 }
 
@@ -2896,62 +3793,45 @@ fn stop_process_group_with_term_grace(
     active: &ActiveRuntime,
     deadline: Instant,
     term_grace: Option<Duration>,
-    descendant_reap_policy: DescendantReapPolicy,
+    cleanup_phase_policy: CleanupPhasePolicy,
 ) -> bool {
-    if reconcile_stopped_process_group(child, process_group, active) {
-        return true;
-    }
-    let cleanup_started = Instant::now();
-    let remaining = deadline.saturating_duration_since(cleanup_started);
-    let grace = term_grace.unwrap_or(remaining / 3);
-    let eof_grace = STDIN_EOF_GRACE.min(remaining / 3);
-    let graceful_deadline = deadline.min(cleanup_started + eof_grace);
-    // stdin has already been closed by every caller. Give app-server a bounded
-    // chance to run its own destructors before TERM/KILL escalation.
-    while Instant::now() < graceful_deadline {
-        if reconcile_stopped_process_group(child, process_group, active) {
-            return true;
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-    signal_active_process_group(active, process_group, SIGTERM);
-    let term_deadline = deadline.min(Instant::now() + grace);
-    while Instant::now() < term_deadline {
-        if reconcile_stopped_process_group(child, process_group, active) {
-            return true;
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-    // Kill authenticated descendants before the group leader so a supervising
-    // runtime can reap its own children and exit without leaving transient
-    // zombies that outlive this request's cleanup deadline.
-    let _ = refresh_owned_processes(active);
-    if signal_active_descendants(active, process_group, SIGKILL) {
-        let descendant_started = Instant::now();
-        let descendant_deadline =
-            descendant_reap_deadline(descendant_reap_policy, descendant_started, deadline);
-        while Instant::now() < descendant_deadline {
-            if reconcile_stopped_process_group(child, process_group, active) {
-                return true;
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-    }
-    signal_active_process_group(active, process_group, SIGKILL);
-    while Instant::now() < deadline {
-        if reconcile_stopped_process_group(child, process_group, active) {
-            return true;
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-    reconcile_stopped_process_group(child, process_group, active)
+    let mut executor = RealCleanupExecutor {
+        child,
+        process_group,
+        active,
+    };
+    let state = CleanupState::new(cleanup_phase_policy, process_group, deadline, term_grace);
+    drive_real_cleanup(
+        &mut executor,
+        cleanup_reduce(
+            state,
+            CleanupObservation::Begin {
+                observed_at: Instant::now(),
+            },
+        ),
+    )
 }
 
 fn authenticated_owned_processes_stopped(active: &ActiveRuntime) -> bool {
-    active.owned_processes.lock().is_ok_and(|mut owned| {
-        owned.retain(|identity| process_identity(identity.process_id) == Some(*identity));
-        owned.is_empty()
-    })
+    authenticated_owned_processes_status(active) == Some(true)
+}
+
+fn authenticated_owned_processes_status(active: &ActiveRuntime) -> Option<bool> {
+    let mut owned = active.owned_processes.lock().ok()?;
+    retain_unstopped_known_owned_processes(&mut owned).then_some(owned.is_empty())
+}
+
+fn retain_unstopped_known_owned_processes(owned: &mut HashSet<ProcessIdentity>) -> bool {
+    let mut observations_available = true;
+    owned.retain(|identity| match known_owned_process_status(*identity) {
+        KnownOwnedProcessStatus::Alive => true,
+        KnownOwnedProcessStatus::Stopped => false,
+        KnownOwnedProcessStatus::Unavailable => {
+            observations_available = false;
+            true
+        }
+    });
+    observations_available
 }
 
 fn reconcile_retained_process_group(active: &ActiveRuntime, deadline: Instant) -> bool {
@@ -2991,21 +3871,48 @@ fn retire_retained_process_group_if_stopped(active: &ActiveRuntime, process_grou
         return true;
     }
     let _ = refresh_owned_processes(active);
-    let owned_alive = active.owned_processes.lock().map_or(true, |mut owned| {
-        owned.retain(|identity| process_identity(identity.process_id) == Some(*identity));
-        !owned.is_empty()
-    });
-    let group_exists = process_group_exists(process_group);
-    let descendants_alive =
-        process_group_has_descendants(process_group, process_group).unwrap_or(group_exists);
-    let child_exited = child_exited_without_reaping(process_group).unwrap_or(!group_exists);
-    if owned_alive || descendants_alive || !child_exited {
+    let owned_alive = !authenticated_owned_processes_stopped(active);
+    let Ok(descendants_alive) = process_group_has_descendants(process_group, process_group) else {
+        return false;
+    };
+    let child_state = retained_child_reap_state(process_group);
+    if owned_alive || descendants_alive {
         return false;
     }
-    if group_exists && !reap_child(process_group) {
+    match child_state {
+        RetainedChildReapState::ExitedNeedsReap if !reap_child(process_group) => return false,
+        RetainedChildReapState::ExitedNeedsReap | RetainedChildReapState::AlreadyReaped => {}
+        RetainedChildReapState::Live | RetainedChildReapState::Unavailable => return false,
+    }
+    if process_group_presence(process_group) != ProcessPresenceStatus::Absent
+        || !authenticated_owned_processes_stopped(active)
+    {
         return false;
     }
     retire_active_process_group(active, active_identity)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RetainedChildReapState {
+    ExitedNeedsReap,
+    AlreadyReaped,
+    Live,
+    Unavailable,
+}
+
+fn retained_child_reap_state(child: i32) -> RetainedChildReapState {
+    classify_retained_child_reap_state(child_exited_without_reaping(child))
+}
+
+fn classify_retained_child_reap_state(observation: io::Result<bool>) -> RetainedChildReapState {
+    match observation {
+        Ok(true) => RetainedChildReapState::ExitedNeedsReap,
+        Ok(false) => RetainedChildReapState::Live,
+        Err(error) if error.raw_os_error() == Some(MACOS_ECHILD) => {
+            RetainedChildReapState::AlreadyReaped
+        }
+        Err(_) => RetainedChildReapState::Unavailable,
+    }
 }
 
 fn reap_child(child: i32) -> bool {
@@ -3097,37 +4004,30 @@ fn retire_active_process_group(active: &ActiveRuntime, identity: ProcessIdentity
     true
 }
 
-fn ready_to_reap(child: i32, process_group: i32, active: &ActiveRuntime) -> bool {
-    let exited = child_exited_without_reaping(child);
-    let descendants = process_group_has_descendants(process_group, child);
-    let owned_descendants = owned_descendants_alive(active, child);
-    exited.unwrap_or(false)
-        && !descendants.unwrap_or(true)
-        && owned_descendants.is_some_and(|alive| !alive)
-}
-
+#[cfg(test)]
 fn reconcile_stopped_process_group(
     child: &mut Child,
     process_group: i32,
     active: &ActiveRuntime,
 ) -> bool {
-    let active_identity = active.process_group.lock().ok().and_then(|active_group| {
-        active_group.filter(|identity| {
-            identity.process_id == process_group
-                && retained_process_identity_status(*identity)
-                    == RetainedProcessIdentityStatus::Current
-        })
-    });
-    let Some(active_identity) = active_identity else {
-        return false;
+    let mut executor = RealCleanupExecutor {
+        child,
+        process_group,
+        active,
     };
-    if !ready_to_reap(child.id() as i32, process_group, active) || child.wait().is_err() {
-        return false;
-    }
-    if process_group_exists(process_group) || !authenticated_owned_processes_stopped(active) {
-        return false;
-    }
-    retire_active_process_group(active, active_identity)
+    let started_at = Instant::now();
+    let controller = CleanupController {
+        policy: CleanupPhasePolicy::AllowParentReap,
+        process_group,
+        deadline: started_at,
+        cleanup_started: started_at,
+        eof_grace: Duration::ZERO,
+        term_grace: Duration::ZERO,
+    };
+    drive_real_cleanup(
+        &mut executor,
+        start_cleanup_reconciliation(controller, CleanupContinuation::Final, started_at),
+    )
 }
 
 fn register_owned_process(active: &ActiveRuntime, process: i32) {
@@ -3164,7 +4064,9 @@ fn refresh_owned_processes(active: &ActiveRuntime) -> bool {
     let Ok(mut owned) = active.owned_processes.lock() else {
         return false;
     };
-    owned.retain(|identity| process_identity(identity.process_id) == Some(*identity));
+    if !retain_unstopped_known_owned_processes(&mut owned) {
+        return false;
+    }
     let mut pending = owned.iter().copied().collect::<Vec<_>>();
     let mut parent_processes = vec![leader];
     let mut inspected = HashSet::from([leader]);
@@ -3212,6 +4114,46 @@ fn retained_process_identity_status(identity: ProcessIdentity) -> RetainedProces
             RetainedProcessIdentityStatus::Current
         }
         None => RetainedProcessIdentityStatus::Unavailable,
+    }
+}
+
+fn classify_known_owned_process<F>(
+    identity_status: RetainedProcessIdentityStatus,
+    presence: F,
+) -> KnownOwnedProcessStatus
+where
+    F: FnOnce() -> io::Result<bool>,
+{
+    match identity_status {
+        RetainedProcessIdentityStatus::Current => KnownOwnedProcessStatus::Alive,
+        RetainedProcessIdentityStatus::Reused => KnownOwnedProcessStatus::Stopped,
+        RetainedProcessIdentityStatus::Unavailable => match presence() {
+            Ok(false) => KnownOwnedProcessStatus::Stopped,
+            Ok(true) | Err(_) => KnownOwnedProcessStatus::Unavailable,
+        },
+    }
+}
+
+fn known_owned_process_status(identity: ProcessIdentity) -> KnownOwnedProcessStatus {
+    classify_known_owned_process(retained_process_identity_status(identity), || {
+        process_presence(identity.process_id)
+    })
+}
+
+fn process_presence(process: i32) -> io::Result<bool> {
+    if process <= 0 {
+        return Err(io::Error::other("process presence"));
+    }
+    // SAFETY: signal 0 performs existence/permission checking only for a PID
+    // previously authenticated as part of the owned runtime ancestry.
+    let result = unsafe { keiko_kill(process, 0) };
+    let error = (result != 0).then(io::Error::last_os_error);
+    match classify_process_presence(result, error.as_ref().and_then(io::Error::raw_os_error)) {
+        ProcessPresenceStatus::Present => Ok(true),
+        ProcessPresenceStatus::Absent => Ok(false),
+        ProcessPresenceStatus::Unavailable => {
+            Err(error.unwrap_or_else(|| io::Error::other("process presence")))
+        }
     }
 }
 
@@ -3383,10 +4325,30 @@ fn signal_process(process: i32, signal: i32) {
 }
 
 fn process_group_exists(process_group: i32) -> bool {
+    process_group_presence(process_group) == ProcessPresenceStatus::Present
+}
+
+fn process_group_presence(process_group: i32) -> ProcessPresenceStatus {
     // SAFETY: signal 0 performs existence/permission checking only. The process
     // group ID came directly from the child created by this supervisor.
     let result = unsafe { keiko_kill(-process_group, 0) };
-    result == 0
+    let raw_os_error = (result != 0)
+        .then(io::Error::last_os_error)
+        .and_then(|error| error.raw_os_error());
+    classify_process_presence(result, raw_os_error)
+}
+
+fn classify_process_presence(
+    signal_zero_result: i32,
+    raw_os_error: Option<i32>,
+) -> ProcessPresenceStatus {
+    if signal_zero_result == 0 {
+        ProcessPresenceStatus::Present
+    } else if raw_os_error == Some(MACOS_ESRCH) {
+        ProcessPresenceStatus::Absent
+    } else {
+        ProcessPresenceStatus::Unavailable
+    }
 }
 
 #[cfg(test)]
@@ -3404,6 +4366,17 @@ mod tests {
             started_microseconds: 0,
             started_seconds: 1,
         }
+    }
+
+    fn bounded_owned_child_exit(child: &mut Child) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < deadline {
+            if child.try_wait().is_ok_and(|status| status.is_some()) {
+                return true;
+            }
+            thread::yield_now();
+        }
+        false
     }
 
     #[test]
@@ -3626,6 +4599,24 @@ mod tests {
         );
         assert_eq!(projection.quarantined_events, 1);
         assert_eq!(projection.stage, ProjectionStage::Initialize);
+    }
+
+    #[test]
+    fn remote_control_schema_rejects_missing_and_wrong_typed_fields() {
+        for params in [
+            json!({"environmentId": null, "serverName": "redacted", "status": "disabled"}),
+            json!({"environmentId": null, "installationId": "redacted", "status": "disabled"}),
+            json!({"environmentId": null, "installationId": "redacted", "serverName": "redacted"}),
+            json!({"installationId": 7, "serverName": "redacted", "status": "disabled"}),
+            json!({"installationId": "redacted", "serverName": 7, "status": "disabled"}),
+        ] {
+            assert!(!remote_control_is_disabled(Some(&params)), "{params}");
+        }
+        assert!(!remote_control_is_disabled(Some(&json!({
+            "installationId": "redacted",
+            "serverName": "redacted",
+            "status": 7
+        }))));
     }
 
     #[test]
@@ -3905,6 +4896,46 @@ mod tests {
         assert_eq!(
             read_bounded_line(&mut BufReader::new(b"{}\r\n".as_slice())).expect("CRLF line"),
             Some(b"{}".to_vec())
+        );
+    }
+
+    #[test]
+    fn bounded_line_handles_empty_partial_exact_oversize_lf_and_crlf() {
+        let read = |input: Vec<u8>| {
+            let mut reader = BufReader::new(Cursor::new(input));
+            read_bounded_line(&mut reader)
+        };
+
+        assert_eq!(read(Vec::new()).expect("empty EOF"), None);
+        assert_eq!(
+            read(b"partial".to_vec())
+                .expect_err("partial EOF must be rejected")
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+
+        let mut exact = vec![b'x'; MAX_FRAME_BYTES - 1];
+        exact.push(b'\n');
+        assert_eq!(
+            read(exact).expect("exact frame boundary"),
+            Some(vec![b'x'; MAX_FRAME_BYTES - 1])
+        );
+
+        let mut oversized = vec![b'x'; MAX_FRAME_BYTES];
+        oversized.push(b'\n');
+        assert_eq!(
+            read(oversized)
+                .expect_err("oversized frame must be rejected")
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            read(b"line\n".to_vec()).expect("LF frame"),
+            Some(b"line".to_vec())
+        );
+        assert_eq!(
+            read(b"line\r\n".to_vec()).expect("CRLF frame"),
+            Some(b"line".to_vec())
         );
     }
 
@@ -4264,6 +5295,74 @@ mod tests {
     }
 
     #[test]
+    fn startup_reconciliation_rejects_missing_or_unprotected_work_roots() {
+        let fixture = Fixture::new();
+        let missing = fixture.root.join("missing-owned-directory");
+        let missing_is_owned = private_directory_is_owned(&missing);
+
+        let writable_parent = fixture.root.join("startup-writable-parent");
+        let nested_work = writable_parent.join("work");
+        fs::create_dir_all(&nested_work).expect("nested work root");
+        fs::set_permissions(&writable_parent, fs::Permissions::from_mode(0o777))
+            .expect("unprotected parent");
+        fs::set_permissions(&nested_work, fs::Permissions::from_mode(0o700))
+            .expect("private nested work root");
+        let configuration = RuntimeConfiguration {
+            binary: fixture.binary.clone(),
+            codex_home: fixture.home.clone(),
+            work_root: nested_work.clone(),
+            expected_sha256: sha256_file(&fixture.binary).expect("runtime digest"),
+        };
+        let reconciled = reconcile_startup_configuration(&configuration);
+        let nested_private = private_directory_is_owned(&nested_work);
+        fs::set_permissions(&writable_parent, fs::Permissions::from_mode(0o700))
+            .expect("restore parent before assertions");
+
+        assert!(!missing_is_owned);
+        assert!(nested_private);
+        assert!(!reconciled);
+        assert_eq!(
+            fs::metadata(&writable_parent)
+                .expect("restored parent")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+    }
+
+    #[test]
+    fn private_directory_metadata_rejects_files_and_wrong_owner() {
+        let fixture = Fixture::new();
+        let file_metadata = fs::metadata(&fixture.binary).expect("regular-file metadata");
+        let directory_metadata = fs::metadata(&fixture.work).expect("private-directory metadata");
+        let owner = effective_user_id();
+        let wrong_owner = owner.wrapping_add(1);
+
+        assert!(!private_owned_directory_metadata(&file_metadata, owner));
+        assert_ne!(wrong_owner, directory_metadata.uid());
+        assert!(!private_owned_directory_metadata(
+            &directory_metadata,
+            wrong_owner
+        ));
+    }
+
+    #[test]
+    fn runtime_owner_record_mismatch_is_removed_without_residue() {
+        let fixture = Fixture::new();
+        let owner = process_identity(std::process::id() as i32).expect("test process identity");
+        let work_directory = fixture
+            .work
+            .join(runtime_work_directory_name("readiness", owner, 1));
+
+        let outcome = create_private_runtime_directory_with(&work_directory, owner, 2, |_| Ok(()));
+
+        assert_eq!(outcome, Err(PrivateDirectoryFailure::Unavailable));
+        assert!(!work_directory.exists());
+        assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
+    }
+
+    #[test]
     fn runtime_directory_recovery_rejects_malformed_and_ignores_reused_process_records() {
         let fixture = Fixture::new();
         let active = ActiveRuntime::default();
@@ -4450,6 +5549,61 @@ mod tests {
     }
 
     #[test]
+    fn verified_binary_revalidation_detects_drift_and_substitution() {
+        let valid_fixture = Fixture::new();
+        let valid_configuration = RuntimeConfiguration {
+            binary: valid_fixture.binary.clone(),
+            codex_home: valid_fixture.home.clone(),
+            work_root: valid_fixture.work.clone(),
+            expected_sha256: sha256_file(&valid_fixture.binary).expect("valid digest"),
+        };
+        let mut valid = bind_configuration(&valid_configuration, None).expect("valid binding");
+        assert_eq!(valid.revalidate_binary(), Ok(()));
+        let wrong_digest_configuration = RuntimeConfiguration {
+            expected_sha256: "0".repeat(64),
+            ..valid_configuration
+        };
+        let mut wrong_digest =
+            bind_configuration(&wrong_digest_configuration, None).expect("wrong digest binding");
+        assert_eq!(
+            wrong_digest.revalidate_binary(),
+            Err(RuntimeReadinessState::Incompatible)
+        );
+
+        let drift_fixture = Fixture::new();
+        let drift_configuration = RuntimeConfiguration {
+            binary: drift_fixture.binary.clone(),
+            codex_home: drift_fixture.home.clone(),
+            work_root: drift_fixture.work.clone(),
+            expected_sha256: sha256_file(&drift_fixture.binary).expect("drift digest"),
+        };
+        let drifted = bind_configuration(&drift_configuration, None).expect("drift binding");
+        fs::write(&drift_fixture.binary, b"changed runtime content")
+            .expect("change verified descriptor content");
+        assert_eq!(
+            drifted.revalidate_binary_identity(),
+            Err(RuntimeReadinessState::Incompatible)
+        );
+
+        let symlink_fixture = Fixture::new();
+        let symlink_configuration = RuntimeConfiguration {
+            binary: symlink_fixture.binary.clone(),
+            codex_home: symlink_fixture.home.clone(),
+            work_root: symlink_fixture.work.clone(),
+            expected_sha256: sha256_file(&symlink_fixture.binary).expect("symlink digest"),
+        };
+        let substituted =
+            bind_configuration(&symlink_configuration, None).expect("symlink binding");
+        let original = symlink_fixture.root.join("verified-codex");
+        fs::rename(&symlink_fixture.binary, &original).expect("retain verified binary");
+        symlink(&original, &symlink_fixture.binary).expect("substitute binary symlink");
+        assert_eq!(
+            substituted.revalidate_binary_identity(),
+            Err(RuntimeReadinessState::Incompatible)
+        );
+    }
+
+    #[test]
     fn staged_runtime_is_copied_from_the_verified_descriptor() {
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
@@ -4583,6 +5737,103 @@ mod tests {
     }
 
     #[test]
+    fn inactive_cancel_preserves_the_first_pending_request() {
+        let host = RuntimeHost {
+            configuration: None,
+            active: Arc::new(ActiveRuntime::default()),
+            work_generation: Arc::new(AtomicU64::new(0)),
+            invalidated_workspace_generation: Arc::new(AtomicU64::new(0)),
+        };
+
+        host.cancel_request("pending-a");
+        let first = host.active.control.lock().expect("first pending cancel");
+        let first_pending = first.pending_request_id.clone();
+        let first_cancellation = first.cancellation;
+        drop(first);
+
+        host.cancel_request("inactive-b");
+        let second = host
+            .active
+            .control
+            .lock()
+            .expect("preserved pending cancel");
+        let second_pending = second.pending_request_id.clone();
+        let second_cancellation = second.cancellation;
+        drop(second);
+
+        assert_eq!(first_pending.as_deref(), Some("pending-a"));
+        assert_eq!(first_cancellation, Some(RuntimeCancellation::User));
+        assert_eq!(second_pending, first_pending);
+        assert_eq!(second_cancellation, first_cancellation);
+        assert!(!host.active.running.load(Ordering::Acquire));
+        assert_eq!(
+            *host.active.process_group.lock().expect("process group"),
+            None
+        );
+    }
+
+    #[test]
+    fn runtime_request_rejects_application_health_and_reports_unavailable_runtime() {
+        let mut lifecycle = HostLifecycle::default();
+        let document_nonce = "a".repeat(64);
+        let generation = lifecycle
+            .begin_renderer_session(document_nonce.clone())
+            .expect("renderer generation");
+        let sender =
+            lifecycle.sender_for_document("main", "tauri://localhost", generation, &document_nonce);
+        let lifecycle = Mutex::new(lifecycle);
+        let runtime = RuntimeHost {
+            configuration: None,
+            active: Arc::new(ActiveRuntime::default()),
+            work_generation: Arc::new(AtomicU64::new(0)),
+            invalidated_workspace_generation: Arc::new(AtomicU64::new(0)),
+        };
+        let health = r#"{"schemaVersion":1,"requestId":"request-0000000000000001-0000000000000001","sequence":1,"timeoutMs":1000,"operation":{"kind":"application-health"}}"#;
+        let readiness = r#"{"schemaVersion":1,"requestId":"request-0000000000000001-0000000000000002","sequence":2,"timeoutMs":1000,"operation":{"kind":"runtime-readiness"}}"#;
+
+        let health_output = runtime_request(&lifecycle, &runtime, &sender, None, health);
+        let health_value: Value =
+            serde_json::from_str(&health_output.encoded).expect("health rejection");
+        let generation_after_health = runtime.work_generation.load(Ordering::Acquire);
+        let running_after_health = runtime.active.running.load(Ordering::Acquire);
+        let control_after_health = runtime.active.control.lock().expect("runtime control");
+        let request_after_health = control_after_health.request_id.clone();
+        let pending_after_health = control_after_health.pending_request_id.clone();
+        drop(control_after_health);
+
+        let readiness_output = runtime_request(&lifecycle, &runtime, &sender, None, readiness);
+        let readiness_value: Value =
+            serde_json::from_str(&readiness_output.encoded).expect("readiness response");
+
+        assert_eq!(
+            health_value.pointer("/error/code"),
+            Some(&json!("unknown-operation"))
+        );
+        assert_eq!(
+            health_value.get("requestId"),
+            Some(&json!("unknown-request"))
+        );
+        assert_eq!(generation_after_health, 0);
+        assert!(!running_after_health);
+        assert_eq!(request_after_health, None);
+        assert_eq!(pending_after_health, None);
+        assert_eq!(
+            readiness_value.get("requestId"),
+            Some(&json!("request-0000000000000001-0000000000000002"))
+        );
+        assert_eq!(
+            readiness_value.pointer("/result/kind"),
+            Some(&json!("runtime-readiness"))
+        );
+        assert_eq!(
+            readiness_value.pointer("/result/state/state"),
+            Some(&json!("unavailable"))
+        );
+        assert_eq!(runtime.work_generation.load(Ordering::Acquire), 0);
+        assert!(!runtime.active.running.load(Ordering::Acquire));
+    }
+
+    #[test]
     fn first_observed_shutdown_reason_wins_for_the_active_request() {
         let active = ActiveRuntime::default();
         active.running.store(true, Ordering::Release);
@@ -4676,6 +5927,158 @@ mod tests {
     }
 
     #[test]
+    fn authenticated_signal_refuses_another_owned_process_group() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut first = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("trap 'exit 0' TERM INT; printf 'ready\\n'; read -r line")
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("first owned process group");
+        let second_spawn = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("trap 'exit 0' TERM INT; printf 'ready\\n'; read -r line")
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn();
+        let second_spawned = second_spawn.is_ok();
+        let mut second = second_spawn.ok();
+        let first_group = first.id() as i32;
+        let second_group = second.as_ref().map(|child| child.id() as i32);
+        let first_stdin = first.stdin.take();
+        let second_stdin = second.as_mut().and_then(|child| child.stdin.take());
+        let mut first_stdout = first.stdout.take().map(BufReader::new);
+        let mut second_stdout = second
+            .as_mut()
+            .and_then(|child| child.stdout.take())
+            .map(BufReader::new);
+        let mut first_ready = String::new();
+        let mut second_ready = String::new();
+        let first_handshake = first_stdout
+            .as_mut()
+            .map(|stdout| stdout.read_line(&mut first_ready));
+        let second_handshake = second_stdout
+            .as_mut()
+            .map(|stdout| stdout.read_line(&mut second_ready));
+
+        let first_active = ActiveRuntime::default();
+        let second_active = ActiveRuntime::default();
+        let first_published = publish_active_process_group(&first_active, first_group);
+        let second_published =
+            second_group.is_some_and(|group| publish_active_process_group(&second_active, group));
+        let first_identity = first_active
+            .process_group
+            .lock()
+            .ok()
+            .and_then(|group| *group);
+        let second_identity = second_active
+            .process_group
+            .lock()
+            .ok()
+            .and_then(|group| *group);
+        let group_refused = second_group
+            .is_some_and(|group| !signal_active_process_group(&first_active, group, SIGTERM));
+        let descendants_refused = second_group
+            .is_some_and(|group| !signal_active_descendants(&first_active, group, SIGKILL));
+        let first_retained = first_active
+            .process_group
+            .lock()
+            .ok()
+            .and_then(|group| *group);
+        let second_retained = second_active
+            .process_group
+            .lock()
+            .ok()
+            .and_then(|group| *group);
+        let first_still_current = first_identity.is_some_and(|identity| {
+            retained_process_identity_status(identity) == RetainedProcessIdentityStatus::Current
+        });
+        let second_still_current = second_identity.is_some_and(|identity| {
+            retained_process_identity_status(identity) == RetainedProcessIdentityStatus::Current
+        });
+
+        let first_signalled = signal_active_process_group(&first_active, first_group, SIGTERM);
+        let second_signalled = second_group
+            .is_some_and(|group| signal_active_process_group(&second_active, group, SIGTERM));
+        drop(first_stdin);
+        drop(second_stdin);
+        let first_graceful_exit = bounded_owned_child_exit(&mut first);
+        let second_graceful_exit = second.as_mut().map(bounded_owned_child_exit);
+        let _ = first.kill();
+        let _ = second.as_mut().map(Child::kill);
+        let first_waited = first_graceful_exit | bounded_owned_child_exit(&mut first);
+        let second_waited = second_graceful_exit
+            .zip(second.as_mut().map(bounded_owned_child_exit))
+            .map(|(graceful, killed)| graceful | killed);
+        let first_absent = !process_group_exists(first_group);
+        let second_absent = second_group.map(|group| !process_group_exists(group));
+        let first_cleanup_retired = first_identity
+            .is_some_and(|identity| retire_active_process_group(&first_active, identity));
+        let second_cleanup_retired = second_identity
+            .is_some_and(|identity| retire_active_process_group(&second_active, identity));
+        let first_group_cleared = first_active
+            .process_group
+            .lock()
+            .is_ok_and(|group| group.is_none());
+        let first_owned_cleared = first_active
+            .owned_processes
+            .lock()
+            .is_ok_and(|owned| owned.is_empty());
+        let second_group_cleared = second_active
+            .process_group
+            .lock()
+            .is_ok_and(|group| group.is_none());
+        let second_owned_cleared = second_active
+            .owned_processes
+            .lock()
+            .is_ok_and(|owned| owned.is_empty());
+
+        assert!(second_spawned);
+        assert_eq!(
+            first_handshake
+                .expect("first readiness pipe")
+                .expect("first readiness handshake"),
+            6
+        );
+        assert_eq!(
+            second_handshake
+                .expect("second readiness pipe")
+                .expect("second readiness handshake"),
+            6
+        );
+        assert_eq!(first_ready, "ready\n");
+        assert_eq!(second_ready, "ready\n");
+        assert_ne!(Some(first_group), second_group);
+        assert!(first_published);
+        assert!(second_published);
+        assert!(first_identity.is_some());
+        assert!(second_identity.is_some());
+        assert!(group_refused);
+        assert!(descendants_refused);
+        assert_eq!(first_retained, first_identity);
+        assert_eq!(second_retained, second_identity);
+        assert!(first_still_current);
+        assert!(second_still_current);
+        assert!(first_signalled);
+        assert!(second_signalled);
+        assert!(first_waited);
+        assert_eq!(second_waited, Some(true));
+        assert!(first_absent);
+        assert_eq!(second_absent, Some(true));
+        assert!(first_cleanup_retired);
+        assert!(second_cleanup_retired);
+        assert!(first_group_cleared);
+        assert!(first_owned_cleared);
+        assert!(second_group_cleared);
+        assert!(second_owned_cleared);
+    }
+
+    #[test]
     fn process_identity_and_child_count_validation_fail_closed() {
         let process = 41;
         let buffer_size = std::mem::size_of::<ProcessBsdInformation>() as i32;
@@ -4713,6 +6116,77 @@ mod tests {
         assert!(validated_child_count(-1, 512).is_err());
         assert!(validated_child_count(512, 512).is_err());
         assert_eq!(validated_child_count(0, 512).expect("empty child list"), 0);
+    }
+
+    #[test]
+    fn known_owned_process_status_requires_positive_absence_proof() {
+        assert_eq!(
+            classify_known_owned_process(RetainedProcessIdentityStatus::Current, || Ok(false)),
+            KnownOwnedProcessStatus::Alive
+        );
+        assert_eq!(
+            classify_known_owned_process(RetainedProcessIdentityStatus::Reused, || Ok(true)),
+            KnownOwnedProcessStatus::Stopped
+        );
+        assert_eq!(
+            classify_known_owned_process(RetainedProcessIdentityStatus::Unavailable, || Ok(false)),
+            KnownOwnedProcessStatus::Stopped
+        );
+        assert_eq!(
+            classify_known_owned_process(RetainedProcessIdentityStatus::Unavailable, || Ok(true)),
+            KnownOwnedProcessStatus::Unavailable
+        );
+        assert_eq!(
+            classify_known_owned_process(RetainedProcessIdentityStatus::Unavailable, || {
+                Err(io::Error::from_raw_os_error(1))
+            }),
+            KnownOwnedProcessStatus::Unavailable
+        );
+    }
+
+    #[test]
+    fn process_presence_status_requires_exact_esrch_for_absence() {
+        assert_eq!(
+            classify_process_presence(0, None),
+            ProcessPresenceStatus::Present
+        );
+        assert_eq!(
+            classify_process_presence(-1, Some(MACOS_ESRCH)),
+            ProcessPresenceStatus::Absent
+        );
+        assert_eq!(
+            classify_process_presence(-1, Some(1)),
+            ProcessPresenceStatus::Unavailable
+        );
+        assert_eq!(
+            classify_process_presence(-1, None),
+            ProcessPresenceStatus::Unavailable
+        );
+    }
+
+    #[test]
+    fn unavailable_known_owned_identity_is_retained_fail_closed() {
+        let active = ActiveRuntime::default();
+        let unavailable = ProcessIdentity {
+            process_id: 0,
+            started_microseconds: 7,
+            started_seconds: 11,
+        };
+        active
+            .owned_processes
+            .lock()
+            .expect("owned process state")
+            .insert(unavailable);
+
+        assert!(!authenticated_owned_processes_stopped(&active));
+        assert!(
+            active
+                .owned_processes
+                .lock()
+                .expect("retained owned process state")
+                .contains(&unavailable)
+        );
+        assert!(process_presence(unavailable.process_id).is_err());
     }
 
     #[test]
@@ -5012,6 +6486,76 @@ printf '%s\n' '{"method":"item/tool/call","id":7,"params":{"path":"/private/secr
         projection.turn_id = Some("turn-1".to_owned());
         projection.streaming_announced = true;
         projection
+    }
+
+    #[test]
+    fn token_usage_and_non_agent_items_fail_closed() {
+        let breakdown = json!({
+            "cachedInputTokens": 0,
+            "inputTokens": 12,
+            "outputTokens": 3,
+            "reasoningOutputTokens": 0,
+            "totalTokens": 15
+        });
+        for usage in [
+            json!({"last": breakdown, "modelContextWindow": null, "total": breakdown}),
+            json!({"last": breakdown, "modelContextWindow": 128_000, "total": breakdown}),
+        ] {
+            assert!(token_usage_is_bounded(Some(&usage)), "{usage}");
+        }
+        for usage in [
+            json!({"last": breakdown, "modelContextWindow": 128_000, "total": breakdown, "unknown": true}),
+            json!({"last": breakdown, "modelContextWindow": (i64::MAX as u64) + 1, "total": breakdown}),
+            json!({"last": breakdown, "modelContextWindow": "unknown", "total": breakdown}),
+        ] {
+            assert!(!token_usage_is_bounded(Some(&usage)), "{usage}");
+        }
+
+        let home = Path::new("/private/tmp/codex-home");
+        let work = Path::new("/private/tmp/codex-work");
+        let started = json!({
+            "method": "item/started",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "item": {"id": "reasoning-1", "type": "reasoning"}
+            }
+        });
+        let completed = json!({
+            "method": "item/completed",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "item": {"id": "reasoning-1", "type": "reasoning"}
+            }
+        });
+        let mut valid = active_turn_projection(home, work);
+        assert_eq!(
+            valid.accept(&serde_json::to_vec(&started).expect("started item")),
+            TurnProjectionAction::Quarantine
+        );
+        assert_eq!(
+            valid.accept(&serde_json::to_vec(&completed).expect("completed item")),
+            TurnProjectionAction::Quarantine
+        );
+        assert_eq!(
+            valid.started_items.get("reasoning-1"),
+            Some(&InertItemKind::Reasoning)
+        );
+        assert!(valid.completed_items.contains("reasoning-1"));
+
+        let mut mismatched = active_turn_projection(home, work);
+        assert_eq!(
+            mismatched.accept(&serde_json::to_vec(&started).expect("mismatch start")),
+            TurnProjectionAction::Quarantine
+        );
+        let mut wrong_completion = completed;
+        wrong_completion["params"]["item"]["type"] = json!("plan");
+        assert_turn_containment(
+            mismatched
+                .accept(&serde_json::to_vec(&wrong_completion).expect("mismatched completion")),
+            TurnReason::ProtocolRejected,
+        );
     }
 
     fn assert_turn_containment(action: TurnProjectionAction, reason: TurnReason) {
@@ -6467,7 +8011,7 @@ exit 9
         let host = fixture.scripted_host(
             r#"#!/bin/sh
 read -r initialize
-while :; do /bin/sleep 1; done
+exec /bin/sleep 30
 "#,
         );
         let started = Instant::now();
@@ -6526,7 +8070,7 @@ while :; do /bin/sleep 1; done
 
         assert_eq!(
             descendant_reap_deadline(
-                DescendantReapPolicy::PreserveFinalReconciliation,
+                CleanupPhasePolicy::PreserveFinalReconciliation,
                 descendant_started,
                 deadline,
             ),
@@ -6534,7 +8078,7 @@ while :; do /bin/sleep 1; done
         );
         assert_eq!(
             descendant_reap_deadline(
-                DescendantReapPolicy::AllowParentReap,
+                CleanupPhasePolicy::AllowParentReap,
                 descendant_started,
                 deadline,
             ),
@@ -6542,7 +8086,7 @@ while :; do /bin/sleep 1; done
         );
         assert_eq!(
             descendant_reap_deadline(
-                DescendantReapPolicy::AllowParentReap,
+                CleanupPhasePolicy::AllowParentReap,
                 descendant_started,
                 descendant_started + Duration::from_secs(1),
             ),
@@ -6550,8 +8094,1438 @@ while :; do /bin/sleep 1; done
         );
     }
 
+    fn expect_cleanup_command(result: CleanupResult) -> (CleanupState, CleanupCommand) {
+        match result {
+            CleanupResult::Command { state, command } => (state, command),
+            CleanupResult::Terminal(terminal) => {
+                panic!("expected cleanup command, got terminal {terminal:?}")
+            }
+        }
+    }
+
     #[test]
-    fn readiness_cleanup_reaps_after_escalating_a_term_resistant_process() {
+    fn cleanup_reducer_golden_trace_reaps_and_retires_only_after_strict_proof() {
+        let started_at = Instant::now();
+        let deadline = started_at + READINESS_CLEANUP_RESERVE;
+        let identity = ProcessIdentity {
+            process_id: 41,
+            started_microseconds: 7,
+            started_seconds: 11,
+        };
+        let guard = Some(deadline);
+        let mut trace = Vec::new();
+        let mut result = cleanup_reduce(
+            CleanupState::new(
+                CleanupPhasePolicy::PreserveFinalReconciliation,
+                identity.process_id,
+                deadline,
+                Some(Duration::from_millis(100)),
+            ),
+            CleanupObservation::Begin {
+                observed_at: started_at,
+            },
+        );
+        let steps = [
+            (
+                CleanupCommand::ObserveActiveIdentity { guard },
+                CleanupObservation::ActiveIdentity {
+                    started_at,
+                    completed_at: started_at,
+                    identity: Some(identity),
+                },
+            ),
+            (
+                CleanupCommand::ObserveActiveIdentityStatus { guard, identity },
+                CleanupObservation::ActiveIdentityStatus {
+                    started_at,
+                    completed_at: started_at,
+                    status: RetainedProcessIdentityStatus::Current,
+                },
+            ),
+            (
+                CleanupCommand::ObserveChildExit { guard },
+                CleanupObservation::ChildExit {
+                    started_at,
+                    completed_at: started_at,
+                    exited: Some(true),
+                },
+            ),
+            (
+                CleanupCommand::ObserveDescendants { guard },
+                CleanupObservation::Descendants {
+                    started_at,
+                    completed_at: started_at,
+                    alive: Some(false),
+                },
+            ),
+            (
+                CleanupCommand::ObserveOwnedDescendants { guard },
+                CleanupObservation::OwnedDescendants {
+                    started_at,
+                    completed_at: started_at,
+                    alive: Some(false),
+                },
+            ),
+            (
+                CleanupCommand::WaitChild { guard },
+                CleanupObservation::ChildWaited {
+                    started_at,
+                    completed_at: started_at,
+                    reaped: true,
+                },
+            ),
+            (
+                CleanupCommand::ObserveGroupPresence { guard },
+                CleanupObservation::GroupPresence {
+                    started_at,
+                    completed_at: started_at,
+                    status: ProcessPresenceStatus::Absent,
+                },
+            ),
+            (
+                CleanupCommand::ObserveOwnedStopped { guard },
+                CleanupObservation::OwnedStopped {
+                    started_at,
+                    completed_at: started_at,
+                    stopped: Some(true),
+                },
+            ),
+            (
+                CleanupCommand::RetireOwnership { guard, identity },
+                CleanupObservation::OwnershipRetired {
+                    started_at,
+                    completed_at: started_at,
+                    retired: true,
+                },
+            ),
+        ];
+
+        for (expected, observation) in steps.iter().copied() {
+            let (state, command) = expect_cleanup_command(result);
+            assert_eq!(command, expected);
+            trace.push(command);
+            result = cleanup_reduce(state, observation);
+        }
+
+        assert_eq!(result, CleanupResult::Terminal(CleanupTerminal::Cleaned));
+        assert_eq!(trace, steps.map(|(command, _)| command));
+    }
+
+    fn reduce_expected_command(
+        result: CleanupResult,
+        expected: CleanupCommand,
+        observation: CleanupObservation,
+    ) -> CleanupResult {
+        let (state, command) = expect_cleanup_command(result);
+        assert_eq!(command, expected);
+        cleanup_reduce(state, observation)
+    }
+
+    fn live_child_reconciliation(
+        mut result: CleanupResult,
+        at: Instant,
+        guard: Option<Instant>,
+        identity: ProcessIdentity,
+    ) -> CleanupResult {
+        result = reduce_expected_command(
+            result,
+            CleanupCommand::ObserveActiveIdentity { guard },
+            CleanupObservation::ActiveIdentity {
+                started_at: at,
+                completed_at: at,
+                identity: Some(identity),
+            },
+        );
+        result = reduce_expected_command(
+            result,
+            CleanupCommand::ObserveActiveIdentityStatus { guard, identity },
+            CleanupObservation::ActiveIdentityStatus {
+                started_at: at,
+                completed_at: at,
+                status: RetainedProcessIdentityStatus::Current,
+            },
+        );
+        result = reduce_expected_command(
+            result,
+            CleanupCommand::ObserveChildExit { guard },
+            CleanupObservation::ChildExit {
+                started_at: at,
+                completed_at: at,
+                exited: Some(false),
+            },
+        );
+        result = reduce_expected_command(
+            result,
+            CleanupCommand::ObserveDescendants { guard },
+            CleanupObservation::Descendants {
+                started_at: at,
+                completed_at: at,
+                alive: Some(false),
+            },
+        );
+        reduce_expected_command(
+            result,
+            CleanupCommand::ObserveOwnedDescendants { guard },
+            CleanupObservation::OwnedDescendants {
+                started_at: at,
+                completed_at: at,
+                alive: Some(false),
+            },
+        )
+    }
+
+    fn strict_cleanup_reconciliation(
+        mut result: CleanupResult,
+        at: Instant,
+        guard: Option<Instant>,
+        identity: ProcessIdentity,
+    ) -> CleanupResult {
+        let steps = [
+            (
+                CleanupCommand::ObserveActiveIdentity { guard },
+                CleanupObservation::ActiveIdentity {
+                    started_at: at,
+                    completed_at: at,
+                    identity: Some(identity),
+                },
+            ),
+            (
+                CleanupCommand::ObserveActiveIdentityStatus { guard, identity },
+                CleanupObservation::ActiveIdentityStatus {
+                    started_at: at,
+                    completed_at: at,
+                    status: RetainedProcessIdentityStatus::Current,
+                },
+            ),
+            (
+                CleanupCommand::ObserveChildExit { guard },
+                CleanupObservation::ChildExit {
+                    started_at: at,
+                    completed_at: at,
+                    exited: Some(true),
+                },
+            ),
+            (
+                CleanupCommand::ObserveDescendants { guard },
+                CleanupObservation::Descendants {
+                    started_at: at,
+                    completed_at: at,
+                    alive: Some(false),
+                },
+            ),
+            (
+                CleanupCommand::ObserveOwnedDescendants { guard },
+                CleanupObservation::OwnedDescendants {
+                    started_at: at,
+                    completed_at: at,
+                    alive: Some(false),
+                },
+            ),
+            (
+                CleanupCommand::WaitChild { guard },
+                CleanupObservation::ChildWaited {
+                    started_at: at,
+                    completed_at: at,
+                    reaped: true,
+                },
+            ),
+            (
+                CleanupCommand::ObserveGroupPresence { guard },
+                CleanupObservation::GroupPresence {
+                    started_at: at,
+                    completed_at: at,
+                    status: ProcessPresenceStatus::Absent,
+                },
+            ),
+            (
+                CleanupCommand::ObserveOwnedStopped { guard },
+                CleanupObservation::OwnedStopped {
+                    started_at: at,
+                    completed_at: at,
+                    stopped: Some(true),
+                },
+            ),
+            (
+                CleanupCommand::RetireOwnership { guard, identity },
+                CleanupObservation::OwnershipRetired {
+                    started_at: at,
+                    completed_at: at,
+                    retired: true,
+                },
+            ),
+        ];
+        for (command, observation) in steps {
+            result = reduce_expected_command(result, command, observation);
+        }
+        result
+    }
+
+    #[test]
+    fn cleanup_reducer_golden_trace_allocates_and_orders_every_readiness_phase() {
+        let started_at = Instant::now();
+        let eof_deadline = started_at + Duration::from_millis(100);
+        let term_deadline = started_at + Duration::from_millis(200);
+        let deadline = started_at + READINESS_CLEANUP_RESERVE;
+        let identity = ProcessIdentity {
+            process_id: 41,
+            started_microseconds: 7,
+            started_seconds: 11,
+        };
+        let guard = Some(deadline);
+        let mut result = cleanup_reduce(
+            CleanupState::new(
+                CleanupPhasePolicy::PreserveFinalReconciliation,
+                identity.process_id,
+                deadline,
+                Some(READINESS_MAX_TERM_GRACE),
+            ),
+            CleanupObservation::Begin {
+                observed_at: started_at,
+            },
+        );
+
+        result = live_child_reconciliation(result, started_at, guard, identity);
+        result = live_child_reconciliation(result, started_at, guard, identity);
+        result = reduce_expected_command(
+            result,
+            CleanupCommand::Sleep {
+                guard: Some(eof_deadline),
+                duration: Duration::from_millis(10),
+            },
+            CleanupObservation::Slept {
+                started_at,
+                completed_at: eof_deadline,
+            },
+        );
+        result = reduce_expected_command(
+            result,
+            CleanupCommand::SignalProcessGroup {
+                guard,
+                signal: SIGTERM,
+            },
+            CleanupObservation::ProcessGroupSignalled {
+                started_at: eof_deadline,
+                completed_at: eof_deadline,
+                signal: SIGTERM,
+            },
+        );
+        result = live_child_reconciliation(result, eof_deadline, guard, identity);
+        result = reduce_expected_command(
+            result,
+            CleanupCommand::Sleep {
+                guard: Some(term_deadline),
+                duration: Duration::from_millis(10),
+            },
+            CleanupObservation::Slept {
+                started_at: eof_deadline,
+                completed_at: term_deadline,
+            },
+        );
+        result = reduce_expected_command(
+            result,
+            CleanupCommand::RefreshOwned { guard },
+            CleanupObservation::OwnedRefreshed {
+                started_at: term_deadline,
+                completed_at: term_deadline,
+                refreshed: true,
+            },
+        );
+        result = reduce_expected_command(
+            result,
+            CleanupCommand::SignalDescendants {
+                guard,
+                signal: SIGKILL,
+            },
+            CleanupObservation::DescendantsSignalled {
+                started_at: term_deadline,
+                completed_at: term_deadline,
+                signal: SIGKILL,
+                signalled: false,
+            },
+        );
+        result = reduce_expected_command(
+            result,
+            CleanupCommand::SignalProcessGroup {
+                guard,
+                signal: SIGKILL,
+            },
+            CleanupObservation::ProcessGroupSignalled {
+                started_at: term_deadline,
+                completed_at: term_deadline,
+                signal: SIGKILL,
+            },
+        );
+        result = live_child_reconciliation(result, term_deadline, guard, identity);
+        let (state, final_sleep) = expect_cleanup_command(result);
+        assert_eq!(
+            final_sleep,
+            CleanupCommand::Sleep {
+                guard,
+                duration: Duration::from_millis(10),
+            }
+        );
+
+        assert_eq!(
+            cleanup_reduce(
+                state,
+                CleanupObservation::DeadlineClosed {
+                    closed_at: deadline,
+                },
+            ),
+            CleanupResult::Terminal(CleanupTerminal::Retained)
+        );
+    }
+
+    #[test]
+    fn readiness_reducer_anchors_term_deadline_when_eof_poll_completion_overshoots() {
+        let started_at = Instant::now();
+        let eof_deadline = started_at + Duration::from_millis(100);
+        let term_deadline = started_at + Duration::from_millis(200);
+        let overshot_at = started_at + Duration::from_millis(150);
+        let deadline = started_at + READINESS_CLEANUP_RESERVE;
+        let identity = ProcessIdentity {
+            process_id: 41,
+            started_microseconds: 7,
+            started_seconds: 11,
+        };
+        let guard = Some(deadline);
+        let mut result = cleanup_reduce(
+            CleanupState::new(
+                CleanupPhasePolicy::PreserveFinalReconciliation,
+                identity.process_id,
+                deadline,
+                Some(Duration::from_millis(100)),
+            ),
+            CleanupObservation::Begin {
+                observed_at: started_at,
+            },
+        );
+        result = live_child_reconciliation(result, started_at, guard, identity);
+        result = live_child_reconciliation(result, started_at, guard, identity);
+        result = reduce_expected_command(
+            result,
+            CleanupCommand::Sleep {
+                guard: Some(eof_deadline),
+                duration: Duration::from_millis(10),
+            },
+            CleanupObservation::Slept {
+                started_at: eof_deadline - Duration::from_nanos(1),
+                completed_at: overshot_at,
+            },
+        );
+        result = reduce_expected_command(
+            result,
+            CleanupCommand::SignalProcessGroup {
+                guard,
+                signal: SIGTERM,
+            },
+            CleanupObservation::ProcessGroupSignalled {
+                started_at: overshot_at,
+                completed_at: overshot_at,
+                signal: SIGTERM,
+            },
+        );
+        result = live_child_reconciliation(result, overshot_at, guard, identity);
+        let (_, command) = expect_cleanup_command(result);
+        assert_eq!(
+            command,
+            CleanupCommand::Sleep {
+                guard: Some(term_deadline),
+                duration: Duration::from_millis(10),
+            }
+        );
+    }
+
+    #[test]
+    fn readiness_reducer_clamps_requested_term_grace_to_actual_entry_remaining() {
+        let started_at = Instant::now();
+        let eof_deadline = started_at + Duration::from_millis(30);
+        let term_deadline = started_at + Duration::from_millis(60);
+        let deadline = started_at + Duration::from_millis(90);
+        let identity = ProcessIdentity {
+            process_id: 41,
+            started_microseconds: 7,
+            started_seconds: 11,
+        };
+        let guard = Some(deadline);
+        let mut result = cleanup_reduce(
+            CleanupState::new(
+                CleanupPhasePolicy::PreserveFinalReconciliation,
+                identity.process_id,
+                deadline,
+                Some(Duration::from_millis(100)),
+            ),
+            CleanupObservation::Begin {
+                observed_at: started_at,
+            },
+        );
+        result = live_child_reconciliation(result, started_at, guard, identity);
+        result = live_child_reconciliation(result, started_at, guard, identity);
+        result = reduce_expected_command(
+            result,
+            CleanupCommand::Sleep {
+                guard: Some(eof_deadline),
+                duration: Duration::from_millis(10),
+            },
+            CleanupObservation::Slept {
+                started_at,
+                completed_at: eof_deadline,
+            },
+        );
+        result = reduce_expected_command(
+            result,
+            CleanupCommand::SignalProcessGroup {
+                guard,
+                signal: SIGTERM,
+            },
+            CleanupObservation::ProcessGroupSignalled {
+                started_at: eof_deadline,
+                completed_at: eof_deadline,
+                signal: SIGTERM,
+            },
+        );
+        result = live_child_reconciliation(result, eof_deadline, guard, identity);
+        let (_, command) = expect_cleanup_command(result);
+        assert_eq!(
+            command,
+            CleanupCommand::Sleep {
+                guard: Some(term_deadline),
+                duration: Duration::from_millis(10),
+            }
+        );
+    }
+
+    #[test]
+    fn cleanup_reducer_retains_for_every_non_strict_or_mismatched_proof() {
+        let started_at = Instant::now();
+        let deadline = started_at + READINESS_CLEANUP_RESERVE;
+        let controller = CleanupController {
+            policy: CleanupPhasePolicy::PreserveFinalReconciliation,
+            process_group: 41,
+            deadline,
+            cleanup_started: started_at,
+            eof_grace: Duration::from_millis(100),
+            term_grace: Duration::from_millis(100),
+        };
+        let identity = ProcessIdentity {
+            process_id: controller.process_group,
+            started_microseconds: 7,
+            started_seconds: 11,
+        };
+        let reused = ProcessIdentity {
+            process_id: 42,
+            ..identity
+        };
+        let cases = [
+            (
+                "missing ownership",
+                CleanupProofStep::ActiveIdentity,
+                None,
+                CleanupObservation::ActiveIdentity {
+                    started_at,
+                    completed_at: started_at,
+                    identity: None,
+                },
+            ),
+            (
+                "mismatched ownership",
+                CleanupProofStep::ActiveIdentity,
+                None,
+                CleanupObservation::ActiveIdentity {
+                    started_at,
+                    completed_at: started_at,
+                    identity: Some(reused),
+                },
+            ),
+            (
+                "reused identity",
+                CleanupProofStep::ActiveIdentityStatus,
+                Some(identity),
+                CleanupObservation::ActiveIdentityStatus {
+                    started_at,
+                    completed_at: started_at,
+                    status: RetainedProcessIdentityStatus::Reused,
+                },
+            ),
+            (
+                "unavailable identity",
+                CleanupProofStep::ActiveIdentityStatus,
+                Some(identity),
+                CleanupObservation::ActiveIdentityStatus {
+                    started_at,
+                    completed_at: started_at,
+                    status: RetainedProcessIdentityStatus::Unavailable,
+                },
+            ),
+            (
+                "live child",
+                CleanupProofStep::ChildExit,
+                Some(identity),
+                CleanupObservation::ChildExit {
+                    started_at,
+                    completed_at: started_at,
+                    exited: Some(false),
+                },
+            ),
+            (
+                "unavailable child",
+                CleanupProofStep::ChildExit,
+                Some(identity),
+                CleanupObservation::ChildExit {
+                    started_at,
+                    completed_at: started_at,
+                    exited: None,
+                },
+            ),
+            (
+                "live descendants",
+                CleanupProofStep::Descendants,
+                Some(identity),
+                CleanupObservation::Descendants {
+                    started_at,
+                    completed_at: started_at,
+                    alive: Some(true),
+                },
+            ),
+            (
+                "unavailable descendants",
+                CleanupProofStep::Descendants,
+                Some(identity),
+                CleanupObservation::Descendants {
+                    started_at,
+                    completed_at: started_at,
+                    alive: None,
+                },
+            ),
+            (
+                "live owned descendants",
+                CleanupProofStep::OwnedDescendants,
+                Some(identity),
+                CleanupObservation::OwnedDescendants {
+                    started_at,
+                    completed_at: started_at,
+                    alive: Some(true),
+                },
+            ),
+            (
+                "unavailable owned descendants",
+                CleanupProofStep::OwnedDescendants,
+                Some(identity),
+                CleanupObservation::OwnedDescendants {
+                    started_at,
+                    completed_at: started_at,
+                    alive: None,
+                },
+            ),
+            (
+                "wait failure",
+                CleanupProofStep::WaitChild,
+                Some(identity),
+                CleanupObservation::ChildWaited {
+                    started_at,
+                    completed_at: started_at,
+                    reaped: false,
+                },
+            ),
+            (
+                "present group",
+                CleanupProofStep::GroupPresence,
+                Some(identity),
+                CleanupObservation::GroupPresence {
+                    started_at,
+                    completed_at: started_at,
+                    status: ProcessPresenceStatus::Present,
+                },
+            ),
+            (
+                "unavailable group",
+                CleanupProofStep::GroupPresence,
+                Some(identity),
+                CleanupObservation::GroupPresence {
+                    started_at,
+                    completed_at: started_at,
+                    status: ProcessPresenceStatus::Unavailable,
+                },
+            ),
+            (
+                "owned process alive",
+                CleanupProofStep::OwnedStopped,
+                Some(identity),
+                CleanupObservation::OwnedStopped {
+                    started_at,
+                    completed_at: started_at,
+                    stopped: Some(false),
+                },
+            ),
+            (
+                "owned process unavailable",
+                CleanupProofStep::OwnedStopped,
+                Some(identity),
+                CleanupObservation::OwnedStopped {
+                    started_at,
+                    completed_at: started_at,
+                    stopped: None,
+                },
+            ),
+            (
+                "retirement failure",
+                CleanupProofStep::RetireOwnership,
+                Some(identity),
+                CleanupObservation::OwnershipRetired {
+                    started_at,
+                    completed_at: started_at,
+                    retired: false,
+                },
+            ),
+            (
+                "premature observation",
+                CleanupProofStep::ActiveIdentity,
+                None,
+                CleanupObservation::ChildExit {
+                    started_at,
+                    completed_at: started_at,
+                    exited: Some(true),
+                },
+            ),
+        ];
+
+        for (name, step, retained_identity, observation) in cases {
+            let child_exited = matches!(
+                step,
+                CleanupProofStep::Descendants
+                    | CleanupProofStep::OwnedDescendants
+                    | CleanupProofStep::WaitChild
+                    | CleanupProofStep::GroupPresence
+                    | CleanupProofStep::OwnedStopped
+                    | CleanupProofStep::RetireOwnership
+            )
+            .then_some(true);
+            let descendants_alive = matches!(
+                step,
+                CleanupProofStep::OwnedDescendants
+                    | CleanupProofStep::WaitChild
+                    | CleanupProofStep::GroupPresence
+                    | CleanupProofStep::OwnedStopped
+                    | CleanupProofStep::RetireOwnership
+            )
+            .then_some(false);
+            let state = CleanupState::Reconciling {
+                controller,
+                continuation: CleanupContinuation::Final,
+                step,
+                proof: CleanupProof {
+                    identity: retained_identity,
+                    child_exited,
+                    descendants_alive,
+                },
+            };
+            let mut result = cleanup_reduce(state, observation);
+            if matches!(
+                result,
+                CleanupResult::Command {
+                    command: CleanupCommand::ObserveDescendants { .. },
+                    ..
+                }
+            ) {
+                let (state, _) = expect_cleanup_command(result);
+                result = cleanup_reduce(
+                    state,
+                    CleanupObservation::Descendants {
+                        started_at,
+                        completed_at: started_at,
+                        alive: Some(false),
+                    },
+                );
+            }
+            if matches!(
+                result,
+                CleanupResult::Command {
+                    command: CleanupCommand::ObserveOwnedDescendants { .. },
+                    ..
+                }
+            ) {
+                let (state, _) = expect_cleanup_command(result);
+                result = cleanup_reduce(
+                    state,
+                    CleanupObservation::OwnedDescendants {
+                        started_at,
+                        completed_at: started_at,
+                        alive: Some(false),
+                    },
+                );
+            }
+            assert_eq!(
+                result,
+                CleanupResult::Terminal(CleanupTerminal::Retained),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn cleanup_reducer_starts_no_next_primitive_after_a_completion_reaches_cutoff() {
+        let started_at = Instant::now();
+        let deadline = started_at + READINESS_CLEANUP_RESERVE;
+        let before = deadline - Duration::from_nanos(1);
+        let controller = CleanupController {
+            policy: CleanupPhasePolicy::PreserveFinalReconciliation,
+            process_group: 41,
+            deadline,
+            cleanup_started: started_at,
+            eof_grace: Duration::from_millis(100),
+            term_grace: Duration::from_millis(100),
+        };
+        let identity = ProcessIdentity {
+            process_id: controller.process_group,
+            started_microseconds: 7,
+            started_seconds: 11,
+        };
+        let proof_cases = [
+            (
+                CleanupProofStep::ActiveIdentity,
+                None,
+                CleanupObservation::ActiveIdentity {
+                    started_at: before,
+                    completed_at: deadline,
+                    identity: Some(identity),
+                },
+            ),
+            (
+                CleanupProofStep::ActiveIdentityStatus,
+                Some(identity),
+                CleanupObservation::ActiveIdentityStatus {
+                    started_at: before,
+                    completed_at: deadline,
+                    status: RetainedProcessIdentityStatus::Current,
+                },
+            ),
+            (
+                CleanupProofStep::ChildExit,
+                Some(identity),
+                CleanupObservation::ChildExit {
+                    started_at: before,
+                    completed_at: deadline,
+                    exited: Some(true),
+                },
+            ),
+            (
+                CleanupProofStep::Descendants,
+                Some(identity),
+                CleanupObservation::Descendants {
+                    started_at: before,
+                    completed_at: deadline,
+                    alive: Some(false),
+                },
+            ),
+            (
+                CleanupProofStep::OwnedDescendants,
+                Some(identity),
+                CleanupObservation::OwnedDescendants {
+                    started_at: before,
+                    completed_at: deadline,
+                    alive: Some(false),
+                },
+            ),
+            (
+                CleanupProofStep::WaitChild,
+                Some(identity),
+                CleanupObservation::ChildWaited {
+                    started_at: before,
+                    completed_at: deadline,
+                    reaped: true,
+                },
+            ),
+            (
+                CleanupProofStep::GroupPresence,
+                Some(identity),
+                CleanupObservation::GroupPresence {
+                    started_at: before,
+                    completed_at: deadline,
+                    status: ProcessPresenceStatus::Absent,
+                },
+            ),
+            (
+                CleanupProofStep::OwnedStopped,
+                Some(identity),
+                CleanupObservation::OwnedStopped {
+                    started_at: before,
+                    completed_at: deadline,
+                    stopped: Some(true),
+                },
+            ),
+        ];
+        for (step, retained_identity, observation) in proof_cases {
+            assert_eq!(
+                cleanup_reduce(
+                    CleanupState::Reconciling {
+                        controller,
+                        continuation: CleanupContinuation::Final,
+                        step,
+                        proof: CleanupProof {
+                            identity: retained_identity,
+                            ..CleanupProof::default()
+                        },
+                    },
+                    observation,
+                ),
+                CleanupResult::Terminal(CleanupTerminal::Retained)
+            );
+        }
+
+        let effect_cases = [
+            (
+                CleanupEffect::Sleep {
+                    phase_deadline: deadline,
+                    after: CleanupAfterPoll::SignalTerm,
+                },
+                CleanupObservation::Slept {
+                    started_at: before,
+                    completed_at: deadline,
+                },
+            ),
+            (
+                CleanupEffect::SignalTerm,
+                CleanupObservation::ProcessGroupSignalled {
+                    started_at: before,
+                    completed_at: deadline,
+                    signal: SIGTERM,
+                },
+            ),
+            (
+                CleanupEffect::RefreshOwned,
+                CleanupObservation::OwnedRefreshed {
+                    started_at: before,
+                    completed_at: deadline,
+                    refreshed: true,
+                },
+            ),
+            (
+                CleanupEffect::SignalDescendants,
+                CleanupObservation::DescendantsSignalled {
+                    started_at: before,
+                    completed_at: deadline,
+                    signal: SIGKILL,
+                    signalled: true,
+                },
+            ),
+            (
+                CleanupEffect::SignalGroupKill,
+                CleanupObservation::ProcessGroupSignalled {
+                    started_at: before,
+                    completed_at: deadline,
+                    signal: SIGKILL,
+                },
+            ),
+        ];
+        for (effect, observation) in effect_cases {
+            assert_eq!(
+                cleanup_reduce(
+                    CleanupState::AwaitingEffect { controller, effect },
+                    observation,
+                ),
+                CleanupResult::Terminal(CleanupTerminal::Retained)
+            );
+        }
+    }
+
+    #[test]
+    fn cleanup_reducer_rejects_deadline_closed_for_every_pending_primitive() {
+        let started_at = Instant::now();
+        let deadline = started_at + READINESS_CLEANUP_RESERVE;
+        let controller = CleanupController {
+            policy: CleanupPhasePolicy::PreserveFinalReconciliation,
+            process_group: 41,
+            deadline,
+            cleanup_started: started_at,
+            eof_grace: Duration::from_millis(100),
+            term_grace: Duration::from_millis(100),
+        };
+        let identity = ProcessIdentity {
+            process_id: controller.process_group,
+            started_microseconds: 7,
+            started_seconds: 11,
+        };
+        for step in [
+            CleanupProofStep::ActiveIdentity,
+            CleanupProofStep::ActiveIdentityStatus,
+            CleanupProofStep::ChildExit,
+            CleanupProofStep::Descendants,
+            CleanupProofStep::OwnedDescendants,
+            CleanupProofStep::WaitChild,
+            CleanupProofStep::GroupPresence,
+            CleanupProofStep::OwnedStopped,
+            CleanupProofStep::RetireOwnership,
+        ] {
+            assert_eq!(
+                cleanup_reduce(
+                    CleanupState::Reconciling {
+                        controller,
+                        continuation: CleanupContinuation::Final,
+                        step,
+                        proof: CleanupProof {
+                            identity: Some(identity),
+                            ..CleanupProof::default()
+                        },
+                    },
+                    CleanupObservation::DeadlineClosed {
+                        closed_at: deadline,
+                    },
+                ),
+                CleanupResult::Terminal(CleanupTerminal::Retained)
+            );
+        }
+        for effect in [
+            CleanupEffect::Sleep {
+                phase_deadline: deadline,
+                after: CleanupAfterPoll::SignalTerm,
+            },
+            CleanupEffect::SignalTerm,
+            CleanupEffect::RefreshOwned,
+            CleanupEffect::SignalDescendants,
+            CleanupEffect::SignalGroupKill,
+        ] {
+            assert_eq!(
+                cleanup_reduce(
+                    CleanupState::AwaitingEffect { controller, effect },
+                    CleanupObservation::DeadlineClosed {
+                        closed_at: deadline,
+                    },
+                ),
+                CleanupResult::Terminal(CleanupTerminal::Retained)
+            );
+        }
+    }
+
+    #[test]
+    fn cleanup_reducer_rejects_invalid_initial_and_mismatched_effect_results() {
+        let started_at = Instant::now();
+        let deadline = started_at + READINESS_CLEANUP_RESERVE;
+        let controller = CleanupController {
+            policy: CleanupPhasePolicy::PreserveFinalReconciliation,
+            process_group: 41,
+            deadline,
+            cleanup_started: started_at,
+            eof_grace: Duration::from_millis(100),
+            term_grace: Duration::from_millis(100),
+        };
+        assert_eq!(
+            cleanup_reduce(
+                CleanupState::new(
+                    controller.policy,
+                    controller.process_group,
+                    controller.deadline,
+                    Some(controller.term_grace),
+                ),
+                CleanupObservation::Slept {
+                    started_at,
+                    completed_at: started_at,
+                },
+            ),
+            CleanupResult::Terminal(CleanupTerminal::Retained)
+        );
+        let cases = [
+            (
+                CleanupEffect::Sleep {
+                    phase_deadline: deadline,
+                    after: CleanupAfterPoll::SignalTerm,
+                },
+                CleanupObservation::OwnedRefreshed {
+                    started_at,
+                    completed_at: started_at,
+                    refreshed: true,
+                },
+            ),
+            (
+                CleanupEffect::SignalTerm,
+                CleanupObservation::ProcessGroupSignalled {
+                    started_at,
+                    completed_at: started_at,
+                    signal: SIGKILL,
+                },
+            ),
+            (
+                CleanupEffect::RefreshOwned,
+                CleanupObservation::Slept {
+                    started_at,
+                    completed_at: started_at,
+                },
+            ),
+            (
+                CleanupEffect::SignalDescendants,
+                CleanupObservation::DescendantsSignalled {
+                    started_at,
+                    completed_at: started_at,
+                    signal: SIGTERM,
+                    signalled: true,
+                },
+            ),
+            (
+                CleanupEffect::SignalGroupKill,
+                CleanupObservation::ProcessGroupSignalled {
+                    started_at,
+                    completed_at: started_at,
+                    signal: SIGTERM,
+                },
+            ),
+        ];
+        for (effect, observation) in cases {
+            assert_eq!(
+                cleanup_reduce(
+                    CleanupState::AwaitingEffect { controller, effect },
+                    observation,
+                ),
+                CleanupResult::Terminal(CleanupTerminal::Retained)
+            );
+        }
+    }
+
+    #[test]
+    fn cleanup_reducer_accepts_late_completion_only_after_retirement_already_succeeded() {
+        let started_at = Instant::now();
+        let deadline = started_at + READINESS_CLEANUP_RESERVE;
+        let identity = ProcessIdentity {
+            process_id: 41,
+            started_microseconds: 7,
+            started_seconds: 11,
+        };
+        let controller = CleanupController {
+            policy: CleanupPhasePolicy::PreserveFinalReconciliation,
+            process_group: identity.process_id,
+            deadline,
+            cleanup_started: started_at,
+            eof_grace: Duration::from_millis(100),
+            term_grace: Duration::from_millis(100),
+        };
+        assert_eq!(
+            cleanup_reduce(
+                CleanupState::Reconciling {
+                    controller,
+                    continuation: CleanupContinuation::Final,
+                    step: CleanupProofStep::RetireOwnership,
+                    proof: CleanupProof {
+                        identity: Some(identity),
+                        ..CleanupProof::default()
+                    },
+                },
+                CleanupObservation::OwnershipRetired {
+                    started_at: deadline - Duration::from_nanos(1),
+                    completed_at: deadline,
+                    retired: true,
+                },
+            ),
+            CleanupResult::Terminal(CleanupTerminal::Cleaned)
+        );
+    }
+
+    #[test]
+    fn cleanup_reducer_sleep_completion_at_phase_boundary_advances_without_another_poll() {
+        let started_at = Instant::now();
+        let phase_deadline = started_at + Duration::from_millis(100);
+        let deadline = started_at + READINESS_CLEANUP_RESERVE;
+        let controller = CleanupController {
+            policy: CleanupPhasePolicy::PreserveFinalReconciliation,
+            process_group: 41,
+            deadline,
+            cleanup_started: started_at,
+            eof_grace: Duration::from_millis(100),
+            term_grace: Duration::from_millis(100),
+        };
+        for completed_at in [phase_deadline, phase_deadline + Duration::from_nanos(1)] {
+            let result = cleanup_reduce(
+                CleanupState::AwaitingEffect {
+                    controller,
+                    effect: CleanupEffect::Sleep {
+                        phase_deadline,
+                        after: CleanupAfterPoll::SignalTerm,
+                    },
+                },
+                CleanupObservation::Slept {
+                    started_at: phase_deadline - Duration::from_nanos(1),
+                    completed_at,
+                },
+            );
+            let (_, command) = expect_cleanup_command(result);
+            assert_eq!(
+                command,
+                CleanupCommand::SignalProcessGroup {
+                    guard: Some(deadline),
+                    signal: SIGTERM,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn readiness_reducer_kills_the_group_after_signalling_live_descendants() {
+        let started_at = Instant::now();
+        let deadline = started_at + READINESS_CLEANUP_RESERVE;
+        let controller = CleanupController {
+            policy: CleanupPhasePolicy::PreserveFinalReconciliation,
+            process_group: 41,
+            deadline,
+            cleanup_started: started_at,
+            eof_grace: Duration::from_millis(100),
+            term_grace: Duration::from_millis(100),
+        };
+        let result = cleanup_reduce(
+            CleanupState::AwaitingEffect {
+                controller,
+                effect: CleanupEffect::SignalDescendants,
+            },
+            CleanupObservation::DescendantsSignalled {
+                started_at,
+                completed_at: started_at,
+                signal: SIGKILL,
+                signalled: true,
+            },
+        );
+        let (_, command) = expect_cleanup_command(result);
+        assert_eq!(
+            command,
+            CleanupCommand::SignalProcessGroup {
+                guard: Some(deadline),
+                signal: SIGKILL,
+            }
+        );
+    }
+
+    #[test]
+    fn turn_cleanup_reducer_preserves_full_poll_and_effect_order() {
+        let started_at = Instant::now();
+        let deadline = started_at + TURN_CLEANUP_RESERVE;
+        let eof_deadline = started_at + STDIN_EOF_GRACE;
+        let term_deadline = eof_deadline + CANCEL_TERM_GRACE;
+        let descendant_deadline = term_deadline + DESCENDANT_REAP_GRACE;
+        let identity = ProcessIdentity {
+            process_id: 41,
+            started_microseconds: 7,
+            started_seconds: 11,
+        };
+        let mut result = cleanup_reduce(
+            CleanupState::new(
+                CleanupPhasePolicy::AllowParentReap,
+                identity.process_id,
+                deadline,
+                Some(CANCEL_TERM_GRACE),
+            ),
+            CleanupObservation::Begin {
+                observed_at: started_at,
+            },
+        );
+
+        result = live_child_reconciliation(result, started_at, None, identity);
+        result = live_child_reconciliation(result, started_at, None, identity);
+        result = reduce_expected_command(
+            result,
+            CleanupCommand::Sleep {
+                guard: None,
+                duration: Duration::from_millis(10),
+            },
+            CleanupObservation::Slept {
+                started_at,
+                completed_at: eof_deadline,
+            },
+        );
+        result = reduce_expected_command(
+            result,
+            CleanupCommand::SignalProcessGroup {
+                guard: None,
+                signal: SIGTERM,
+            },
+            CleanupObservation::ProcessGroupSignalled {
+                started_at: eof_deadline,
+                completed_at: eof_deadline,
+                signal: SIGTERM,
+            },
+        );
+        result = live_child_reconciliation(result, eof_deadline, None, identity);
+        result = reduce_expected_command(
+            result,
+            CleanupCommand::Sleep {
+                guard: None,
+                duration: Duration::from_millis(10),
+            },
+            CleanupObservation::Slept {
+                started_at: eof_deadline,
+                completed_at: term_deadline,
+            },
+        );
+        result = reduce_expected_command(
+            result,
+            CleanupCommand::RefreshOwned { guard: None },
+            CleanupObservation::OwnedRefreshed {
+                started_at: term_deadline,
+                completed_at: term_deadline,
+                refreshed: true,
+            },
+        );
+        result = reduce_expected_command(
+            result,
+            CleanupCommand::SignalDescendants {
+                guard: None,
+                signal: SIGKILL,
+            },
+            CleanupObservation::DescendantsSignalled {
+                started_at: term_deadline,
+                completed_at: term_deadline,
+                signal: SIGKILL,
+                signalled: true,
+            },
+        );
+        result = live_child_reconciliation(result, term_deadline, None, identity);
+        result = reduce_expected_command(
+            result,
+            CleanupCommand::Sleep {
+                guard: None,
+                duration: Duration::from_millis(10),
+            },
+            CleanupObservation::Slept {
+                started_at: term_deadline,
+                completed_at: descendant_deadline,
+            },
+        );
+        result = reduce_expected_command(
+            result,
+            CleanupCommand::SignalProcessGroup {
+                guard: None,
+                signal: SIGKILL,
+            },
+            CleanupObservation::ProcessGroupSignalled {
+                started_at: descendant_deadline,
+                completed_at: descendant_deadline,
+                signal: SIGKILL,
+            },
+        );
+        result = live_child_reconciliation(result, descendant_deadline, None, identity);
+        result = reduce_expected_command(
+            result,
+            CleanupCommand::Sleep {
+                guard: None,
+                duration: Duration::from_millis(10),
+            },
+            CleanupObservation::Slept {
+                started_at: descendant_deadline,
+                completed_at: deadline,
+            },
+        );
+
+        assert_eq!(
+            strict_cleanup_reconciliation(result, deadline, None, identity),
+            CleanupResult::Terminal(CleanupTerminal::Cleaned)
+        );
+    }
+
+    #[test]
+    fn turn_cleanup_reducer_preserves_strict_parent_reap_after_the_deadline() {
+        let started_at = Instant::now();
+        let deadline = started_at + TURN_CLEANUP_RESERVE;
+        let identity = ProcessIdentity {
+            process_id: 41,
+            started_microseconds: 7,
+            started_seconds: 11,
+        };
+        let result = cleanup_reduce(
+            CleanupState::new(
+                CleanupPhasePolicy::AllowParentReap,
+                identity.process_id,
+                deadline,
+                Some(CANCEL_TERM_GRACE),
+            ),
+            CleanupObservation::Begin {
+                observed_at: deadline,
+            },
+        );
+        assert_eq!(
+            strict_cleanup_reconciliation(result, deadline, None, identity),
+            CleanupResult::Terminal(CleanupTerminal::Cleaned)
+        );
+    }
+
+    #[test]
+    fn real_cleanup_executor_refuses_an_expired_sleep_without_invoking_it() {
+        let mut child = Command::new("/usr/bin/true")
+            .spawn()
+            .expect("executor guard child");
+        let active = ActiveRuntime::default();
+        let process_group = child.id() as i32;
+        let mut executor = RealCleanupExecutor {
+            child: &mut child,
+            process_group,
+            active: &active,
+        };
+        let observation = executor.execute(CleanupCommand::Sleep {
+            guard: Some(Instant::now() - Duration::from_nanos(1)),
+            duration: Duration::from_millis(1),
+        });
+        assert!(matches!(
+            observation,
+            CleanupObservation::DeadlineClosed { .. }
+        ));
+        child.wait().expect("executor guard child reap");
+    }
+
+    #[test]
+    fn readiness_cleanup_rejects_an_expired_entry_without_retiring_ownership() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child = Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .expect("expired readiness cleanup process");
+        let process_group = child.id() as i32;
+        let active = ActiveRuntime::default();
+        let published = publish_active_process_group(&active, process_group);
+        let retained_identity = process_identity(process_group);
+
+        let cleaned = stop_process_group_with_term_grace(
+            &mut child,
+            process_group,
+            &active,
+            Instant::now() - Duration::from_millis(1),
+            Some(Duration::ZERO),
+            CleanupPhasePolicy::PreserveFinalReconciliation,
+        );
+        let late_reconciled = stop_process_group_with_term_grace(
+            &mut child,
+            process_group,
+            &active,
+            Instant::now() - Duration::from_millis(1),
+            Some(Duration::ZERO),
+            CleanupPhasePolicy::PreserveFinalReconciliation,
+        );
+        let retained = active.process_group.lock().ok().and_then(|group| *group);
+        let still_running = process_group_exists(process_group);
+        let recovered = stop_process_group(
+            &mut child,
+            process_group,
+            &active,
+            Instant::now() + Duration::from_secs(1),
+        );
+        let fallback_reaped = if recovered {
+            true
+        } else {
+            signal_process_group(process_group, SIGKILL);
+            child.wait().is_ok()
+        };
+        let group_absent = !process_group_exists(process_group);
+
+        assert!(published);
+        assert!(!cleaned);
+        assert!(!late_reconciled);
+        assert_eq!(retained, retained_identity);
+        assert!(still_running);
+        assert!(
+            recovered,
+            "test-owned fallback must not count as product success"
+        );
+        assert!(fallback_reaped);
+        assert!(group_absent);
+    }
+
+    #[test]
+    fn readiness_cleanup_smoke_reports_strict_success_or_retained_failure() {
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -6566,13 +9540,16 @@ while :; do /bin/sleep 1; done
             .spawn()
             .expect("TERM-resistant readiness process");
         let process_group = child.id() as i32;
-        let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+        let mut stdout = child.stdout.take().map(BufReader::new);
         let mut ready = String::new();
-        stdout.read_line(&mut ready).expect("readiness handshake");
-        assert_eq!(ready, "ready\n");
+        let readiness = stdout
+            .as_mut()
+            .ok_or_else(|| io::Error::other("child stdout"))
+            .and_then(|stdout| stdout.read_line(&mut ready));
 
         let active = ActiveRuntime::default();
-        assert!(publish_active_process_group(&active, process_group));
+        let published = publish_active_process_group(&active, process_group);
+        let exact_identity = process_identity(process_group);
         let outcome = cleanup_after(
             child,
             process_group,
@@ -6581,13 +9558,86 @@ while :; do /bin/sleep 1; done
             &active,
             Instant::now() + READINESS_CLEANUP_RESERVE,
         );
+        let original_cleaned = outcome.cleaned;
+        let product_ownership = active.process_group.lock().ok().and_then(|group| *group);
+        let product_group_presence = process_group_presence(process_group);
+        let product_owned_stopped = authenticated_owned_processes_status(&active);
+        let product_child_reaped = child_exited_without_reaping(process_group)
+            .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD));
+
+        let mut recovered = original_cleaned;
+        if !original_cleaned {
+            recovered =
+                reconcile_retained_process_group(&active, Instant::now() + Duration::from_secs(5));
+            if !recovered {
+                let _ = signal_active_process_group(&active, process_group, SIGKILL);
+                recovered = reconcile_retained_process_group(
+                    &active,
+                    Instant::now() + Duration::from_secs(5),
+                );
+            }
+        }
+        if process_group_presence(process_group) != ProcessPresenceStatus::Absent
+            && exact_identity.is_some_and(|identity| {
+                retained_process_identity_status(identity) == RetainedProcessIdentityStatus::Current
+            })
+        {
+            signal_process_group(process_group, SIGKILL);
+        }
+
+        let reap_deadline = Instant::now() + Duration::from_secs(5);
+        let mut direct_child_reaped = false;
+        while Instant::now() < reap_deadline {
+            match retained_child_reap_state(process_group) {
+                RetainedChildReapState::ExitedNeedsReap => {
+                    direct_child_reaped = reap_child(process_group);
+                    break;
+                }
+                RetainedChildReapState::AlreadyReaped => {
+                    direct_child_reaped = true;
+                    break;
+                }
+                RetainedChildReapState::Live | RetainedChildReapState::Unavailable => {
+                    thread::yield_now();
+                }
+            }
+        }
+        if active
+            .process_group
+            .lock()
+            .ok()
+            .is_some_and(|group| group.is_some())
+        {
+            recovered =
+                reconcile_retained_process_group(&active, Instant::now() + Duration::from_secs(5));
+        }
+        let final_ownership = active.process_group.lock().ok().and_then(|group| *group);
+        let final_group_presence = process_group_presence(process_group);
+        let final_owned_stopped = authenticated_owned_processes_status(&active);
+        let teardown_proven = direct_child_reaped
+            && final_ownership.is_none()
+            && final_group_presence == ProcessPresenceStatus::Absent
+            && final_owned_stopped == Some(true);
+
         assert_eq!(outcome.state, RuntimeReadinessState::TimedOut);
-        assert!(outcome.cleaned);
-        assert_eq!(
-            *active.process_group.lock().expect("process-group state"),
-            None
+        assert!(readiness.is_ok());
+        assert_eq!(ready, "ready\n");
+        assert!(published);
+        assert!(exact_identity.is_some());
+        assert!(
+            (original_cleaned
+                && product_ownership.is_none()
+                && product_group_presence == ProcessPresenceStatus::Absent
+                && product_owned_stopped == Some(true)
+                && product_child_reaped)
+                || (!original_cleaned && product_ownership == exact_identity),
+            "300ms cleanup must report only strict success or exact retained failure"
         );
-        assert!(!process_group_exists(process_group));
+        assert!(
+            recovered || teardown_proven,
+            "test-owned recovery must not count as product success"
+        );
+        assert!(teardown_proven);
     }
 
     #[test]
@@ -6606,37 +9656,100 @@ while :; do /bin/sleep 1; done
             .spawn()
             .expect("TERM-resistant parent and descendant");
         let process_group = child.id() as i32;
-        let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+        let mut stdout = child.stdout.take().map(BufReader::new);
         let mut ready = String::new();
-        stdout.read_line(&mut ready).expect("readiness handshake");
-        assert_eq!(ready, "ready\n");
+        let readiness = stdout
+            .as_mut()
+            .ok_or_else(|| io::Error::other("child stdout"))
+            .and_then(|stdout| stdout.read_line(&mut ready));
 
         let active = ActiveRuntime::default();
-        assert!(publish_active_process_group(&active, process_group));
-        assert!(refresh_owned_processes(&active));
-        assert!(signal_active_process_group(&active, process_group, SIGTERM));
-        assert!(process_group_exists(process_group));
-        assert!(
-            process_group_has_descendants(process_group, process_group)
-                .expect("TERM-resistant descendant state")
-        );
-        assert!(signal_active_descendants(&active, process_group, SIGKILL));
+        let exact_identity = process_identity(process_group);
+        let published = publish_active_process_group(&active, process_group);
+        let refreshed = refresh_owned_processes(&active);
+        let term_signalled = signal_active_process_group(&active, process_group, SIGTERM);
+        let group_survived_term = process_group_exists(process_group);
+        let descendants_after_term = process_group_has_descendants(process_group, process_group);
+        let descendants_signalled = signal_active_descendants(&active, process_group, SIGKILL);
         let reap_deadline = Instant::now() + Duration::from_secs(5);
-        while !reconcile_stopped_process_group(&mut child, process_group, &active) {
-            assert!(
-                Instant::now() < reap_deadline,
-                "parent did not reap descendant"
-            );
+        let mut product_reconciled = false;
+        while Instant::now() < reap_deadline {
+            if reconcile_stopped_process_group(&mut child, process_group, &active) {
+                product_reconciled = true;
+                break;
+            }
             thread::yield_now();
         }
-        assert_eq!(
-            *active.process_group.lock().expect("process-group state"),
-            None
-        );
+
+        let recovered = product_reconciled
+            || stop_process_group(
+                &mut child,
+                process_group,
+                &active,
+                Instant::now() + Duration::from_secs(5),
+            );
+        let mut teardown_reconciled = recovered;
+        if !teardown_reconciled {
+            let _ = signal_active_process_group(&active, process_group, SIGKILL);
+            teardown_reconciled =
+                reconcile_retained_process_group(&active, Instant::now() + Duration::from_secs(5));
+        }
+        if process_group_presence(process_group) != ProcessPresenceStatus::Absent
+            && exact_identity.is_some_and(|identity| {
+                retained_process_identity_status(identity) == RetainedProcessIdentityStatus::Current
+            })
+        {
+            signal_process_group(process_group, SIGKILL);
+            let emergency_deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < emergency_deadline {
+                if child.try_wait().is_ok_and(|status| status.is_some()) {
+                    break;
+                }
+                thread::yield_now();
+            }
+            teardown_reconciled =
+                reconcile_retained_process_group(&active, Instant::now() + Duration::from_secs(5));
+        }
+
+        let retained = active.process_group.lock().ok().and_then(|group| *group);
+        let owned_stopped = authenticated_owned_processes_status(&active);
+        let group_presence = process_group_presence(process_group);
+        let direct_child_reaped = child_exited_without_reaping(process_group)
+            .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD));
         let mut reaped = String::new();
-        stdout.read_line(&mut reaped).expect("parent reap marker");
+        let reap_marker = if group_presence == ProcessPresenceStatus::Absent
+            && direct_child_reaped
+            && owned_stopped == Some(true)
+        {
+            stdout
+                .as_mut()
+                .ok_or_else(|| io::Error::other("child stdout"))
+                .and_then(|stdout| stdout.read_line(&mut reaped))
+        } else {
+            Err(io::Error::other("fixture teardown was not proven"))
+        };
+
+        assert!(readiness.is_ok());
+        assert_eq!(ready, "ready\n");
+        assert!(exact_identity.is_some());
+        assert!(published);
+        assert!(refreshed);
+        assert!(term_signalled);
+        assert!(group_survived_term);
+        assert!(descendants_after_term.as_ref().is_ok_and(|alive| *alive));
+        assert!(descendants_signalled);
+        assert!(product_reconciled, "parent did not reap descendant");
+        assert!(
+            recovered,
+            "test-owned recovery must not count as product success"
+        );
+        assert!(teardown_reconciled);
+        assert_eq!(retained, None);
+        assert_eq!(owned_stopped, Some(true));
+        assert_eq!(group_presence, ProcessPresenceStatus::Absent);
+        assert!(direct_child_reaped);
+        assert!(reap_marker.is_ok());
         assert_eq!(reaped, "reaped\n");
-        assert!(!process_group_exists(process_group));
     }
 
     #[test]
@@ -6772,6 +9885,95 @@ while :; do /bin/sleep 1; done
     }
 
     #[test]
+    fn retained_ownership_reaps_an_exited_direct_child_after_handle_drop() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("printf 'ready\\n'; read -r line")
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("unreaped retained reconciliation process");
+        let process_group = child.id() as i32;
+        let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+        let mut ready = String::new();
+        stdout.read_line(&mut ready).expect("readiness handshake");
+        assert_eq!(ready, "ready\n");
+
+        let active = ActiveRuntime::default();
+        assert!(publish_active_process_group(&active, process_group));
+        drop(child.stdin.take());
+        let exit_deadline = Instant::now() + Duration::from_secs(1);
+        while !child_exited_without_reaping(process_group).expect("direct-child exit state") {
+            assert!(Instant::now() < exit_deadline, "direct child did not exit");
+            thread::yield_now();
+        }
+        assert!(!process_group_exists(process_group));
+        drop(child);
+
+        let reconciled =
+            reconcile_retained_process_group(&active, Instant::now() + Duration::from_secs(1));
+        let reap_observation = child_exited_without_reaping(process_group);
+        if reap_observation.as_ref().is_ok_and(|exited| *exited) {
+            let _ = reap_child(process_group);
+        }
+
+        assert!(reconciled);
+        assert_eq!(
+            reap_observation
+                .expect_err("retained recovery must reap the direct child")
+                .raw_os_error(),
+            Some(MACOS_ECHILD)
+        );
+        assert_eq!(
+            *active.process_group.lock().expect("process-group state"),
+            None
+        );
+    }
+
+    #[test]
+    fn retained_child_reap_state_distinguishes_every_wait_observation() {
+        assert_eq!(
+            classify_retained_child_reap_state(Ok(true)),
+            RetainedChildReapState::ExitedNeedsReap
+        );
+        assert_eq!(
+            classify_retained_child_reap_state(Ok(false)),
+            RetainedChildReapState::Live
+        );
+        assert_eq!(
+            classify_retained_child_reap_state(Err(io::Error::from_raw_os_error(MACOS_ECHILD))),
+            RetainedChildReapState::AlreadyReaped
+        );
+        assert_eq!(
+            classify_retained_child_reap_state(Err(io::Error::other("wait unavailable"))),
+            RetainedChildReapState::Unavailable
+        );
+    }
+
+    #[test]
+    fn retained_reconciliation_ignores_absent_and_mismatched_registrations() {
+        let active = ActiveRuntime::default();
+        assert!(retire_retained_process_group_if_stopped(&active, 42));
+
+        let retained = ProcessIdentity {
+            process_id: 41,
+            started_microseconds: 7,
+            started_seconds: 11,
+        };
+        *active.process_group.lock().expect("process-group state") = Some(retained);
+
+        assert!(retire_retained_process_group_if_stopped(&active, 42));
+        assert_eq!(
+            *active.process_group.lock().expect("retained process group"),
+            Some(retained)
+        );
+    }
+
+    #[test]
     fn already_expired_deadline_never_creates_runtime_work() {
         let fixture = Fixture::new();
         let host = fixture.scripted_host("#!/bin/sh\nexit 0\n");
@@ -6888,7 +10090,7 @@ while :; do /bin/sleep 1; done
             &active,
             Instant::now() + Duration::from_secs(1),
             Some(Duration::from_millis(200)),
-            DescendantReapPolicy::AllowParentReap,
+            CleanupPhasePolicy::AllowParentReap,
         ));
         assert!(!term_marker.exists());
         assert!(!process_group_exists(process_group));
@@ -6925,7 +10127,7 @@ while :; do /bin/sleep 1; done
             &active,
             Instant::now() + Duration::from_secs(1),
             Some(Duration::from_millis(20)),
-            DescendantReapPolicy::AllowParentReap,
+            CleanupPhasePolicy::AllowParentReap,
         ));
         assert_eq!(
             fs::read_to_string(term_marker).expect("TERM marker"),
@@ -6970,6 +10172,228 @@ while :; do /bin/sleep 1; done
             *active.process_group.lock().expect("retired ownership"),
             None
         );
+    }
+
+    #[test]
+    fn retained_retirement_refuses_live_owned_or_group_members() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let mut owned_leader = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(
+                "child=''; cleanup() { if [ -n \"$child\" ]; then kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; fi; }; trap cleanup EXIT TERM INT; exec 3<&0; printf 'leader-ready\\n'; if read -r command; then /bin/sh -c \"trap 'exit 0' TERM INT; printf 'owned-ready\\n'; read -r line\" <&3 & child=$!; wait \"$child\"; fi",
+            )
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("owned descendant leader");
+        let owned_group = owned_leader.id() as i32;
+        let mut owned_stdout = owned_leader.stdout.take().map(BufReader::new);
+        let mut owned_stdin = owned_leader.stdin.take();
+        let mut leader_ready = String::new();
+        let leader_handshake = owned_stdout
+            .as_mut()
+            .map(|stdout| stdout.read_line(&mut leader_ready));
+        let owned_active = ActiveRuntime::default();
+        let owned_published = publish_active_process_group(&owned_active, owned_group);
+        let owned_identity = owned_active
+            .process_group
+            .lock()
+            .ok()
+            .and_then(|group| *group);
+        let owned_current = owned_identity.is_some_and(|identity| {
+            retained_process_identity_status(identity) == RetainedProcessIdentityStatus::Current
+        });
+        let spawn_owned = (owned_published && owned_current).then(|| {
+            owned_stdin.as_mut().map_or_else(
+                || Err(io::Error::other("missing owned leader stdin")),
+                |stdin| stdin.write_all(b"spawn\n").and_then(|()| stdin.flush()),
+            )
+        });
+        let mut owned_ready = String::new();
+        let owned_handshake = spawn_owned
+            .as_ref()
+            .is_some_and(Result::is_ok)
+            .then(|| {
+                owned_stdout
+                    .as_mut()
+                    .map(|stdout| stdout.read_line(&mut owned_ready))
+            })
+            .flatten();
+        let owned_refreshed = refresh_owned_processes(&owned_active);
+        let tracked_owned = owned_active
+            .owned_processes
+            .lock()
+            .ok()
+            .and_then(|owned| owned.iter().copied().next());
+        let owned_refused = !retire_retained_process_group_if_stopped(&owned_active, owned_group);
+        let owned_retained = owned_active
+            .process_group
+            .lock()
+            .ok()
+            .and_then(|group| *group);
+
+        let owned_signalled = signal_active_process_group(&owned_active, owned_group, SIGTERM);
+        drop(owned_stdin);
+        let owned_graceful_exit = bounded_owned_child_exit(&mut owned_leader);
+        let _ = owned_leader.kill();
+        let owned_waited = owned_graceful_exit | bounded_owned_child_exit(&mut owned_leader);
+        let owned_group_absent = !process_group_exists(owned_group);
+        let tracked_owned_ended = tracked_owned
+            .is_some_and(|identity| process_identity(identity.process_id) != Some(identity));
+        let owned_cleanup_retired = owned_identity
+            .is_some_and(|identity| retire_active_process_group(&owned_active, identity));
+        let owned_group_cleared = owned_active
+            .process_group
+            .lock()
+            .is_ok_and(|group| group.is_none());
+        let owned_processes_cleared = owned_active
+            .owned_processes
+            .lock()
+            .is_ok_and(|owned| owned.is_empty());
+
+        assert_eq!(
+            leader_handshake
+                .expect("leader readiness pipe")
+                .expect("leader readiness handshake"),
+            13
+        );
+        assert_eq!(leader_ready, "leader-ready\n");
+        assert!(owned_published);
+        assert!(owned_current);
+        assert!(spawn_owned.is_some_and(|result| result.is_ok()));
+        assert_eq!(
+            owned_handshake
+                .expect("owned readiness pipe")
+                .expect("owned readiness handshake"),
+            12
+        );
+        assert_eq!(owned_ready, "owned-ready\n");
+        assert!(owned_refreshed);
+        assert!(tracked_owned.is_some());
+        assert!(owned_refused);
+        assert_eq!(owned_retained, owned_identity);
+        assert!(owned_signalled);
+        assert!(owned_waited);
+        assert!(owned_group_absent);
+        assert!(tracked_owned_ended);
+        assert!(owned_cleanup_retired);
+        assert!(owned_group_cleared);
+        assert!(owned_processes_cleared);
+
+        let mut group_leader = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("trap 'exit 0' TERM INT; printf 'leader-ready\\n'; read -r line")
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("same-group leader");
+        let same_group = group_leader.id() as i32;
+        let group_stdin = group_leader.stdin.take();
+        let mut group_stdout = group_leader.stdout.take().map(BufReader::new);
+        let mut group_leader_ready = String::new();
+        let group_leader_handshake = group_stdout
+            .as_mut()
+            .map(|stdout| stdout.read_line(&mut group_leader_ready));
+        let group_active = ActiveRuntime::default();
+        let group_published = publish_active_process_group(&group_active, same_group);
+        let group_identity = group_active
+            .process_group
+            .lock()
+            .ok()
+            .and_then(|group| *group);
+        let group_current = group_identity.is_some_and(|identity| {
+            retained_process_identity_status(identity) == RetainedProcessIdentityStatus::Current
+        });
+        let member_spawn = (group_published && group_current).then(|| {
+            Command::new("/bin/sh")
+                .arg("-c")
+                .arg("trap 'exit 0' TERM INT; printf 'member-ready\\n'; read -r line")
+                .process_group(same_group)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+        });
+        let member_spawned = member_spawn.as_ref().is_some_and(|result| result.is_ok());
+        let mut group_member = member_spawn.and_then(Result::ok);
+        let member_stdin = group_member.as_mut().and_then(|child| child.stdin.take());
+        let mut member_stdout = group_member
+            .as_mut()
+            .and_then(|child| child.stdout.take())
+            .map(BufReader::new);
+        let mut member_ready = String::new();
+        let member_handshake = member_stdout
+            .as_mut()
+            .map(|stdout| stdout.read_line(&mut member_ready));
+        let group_refused = !retire_retained_process_group_if_stopped(&group_active, same_group);
+        let group_owned_empty = group_active
+            .owned_processes
+            .lock()
+            .is_ok_and(|owned| owned.is_empty());
+        let live_group_member =
+            process_group_has_descendants(same_group, same_group).unwrap_or(false);
+        let group_retained = group_active
+            .process_group
+            .lock()
+            .ok()
+            .and_then(|group| *group);
+
+        let group_signalled = signal_active_process_group(&group_active, same_group, SIGTERM);
+        drop(group_stdin);
+        drop(member_stdin);
+        let group_leader_graceful_exit = bounded_owned_child_exit(&mut group_leader);
+        let group_member_graceful_exit = group_member.as_mut().map(bounded_owned_child_exit);
+        let _ = group_leader.kill();
+        let _ = group_member.as_mut().map(Child::kill);
+        let group_leader_waited =
+            group_leader_graceful_exit | bounded_owned_child_exit(&mut group_leader);
+        let group_member_waited = group_member_graceful_exit
+            .zip(group_member.as_mut().map(bounded_owned_child_exit))
+            .map(|(graceful, killed)| graceful | killed);
+        let same_group_absent = !process_group_exists(same_group);
+        let group_cleanup_retired = group_identity
+            .is_some_and(|identity| retire_active_process_group(&group_active, identity));
+        let group_ownership_cleared = group_active
+            .process_group
+            .lock()
+            .is_ok_and(|group| group.is_none());
+        let group_owned_processes_cleared = group_active
+            .owned_processes
+            .lock()
+            .is_ok_and(|owned| owned.is_empty());
+
+        assert_eq!(
+            group_leader_handshake
+                .expect("same-group leader readiness pipe")
+                .expect("same-group leader handshake"),
+            13
+        );
+        assert_eq!(group_leader_ready, "leader-ready\n");
+        assert!(group_published);
+        assert!(group_current);
+        assert!(member_spawned);
+        assert_eq!(
+            member_handshake
+                .expect("same-group member readiness pipe")
+                .expect("same-group member handshake"),
+            13
+        );
+        assert_eq!(member_ready, "member-ready\n");
+        assert!(group_refused);
+        assert!(group_owned_empty);
+        assert!(live_group_member);
+        assert_eq!(group_retained, group_identity);
+        assert!(group_signalled);
+        assert!(group_leader_waited);
+        assert_eq!(group_member_waited, Some(true));
+        assert!(same_group_absent);
+        assert!(group_cleanup_retired);
+        assert!(group_ownership_cleared);
+        assert!(group_owned_processes_cleared);
     }
 
     #[test]
