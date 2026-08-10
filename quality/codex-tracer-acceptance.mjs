@@ -4,6 +4,8 @@ import { compareCodeUnits } from "./deterministic-order.mjs";
 import { redactionMatches } from "./native-contract.mjs";
 
 const SCHEMA_VERSION = "keiko-native-codex-tracer-acceptance/v2";
+const WORKSPACE_SCHEMA_VERSION =
+  "keiko-native-codex-tracer-workspace-acceptance/v1";
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const REVISION_PATTERN = /^[0-9a-f]{40}$/u;
 
@@ -16,7 +18,7 @@ export const acceptanceIdentityContract = Object.freeze({
   issueReadinessFingerprint:
     "1a0be864b3855b81c649c5843e936828ebaeb27477463ccf0af86f9da61d3391",
   parentReadinessFingerprint:
-    "636838fca50c74fc4e9b7342a678a7c53a87435607a42003057e1e1b2c78b679",
+    "12ed4a0225fdf1fac2a75731fdbb25e949cf61349cc0a7ab7d8bad09c0eab7a3",
   promptSha256:
     "e1a92579b1ca673135331829beb97792c1289a6bccdfe0303302256c546960f6",
   runtimeArtifactSha256:
@@ -25,6 +27,58 @@ export const acceptanceIdentityContract = Object.freeze({
   runtimeVersion: "0.145.0",
   stableSchemaSha256:
     "27fc5257cdd29b97b2abb064caadec32a72b7567d6df26a7f82c5f452c8bdfb9",
+});
+
+export const workspaceAcceptanceIdentityContract = Object.freeze({
+  issueReadinessFingerprint:
+    "c66599671f59b04b27bac84263e5219c99e4e8458084a7213c84f4831a20b062",
+  parentReadinessFingerprint:
+    "12ed4a0225fdf1fac2a75731fdbb25e949cf61349cc0a7ab7d8bad09c0eab7a3",
+});
+
+export const workspaceAcceptanceBudgetLimits = Object.freeze({
+  cleanupMaxMs: 5_000,
+  nativePickerCancellationP95MaxMs: 750,
+  nativePickerCancellationSamples: 20,
+  workspaceProjectionP95MaxMs: 100,
+  workspaceProjectionSamples: 4,
+  workspaceSelectionNativeActionMaxMs: 5_000,
+});
+
+export const workspaceAcceptanceJourneyContract = Object.freeze({
+  automationMechanism: "AXUIElement",
+  checkpointResults: Object.freeze(
+    [
+      "application-launch",
+      "canvas-presentation",
+      "workspace-picker-open",
+      "workspace-picker-cancellation",
+      "workspace-permission-denial",
+      "workspace-selection",
+      "application-quit",
+    ].map((checkpoint) => Object.freeze({ checkpoint, status: "passed" })),
+  ),
+  manualOnlyAutomatableCheckpoints: 0,
+  mockOnlyClaims: 0,
+  scenarios: Object.freeze([
+    "workspace-selection",
+    "workspace-picker-cancellation",
+    "workspace-permission-denial",
+    "application-quit",
+  ]),
+});
+
+export const workspaceAcceptanceSafeguardContract = Object.freeze({
+  hiddenRetries: 0,
+  manualOnlyAutomatableCheckpoints: 0,
+  mockOnlyClaims: 0,
+  packageTestHooks: 0,
+  rawPathBytesInEvidence: 0,
+  redactionMatches: 0,
+  repositoryBytesInEvidence: 0,
+  repositoryContextBytesToRuntime: 0,
+  residualProcesses: 0,
+  unexpectedWorkspaceMutations: 0,
 });
 
 export const acceptanceJourneyContract = Object.freeze({
@@ -459,6 +513,237 @@ export function acceptanceEvidenceFailures(evidence, expected) {
   if (redactionMatches(JSON.stringify(evidence)).length > 0)
     failures.push("evidence-sensitive-content");
   return failures;
+}
+
+function exactContractFailures(value, contract, prefix) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    JSON.stringify(Object.keys(value).toSorted(compareCodeUnits)) !==
+      JSON.stringify(Object.keys(contract).toSorted(compareCodeUnits))
+  ) {
+    return [`${prefix}-fields`];
+  }
+  return Object.entries(contract)
+    .filter(
+      ([key, expected]) =>
+        JSON.stringify(value[key]) !== JSON.stringify(expected),
+    )
+    .map(([key]) => `${prefix}-${key}`);
+}
+
+function workspaceIdentityFailures(bindings, expected) {
+  const contract = { ...workspaceAcceptanceIdentityContract, ...expected };
+  const failures = exactContractFailures(
+    bindings,
+    contract,
+    "workspace-identity",
+  );
+  if (!REVISION_PATTERN.test(bindings?.sourceRevision ?? ""))
+    failures.push("workspace-identity-source-revision");
+  for (const key of ["packageExecutableSha256", "packageManifestSha256"]) {
+    if (!SHA256_PATTERN.test(bindings?.[key] ?? ""))
+      failures.push(`workspace-identity-${key}`);
+  }
+  return failures;
+}
+
+function sampledMeasurementFailures(
+  measurements,
+  { count, maximum, prefix, reportedP95Ms, valueKey },
+) {
+  if (!Array.isArray(measurements) || measurements.length !== count)
+    return [`${prefix}-measurements`];
+  for (const [index, measurement] of measurements.entries()) {
+    if (
+      typeof measurement !== "object" ||
+      measurement === null ||
+      Array.isArray(measurement) ||
+      JSON.stringify(Object.keys(measurement).toSorted(compareCodeUnits)) !==
+        JSON.stringify(["sample", valueKey].toSorted(compareCodeUnits)) ||
+      measurement.sample !== index + 1 ||
+      !Number.isSafeInteger(measurement[valueKey]) ||
+      measurement[valueKey] < 0 ||
+      measurement[valueKey] > maximum
+    ) {
+      return [`${prefix}-measurements`];
+    }
+  }
+  if (
+    reportedP95Ms !== undefined &&
+    percentile95(measurements.map((measurement) => measurement[valueKey])) !==
+      reportedP95Ms
+  ) {
+    return [`${prefix}-p95-consistency`];
+  }
+  return [];
+}
+
+export function workspaceBudgetEvidenceFailures(budgets) {
+  const measurementKeys = [
+    "cleanupMs",
+    "nativePickerCancellationMeasurements",
+    "nativePickerCancellationP95Ms",
+    "workspaceProjectionMeasurements",
+    "workspaceProjectionP95Ms",
+    "workspaceSelectionNativeActionMeasurements",
+  ];
+  const failures = [];
+  const expectedKeys = [
+    ...Object.keys(workspaceAcceptanceBudgetLimits),
+    ...measurementKeys,
+  ].toSorted(compareCodeUnits);
+  if (
+    typeof budgets !== "object" ||
+    budgets === null ||
+    Array.isArray(budgets) ||
+    JSON.stringify(Object.keys(budgets).toSorted(compareCodeUnits)) !==
+      JSON.stringify(expectedKeys)
+  ) {
+    failures.push("workspace-budget-fields");
+  }
+  for (const [key, value] of Object.entries(workspaceAcceptanceBudgetLimits)) {
+    if (budgets?.[key] !== value) failures.push(`workspace-budget-${key}`);
+  }
+  if (
+    !Number.isSafeInteger(budgets?.cleanupMs) ||
+    budgets.cleanupMs < 0 ||
+    budgets.cleanupMs > workspaceAcceptanceBudgetLimits.cleanupMaxMs
+  ) {
+    failures.push("workspace-budget-cleanupMs");
+  }
+  failures.push(
+    ...sampledMeasurementFailures(budgets?.workspaceProjectionMeasurements, {
+      count: workspaceAcceptanceBudgetLimits.workspaceProjectionSamples,
+      maximum: workspaceAcceptanceBudgetLimits.workspaceProjectionP95MaxMs,
+      prefix: "workspace-budget-projection",
+      reportedP95Ms: budgets?.workspaceProjectionP95Ms,
+      valueKey: "projectedMs",
+    }),
+    ...sampledMeasurementFailures(
+      budgets?.workspaceSelectionNativeActionMeasurements,
+      {
+        count: workspaceAcceptanceBudgetLimits.workspaceProjectionSamples,
+        maximum:
+          workspaceAcceptanceBudgetLimits.workspaceSelectionNativeActionMaxMs,
+        prefix: "workspace-budget-native-action",
+        valueKey: "nativeActionMs",
+      },
+    ),
+    ...nativePickerMeasurementFailures(
+      budgets?.nativePickerCancellationMeasurements,
+      budgets?.nativePickerCancellationP95Ms,
+    ),
+  );
+  if (
+    !Number.isSafeInteger(budgets?.nativePickerCancellationP95Ms) ||
+    budgets.nativePickerCancellationP95Ms >
+      workspaceAcceptanceBudgetLimits.nativePickerCancellationP95MaxMs
+  ) {
+    failures.push("workspace-budget-native-picker-p95");
+  }
+  return failures;
+}
+
+export function workspaceAcceptanceEvidenceFailures(evidence, expected) {
+  const expectedKeys = [
+    "bindings",
+    "budgets",
+    "journey",
+    "packageInspection",
+    "redaction",
+    "referenceEnvironment",
+    "safeguards",
+    "schemaVersion",
+    "status",
+  ].toSorted(compareCodeUnits);
+  const failures = [];
+  if (
+    typeof evidence !== "object" ||
+    evidence === null ||
+    Array.isArray(evidence) ||
+    JSON.stringify(Object.keys(evidence).toSorted(compareCodeUnits)) !==
+      JSON.stringify(expectedKeys)
+  ) {
+    failures.push("workspace-evidence-fields");
+  }
+  if (evidence?.schemaVersion !== WORKSPACE_SCHEMA_VERSION)
+    failures.push("workspace-evidence-schema");
+  if (evidence?.status !== "complete")
+    failures.push("workspace-evidence-status");
+  if (evidence?.redaction !== "closed")
+    failures.push("workspace-evidence-redaction");
+  failures.push(
+    ...workspaceIdentityFailures(evidence?.bindings, expected),
+    ...workspaceBudgetEvidenceFailures(evidence?.budgets),
+    ...exactContractFailures(
+      evidence?.journey,
+      workspaceAcceptanceJourneyContract,
+      "workspace-journey",
+    ),
+    ...packageInspectionFailures(evidence?.packageInspection),
+    ...referenceEnvironmentFailures(evidence?.referenceEnvironment),
+    ...exactContractFailures(
+      evidence?.safeguards,
+      workspaceAcceptanceSafeguardContract,
+      "workspace-safeguard",
+    ),
+  );
+  if (redactionMatches(JSON.stringify(evidence)).length > 0)
+    failures.push("workspace-evidence-sensitive-content");
+  return failures;
+}
+
+function closedWorkspaceRejection(reasonCode) {
+  return {
+    exitCode: 2,
+    output: {
+      reasonCode,
+      schemaVersion: WORKSPACE_SCHEMA_VERSION,
+      status: "rejected",
+    },
+  };
+}
+
+export async function runCodexTracerWorkspaceAcceptance({ args, io }) {
+  if (!Array.isArray(args) || args.length !== 0)
+    return closedWorkspaceRejection("invalid-command");
+  let prepared;
+  let cleanupAttempted = false;
+  try {
+    prepared = await io.prepareWorkspacePackage();
+    const workspace = await io.runWorkspaceJourney(prepared);
+    const evidence = {
+      bindings: prepared.workspaceBindings,
+      budgets: workspace.budgets,
+      journey: workspace.journey,
+      packageInspection: prepared.packageInspection,
+      redaction: "closed",
+      referenceEnvironment: workspace.referenceEnvironment,
+      safeguards: workspace.safeguards,
+      schemaVersion: WORKSPACE_SCHEMA_VERSION,
+      status: "complete",
+    };
+    cleanupAttempted = true;
+    await io.cleanupWorkspacePackage(prepared);
+    if (
+      workspaceAcceptanceEvidenceFailures(evidence, prepared.expected).length >
+      0
+    )
+      return closedWorkspaceRejection("acceptance-evidence-invalid");
+    await io.writeWorkspaceEvidence(evidence, prepared);
+    return { exitCode: 0, output: evidence };
+  } catch {
+    if (prepared !== undefined && !cleanupAttempted) {
+      try {
+        await io.cleanupWorkspacePackage(prepared);
+      } catch {
+        return closedWorkspaceRejection("acceptance-check-failed");
+      }
+    }
+    return closedWorkspaceRejection("acceptance-check-failed");
+  }
 }
 
 function closedRejection(reasonCode) {

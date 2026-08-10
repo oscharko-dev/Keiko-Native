@@ -10,6 +10,7 @@ import {
   executeTracerAccessibilityAction,
   percentile95,
   runPackagedTracerJourney,
+  runPackagedWorkspaceJourney,
   waitForTracerAccessibilityAction,
 } from "./codex-tracer-accessibility.mjs";
 
@@ -509,6 +510,103 @@ test("the packaged journey drives the fixed sequence and excludes observer start
   assert.equal(result.turnCancellationProjectionMs, 80);
   assert.equal(result.turnDurationMs, 30);
   assert.equal(result.workspaceSelectionNativeActionMs, 102);
+});
+
+test("the workspace tranche stops after four exact successful projections", async () => {
+  const calls = [];
+  const result = await runPackagedWorkspaceJourney({
+    deniedWorkspaceLabel: "KeikoAcceptanceIdentity104DeniedABC123",
+    execute: async (request) => {
+      calls.push(request);
+      const successfulSelection =
+        request.action === "select-workspace" &&
+        request.observation === "observe-workspace-selected";
+      return {
+        elapsedMs: 10,
+        ...(request.observation === undefined
+          ? {}
+          : {
+              ...(successfulSelection ? { nativeActionMs: 120 } : {}),
+              projectedMs: successfulSelection ? 40 : 20,
+            }),
+        prompted: false,
+        reasonCode: null,
+        status: "passed",
+      };
+    },
+    workspaceLabels: Array.from(
+      { length: 4 },
+      (_, index) => `KeikoAcceptanceIdentity104Sample${index + 1}ABC123`,
+    ),
+  });
+
+  assert.deepEqual(
+    {
+      actions: calls.map(
+        ({ action, observation }) =>
+          `${action}${observation === undefined ? "" : `->${observation}`}`,
+      ),
+      nativeActions: result.workspaceSelectionNativeActionMeasurements,
+      p95: result.workspaceProjectionP95Ms,
+      projections: result.workspaceProjectionMeasurements,
+    },
+    {
+      actions: [
+        "probe-start",
+        "open-canvas->probe-canvas",
+        "open-workspace-picker",
+        "cancel-workspace-picker->observe-workspace-cancelled",
+        "open-workspace-picker",
+        "select-workspace->observe-workspace-permission-denied",
+        "open-workspace-picker",
+        "select-workspace->observe-workspace-selected",
+        "open-workspace-picker",
+        "select-workspace->observe-workspace-selected",
+        "open-workspace-picker",
+        "select-workspace->observe-workspace-selected",
+        "open-workspace-picker",
+        "select-workspace->observe-workspace-selected",
+        "quit",
+      ],
+      nativeActions: Array.from({ length: 4 }, (_, index) => ({
+        nativeActionMs: 120,
+        sample: index + 1,
+      })),
+      p95: 40,
+      projections: Array.from({ length: 4 }, (_, index) => ({
+        projectedMs: 40,
+        sample: index + 1,
+      })),
+    },
+  );
+  assert.equal(
+    calls.some(({ action }) =>
+      ["check-runtime", "submit-task", "cancel-turn"].includes(action),
+    ),
+    false,
+  );
+  assert.ok(
+    calls
+      .filter(
+        ({ action, observation }) =>
+          action === "select-workspace" &&
+          observation === "observe-workspace-selected",
+      )
+      .every(({ timeoutMs }) => timeoutMs === 15_000),
+  );
+  assert.deepEqual(
+    calls
+      .filter(
+        ({ action, observation }) =>
+          action === "select-workspace" &&
+          observation === "observe-workspace-selected",
+      )
+      .map(({ input }) => input),
+    Array.from(
+      { length: 4 },
+      (_, index) => `KeikoAcceptanceIdentity104Sample${index + 1}ABC123`,
+    ),
+  );
 });
 
 const macArm64Test =

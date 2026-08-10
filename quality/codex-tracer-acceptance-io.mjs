@@ -29,11 +29,16 @@ import {
   acceptancePackageInspectionContract,
   acceptancePhysicalContract,
   referenceEnvironmentFailures,
+  workspaceAcceptanceBudgetLimits,
+  workspaceAcceptanceIdentityContract,
+  workspaceAcceptanceJourneyContract,
+  workspaceAcceptanceSafeguardContract,
 } from "./codex-tracer-acceptance.mjs";
 import {
   compileTracerAccessibility,
   percentile95,
   runPackagedTracerJourney,
+  runPackagedWorkspaceJourney,
   waitForTracerAccessibilityAction,
 } from "./codex-tracer-accessibility.mjs";
 import {
@@ -994,16 +999,59 @@ async function crashOwnedRuntime(options) {
   process.kill(-ownership.processGroupId, "SIGKILL");
 }
 
-async function createIdentityWorkspace(prefix) {
-  const root = await mkdtemp(join(homedir(), "Documents", prefix));
-  await chmod(root, 0o700);
-  await mkdir(join(root, ".git"), { mode: 0o700 });
-  await writeFile(
-    join(root, "repository-context-canary.txt"),
-    "KeikoRepositoryContextCanary104",
-    { encoding: "utf8", mode: 0o600 },
-  );
-  return root;
+export async function createIdentityWorkspace(prefix, dependencies = {}) {
+  if (!/^KeikoAcceptanceIdentity104[A-Za-z0-9]*$/u.test(prefix))
+    throw new TypeError("acceptance-workspace-prefix-invalid");
+  const createTemporaryDirectory = dependencies.mkdtemp ?? mkdtemp;
+  const setMode = dependencies.chmod ?? chmod;
+  const createDirectory = dependencies.mkdir ?? mkdir;
+  const write = dependencies.writeFile ?? writeFile;
+  const remove = dependencies.rm ?? rm;
+  let root;
+  try {
+    root = await createTemporaryDirectory(join(homedir(), "Documents", prefix));
+    await setMode(root, 0o700);
+    await createDirectory(join(root, ".git"), { mode: 0o700 });
+    await write(
+      join(root, "repository-context-canary.txt"),
+      "KeikoRepositoryContextCanary104",
+      { encoding: "utf8", mode: 0o600 },
+    );
+    return root;
+  } catch {
+    if (root !== undefined)
+      await remove(root, { force: true, recursive: true }).catch(
+        () => undefined,
+      );
+    throw new Error("acceptance-workspace-fixture-unavailable");
+  }
+}
+
+export async function createAcceptanceRunRoot(prefix, dependencies = {}) {
+  if (
+    !["keiko-native-codex-tracer-104-", "keiko-native-workspace-187-"].includes(
+      prefix,
+    )
+  ) {
+    throw new TypeError("acceptance-run-root-prefix-invalid");
+  }
+  const createTemporaryDirectory = dependencies.mkdtemp ?? mkdtemp;
+  const canonicalize = dependencies.canonicalize ?? realpath;
+  const setMode = dependencies.chmod ?? chmod;
+  const remove = dependencies.rm ?? rm;
+  let root;
+  try {
+    root = await createTemporaryDirectory(join(tmpdir(), prefix));
+    const canonicalRoot = await canonicalRuntimeRoot(root, canonicalize);
+    await setMode(canonicalRoot, 0o700);
+    return canonicalRoot;
+  } catch {
+    if (root !== undefined)
+      await remove(root, { force: true, recursive: true }).catch(
+        () => undefined,
+      );
+    throw new Error("acceptance-run-root-unavailable");
+  }
 }
 
 function launchPackagedApp(internal) {
@@ -1016,6 +1064,28 @@ function launchPackagedApp(internal) {
     }),
     stdio: "ignore",
   });
+}
+
+function launchWorkspacePackagedApp(internal) {
+  return spawn(internal.packageExecutable, [], {
+    detached: true,
+    env: acceptanceProcessEnvironment(process.env, {
+      KEIKO_CODEX_0_145_0_WORK_ROOT: internal.runtimeWorkRoot,
+    }),
+    stdio: "ignore",
+  });
+}
+
+async function removeWorkspaceRoots(workspaceRoots) {
+  let firstFailure;
+  for (const workspaceRoot of workspaceRoots) {
+    try {
+      await rm(workspaceRoot, { force: true, recursive: true });
+    } catch (error) {
+      firstFailure ??= error;
+    }
+  }
+  if (firstFailure !== undefined) throw firstFailure;
 }
 
 export async function measureFirstVisibleP95(
@@ -1204,6 +1274,152 @@ export function assertStableReferenceEnvironment(before, after) {
   return before;
 }
 
+function sameSnapshot(before, after) {
+  return JSON.stringify(before) === JSON.stringify(after);
+}
+
+export function observedWorkspaceSafeguards({
+  packageInspection,
+  residualProcesses,
+  runtimeAfter,
+  runtimeBefore,
+  workspaceAfter,
+  workspaceBefore,
+}) {
+  return {
+    ...workspaceAcceptanceSafeguardContract,
+    packageTestHooks: packageInspection.testHookMarkers,
+    residualProcesses,
+    unexpectedWorkspaceMutations:
+      sameSnapshot(runtimeBefore, runtimeAfter) &&
+      sameSnapshot(workspaceBefore, workspaceAfter)
+        ? 0
+        : 1,
+  };
+}
+
+async function prepareWorkspaceJourney(prepared) {
+  const processInspectorRoot = join(
+    prepared.internal.runRoot,
+    "workspace-process-inspector",
+  );
+  await compileProcessGroupInspector(processInspectorRoot);
+  const cleanupDependencies = processCleanupDependencies(processInspectorRoot);
+  const adapter = await compileTracerAccessibility(
+    join(prepared.internal.runRoot, "workspace-accessibility"),
+    (command, args, options) =>
+      runAcceptanceSubprocess(command, args, {
+        output: "stdout",
+        timeoutMs: options.timeoutMs,
+      }).then(() => ({ error: undefined, status: 0 })),
+  );
+  const referenceEnvironmentBefore = await inspectReferenceEnvironment();
+  const [runtimeBefore, workspaceBefore] = await Promise.all([
+    snapshotDirectory(prepared.internal.runtimeWorkRoot),
+    Promise.all(
+      prepared.internal.workspaceRoots.map((root) => snapshotDirectory(root)),
+    ),
+  ]);
+  const nativePickerCancellation =
+    await measureNativePickerCancellationDistribution(
+      prepared.internal,
+      adapter.binary,
+      cleanupDependencies,
+      { launch: launchWorkspacePackagedApp },
+    );
+  const launched = await establishOwnedProcess({
+    authenticate: (candidate) =>
+      authenticateOwnedProcessGroup(candidate, cleanupDependencies),
+    launch: () => launchWorkspacePackagedApp(prepared.internal),
+    reject: rejectUnauthenticatedLauncher,
+  });
+  return {
+    ...launched,
+    adapter,
+    cleanupDependencies,
+    nativePickerCancellation,
+    referenceEnvironmentBefore,
+    runtimeBefore,
+    workspaceBefore,
+  };
+}
+
+async function executeWorkspaceJourney(prepared, resources) {
+  const { child, cleanupDependencies, ownership } = resources;
+  let cleaned = false;
+  try {
+    const journey = await runPackagedWorkspaceJourney({
+      deniedWorkspaceLabel: basename(prepared.internal.deniedWorkspaceRoot),
+      execute: (request) =>
+        waitForTracerAccessibilityAction({
+          ...request,
+          binary: resources.adapter.binary,
+          pid: child.pid,
+        }),
+      workspaceLabels: prepared.internal.workspaceRoots.map((root) =>
+        basename(root),
+      ),
+    });
+    const cleanupStartedAt = performance.now();
+    if (!(await waitForProcessExit(child.pid, 5_000)))
+      throw new Error("workspace-acceptance-app-quit-failed");
+    await terminateOwnedProcess(ownership, cleanupDependencies);
+    const cleanupMs = Math.round(performance.now() - cleanupStartedAt);
+    cleaned = true;
+    const [referenceEnvironmentAfter, runtimeAfter, workspaceAfter] =
+      await Promise.all([
+        inspectReferenceEnvironment(),
+        snapshotDirectory(prepared.internal.runtimeWorkRoot),
+        Promise.all(
+          prepared.internal.workspaceRoots.map((root) =>
+            snapshotDirectory(root),
+          ),
+        ),
+      ]);
+    return {
+      cleanupMs,
+      journey,
+      referenceEnvironmentAfter,
+      runtimeAfter,
+      workspaceAfter,
+    };
+  } finally {
+    if (!cleaned) await terminateOwnedProcess(ownership, cleanupDependencies);
+  }
+}
+
+export async function runWorkspaceAcceptanceJourney(prepared) {
+  const resources = await prepareWorkspaceJourney(prepared);
+  const completed = await executeWorkspaceJourney(prepared, resources);
+  return {
+    budgets: {
+      ...workspaceAcceptanceBudgetLimits,
+      cleanupMs: completed.cleanupMs,
+      nativePickerCancellationMeasurements:
+        resources.nativePickerCancellation.measurements,
+      nativePickerCancellationP95Ms: resources.nativePickerCancellation.p95Ms,
+      workspaceProjectionMeasurements:
+        completed.journey.workspaceProjectionMeasurements,
+      workspaceProjectionP95Ms: completed.journey.workspaceProjectionP95Ms,
+      workspaceSelectionNativeActionMeasurements:
+        completed.journey.workspaceSelectionNativeActionMeasurements,
+    },
+    journey: structuredClone(workspaceAcceptanceJourneyContract),
+    referenceEnvironment: assertStableReferenceEnvironment(
+      resources.referenceEnvironmentBefore,
+      completed.referenceEnvironmentAfter,
+    ),
+    safeguards: observedWorkspaceSafeguards({
+      packageInspection: prepared.packageInspection,
+      residualProcesses: processExists(resources.child.pid) ? 1 : 0,
+      runtimeAfter: completed.runtimeAfter,
+      runtimeBefore: resources.runtimeBefore,
+      workspaceAfter: completed.workspaceAfter,
+      workspaceBefore: resources.workspaceBefore,
+    }),
+  };
+}
+
 function normalizedReferenceEnvironment([
   hardware,
   version,
@@ -1251,15 +1467,80 @@ function normalizedReferenceEnvironment([
 
 export function createCodexTracerAcceptanceIo() {
   return {
+    async prepareWorkspacePackage() {
+      const runRoot = await createAcceptanceRunRoot(
+        "keiko-native-workspace-187-",
+      );
+      const workspaceRoots = [];
+      let deniedWorkspaceRoot;
+      try {
+        const sourceRevision = await run(
+          "git",
+          hardenedGitArguments(["rev-parse", "HEAD"]),
+          { timeoutMs: acceptanceSubprocessTimeouts.inspection },
+        );
+        if (!REVISION_PATTERN.test(sourceRevision))
+          throw new Error("acceptance-source-revision-invalid");
+        const inspected = await inspectPackage(sourceRevision);
+        const runtimeWorkRoot = join(runRoot, "runtime-work");
+        await mkdir(runtimeWorkRoot, { mode: 0o700 });
+        for (let sample = 1; sample <= 4; sample += 1) {
+          workspaceRoots.push(
+            await createIdentityWorkspace(
+              `KeikoAcceptanceIdentity104Sample${sample}`,
+            ),
+          );
+        }
+        deniedWorkspaceRoot = await createIdentityWorkspace(
+          "KeikoAcceptanceIdentity104Denied",
+        );
+        await chmod(deniedWorkspaceRoot, 0o000);
+        const expected = {
+          packageExecutableSha256: inspected.executableSha256,
+          packageManifestSha256: inspected.packageManifestSha256,
+          sourceRevision,
+        };
+        return {
+          expected,
+          internal: {
+            packageExecutable,
+            packageRoot,
+            deniedWorkspaceRoot,
+            runRoot,
+            runtimeWorkRoot,
+            workspaceRoots,
+          },
+          packageInspection: structuredClone(
+            acceptancePackageInspectionContract,
+          ),
+          workspaceBindings: {
+            ...workspaceAcceptanceIdentityContract,
+            ...expected,
+          },
+        };
+      } catch {
+        await removeWorkspaceRoots(workspaceRoots).catch(() => undefined);
+        if (deniedWorkspaceRoot !== undefined) {
+          await chmod(deniedWorkspaceRoot, 0o700).catch(() => undefined);
+          await rm(deniedWorkspaceRoot, {
+            force: true,
+            recursive: true,
+          }).catch(() => undefined);
+        }
+        await rm(runRoot, { force: true, recursive: true }).catch(
+          () => undefined,
+        );
+        throw new Error("acceptance-workspace-fixture-unavailable");
+      }
+    },
     async preparePackage() {
       const runtime = await canonicalRuntimeResources({
         binary: runtimeBinary,
         home: runtimeHome,
       });
-      const runRoot = await canonicalRuntimeRoot(
-        await mkdtemp(join(tmpdir(), "keiko-native-codex-tracer-104-")),
+      const runRoot = await createAcceptanceRunRoot(
+        "keiko-native-codex-tracer-104-",
       );
-      await chmod(runRoot, 0o700);
       let workspaceRoot;
       let deniedWorkspaceRoot;
       try {
@@ -1301,7 +1582,7 @@ export function createCodexTracerAcceptanceIo() {
             packageExecutableSha256: inspected.executableSha256,
             packageManifestSha256: inspected.packageManifestSha256,
             parentReadinessFingerprint:
-              "636838fca50c74fc4e9b7342a678a7c53a87435607a42003057e1e1b2c78b679",
+              "12ed4a0225fdf1fac2a75731fdbb25e949cf61349cc0a7ab7d8bad09c0eab7a3",
             promptSha256: acceptedEnvironment.promptSha256,
             runtimeArtifactSha256: acceptedEnvironment.runtimeSha256,
             runtimePackage: "@openai/codex",
@@ -1513,6 +1794,23 @@ export function createCodexTracerAcceptanceIo() {
     },
     async cleanup(prepared) {
       await cleanupAcceptanceFixture(prepared);
+    },
+    async cleanupWorkspacePackage(prepared) {
+      await cleanupAcceptanceFixture(prepared, {
+        removeObservation: async () => undefined,
+        removeWorkspace: async () =>
+          removeWorkspaceRoots(prepared.internal.workspaceRoots),
+      });
+    },
+    async runWorkspaceJourney(prepared) {
+      return runWorkspaceAcceptanceJourney(prepared);
+    },
+    async writeWorkspaceEvidence(evidence) {
+      await writeFile(
+        join(packageRoot, "codex-tracer-workspace-acceptance-evidence.json"),
+        `${JSON.stringify(evidence, null, 2)}\n`,
+        { mode: 0o600 },
+      );
     },
     async writeEvidence(evidence) {
       await writeFile(

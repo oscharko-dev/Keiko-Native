@@ -13,6 +13,9 @@ import {
   canonicalRuntimeRoot,
   canonicalRuntimeResources,
   cleanupAcceptanceFixture,
+  createAcceptanceRunRoot,
+  createCodexTracerAcceptanceIo,
+  createIdentityWorkspace,
   inspectReferenceEnvironment,
   measureFirstVisibleP95,
   measureNativePickerCancellationDistribution,
@@ -35,6 +38,57 @@ const runtimeSha256 =
   "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590";
 const promptSha256 =
   "e1a92579b1ca673135331829beb97792c1289a6bccdfe0303302256c546960f6";
+
+test("the acceptance IO exposes a bounded workspace tranche without a runtime journey", () => {
+  const io = createCodexTracerAcceptanceIo();
+
+  assert.deepEqual(
+    {
+      cleanupWorkspacePackage: typeof io.cleanupWorkspacePackage,
+      prepareWorkspacePackage: typeof io.prepareWorkspacePackage,
+      runWorkspaceJourney: typeof io.runWorkspaceJourney,
+      writeWorkspaceEvidence: typeof io.writeWorkspaceEvidence,
+    },
+    {
+      cleanupWorkspacePackage: "function",
+      prepareWorkspacePackage: "function",
+      runWorkspaceJourney: "function",
+      writeWorkspaceEvidence: "function",
+    },
+  );
+});
+
+test("partial fixture creation and canonicalization remove their owned roots", async () => {
+  const calls = [];
+  await assert.rejects(
+    createIdentityWorkspace("KeikoAcceptanceIdentity104", {
+      chmod: async () => calls.push("chmod-workspace"),
+      mkdir: async () => {
+        throw new Error("git-fixture-failed");
+      },
+      mkdtemp: async () => "/safe/workspace-root",
+      rm: async (root) => calls.push(`remove:${root}`),
+      writeFile: async () => calls.push("write-workspace"),
+    }),
+    /acceptance-workspace-fixture-unavailable/u,
+  );
+  await assert.rejects(
+    createAcceptanceRunRoot("keiko-native-workspace-187-", {
+      canonicalize: async () => {
+        throw new Error("canonicalization-failed");
+      },
+      chmod: async () => calls.push("chmod-run-root"),
+      mkdtemp: async () => "/safe/run-root",
+      rm: async (root) => calls.push(`remove:${root}`),
+    }),
+    /acceptance-run-root-unavailable/u,
+  );
+  assert.deepEqual(calls, [
+    "chmod-workspace",
+    "remove:/safe/workspace-root",
+    "remove:/safe/run-root",
+  ]);
+});
 
 test("directory snapshots bind symlink targets without following them", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "keiko-home-snapshot-"));

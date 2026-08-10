@@ -231,6 +231,109 @@ export async function waitForTracerAccessibilityAction({
   };
 }
 
+async function runWorkspaceStep(execute, request) {
+  const result = await execute({ timeoutMs: 5_000, ...request });
+  if (
+    result?.status !== "passed" ||
+    result.reasonCode !== null ||
+    result.prompted !== false ||
+    !Number.isSafeInteger(result.elapsedMs) ||
+    result.elapsedMs < 0 ||
+    result.elapsedMs > (request.timeoutMs ?? 5_000)
+  ) {
+    throw new Error("packaged-workspace-checkpoint-failed");
+  }
+  return result;
+}
+
+async function runWorkspaceProjection(execute, request) {
+  const result = await runWorkspaceStep(execute, request);
+  if (
+    !Number.isSafeInteger(result.projectedMs) ||
+    result.projectedMs < 0 ||
+    result.projectedMs > 5_000
+  ) {
+    throw new Error("packaged-workspace-measurement-invalid");
+  }
+  return result;
+}
+
+async function measureWorkspaceSelections(execute, workspaceLabels) {
+  const selections = [];
+  for (const [index, workspaceLabel] of workspaceLabels.entries()) {
+    await runWorkspaceStep(execute, { action: "open-workspace-picker" });
+    const selected = await runWorkspaceProjection(execute, {
+      action: "select-workspace",
+      input: workspaceLabel,
+      observation: "observe-workspace-selected",
+      timeoutMs: successfulWorkspaceInvocationTimeoutMs,
+    });
+    if (
+      !Number.isSafeInteger(selected.nativeActionMs) ||
+      selected.nativeActionMs < 0 ||
+      selected.nativeActionMs > 5_000
+    ) {
+      throw new Error("packaged-workspace-measurement-invalid");
+    }
+    selections.push({
+      nativeActionMs: selected.nativeActionMs,
+      projectedMs: selected.projectedMs,
+      sample: index + 1,
+    });
+  }
+  return selections;
+}
+
+export async function runPackagedWorkspaceJourney({
+  deniedWorkspaceLabel,
+  execute,
+  workspaceLabels,
+}) {
+  const labelPattern = /^KeikoAcceptanceIdentity104[A-Za-z0-9]+$/u;
+  const selectedLabels = Array.isArray(workspaceLabels)
+    ? new Set(workspaceLabels)
+    : new Set();
+  if (
+    typeof execute !== "function" ||
+    workspaceLabels?.length !== 4 ||
+    selectedLabels.size !== 4 ||
+    workspaceLabels.some((label) => !labelPattern.test(label)) ||
+    !labelPattern.test(deniedWorkspaceLabel ?? "") ||
+    selectedLabels.has(deniedWorkspaceLabel)
+  ) {
+    throw new TypeError("packaged-workspace-invalid");
+  }
+  await runWorkspaceStep(execute, { action: "probe-start" });
+  await runWorkspaceProjection(execute, {
+    action: "open-canvas",
+    observation: "probe-canvas",
+  });
+  await runWorkspaceStep(execute, { action: "open-workspace-picker" });
+  await runWorkspaceProjection(execute, {
+    action: "cancel-workspace-picker",
+    observation: "observe-workspace-cancelled",
+  });
+  await runWorkspaceStep(execute, { action: "open-workspace-picker" });
+  await runWorkspaceProjection(execute, {
+    action: "select-workspace",
+    input: deniedWorkspaceLabel,
+    observation: "observe-workspace-permission-denied",
+  });
+  const selections = await measureWorkspaceSelections(execute, workspaceLabels);
+  await runWorkspaceStep(execute, { action: "quit" });
+  return {
+    workspaceProjectionMeasurements: selections.map(
+      ({ projectedMs, sample }) => ({ projectedMs, sample }),
+    ),
+    workspaceProjectionP95Ms: percentile95(
+      selections.map(({ projectedMs }) => projectedMs),
+    ),
+    workspaceSelectionNativeActionMeasurements: selections.map(
+      ({ nativeActionMs, sample }) => ({ nativeActionMs, sample }),
+    ),
+  };
+}
+
 export async function runPackagedTracerJourney({
   crashRuntime,
   deniedWorkspaceLabel,
