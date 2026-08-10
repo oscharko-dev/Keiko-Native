@@ -3406,6 +3406,17 @@ mod tests {
         }
     }
 
+    fn bounded_owned_child_exit(child: &mut Child) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < deadline {
+            if child.try_wait().is_ok_and(|status| status.is_some()) {
+                return true;
+            }
+            thread::yield_now();
+        }
+        false
+    }
+
     #[test]
     fn runtime_boundary_counts_and_rejects_structural_repository_context() {
         let workspace = Path::new("/private/KeikoRepositoryCanary");
@@ -3626,6 +3637,24 @@ mod tests {
         );
         assert_eq!(projection.quarantined_events, 1);
         assert_eq!(projection.stage, ProjectionStage::Initialize);
+    }
+
+    #[test]
+    fn remote_control_schema_rejects_missing_and_wrong_typed_fields() {
+        for params in [
+            json!({"environmentId": null, "serverName": "redacted", "status": "disabled"}),
+            json!({"environmentId": null, "installationId": "redacted", "status": "disabled"}),
+            json!({"environmentId": null, "installationId": "redacted", "serverName": "redacted"}),
+            json!({"installationId": 7, "serverName": "redacted", "status": "disabled"}),
+            json!({"installationId": "redacted", "serverName": 7, "status": "disabled"}),
+        ] {
+            assert!(!remote_control_is_disabled(Some(&params)), "{params}");
+        }
+        assert!(!remote_control_is_disabled(Some(&json!({
+            "installationId": "redacted",
+            "serverName": "redacted",
+            "status": 7
+        }))));
     }
 
     #[test]
@@ -3905,6 +3934,46 @@ mod tests {
         assert_eq!(
             read_bounded_line(&mut BufReader::new(b"{}\r\n".as_slice())).expect("CRLF line"),
             Some(b"{}".to_vec())
+        );
+    }
+
+    #[test]
+    fn bounded_line_handles_empty_partial_exact_oversize_lf_and_crlf() {
+        let read = |input: Vec<u8>| {
+            let mut reader = BufReader::new(Cursor::new(input));
+            read_bounded_line(&mut reader)
+        };
+
+        assert_eq!(read(Vec::new()).expect("empty EOF"), None);
+        assert_eq!(
+            read(b"partial".to_vec())
+                .expect_err("partial EOF must be rejected")
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+
+        let mut exact = vec![b'x'; MAX_FRAME_BYTES - 1];
+        exact.push(b'\n');
+        assert_eq!(
+            read(exact).expect("exact frame boundary"),
+            Some(vec![b'x'; MAX_FRAME_BYTES - 1])
+        );
+
+        let mut oversized = vec![b'x'; MAX_FRAME_BYTES];
+        oversized.push(b'\n');
+        assert_eq!(
+            read(oversized)
+                .expect_err("oversized frame must be rejected")
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            read(b"line\n".to_vec()).expect("LF frame"),
+            Some(b"line".to_vec())
+        );
+        assert_eq!(
+            read(b"line\r\n".to_vec()).expect("CRLF frame"),
+            Some(b"line".to_vec())
         );
     }
 
@@ -4264,6 +4333,74 @@ mod tests {
     }
 
     #[test]
+    fn startup_reconciliation_rejects_missing_or_unprotected_work_roots() {
+        let fixture = Fixture::new();
+        let missing = fixture.root.join("missing-owned-directory");
+        let missing_is_owned = private_directory_is_owned(&missing);
+
+        let writable_parent = fixture.root.join("startup-writable-parent");
+        let nested_work = writable_parent.join("work");
+        fs::create_dir_all(&nested_work).expect("nested work root");
+        fs::set_permissions(&writable_parent, fs::Permissions::from_mode(0o777))
+            .expect("unprotected parent");
+        fs::set_permissions(&nested_work, fs::Permissions::from_mode(0o700))
+            .expect("private nested work root");
+        let configuration = RuntimeConfiguration {
+            binary: fixture.binary.clone(),
+            codex_home: fixture.home.clone(),
+            work_root: nested_work.clone(),
+            expected_sha256: sha256_file(&fixture.binary).expect("runtime digest"),
+        };
+        let reconciled = reconcile_startup_configuration(&configuration);
+        let nested_private = private_directory_is_owned(&nested_work);
+        fs::set_permissions(&writable_parent, fs::Permissions::from_mode(0o700))
+            .expect("restore parent before assertions");
+
+        assert!(!missing_is_owned);
+        assert!(nested_private);
+        assert!(!reconciled);
+        assert_eq!(
+            fs::metadata(&writable_parent)
+                .expect("restored parent")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+    }
+
+    #[test]
+    fn private_directory_metadata_rejects_files_and_wrong_owner() {
+        let fixture = Fixture::new();
+        let file_metadata = fs::metadata(&fixture.binary).expect("regular-file metadata");
+        let directory_metadata = fs::metadata(&fixture.work).expect("private-directory metadata");
+        let owner = effective_user_id();
+        let wrong_owner = owner.wrapping_add(1);
+
+        assert!(!private_owned_directory_metadata(&file_metadata, owner));
+        assert_ne!(wrong_owner, directory_metadata.uid());
+        assert!(!private_owned_directory_metadata(
+            &directory_metadata,
+            wrong_owner
+        ));
+    }
+
+    #[test]
+    fn runtime_owner_record_mismatch_is_removed_without_residue() {
+        let fixture = Fixture::new();
+        let owner = process_identity(std::process::id() as i32).expect("test process identity");
+        let work_directory = fixture
+            .work
+            .join(runtime_work_directory_name("readiness", owner, 1));
+
+        let outcome = create_private_runtime_directory_with(&work_directory, owner, 2, |_| Ok(()));
+
+        assert_eq!(outcome, Err(PrivateDirectoryFailure::Unavailable));
+        assert!(!work_directory.exists());
+        assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
+    }
+
+    #[test]
     fn runtime_directory_recovery_rejects_malformed_and_ignores_reused_process_records() {
         let fixture = Fixture::new();
         let active = ActiveRuntime::default();
@@ -4450,6 +4587,61 @@ mod tests {
     }
 
     #[test]
+    fn verified_binary_revalidation_detects_drift_and_substitution() {
+        let valid_fixture = Fixture::new();
+        let valid_configuration = RuntimeConfiguration {
+            binary: valid_fixture.binary.clone(),
+            codex_home: valid_fixture.home.clone(),
+            work_root: valid_fixture.work.clone(),
+            expected_sha256: sha256_file(&valid_fixture.binary).expect("valid digest"),
+        };
+        let mut valid = bind_configuration(&valid_configuration, None).expect("valid binding");
+        assert_eq!(valid.revalidate_binary(), Ok(()));
+        let wrong_digest_configuration = RuntimeConfiguration {
+            expected_sha256: "0".repeat(64),
+            ..valid_configuration
+        };
+        let mut wrong_digest =
+            bind_configuration(&wrong_digest_configuration, None).expect("wrong digest binding");
+        assert_eq!(
+            wrong_digest.revalidate_binary(),
+            Err(RuntimeReadinessState::Incompatible)
+        );
+
+        let drift_fixture = Fixture::new();
+        let drift_configuration = RuntimeConfiguration {
+            binary: drift_fixture.binary.clone(),
+            codex_home: drift_fixture.home.clone(),
+            work_root: drift_fixture.work.clone(),
+            expected_sha256: sha256_file(&drift_fixture.binary).expect("drift digest"),
+        };
+        let drifted = bind_configuration(&drift_configuration, None).expect("drift binding");
+        fs::write(&drift_fixture.binary, b"changed runtime content")
+            .expect("change verified descriptor content");
+        assert_eq!(
+            drifted.revalidate_binary_identity(),
+            Err(RuntimeReadinessState::Incompatible)
+        );
+
+        let symlink_fixture = Fixture::new();
+        let symlink_configuration = RuntimeConfiguration {
+            binary: symlink_fixture.binary.clone(),
+            codex_home: symlink_fixture.home.clone(),
+            work_root: symlink_fixture.work.clone(),
+            expected_sha256: sha256_file(&symlink_fixture.binary).expect("symlink digest"),
+        };
+        let substituted =
+            bind_configuration(&symlink_configuration, None).expect("symlink binding");
+        let original = symlink_fixture.root.join("verified-codex");
+        fs::rename(&symlink_fixture.binary, &original).expect("retain verified binary");
+        symlink(&original, &symlink_fixture.binary).expect("substitute binary symlink");
+        assert_eq!(
+            substituted.revalidate_binary_identity(),
+            Err(RuntimeReadinessState::Incompatible)
+        );
+    }
+
+    #[test]
     fn staged_runtime_is_copied_from_the_verified_descriptor() {
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
@@ -4583,6 +4775,103 @@ mod tests {
     }
 
     #[test]
+    fn inactive_cancel_preserves_the_first_pending_request() {
+        let host = RuntimeHost {
+            configuration: None,
+            active: Arc::new(ActiveRuntime::default()),
+            work_generation: Arc::new(AtomicU64::new(0)),
+            invalidated_workspace_generation: Arc::new(AtomicU64::new(0)),
+        };
+
+        host.cancel_request("pending-a");
+        let first = host.active.control.lock().expect("first pending cancel");
+        let first_pending = first.pending_request_id.clone();
+        let first_cancellation = first.cancellation;
+        drop(first);
+
+        host.cancel_request("inactive-b");
+        let second = host
+            .active
+            .control
+            .lock()
+            .expect("preserved pending cancel");
+        let second_pending = second.pending_request_id.clone();
+        let second_cancellation = second.cancellation;
+        drop(second);
+
+        assert_eq!(first_pending.as_deref(), Some("pending-a"));
+        assert_eq!(first_cancellation, Some(RuntimeCancellation::User));
+        assert_eq!(second_pending, first_pending);
+        assert_eq!(second_cancellation, first_cancellation);
+        assert!(!host.active.running.load(Ordering::Acquire));
+        assert_eq!(
+            *host.active.process_group.lock().expect("process group"),
+            None
+        );
+    }
+
+    #[test]
+    fn runtime_request_rejects_application_health_and_reports_unavailable_runtime() {
+        let mut lifecycle = HostLifecycle::default();
+        let document_nonce = "a".repeat(64);
+        let generation = lifecycle
+            .begin_renderer_session(document_nonce.clone())
+            .expect("renderer generation");
+        let sender =
+            lifecycle.sender_for_document("main", "tauri://localhost", generation, &document_nonce);
+        let lifecycle = Mutex::new(lifecycle);
+        let runtime = RuntimeHost {
+            configuration: None,
+            active: Arc::new(ActiveRuntime::default()),
+            work_generation: Arc::new(AtomicU64::new(0)),
+            invalidated_workspace_generation: Arc::new(AtomicU64::new(0)),
+        };
+        let health = r#"{"schemaVersion":1,"requestId":"request-0000000000000001-0000000000000001","sequence":1,"timeoutMs":1000,"operation":{"kind":"application-health"}}"#;
+        let readiness = r#"{"schemaVersion":1,"requestId":"request-0000000000000001-0000000000000002","sequence":2,"timeoutMs":1000,"operation":{"kind":"runtime-readiness"}}"#;
+
+        let health_output = runtime_request(&lifecycle, &runtime, &sender, None, health);
+        let health_value: Value =
+            serde_json::from_str(&health_output.encoded).expect("health rejection");
+        let generation_after_health = runtime.work_generation.load(Ordering::Acquire);
+        let running_after_health = runtime.active.running.load(Ordering::Acquire);
+        let control_after_health = runtime.active.control.lock().expect("runtime control");
+        let request_after_health = control_after_health.request_id.clone();
+        let pending_after_health = control_after_health.pending_request_id.clone();
+        drop(control_after_health);
+
+        let readiness_output = runtime_request(&lifecycle, &runtime, &sender, None, readiness);
+        let readiness_value: Value =
+            serde_json::from_str(&readiness_output.encoded).expect("readiness response");
+
+        assert_eq!(
+            health_value.pointer("/error/code"),
+            Some(&json!("unknown-operation"))
+        );
+        assert_eq!(
+            health_value.get("requestId"),
+            Some(&json!("unknown-request"))
+        );
+        assert_eq!(generation_after_health, 0);
+        assert!(!running_after_health);
+        assert_eq!(request_after_health, None);
+        assert_eq!(pending_after_health, None);
+        assert_eq!(
+            readiness_value.get("requestId"),
+            Some(&json!("request-0000000000000001-0000000000000002"))
+        );
+        assert_eq!(
+            readiness_value.pointer("/result/kind"),
+            Some(&json!("runtime-readiness"))
+        );
+        assert_eq!(
+            readiness_value.pointer("/result/state/state"),
+            Some(&json!("unavailable"))
+        );
+        assert_eq!(runtime.work_generation.load(Ordering::Acquire), 0);
+        assert!(!runtime.active.running.load(Ordering::Acquire));
+    }
+
+    #[test]
     fn first_observed_shutdown_reason_wins_for_the_active_request() {
         let active = ActiveRuntime::default();
         active.running.store(true, Ordering::Release);
@@ -4673,6 +4962,158 @@ mod tests {
             *active.process_group.lock().expect("process-group state"),
             None
         );
+    }
+
+    #[test]
+    fn authenticated_signal_refuses_another_owned_process_group() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut first = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("trap 'exit 0' TERM INT; printf 'ready\\n'; read -r line")
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("first owned process group");
+        let second_spawn = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("trap 'exit 0' TERM INT; printf 'ready\\n'; read -r line")
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn();
+        let second_spawned = second_spawn.is_ok();
+        let mut second = second_spawn.ok();
+        let first_group = first.id() as i32;
+        let second_group = second.as_ref().map(|child| child.id() as i32);
+        let first_stdin = first.stdin.take();
+        let second_stdin = second.as_mut().and_then(|child| child.stdin.take());
+        let mut first_stdout = first.stdout.take().map(BufReader::new);
+        let mut second_stdout = second
+            .as_mut()
+            .and_then(|child| child.stdout.take())
+            .map(BufReader::new);
+        let mut first_ready = String::new();
+        let mut second_ready = String::new();
+        let first_handshake = first_stdout
+            .as_mut()
+            .map(|stdout| stdout.read_line(&mut first_ready));
+        let second_handshake = second_stdout
+            .as_mut()
+            .map(|stdout| stdout.read_line(&mut second_ready));
+
+        let first_active = ActiveRuntime::default();
+        let second_active = ActiveRuntime::default();
+        let first_published = publish_active_process_group(&first_active, first_group);
+        let second_published =
+            second_group.is_some_and(|group| publish_active_process_group(&second_active, group));
+        let first_identity = first_active
+            .process_group
+            .lock()
+            .ok()
+            .and_then(|group| *group);
+        let second_identity = second_active
+            .process_group
+            .lock()
+            .ok()
+            .and_then(|group| *group);
+        let group_refused = second_group
+            .is_some_and(|group| !signal_active_process_group(&first_active, group, SIGTERM));
+        let descendants_refused = second_group
+            .is_some_and(|group| !signal_active_descendants(&first_active, group, SIGKILL));
+        let first_retained = first_active
+            .process_group
+            .lock()
+            .ok()
+            .and_then(|group| *group);
+        let second_retained = second_active
+            .process_group
+            .lock()
+            .ok()
+            .and_then(|group| *group);
+        let first_still_current = first_identity.is_some_and(|identity| {
+            retained_process_identity_status(identity) == RetainedProcessIdentityStatus::Current
+        });
+        let second_still_current = second_identity.is_some_and(|identity| {
+            retained_process_identity_status(identity) == RetainedProcessIdentityStatus::Current
+        });
+
+        let first_signalled = signal_active_process_group(&first_active, first_group, SIGTERM);
+        let second_signalled = second_group
+            .is_some_and(|group| signal_active_process_group(&second_active, group, SIGTERM));
+        drop(first_stdin);
+        drop(second_stdin);
+        let first_graceful_exit = bounded_owned_child_exit(&mut first);
+        let second_graceful_exit = second.as_mut().map(bounded_owned_child_exit);
+        let _ = first.kill();
+        let _ = second.as_mut().map(Child::kill);
+        let first_waited = first_graceful_exit | bounded_owned_child_exit(&mut first);
+        let second_waited = second_graceful_exit
+            .zip(second.as_mut().map(bounded_owned_child_exit))
+            .map(|(graceful, killed)| graceful | killed);
+        let first_absent = !process_group_exists(first_group);
+        let second_absent = second_group.map(|group| !process_group_exists(group));
+        let first_cleanup_retired = first_identity
+            .is_some_and(|identity| retire_active_process_group(&first_active, identity));
+        let second_cleanup_retired = second_identity
+            .is_some_and(|identity| retire_active_process_group(&second_active, identity));
+        let first_group_cleared = first_active
+            .process_group
+            .lock()
+            .is_ok_and(|group| group.is_none());
+        let first_owned_cleared = first_active
+            .owned_processes
+            .lock()
+            .is_ok_and(|owned| owned.is_empty());
+        let second_group_cleared = second_active
+            .process_group
+            .lock()
+            .is_ok_and(|group| group.is_none());
+        let second_owned_cleared = second_active
+            .owned_processes
+            .lock()
+            .is_ok_and(|owned| owned.is_empty());
+
+        assert!(second_spawned);
+        assert_eq!(
+            first_handshake
+                .expect("first readiness pipe")
+                .expect("first readiness handshake"),
+            6
+        );
+        assert_eq!(
+            second_handshake
+                .expect("second readiness pipe")
+                .expect("second readiness handshake"),
+            6
+        );
+        assert_eq!(first_ready, "ready\n");
+        assert_eq!(second_ready, "ready\n");
+        assert_ne!(Some(first_group), second_group);
+        assert!(first_published);
+        assert!(second_published);
+        assert!(first_identity.is_some());
+        assert!(second_identity.is_some());
+        assert!(group_refused);
+        assert!(descendants_refused);
+        assert_eq!(first_retained, first_identity);
+        assert_eq!(second_retained, second_identity);
+        assert!(first_still_current);
+        assert!(second_still_current);
+        assert!(first_signalled);
+        assert!(second_signalled);
+        assert!(first_waited);
+        assert_eq!(second_waited, Some(true));
+        assert!(first_absent);
+        assert_eq!(second_absent, Some(true));
+        assert!(first_cleanup_retired);
+        assert!(second_cleanup_retired);
+        assert!(first_group_cleared);
+        assert!(first_owned_cleared);
+        assert!(second_group_cleared);
+        assert!(second_owned_cleared);
     }
 
     #[test]
@@ -5012,6 +5453,76 @@ printf '%s\n' '{"method":"item/tool/call","id":7,"params":{"path":"/private/secr
         projection.turn_id = Some("turn-1".to_owned());
         projection.streaming_announced = true;
         projection
+    }
+
+    #[test]
+    fn token_usage_and_non_agent_items_fail_closed() {
+        let breakdown = json!({
+            "cachedInputTokens": 0,
+            "inputTokens": 12,
+            "outputTokens": 3,
+            "reasoningOutputTokens": 0,
+            "totalTokens": 15
+        });
+        for usage in [
+            json!({"last": breakdown, "modelContextWindow": null, "total": breakdown}),
+            json!({"last": breakdown, "modelContextWindow": 128_000, "total": breakdown}),
+        ] {
+            assert!(token_usage_is_bounded(Some(&usage)), "{usage}");
+        }
+        for usage in [
+            json!({"last": breakdown, "modelContextWindow": 128_000, "total": breakdown, "unknown": true}),
+            json!({"last": breakdown, "modelContextWindow": (i64::MAX as u64) + 1, "total": breakdown}),
+            json!({"last": breakdown, "modelContextWindow": "unknown", "total": breakdown}),
+        ] {
+            assert!(!token_usage_is_bounded(Some(&usage)), "{usage}");
+        }
+
+        let home = Path::new("/private/tmp/codex-home");
+        let work = Path::new("/private/tmp/codex-work");
+        let started = json!({
+            "method": "item/started",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "item": {"id": "reasoning-1", "type": "reasoning"}
+            }
+        });
+        let completed = json!({
+            "method": "item/completed",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "item": {"id": "reasoning-1", "type": "reasoning"}
+            }
+        });
+        let mut valid = active_turn_projection(home, work);
+        assert_eq!(
+            valid.accept(&serde_json::to_vec(&started).expect("started item")),
+            TurnProjectionAction::Quarantine
+        );
+        assert_eq!(
+            valid.accept(&serde_json::to_vec(&completed).expect("completed item")),
+            TurnProjectionAction::Quarantine
+        );
+        assert_eq!(
+            valid.started_items.get("reasoning-1"),
+            Some(&InertItemKind::Reasoning)
+        );
+        assert!(valid.completed_items.contains("reasoning-1"));
+
+        let mut mismatched = active_turn_projection(home, work);
+        assert_eq!(
+            mismatched.accept(&serde_json::to_vec(&started).expect("mismatch start")),
+            TurnProjectionAction::Quarantine
+        );
+        let mut wrong_completion = completed;
+        wrong_completion["params"]["item"]["type"] = json!("plan");
+        assert_turn_containment(
+            mismatched
+                .accept(&serde_json::to_vec(&wrong_completion).expect("mismatched completion")),
+            TurnReason::ProtocolRejected,
+        );
     }
 
     fn assert_turn_containment(action: TurnProjectionAction, reason: TurnReason) {
@@ -6970,6 +7481,228 @@ while :; do /bin/sleep 1; done
             *active.process_group.lock().expect("retired ownership"),
             None
         );
+    }
+
+    #[test]
+    fn retained_retirement_refuses_live_owned_or_group_members() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let mut owned_leader = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(
+                "child=''; cleanup() { if [ -n \"$child\" ]; then kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; fi; }; trap cleanup EXIT TERM INT; exec 3<&0; printf 'leader-ready\\n'; if read -r command; then /bin/sh -c \"trap 'exit 0' TERM INT; printf 'owned-ready\\n'; read -r line\" <&3 & child=$!; wait \"$child\"; fi",
+            )
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("owned descendant leader");
+        let owned_group = owned_leader.id() as i32;
+        let mut owned_stdout = owned_leader.stdout.take().map(BufReader::new);
+        let mut owned_stdin = owned_leader.stdin.take();
+        let mut leader_ready = String::new();
+        let leader_handshake = owned_stdout
+            .as_mut()
+            .map(|stdout| stdout.read_line(&mut leader_ready));
+        let owned_active = ActiveRuntime::default();
+        let owned_published = publish_active_process_group(&owned_active, owned_group);
+        let owned_identity = owned_active
+            .process_group
+            .lock()
+            .ok()
+            .and_then(|group| *group);
+        let owned_current = owned_identity.is_some_and(|identity| {
+            retained_process_identity_status(identity) == RetainedProcessIdentityStatus::Current
+        });
+        let spawn_owned = (owned_published && owned_current).then(|| {
+            owned_stdin.as_mut().map_or_else(
+                || Err(io::Error::other("missing owned leader stdin")),
+                |stdin| stdin.write_all(b"spawn\n").and_then(|()| stdin.flush()),
+            )
+        });
+        let mut owned_ready = String::new();
+        let owned_handshake = spawn_owned
+            .as_ref()
+            .is_some_and(Result::is_ok)
+            .then(|| {
+                owned_stdout
+                    .as_mut()
+                    .map(|stdout| stdout.read_line(&mut owned_ready))
+            })
+            .flatten();
+        let owned_refreshed = refresh_owned_processes(&owned_active);
+        let tracked_owned = owned_active
+            .owned_processes
+            .lock()
+            .ok()
+            .and_then(|owned| owned.iter().copied().next());
+        let owned_refused = !retire_retained_process_group_if_stopped(&owned_active, owned_group);
+        let owned_retained = owned_active
+            .process_group
+            .lock()
+            .ok()
+            .and_then(|group| *group);
+
+        let owned_signalled = signal_active_process_group(&owned_active, owned_group, SIGTERM);
+        drop(owned_stdin);
+        let owned_graceful_exit = bounded_owned_child_exit(&mut owned_leader);
+        let _ = owned_leader.kill();
+        let owned_waited = owned_graceful_exit | bounded_owned_child_exit(&mut owned_leader);
+        let owned_group_absent = !process_group_exists(owned_group);
+        let tracked_owned_ended = tracked_owned
+            .is_some_and(|identity| process_identity(identity.process_id) != Some(identity));
+        let owned_cleanup_retired = owned_identity
+            .is_some_and(|identity| retire_active_process_group(&owned_active, identity));
+        let owned_group_cleared = owned_active
+            .process_group
+            .lock()
+            .is_ok_and(|group| group.is_none());
+        let owned_processes_cleared = owned_active
+            .owned_processes
+            .lock()
+            .is_ok_and(|owned| owned.is_empty());
+
+        assert_eq!(
+            leader_handshake
+                .expect("leader readiness pipe")
+                .expect("leader readiness handshake"),
+            13
+        );
+        assert_eq!(leader_ready, "leader-ready\n");
+        assert!(owned_published);
+        assert!(owned_current);
+        assert!(spawn_owned.is_some_and(|result| result.is_ok()));
+        assert_eq!(
+            owned_handshake
+                .expect("owned readiness pipe")
+                .expect("owned readiness handshake"),
+            12
+        );
+        assert_eq!(owned_ready, "owned-ready\n");
+        assert!(owned_refreshed);
+        assert!(tracked_owned.is_some());
+        assert!(owned_refused);
+        assert_eq!(owned_retained, owned_identity);
+        assert!(owned_signalled);
+        assert!(owned_waited);
+        assert!(owned_group_absent);
+        assert!(tracked_owned_ended);
+        assert!(owned_cleanup_retired);
+        assert!(owned_group_cleared);
+        assert!(owned_processes_cleared);
+
+        let mut group_leader = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("trap 'exit 0' TERM INT; printf 'leader-ready\\n'; read -r line")
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("same-group leader");
+        let same_group = group_leader.id() as i32;
+        let group_stdin = group_leader.stdin.take();
+        let mut group_stdout = group_leader.stdout.take().map(BufReader::new);
+        let mut group_leader_ready = String::new();
+        let group_leader_handshake = group_stdout
+            .as_mut()
+            .map(|stdout| stdout.read_line(&mut group_leader_ready));
+        let group_active = ActiveRuntime::default();
+        let group_published = publish_active_process_group(&group_active, same_group);
+        let group_identity = group_active
+            .process_group
+            .lock()
+            .ok()
+            .and_then(|group| *group);
+        let group_current = group_identity.is_some_and(|identity| {
+            retained_process_identity_status(identity) == RetainedProcessIdentityStatus::Current
+        });
+        let member_spawn = (group_published && group_current).then(|| {
+            Command::new("/bin/sh")
+                .arg("-c")
+                .arg("trap 'exit 0' TERM INT; printf 'member-ready\\n'; read -r line")
+                .process_group(same_group)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+        });
+        let member_spawned = member_spawn.as_ref().is_some_and(|result| result.is_ok());
+        let mut group_member = member_spawn.and_then(Result::ok);
+        let member_stdin = group_member.as_mut().and_then(|child| child.stdin.take());
+        let mut member_stdout = group_member
+            .as_mut()
+            .and_then(|child| child.stdout.take())
+            .map(BufReader::new);
+        let mut member_ready = String::new();
+        let member_handshake = member_stdout
+            .as_mut()
+            .map(|stdout| stdout.read_line(&mut member_ready));
+        let group_refused = !retire_retained_process_group_if_stopped(&group_active, same_group);
+        let group_owned_empty = group_active
+            .owned_processes
+            .lock()
+            .is_ok_and(|owned| owned.is_empty());
+        let live_group_member =
+            process_group_has_descendants(same_group, same_group).unwrap_or(false);
+        let group_retained = group_active
+            .process_group
+            .lock()
+            .ok()
+            .and_then(|group| *group);
+
+        let group_signalled = signal_active_process_group(&group_active, same_group, SIGTERM);
+        drop(group_stdin);
+        drop(member_stdin);
+        let group_leader_graceful_exit = bounded_owned_child_exit(&mut group_leader);
+        let group_member_graceful_exit = group_member.as_mut().map(bounded_owned_child_exit);
+        let _ = group_leader.kill();
+        let _ = group_member.as_mut().map(Child::kill);
+        let group_leader_waited =
+            group_leader_graceful_exit | bounded_owned_child_exit(&mut group_leader);
+        let group_member_waited = group_member_graceful_exit
+            .zip(group_member.as_mut().map(bounded_owned_child_exit))
+            .map(|(graceful, killed)| graceful | killed);
+        let same_group_absent = !process_group_exists(same_group);
+        let group_cleanup_retired = group_identity
+            .is_some_and(|identity| retire_active_process_group(&group_active, identity));
+        let group_ownership_cleared = group_active
+            .process_group
+            .lock()
+            .is_ok_and(|group| group.is_none());
+        let group_owned_processes_cleared = group_active
+            .owned_processes
+            .lock()
+            .is_ok_and(|owned| owned.is_empty());
+
+        assert_eq!(
+            group_leader_handshake
+                .expect("same-group leader readiness pipe")
+                .expect("same-group leader handshake"),
+            13
+        );
+        assert_eq!(group_leader_ready, "leader-ready\n");
+        assert!(group_published);
+        assert!(group_current);
+        assert!(member_spawned);
+        assert_eq!(
+            member_handshake
+                .expect("same-group member readiness pipe")
+                .expect("same-group member handshake"),
+            13
+        );
+        assert_eq!(member_ready, "member-ready\n");
+        assert!(group_refused);
+        assert!(group_owned_empty);
+        assert!(live_group_member);
+        assert_eq!(group_retained, group_identity);
+        assert!(group_signalled);
+        assert!(group_leader_waited);
+        assert_eq!(group_member_waited, Some(true));
+        assert!(same_group_absent);
+        assert!(group_cleanup_retired);
+        assert!(group_ownership_cleared);
+        assert!(group_owned_processes_cleared);
     }
 
     #[test]
