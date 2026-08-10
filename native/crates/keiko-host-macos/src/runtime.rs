@@ -4974,6 +4974,31 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_known_owned_identity_is_retained_fail_closed() {
+        let active = ActiveRuntime::default();
+        let unavailable = ProcessIdentity {
+            process_id: 0,
+            started_microseconds: 7,
+            started_seconds: 11,
+        };
+        active
+            .owned_processes
+            .lock()
+            .expect("owned process state")
+            .insert(unavailable);
+
+        assert!(!authenticated_owned_processes_stopped(&active));
+        assert!(
+            active
+                .owned_processes
+                .lock()
+                .expect("retained owned process state")
+                .contains(&unavailable)
+        );
+        assert!(process_presence(unavailable.process_id).is_err());
+    }
+
+    #[test]
     fn unavailable_host_and_unspawnable_runtime_are_distinct() {
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
@@ -6881,6 +6906,54 @@ while :; do /bin/sleep 1; done
     }
 
     #[test]
+    fn readiness_cleanup_rejects_an_expired_entry_without_retiring_ownership() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child = Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .expect("expired readiness cleanup process");
+        let process_group = child.id() as i32;
+        let active = ActiveRuntime::default();
+        let published = publish_active_process_group(&active, process_group);
+        let retained_identity = process_identity(process_group);
+
+        let cleaned = stop_process_group_with_term_grace(
+            &mut child,
+            process_group,
+            &active,
+            Instant::now() - Duration::from_millis(1),
+            Some(Duration::ZERO),
+            CleanupPhasePolicy::PreserveFinalReconciliation,
+        );
+        let retained = active.process_group.lock().ok().and_then(|group| *group);
+        let still_running = process_group_exists(process_group);
+        let recovered = stop_process_group(
+            &mut child,
+            process_group,
+            &active,
+            Instant::now() + Duration::from_secs(1),
+        );
+        let fallback_reaped = if recovered {
+            true
+        } else {
+            signal_process_group(process_group, SIGKILL);
+            child.wait().is_ok()
+        };
+        let group_absent = !process_group_exists(process_group);
+
+        assert!(published);
+        assert!(!cleaned);
+        assert_eq!(retained, retained_identity);
+        assert!(still_running);
+        assert!(recovered, "test-owned fallback must not count as product success");
+        assert!(fallback_reaped);
+        assert!(group_absent);
+    }
+
+    #[test]
     fn readiness_cleanup_reaps_after_escalating_a_term_resistant_process() {
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
@@ -7183,6 +7256,25 @@ while :; do /bin/sleep 1; done
         assert_eq!(
             classify_retained_child_reap_state(Err(io::Error::other("wait unavailable"))),
             RetainedChildReapState::Unavailable
+        );
+    }
+
+    #[test]
+    fn retained_reconciliation_ignores_absent_and_mismatched_registrations() {
+        let active = ActiveRuntime::default();
+        assert!(retire_retained_process_group_if_stopped(&active, 42));
+
+        let retained = ProcessIdentity {
+            process_id: 41,
+            started_microseconds: 7,
+            started_seconds: 11,
+        };
+        *active.process_group.lock().expect("process-group state") = Some(retained);
+
+        assert!(retire_retained_process_group_if_stopped(&active, 42));
+        assert_eq!(
+            *active.process_group.lock().expect("retained process group"),
+            Some(retained)
         );
     }
 
