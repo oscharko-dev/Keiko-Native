@@ -76,6 +76,74 @@ const DESCENDANT_REAP_GRACE: Duration = Duration::from_millis(100);
 const READINESS_CLEANUP_RESERVE: Duration = Duration::from_millis(300);
 const READINESS_MAX_TERM_GRACE: Duration = Duration::from_millis(100);
 const TURN_CLEANUP_RESERVE: Duration = Duration::from_secs(5);
+
+// Temporary #101 remote diagnostic. Each bit names only a cleanup control-flow
+// fact; no process identifiers, paths, timings, or runtime data are recorded.
+#[cfg(test)]
+#[derive(Clone, Copy)]
+#[repr(u8)]
+enum CleanupTraceFlag {
+    Entered,
+    InitialReconciled,
+    EofComplete,
+    ExpiredBeforeTerm,
+    TermSignalled,
+    TermRefused,
+    TermComplete,
+    RefreshSucceeded,
+    RefreshFailed,
+    ExpiredBeforeDescendants,
+    DescendantsSignalled,
+    NoDescendantsSignalled,
+    ExpiredBeforeGroupKill,
+    GroupKillSignalled,
+    GroupKillRefused,
+    FinalLoopReconciled,
+    FinalLoopComplete,
+    FinalProbeOpen,
+    FinalProbeClosed,
+    FinalProbeReconciled,
+    ActiveIdentity,
+    ActiveIdentityMissing,
+    ChildExited,
+    ChildLive,
+    ChildUnavailable,
+    DescendantsPresent,
+    DescendantsAbsent,
+    DescendantsUnavailable,
+    OwnedPresent,
+    OwnedAbsent,
+    OwnedUnavailable,
+    ChildWaitSucceeded,
+    ChildWaitFailed,
+    GroupAbsent,
+    GroupPresent,
+    GroupUnavailable,
+    OwnedStopped,
+    OwnedNotStopped,
+    Retired,
+    SignalLockUnavailable,
+    SignalIdentityMissing,
+    SignalIdentityReused,
+    SignalIdentityUnavailable,
+}
+
+#[cfg(test)]
+macro_rules! cleanup_trace {
+    ($active:expr, $flag:expr) => {{
+        $active
+            .cleanup_trace
+            .fetch_or(1_u64 << $flag as u8, Ordering::Relaxed);
+    }};
+}
+
+#[cfg(not(test))]
+macro_rules! cleanup_trace {
+    ($active:expr, $flag:expr) => {
+        ()
+    };
+}
+
 const CODEX_CONTAINMENT_ARGUMENTS: &[&str] = &[
     "-c",
     "features.multi_agent=false",
@@ -127,6 +195,12 @@ const CODEX_CONTAINMENT_ARGUMENTS: &[&str] = &[
 ];
 
 unsafe extern "C" {
+    #[cfg(test)]
+    #[link_name = "atexit"]
+    fn keiko_atexit(callback: extern "C" fn()) -> i32;
+    #[cfg(test)]
+    #[link_name = "write"]
+    fn keiko_write(descriptor: i32, buffer: *const c_void, count: usize) -> isize;
     #[link_name = "geteuid"]
     fn keiko_geteuid() -> u32;
     #[link_name = "kill"]
@@ -227,6 +301,8 @@ struct ActiveRuntime {
     finished: Condvar,
     #[cfg(test)]
     idle_waiting: AtomicBool,
+    #[cfg(test)]
+    cleanup_trace: AtomicU64,
     running: AtomicBool,
 }
 
@@ -2971,10 +3047,12 @@ fn stop_process_group_with_term_grace(
     term_grace: Option<Duration>,
     cleanup_phase_policy: CleanupPhasePolicy,
 ) -> bool {
+    cleanup_trace!(active, CleanupTraceFlag::Entered);
     let cleanup_started = Instant::now();
     if cleanup_deadline_open(cleanup_phase_policy, Instant::now(), deadline)
         && reconcile_stopped_process_group(child, process_group, active)
     {
+        cleanup_trace!(active, CleanupTraceFlag::InitialReconciled);
         return true;
     }
     let remaining = deadline.saturating_duration_since(cleanup_started);
@@ -2993,10 +3071,18 @@ fn stop_process_group_with_term_grace(
     ) {
         return true;
     }
+    cleanup_trace!(active, CleanupTraceFlag::EofComplete);
     if !cleanup_deadline_open(cleanup_phase_policy, Instant::now(), deadline) {
+        cleanup_trace!(active, CleanupTraceFlag::ExpiredBeforeTerm);
         return false;
     }
-    signal_active_process_group(active, process_group, SIGTERM);
+    let _term_signalled = signal_active_process_group(active, process_group, SIGTERM);
+    #[cfg(test)]
+    if _term_signalled {
+        cleanup_trace!(active, CleanupTraceFlag::TermSignalled);
+    } else {
+        cleanup_trace!(active, CleanupTraceFlag::TermRefused);
+    }
     let term_deadline = cleanup_term_deadline(
         cleanup_phase_policy,
         cleanup_started,
@@ -3015,15 +3101,24 @@ fn stop_process_group_with_term_grace(
     ) {
         return true;
     }
+    cleanup_trace!(active, CleanupTraceFlag::TermComplete);
     // Kill authenticated descendants before the group leader so a supervising
     // runtime can reap its own children and exit without leaving transient
     // zombies that outlive this request's cleanup deadline.
-    let _ = refresh_owned_processes(active);
+    let _refreshed = refresh_owned_processes(active);
+    #[cfg(test)]
+    if _refreshed {
+        cleanup_trace!(active, CleanupTraceFlag::RefreshSucceeded);
+    } else {
+        cleanup_trace!(active, CleanupTraceFlag::RefreshFailed);
+    }
     if !cleanup_deadline_open(cleanup_phase_policy, Instant::now(), deadline) {
+        cleanup_trace!(active, CleanupTraceFlag::ExpiredBeforeDescendants);
         return false;
     }
     let descendants_signalled = signal_active_descendants(active, process_group, SIGKILL);
     if descendants_signalled {
+        cleanup_trace!(active, CleanupTraceFlag::DescendantsSignalled);
         let descendant_started = Instant::now();
         let descendant_deadline =
             descendant_reap_deadline(cleanup_phase_policy, descendant_started, deadline);
@@ -3037,11 +3132,20 @@ fn stop_process_group_with_term_grace(
         ) {
             return true;
         }
+    } else {
+        cleanup_trace!(active, CleanupTraceFlag::NoDescendantsSignalled);
     }
     if !cleanup_deadline_open(cleanup_phase_policy, Instant::now(), deadline) {
+        cleanup_trace!(active, CleanupTraceFlag::ExpiredBeforeGroupKill);
         return false;
     }
-    signal_active_process_group(active, process_group, SIGKILL);
+    let _group_kill_signalled = signal_active_process_group(active, process_group, SIGKILL);
+    #[cfg(test)]
+    if _group_kill_signalled {
+        cleanup_trace!(active, CleanupTraceFlag::GroupKillSignalled);
+    } else {
+        cleanup_trace!(active, CleanupTraceFlag::GroupKillRefused);
+    }
     if reconcile_until(
         deadline,
         deadline,
@@ -3050,10 +3154,24 @@ fn stop_process_group_with_term_grace(
         process_group,
         active,
     ) {
+        cleanup_trace!(active, CleanupTraceFlag::FinalLoopReconciled);
         return true;
     }
-    cleanup_deadline_open(cleanup_phase_policy, Instant::now(), deadline)
-        && reconcile_stopped_process_group(child, process_group, active)
+    cleanup_trace!(active, CleanupTraceFlag::FinalLoopComplete);
+    let final_probe_open = cleanup_deadline_open(cleanup_phase_policy, Instant::now(), deadline);
+    #[cfg(test)]
+    if final_probe_open {
+        cleanup_trace!(active, CleanupTraceFlag::FinalProbeOpen);
+    } else {
+        cleanup_trace!(active, CleanupTraceFlag::FinalProbeClosed);
+    }
+    let final_reconciled =
+        final_probe_open && reconcile_stopped_process_group(child, process_group, active);
+    #[cfg(test)]
+    if final_reconciled {
+        cleanup_trace!(active, CleanupTraceFlag::FinalProbeReconciled);
+    }
+    final_reconciled
 }
 
 fn authenticated_owned_processes_stopped(active: &ActiveRuntime) -> bool {
@@ -3166,22 +3284,29 @@ fn reap_child(child: i32) -> bool {
 
 fn signal_active_process_group(active: &ActiveRuntime, process_group: i32, signal: i32) -> bool {
     let Ok(active_group) = active.process_group.lock() else {
+        cleanup_trace!(active, CleanupTraceFlag::SignalLockUnavailable);
         return false;
     };
     let Some(identity) = *active_group else {
+        cleanup_trace!(active, CleanupTraceFlag::SignalIdentityMissing);
         return false;
     };
     if identity.process_id != process_group {
+        cleanup_trace!(active, CleanupTraceFlag::SignalIdentityMissing);
         return false;
     }
     match retained_process_identity_status(identity) {
         RetainedProcessIdentityStatus::Current => {}
         RetainedProcessIdentityStatus::Reused => {
+            cleanup_trace!(active, CleanupTraceFlag::SignalIdentityReused);
             drop(active_group);
             retire_active_process_group(active, identity);
             return false;
         }
-        RetainedProcessIdentityStatus::Unavailable => return false,
+        RetainedProcessIdentityStatus::Unavailable => {
+            cleanup_trace!(active, CleanupTraceFlag::SignalIdentityUnavailable);
+            return false;
+        }
     }
     signal_process_group(process_group, signal);
     if let Ok(owned) = active.owned_processes.lock() {
@@ -3249,6 +3374,24 @@ fn ready_to_reap(child: i32, process_group: i32, active: &ActiveRuntime) -> bool
     let exited = child_exited_without_reaping(child);
     let descendants = process_group_has_descendants(process_group, child);
     let owned_descendants = owned_descendants_alive(active, child);
+    #[cfg(test)]
+    match &exited {
+        Ok(true) => cleanup_trace!(active, CleanupTraceFlag::ChildExited),
+        Ok(false) => cleanup_trace!(active, CleanupTraceFlag::ChildLive),
+        Err(_) => cleanup_trace!(active, CleanupTraceFlag::ChildUnavailable),
+    }
+    #[cfg(test)]
+    match &descendants {
+        Ok(true) => cleanup_trace!(active, CleanupTraceFlag::DescendantsPresent),
+        Ok(false) => cleanup_trace!(active, CleanupTraceFlag::DescendantsAbsent),
+        Err(_) => cleanup_trace!(active, CleanupTraceFlag::DescendantsUnavailable),
+    }
+    #[cfg(test)]
+    match owned_descendants {
+        Some(true) => cleanup_trace!(active, CleanupTraceFlag::OwnedPresent),
+        Some(false) => cleanup_trace!(active, CleanupTraceFlag::OwnedAbsent),
+        None => cleanup_trace!(active, CleanupTraceFlag::OwnedUnavailable),
+    }
     exited.unwrap_or(false)
         && !descendants.unwrap_or(true)
         && owned_descendants.is_some_and(|alive| !alive)
@@ -3267,17 +3410,52 @@ fn reconcile_stopped_process_group(
         })
     });
     let Some(active_identity) = active_identity else {
+        cleanup_trace!(active, CleanupTraceFlag::ActiveIdentityMissing);
         return false;
     };
-    if !ready_to_reap(child.id() as i32, process_group, active) || child.wait().is_err() {
-        return false;
-    }
-    if process_group_presence(process_group) != ProcessPresenceStatus::Absent
-        || !authenticated_owned_processes_stopped(active)
+    cleanup_trace!(active, CleanupTraceFlag::ActiveIdentity);
+    if !ready_to_reap(child.id() as i32, process_group, active)
+        || match child.wait() {
+            Ok(_) => {
+                cleanup_trace!(active, CleanupTraceFlag::ChildWaitSucceeded);
+                false
+            }
+            Err(_) => {
+                cleanup_trace!(active, CleanupTraceFlag::ChildWaitFailed);
+                true
+            }
+        }
     {
         return false;
     }
-    retire_active_process_group(active, active_identity)
+    let group_presence = process_group_presence(process_group);
+    #[cfg(test)]
+    match group_presence {
+        ProcessPresenceStatus::Absent => cleanup_trace!(active, CleanupTraceFlag::GroupAbsent),
+        ProcessPresenceStatus::Present => cleanup_trace!(active, CleanupTraceFlag::GroupPresent),
+        ProcessPresenceStatus::Unavailable => {
+            cleanup_trace!(active, CleanupTraceFlag::GroupUnavailable);
+        }
+    }
+    if group_presence != ProcessPresenceStatus::Absent {
+        return false;
+    }
+    let owned_stopped = authenticated_owned_processes_stopped(active);
+    #[cfg(test)]
+    if owned_stopped {
+        cleanup_trace!(active, CleanupTraceFlag::OwnedStopped);
+    } else {
+        cleanup_trace!(active, CleanupTraceFlag::OwnedNotStopped);
+    }
+    if !owned_stopped {
+        return false;
+    }
+    let retired = retire_active_process_group(active, active_identity);
+    #[cfg(test)]
+    if retired {
+        cleanup_trace!(active, CleanupTraceFlag::Retired);
+    }
+    retired
 }
 
 fn register_owned_process(active: &ActiveRuntime, process: i32) {
@@ -3609,6 +3787,20 @@ mod tests {
 
     static PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
     static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    static REMOTE_CLEANUP_TRACE: AtomicU64 = AtomicU64::new(0);
+
+    extern "C" fn emit_remote_cleanup_trace() {
+        let flags = REMOTE_CLEANUP_TRACE.load(Ordering::Acquire);
+        let digits = *b"0123456789abcdef";
+        let mut line = *b"DEBUG-k101-v9 flags=0000000000000000\n";
+        for offset in 0..16 {
+            line[35 - offset] = digits[((flags >> (offset * 4)) & 0x0f) as usize];
+        }
+        // SAFETY: descriptor 2 is stderr and the fixed stack buffer remains
+        // valid for this bounded write. Ignore errors; no Rust I/O or
+        // formatting path can panic across the C atexit boundary.
+        let _ = unsafe { keiko_write(2, line.as_ptr().cast::<c_void>(), line.len()) };
+    }
 
     fn unavailable_process_identity(process_id: i32) -> ProcessIdentity {
         ProcessIdentity {
@@ -6998,6 +7190,13 @@ exec /bin/sleep 30
         );
         let original_cleaned = outcome.cleaned;
         if !original_cleaned {
+            REMOTE_CLEANUP_TRACE.store(
+                active.cleanup_trace.load(Ordering::Relaxed),
+                Ordering::Release,
+            );
+            // SAFETY: the callback has static lifetime, uses only a static
+            // atomic, never unwinds, and is registered only for this failure.
+            let _ = unsafe { keiko_atexit(emit_remote_cleanup_trace) };
             let recovered =
                 reconcile_retained_process_group(&active, Instant::now() + Duration::from_secs(5));
             if !recovered {
