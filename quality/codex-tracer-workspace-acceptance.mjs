@@ -9,4 +9,9 @@ const result = await runCodexTracerWorkspaceAcceptance({
 });
 
 process.stdout.write(`${JSON.stringify(result.output)}\n`);
+if (result.diagnostic !== undefined) {
+  process.stderr.write(
+    `[KEIKO-WORKSPACE-ACCEPTANCE] ${JSON.stringify(result.diagnostic)}\n`,
+  );
+}
 process.exitCode = result.exitCode;

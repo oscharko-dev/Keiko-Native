@@ -695,8 +695,65 @@ export function workspaceAcceptanceEvidenceFailures(evidence, expected) {
   return failures;
 }
 
-function closedWorkspaceRejection(reasonCode) {
+function workspaceProgressTracker() {
+  let lastCompleted = null;
+  let lastStarted = null;
+  const pickerActions = new Set([
+    "launch",
+    "probe-start",
+    "probe-canvas",
+    "open-workspace-picker",
+    "observe-workspace-cancelled",
+    "quit",
+  ]);
+  const workspaceActions = new Set([
+    "probe-start",
+    "probe-canvas",
+    "open-workspace-picker",
+    "observe-workspace-cancelled",
+    "observe-workspace-permission-denied",
+    "observe-workspace-selected",
+    "quit",
+  ]);
+  const valid = (checkpoint) => {
+    if (
+      checkpoint === null ||
+      [
+        "cleanup:application",
+        "cleanup:fixture",
+        "post-observation:reference-environment",
+        "prepare",
+        "validate",
+        "workspace-journey",
+        "write",
+      ].includes(checkpoint)
+    ) {
+      return true;
+    }
+    const [stage, action, sample, extra] = String(checkpoint).split(":");
+    if (extra !== undefined || !/^\d+$/u.test(sample ?? "")) return false;
+    const sampleNumber = Number.parseInt(sample, 10);
+    return stage === "picker-cancellation"
+      ? pickerActions.has(action) && sampleNumber >= 1 && sampleNumber <= 20
+      : stage === "workspace"
+        ? workspaceActions.has(action) && sampleNumber >= 0 && sampleNumber <= 4
+        : false;
+  };
+  const record = (state, checkpoint) => {
+    if (!valid(checkpoint)) throw new TypeError("workspace-progress-invalid");
+    if (state === "started") lastStarted = checkpoint;
+    else if (state === "completed") lastCompleted = checkpoint;
+    else throw new TypeError("workspace-progress-invalid");
+  };
   return {
+    record,
+    snapshot: () => ({ lastCompleted, lastStarted, status: "rejected" }),
+  };
+}
+
+function closedWorkspaceRejection(reasonCode, diagnostic) {
+  return {
+    diagnostic,
     exitCode: 2,
     output: {
       reasonCode,
@@ -707,13 +764,18 @@ function closedWorkspaceRejection(reasonCode) {
 }
 
 export async function runCodexTracerWorkspaceAcceptance({ args, io }) {
+  const progress = workspaceProgressTracker();
   if (!Array.isArray(args) || args.length !== 0)
-    return closedWorkspaceRejection("invalid-command");
+    return closedWorkspaceRejection("invalid-command", progress.snapshot());
   let prepared;
   let cleanupAttempted = false;
   try {
+    progress.record("started", "prepare");
     prepared = await io.prepareWorkspacePackage();
-    const workspace = await io.runWorkspaceJourney(prepared);
+    progress.record("completed", "prepare");
+    progress.record("started", "workspace-journey");
+    const workspace = await io.runWorkspaceJourney(prepared, progress.record);
+    progress.record("completed", "workspace-journey");
     const evidence = {
       bindings: prepared.workspaceBindings,
       budgets: workspace.budgets,
@@ -726,23 +788,35 @@ export async function runCodexTracerWorkspaceAcceptance({ args, io }) {
       status: "complete",
     };
     cleanupAttempted = true;
+    progress.record("started", "cleanup:fixture");
     await io.cleanupWorkspacePackage(prepared);
+    progress.record("completed", "cleanup:fixture");
+    progress.record("started", "validate");
     if (
       workspaceAcceptanceEvidenceFailures(evidence, prepared.expected).length >
       0
     )
-      return closedWorkspaceRejection("acceptance-evidence-invalid");
+      return closedWorkspaceRejection(
+        "acceptance-evidence-invalid",
+        progress.snapshot(),
+      );
+    progress.record("completed", "validate");
+    progress.record("started", "write");
     await io.writeWorkspaceEvidence(evidence, prepared);
+    progress.record("completed", "write");
     return { exitCode: 0, output: evidence };
   } catch {
+    let diagnostic = progress.snapshot();
     if (prepared !== undefined && !cleanupAttempted) {
       try {
+        progress.record("started", "cleanup:fixture");
         await io.cleanupWorkspacePackage(prepared);
+        progress.record("completed", "cleanup:fixture");
       } catch {
-        return closedWorkspaceRejection("acceptance-check-failed");
+        diagnostic = progress.snapshot();
       }
     }
-    return closedWorkspaceRejection("acceptance-check-failed");
+    return closedWorkspaceRejection("acceptance-check-failed", diagnostic);
   }
 }
 

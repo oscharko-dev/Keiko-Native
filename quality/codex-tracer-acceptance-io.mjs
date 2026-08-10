@@ -1298,7 +1298,7 @@ export function observedWorkspaceSafeguards({
   };
 }
 
-async function prepareWorkspaceJourney(prepared) {
+async function prepareWorkspaceJourney(prepared, reportProgress) {
   const processInspectorRoot = join(
     prepared.internal.runRoot,
     "workspace-process-inspector",
@@ -1313,19 +1313,39 @@ async function prepareWorkspaceJourney(prepared) {
         timeoutMs: options.timeoutMs,
       }).then(() => ({ error: undefined, status: 0 })),
   );
+  reportProgress("started", "post-observation:reference-environment");
   const referenceEnvironmentBefore = await inspectReferenceEnvironment();
+  reportProgress("completed", "post-observation:reference-environment");
   const [runtimeBefore, workspaceBefore] = await Promise.all([
     snapshotDirectory(prepared.internal.runtimeWorkRoot),
     Promise.all(
       prepared.internal.workspaceRoots.map((root) => snapshotDirectory(root)),
     ),
   ]);
+  let cancellationSample = 0;
   const nativePickerCancellation =
     await measureNativePickerCancellationDistribution(
       prepared.internal,
       adapter.binary,
       cleanupDependencies,
-      { launch: launchWorkspacePackagedApp },
+      {
+        launch: (internal) => {
+          cancellationSample += 1;
+          reportProgress(
+            "started",
+            `picker-cancellation:launch:${cancellationSample}`,
+          );
+          return launchWorkspacePackagedApp(internal);
+        },
+        observe: async (request) => {
+          const checkpoint = `picker-cancellation:${request.observation ?? request.action}:${cancellationSample}`;
+          reportProgress("started", checkpoint);
+          const result = await waitForTracerAccessibilityAction(request);
+          if (result.status === "passed")
+            reportProgress("completed", checkpoint);
+          return result;
+        },
+      },
     );
   const launched = await establishOwnedProcess({
     authenticate: (candidate) =>
@@ -1344,28 +1364,39 @@ async function prepareWorkspaceJourney(prepared) {
   };
 }
 
-async function executeWorkspaceJourney(prepared, resources) {
+async function executeWorkspaceJourney(prepared, resources, reportProgress) {
   const { child, cleanupDependencies, ownership } = resources;
   let cleaned = false;
+  let selectionSample = 0;
   try {
     const journey = await runPackagedWorkspaceJourney({
       deniedWorkspaceLabel: basename(prepared.internal.deniedWorkspaceRoot),
-      execute: (request) =>
-        waitForTracerAccessibilityAction({
+      execute: async (request) => {
+        if (request.observation === "observe-workspace-selected")
+          selectionSample += 1;
+        const checkpoint = `workspace:${request.observation ?? request.action}:${selectionSample}`;
+        reportProgress("started", checkpoint);
+        const result = await waitForTracerAccessibilityAction({
           ...request,
           binary: resources.adapter.binary,
           pid: child.pid,
-        }),
+        });
+        if (result.status === "passed") reportProgress("completed", checkpoint);
+        return result;
+      },
       workspaceLabels: prepared.internal.workspaceRoots.map((root) =>
         basename(root),
       ),
     });
     const cleanupStartedAt = performance.now();
+    reportProgress("started", "cleanup:application");
     if (!(await waitForProcessExit(child.pid, 5_000)))
       throw new Error("workspace-acceptance-app-quit-failed");
     await terminateOwnedProcess(ownership, cleanupDependencies);
+    reportProgress("completed", "cleanup:application");
     const cleanupMs = Math.round(performance.now() - cleanupStartedAt);
     cleaned = true;
+    reportProgress("started", "post-observation:reference-environment");
     const [referenceEnvironmentAfter, runtimeAfter, workspaceAfter] =
       await Promise.all([
         inspectReferenceEnvironment(),
@@ -1376,6 +1407,7 @@ async function executeWorkspaceJourney(prepared, resources) {
           ),
         ),
       ]);
+    reportProgress("completed", "post-observation:reference-environment");
     return {
       cleanupMs,
       journey,
@@ -1388,9 +1420,16 @@ async function executeWorkspaceJourney(prepared, resources) {
   }
 }
 
-export async function runWorkspaceAcceptanceJourney(prepared) {
-  const resources = await prepareWorkspaceJourney(prepared);
-  const completed = await executeWorkspaceJourney(prepared, resources);
+export async function runWorkspaceAcceptanceJourney(
+  prepared,
+  reportProgress = () => undefined,
+) {
+  const resources = await prepareWorkspaceJourney(prepared, reportProgress);
+  const completed = await executeWorkspaceJourney(
+    prepared,
+    resources,
+    reportProgress,
+  );
   return {
     budgets: {
       ...workspaceAcceptanceBudgetLimits,
@@ -1802,8 +1841,8 @@ export function createCodexTracerAcceptanceIo() {
           removeWorkspaceRoots(prepared.internal.workspaceRoots),
       });
     },
-    async runWorkspaceJourney(prepared) {
-      return runWorkspaceAcceptanceJourney(prepared);
+    async runWorkspaceJourney(prepared, reportProgress) {
+      return runWorkspaceAcceptanceJourney(prepared, reportProgress);
     },
     async writeWorkspaceEvidence(evidence) {
       await writeFile(

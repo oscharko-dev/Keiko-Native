@@ -75,7 +75,10 @@ test("the workspace acceptance command rejects hostile arguments as closed metad
   );
 
   assert.equal(result.status, 2);
-  assert.equal(result.stderr, "");
+  assert.equal(
+    result.stderr,
+    '[KEIKO-WORKSPACE-ACCEPTANCE] {"lastCompleted":null,"lastStarted":null,"status":"rejected"}\n',
+  );
   assert.deepEqual(JSON.parse(result.stdout), {
     reasonCode: "invalid-command",
     schemaVersion: "keiko-native-codex-tracer-workspace-acceptance/v1",
@@ -261,8 +264,9 @@ test("workspace acceptance cleans up and never persists partial evidence", async
         calls.push("prepare");
         return prepared;
       },
-      runWorkspaceJourney() {
+      runWorkspaceJourney(_prepared, reportProgress) {
         calls.push("workspace");
+        reportProgress("started", "workspace:observe-workspace-selected:2");
         throw new Error("private-path-and-content");
       },
       writeWorkspaceEvidence() {
@@ -273,6 +277,11 @@ test("workspace acceptance cleans up and never persists partial evidence", async
 
   assert.deepEqual(calls, ["prepare", "workspace", "cleanup"]);
   assert.deepEqual(result, {
+    diagnostic: {
+      lastCompleted: "prepare",
+      lastStarted: "workspace:observe-workspace-selected:2",
+      status: "rejected",
+    },
     exitCode: 2,
     output: {
       reasonCode: "acceptance-check-failed",
@@ -306,4 +315,59 @@ test("workspace acceptance cleans up and never persists partial evidence", async
   });
   assert.deepEqual(cleanupFailureCalls, ["prepare", "workspace", "cleanup"]);
   assert.equal(cleanupFailure.exitCode, 2);
+  assert.deepEqual(cleanupFailure.diagnostic, {
+    lastCompleted: "workspace-journey",
+    lastStarted: "cleanup:fixture",
+    status: "rejected",
+  });
+
+  const writeFailureCalls = [];
+  const writeFailure = await runCodexTracerWorkspaceAcceptance({
+    args: [],
+    io: {
+      cleanupWorkspacePackage() {
+        writeFailureCalls.push("cleanup");
+      },
+      prepareWorkspacePackage() {
+        return prepared;
+      },
+      runWorkspaceJourney() {
+        return workspace;
+      },
+      writeWorkspaceEvidence() {
+        writeFailureCalls.push("write");
+        throw new Error("write-failed");
+      },
+    },
+  });
+  assert.deepEqual(writeFailureCalls, ["cleanup", "write"]);
+  assert.deepEqual(writeFailure.diagnostic, {
+    lastCompleted: "validate",
+    lastStarted: "write",
+    status: "rejected",
+  });
+});
+
+test("workspace diagnostics reject hostile checkpoints without reflecting them", async () => {
+  const { prepared } = validWorkspaceFixture();
+  const result = await runCodexTracerWorkspaceAcceptance({
+    args: [],
+    io: {
+      cleanupWorkspacePackage() {},
+      prepareWorkspacePackage() {
+        return prepared;
+      },
+      runWorkspaceJourney(_value, reportProgress) {
+        reportProgress("started", "workspace:/Users/private/repository:1");
+      },
+      writeWorkspaceEvidence() {},
+    },
+  });
+
+  assert.deepEqual(result.diagnostic, {
+    lastCompleted: "prepare",
+    lastStarted: "workspace-journey",
+    status: "rejected",
+  });
+  assert.doesNotMatch(JSON.stringify(result), /Users|private|repository/iu);
 });
