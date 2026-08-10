@@ -8003,26 +8003,73 @@ exit 9
 
     #[test]
     fn request_timeout_is_one_end_to_end_initialization_and_cleanup_deadline() {
-        let _process_guard = PROCESS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let request_started = Instant::now();
         let request_timeout = Duration::from_secs(2);
-        let fixture = Fixture::new();
-        let host = fixture.scripted_host(
-            r#"#!/bin/sh
-read -r initialize
-exec /bin/sleep 30
-"#,
+        let request_deadline = request_started + request_timeout;
+        let protocol_started = request_started + Duration::from_millis(500);
+        let protocol_deadline = readiness_protocol_deadline(request_deadline, protocol_started);
+        let cleanup_remaining = request_deadline.duration_since(protocol_deadline);
+        let identity = ProcessIdentity {
+            process_id: 41,
+            started_microseconds: 7,
+            started_seconds: 11,
+        };
+        let result = cleanup_reduce(
+            CleanupState::new(
+                CleanupPhasePolicy::PreserveFinalReconciliation,
+                identity.process_id,
+                request_deadline,
+                Some(readiness_term_grace(cleanup_remaining)),
+            ),
+            CleanupObservation::Begin {
+                observed_at: protocol_deadline,
+            },
         );
-        let started = Instant::now();
-        let result = host.check_with_timeout("request-timeout", None, request_timeout);
-        assert_eq!(result.state, RuntimeReadinessState::TimedOut);
-        assert!(
-            started.elapsed() < request_timeout + request_timeout / 2,
-            "request deadline was multiplied across phases: {:?}",
-            started.elapsed()
+        let (state, command) = expect_cleanup_command(result);
+
+        assert_eq!(READINESS_CLEANUP_RESERVE, Duration::from_millis(300));
+        assert_eq!(READINESS_MAX_TERM_GRACE, Duration::from_millis(100));
+        assert_eq!(cleanup_remaining, READINESS_CLEANUP_RESERVE);
+        assert_eq!(
+            command,
+            CleanupCommand::ObserveActiveIdentity {
+                guard: Some(request_deadline)
+            }
         );
-        assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
+        let controller = match state {
+            CleanupState::Reconciling {
+                controller,
+                continuation: CleanupContinuation::Initial,
+                step: CleanupProofStep::ActiveIdentity,
+                ..
+            } => controller,
+            other => panic!("unexpected initial cleanup state: {other:?}"),
+        };
+        assert_eq!(controller.deadline, request_deadline);
+        assert_eq!(controller.cleanup_started, protocol_deadline);
+        assert_eq!(controller.eof_grace, Duration::from_millis(100));
+        assert_eq!(controller.term_grace, Duration::from_millis(100));
+        assert_eq!(
+            cleanup_reduce(
+                state,
+                CleanupObservation::Slept {
+                    started_at: protocol_deadline,
+                    completed_at: protocol_deadline,
+                },
+            ),
+            CleanupResult::Terminal(CleanupTerminal::Retained),
+            "a typed mismatch must fail closed"
+        );
+        assert_eq!(
+            cleanup_reduce(
+                state,
+                CleanupObservation::DeadlineClosed {
+                    closed_at: request_deadline,
+                },
+            ),
+            CleanupResult::Terminal(CleanupTerminal::Retained),
+            "no guarded primitive may start at the absolute request deadline"
+        );
     }
 
     #[test]
@@ -8362,10 +8409,13 @@ exec /bin/sleep 30
 
     #[test]
     fn cleanup_reducer_golden_trace_allocates_and_orders_every_readiness_phase() {
-        let started_at = Instant::now();
+        let request_started = Instant::now();
+        let request_deadline = request_started + Duration::from_secs(2);
+        let protocol_started = request_started + Duration::from_millis(500);
+        let started_at = readiness_protocol_deadline(request_deadline, protocol_started);
         let eof_deadline = started_at + Duration::from_millis(100);
         let term_deadline = started_at + Duration::from_millis(200);
-        let deadline = started_at + READINESS_CLEANUP_RESERVE;
+        let deadline = request_deadline;
         let identity = ProcessIdentity {
             process_id: 41,
             started_microseconds: 7,
@@ -9497,31 +9547,33 @@ exec /bin/sleep 30
         );
         let retained = active.process_group.lock().ok().and_then(|group| *group);
         let still_running = process_group_exists(process_group);
-        let recovered = stop_process_group(
+        let mut recovered = stop_process_group(
             &mut child,
             process_group,
             &active,
             Instant::now() + Duration::from_secs(1),
         );
-        let fallback_reaped = if recovered {
-            true
-        } else {
-            signal_process_group(process_group, SIGKILL);
-            child.wait().is_ok()
-        };
+        if !recovered {
+            let _ = signal_active_process_group(&active, process_group, SIGKILL);
+            recovered =
+                reconcile_retained_process_group(&active, Instant::now() + Duration::from_secs(5));
+        }
         let group_absent = !process_group_exists(process_group);
+        let direct_child_reaped = child_exited_without_reaping(process_group)
+            .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD));
+        let ownership_retired = active.process_group.lock().ok().and_then(|group| *group);
+        let owned_stopped = authenticated_owned_processes_status(&active);
 
         assert!(published);
         assert!(!cleaned);
         assert!(!late_reconciled);
         assert_eq!(retained, retained_identity);
         assert!(still_running);
-        assert!(
-            recovered,
-            "test-owned fallback must not count as product success"
-        );
-        assert!(fallback_reaped);
+        assert!(recovered, "authenticated test recovery did not complete");
         assert!(group_absent);
+        assert!(direct_child_reaped);
+        assert_eq!(ownership_retired, None);
+        assert_eq!(owned_stopped, Some(true));
     }
 
     #[test]
@@ -9529,6 +9581,9 @@ exec /bin/sleep 30
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let work_directory = fixture.work.join("readiness-cleanup-smoke");
+        fs::create_dir(&work_directory).expect("readiness cleanup work");
         let mut child = Command::new("/bin/sh")
             .arg("-c")
             .arg(
@@ -9558,85 +9613,81 @@ exec /bin/sleep 30
             &active,
             Instant::now() + READINESS_CLEANUP_RESERVE,
         );
+        let work_cleaned = finalize_readiness_work(&active, &work_directory, &outcome);
+        let product_state = if outcome.cleaned && work_cleaned {
+            outcome.state
+        } else {
+            RuntimeReadinessState::CleanupFailed
+        };
         let original_cleaned = outcome.cleaned;
         let product_ownership = active.process_group.lock().ok().and_then(|group| *group);
         let product_group_presence = process_group_presence(process_group);
         let product_owned_stopped = authenticated_owned_processes_status(&active);
         let product_child_reaped = child_exited_without_reaping(process_group)
             .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD));
+        let product_work_exists = work_directory.exists();
+        let product_retained_work = active
+            .retained_work_directories
+            .lock()
+            .ok()
+            .is_some_and(|retained| retained.contains(&work_directory));
 
-        let mut recovered = original_cleaned;
-        if !original_cleaned {
-            recovered =
+        let mut process_recovered = original_cleaned;
+        if !process_recovered {
+            process_recovered =
                 reconcile_retained_process_group(&active, Instant::now() + Duration::from_secs(5));
-            if !recovered {
+            if !process_recovered {
                 let _ = signal_active_process_group(&active, process_group, SIGKILL);
-                recovered = reconcile_retained_process_group(
+                process_recovered = reconcile_retained_process_group(
                     &active,
                     Instant::now() + Duration::from_secs(5),
                 );
             }
         }
-        if process_group_presence(process_group) != ProcessPresenceStatus::Absent
-            && exact_identity.is_some_and(|identity| {
-                retained_process_identity_status(identity) == RetainedProcessIdentityStatus::Current
-            })
-        {
-            signal_process_group(process_group, SIGKILL);
-        }
-
-        let reap_deadline = Instant::now() + Duration::from_secs(5);
-        let mut direct_child_reaped = false;
-        while Instant::now() < reap_deadline {
-            match retained_child_reap_state(process_group) {
-                RetainedChildReapState::ExitedNeedsReap => {
-                    direct_child_reaped = reap_child(process_group);
-                    break;
-                }
-                RetainedChildReapState::AlreadyReaped => {
-                    direct_child_reaped = true;
-                    break;
-                }
-                RetainedChildReapState::Live | RetainedChildReapState::Unavailable => {
-                    thread::yield_now();
-                }
-            }
-        }
-        if active
-            .process_group
-            .lock()
-            .ok()
-            .is_some_and(|group| group.is_some())
-        {
-            recovered =
-                reconcile_retained_process_group(&active, Instant::now() + Duration::from_secs(5));
-        }
+        let work_recovered = reconcile_retained_work_directories(&active);
         let final_ownership = active.process_group.lock().ok().and_then(|group| *group);
         let final_group_presence = process_group_presence(process_group);
         let final_owned_stopped = authenticated_owned_processes_status(&active);
-        let teardown_proven = direct_child_reaped
+        let final_child_reaped = child_exited_without_reaping(process_group)
+            .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD));
+        let final_work_absent = !work_directory.exists()
+            && active
+                .retained_work_directories
+                .lock()
+                .ok()
+                .is_some_and(|retained| retained.is_empty());
+        let teardown_proven = process_recovered
+            && work_recovered
+            && final_child_reaped
             && final_ownership.is_none()
             && final_group_presence == ProcessPresenceStatus::Absent
-            && final_owned_stopped == Some(true);
+            && final_owned_stopped == Some(true)
+            && final_work_absent;
 
-        assert_eq!(outcome.state, RuntimeReadinessState::TimedOut);
         assert!(readiness.is_ok());
         assert_eq!(ready, "ready\n");
         assert!(published);
         assert!(exact_identity.is_some());
-        assert!(
-            (original_cleaned
-                && product_ownership.is_none()
-                && product_group_presence == ProcessPresenceStatus::Absent
-                && product_owned_stopped == Some(true)
-                && product_child_reaped)
-                || (!original_cleaned && product_ownership == exact_identity),
-            "300ms cleanup must report only strict success or exact retained failure"
-        );
-        assert!(
-            recovered || teardown_proven,
-            "test-owned recovery must not count as product success"
-        );
+        match product_state {
+            RuntimeReadinessState::TimedOut => {
+                assert!(original_cleaned);
+                assert!(work_cleaned);
+                assert_eq!(product_ownership, None);
+                assert_eq!(product_group_presence, ProcessPresenceStatus::Absent);
+                assert_eq!(product_owned_stopped, Some(true));
+                assert!(product_child_reaped);
+                assert!(!product_work_exists);
+                assert!(!product_retained_work);
+            }
+            RuntimeReadinessState::CleanupFailed => {
+                assert!(!original_cleaned);
+                assert!(!work_cleaned);
+                assert_eq!(product_ownership, exact_identity);
+                assert!(product_work_exists);
+                assert!(product_retained_work);
+            }
+            state => panic!("unexpected 300ms cleanup result: {state:?}"),
+        }
         assert!(teardown_proven);
     }
 
@@ -9694,28 +9745,17 @@ exec /bin/sleep 30
             teardown_reconciled =
                 reconcile_retained_process_group(&active, Instant::now() + Duration::from_secs(5));
         }
-        if process_group_presence(process_group) != ProcessPresenceStatus::Absent
-            && exact_identity.is_some_and(|identity| {
-                retained_process_identity_status(identity) == RetainedProcessIdentityStatus::Current
-            })
-        {
-            signal_process_group(process_group, SIGKILL);
-            let emergency_deadline = Instant::now() + Duration::from_secs(5);
-            while Instant::now() < emergency_deadline {
-                if child.try_wait().is_ok_and(|status| status.is_some()) {
-                    break;
-                }
-                thread::yield_now();
-            }
-            teardown_reconciled =
-                reconcile_retained_process_group(&active, Instant::now() + Duration::from_secs(5));
-        }
 
         let retained = active.process_group.lock().ok().and_then(|group| *group);
         let owned_stopped = authenticated_owned_processes_status(&active);
         let group_presence = process_group_presence(process_group);
         let direct_child_reaped = child_exited_without_reaping(process_group)
             .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD));
+        let no_retained_work = active
+            .retained_work_directories
+            .lock()
+            .ok()
+            .is_some_and(|retained| retained.is_empty());
         let mut reaped = String::new();
         let reap_marker = if group_presence == ProcessPresenceStatus::Absent
             && direct_child_reaped
@@ -9748,6 +9788,7 @@ exec /bin/sleep 30
         assert_eq!(owned_stopped, Some(true));
         assert_eq!(group_presence, ProcessPresenceStatus::Absent);
         assert!(direct_child_reaped);
+        assert!(no_retained_work);
         assert!(reap_marker.is_ok());
         assert_eq!(reaped, "reaped\n");
     }
