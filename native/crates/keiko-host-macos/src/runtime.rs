@@ -40,6 +40,8 @@ const SIGTERM: i32 = 15;
 const WEXITED: i32 = 0x0000_0004;
 const WNOHANG: i32 = 0x0000_0001;
 const WNOWAIT: i32 = 0x0000_0020;
+const MACOS_ECHILD: i32 = 10;
+const MACOS_ESRCH: i32 = 3;
 #[cfg(not(test))]
 const PT_TRACE_ME: i32 = 0;
 #[cfg(not(test))]
@@ -249,6 +251,20 @@ enum RuntimeCancellation {
 enum RetainedProcessIdentityStatus {
     Current,
     Reused,
+    Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum KnownOwnedProcessStatus {
+    Alive,
+    Stopped,
+    Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProcessPresenceStatus {
+    Present,
+    Absent,
     Unavailable,
 }
 
@@ -1168,7 +1184,7 @@ fn cleanup_turn(
         active,
         cleanup_deadline,
         Some(CANCEL_TERM_GRACE),
-        DescendantReapPolicy::AllowParentReap,
+        CleanupPhasePolicy::AllowParentReap,
     );
     outcome
 }
@@ -2843,7 +2859,7 @@ fn cleanup_after(
         active,
         deadline,
         Some(readiness_term_grace(cleanup_remaining)),
-        DescendantReapPolicy::PreserveFinalReconciliation,
+        CleanupPhasePolicy::PreserveFinalReconciliation,
     );
     ProtocolOutcome {
         state,
@@ -2865,29 +2881,86 @@ fn stop_process_group(
         active,
         deadline,
         None,
-        DescendantReapPolicy::AllowParentReap,
+        CleanupPhasePolicy::AllowParentReap,
     )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DescendantReapPolicy {
+enum CleanupPhasePolicy {
     PreserveFinalReconciliation,
     AllowParentReap,
 }
 
 fn descendant_reap_deadline(
-    policy: DescendantReapPolicy,
+    policy: CleanupPhasePolicy,
     descendant_started: Instant,
     deadline: Instant,
 ) -> Instant {
     match policy {
-        DescendantReapPolicy::PreserveFinalReconciliation => descendant_started,
-        DescendantReapPolicy::AllowParentReap => {
+        CleanupPhasePolicy::PreserveFinalReconciliation => descendant_started,
+        CleanupPhasePolicy::AllowParentReap => {
             let descendant_grace = DESCENDANT_REAP_GRACE
                 .min(deadline.saturating_duration_since(descendant_started) / 2);
             deadline.min(descendant_started + descendant_grace)
         }
     }
+}
+
+fn cleanup_term_deadline(
+    policy: CleanupPhasePolicy,
+    cleanup_started: Instant,
+    observed_after_eof: Instant,
+    deadline: Instant,
+    eof_grace: Duration,
+    term_grace: Duration,
+) -> Instant {
+    match policy {
+        CleanupPhasePolicy::PreserveFinalReconciliation => {
+            deadline.min(cleanup_started + eof_grace + term_grace)
+        }
+        CleanupPhasePolicy::AllowParentReap => deadline.min(observed_after_eof + term_grace),
+    }
+}
+
+fn cleanup_term_grace(
+    policy: CleanupPhasePolicy,
+    requested: Option<Duration>,
+    remaining: Duration,
+) -> Duration {
+    let proportional_grace = remaining / 3;
+    match policy {
+        CleanupPhasePolicy::PreserveFinalReconciliation => requested
+            .unwrap_or(proportional_grace)
+            .min(proportional_grace),
+        CleanupPhasePolicy::AllowParentReap => requested.unwrap_or(proportional_grace),
+    }
+}
+
+fn cleanup_deadline_open(
+    policy: CleanupPhasePolicy,
+    observed_at: Instant,
+    deadline: Instant,
+) -> bool {
+    policy == CleanupPhasePolicy::AllowParentReap || observed_at < deadline
+}
+
+fn reconcile_until(
+    phase_deadline: Instant,
+    cleanup_deadline: Instant,
+    policy: CleanupPhasePolicy,
+    child: &mut Child,
+    process_group: i32,
+    active: &ActiveRuntime,
+) -> bool {
+    while Instant::now() < phase_deadline {
+        if cleanup_deadline_open(policy, Instant::now(), cleanup_deadline)
+            && reconcile_stopped_process_group(child, process_group, active)
+        {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    false
 }
 
 fn stop_process_group_with_term_grace(
@@ -2896,62 +2969,110 @@ fn stop_process_group_with_term_grace(
     active: &ActiveRuntime,
     deadline: Instant,
     term_grace: Option<Duration>,
-    descendant_reap_policy: DescendantReapPolicy,
+    cleanup_phase_policy: CleanupPhasePolicy,
 ) -> bool {
-    if reconcile_stopped_process_group(child, process_group, active) {
+    let cleanup_started = Instant::now();
+    if cleanup_deadline_open(cleanup_phase_policy, Instant::now(), deadline)
+        && reconcile_stopped_process_group(child, process_group, active)
+    {
         return true;
     }
-    let cleanup_started = Instant::now();
     let remaining = deadline.saturating_duration_since(cleanup_started);
-    let grace = term_grace.unwrap_or(remaining / 3);
+    let grace = cleanup_term_grace(cleanup_phase_policy, term_grace, remaining);
     let eof_grace = STDIN_EOF_GRACE.min(remaining / 3);
     let graceful_deadline = deadline.min(cleanup_started + eof_grace);
     // stdin has already been closed by every caller. Give app-server a bounded
     // chance to run its own destructors before TERM/KILL escalation.
-    while Instant::now() < graceful_deadline {
-        if reconcile_stopped_process_group(child, process_group, active) {
-            return true;
-        }
-        thread::sleep(Duration::from_millis(10));
+    if reconcile_until(
+        graceful_deadline,
+        deadline,
+        cleanup_phase_policy,
+        child,
+        process_group,
+        active,
+    ) {
+        return true;
+    }
+    if !cleanup_deadline_open(cleanup_phase_policy, Instant::now(), deadline) {
+        return false;
     }
     signal_active_process_group(active, process_group, SIGTERM);
-    let term_deadline = deadline.min(Instant::now() + grace);
-    while Instant::now() < term_deadline {
-        if reconcile_stopped_process_group(child, process_group, active) {
-            return true;
-        }
-        thread::sleep(Duration::from_millis(10));
+    let term_deadline = cleanup_term_deadline(
+        cleanup_phase_policy,
+        cleanup_started,
+        Instant::now(),
+        deadline,
+        eof_grace,
+        grace,
+    );
+    if reconcile_until(
+        term_deadline,
+        deadline,
+        cleanup_phase_policy,
+        child,
+        process_group,
+        active,
+    ) {
+        return true;
     }
     // Kill authenticated descendants before the group leader so a supervising
     // runtime can reap its own children and exit without leaving transient
     // zombies that outlive this request's cleanup deadline.
     let _ = refresh_owned_processes(active);
-    if signal_active_descendants(active, process_group, SIGKILL) {
+    if !cleanup_deadline_open(cleanup_phase_policy, Instant::now(), deadline) {
+        return false;
+    }
+    let descendants_signalled = signal_active_descendants(active, process_group, SIGKILL);
+    if descendants_signalled {
         let descendant_started = Instant::now();
         let descendant_deadline =
-            descendant_reap_deadline(descendant_reap_policy, descendant_started, deadline);
-        while Instant::now() < descendant_deadline {
-            if reconcile_stopped_process_group(child, process_group, active) {
-                return true;
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-    }
-    signal_active_process_group(active, process_group, SIGKILL);
-    while Instant::now() < deadline {
-        if reconcile_stopped_process_group(child, process_group, active) {
+            descendant_reap_deadline(cleanup_phase_policy, descendant_started, deadline);
+        if reconcile_until(
+            descendant_deadline,
+            deadline,
+            cleanup_phase_policy,
+            child,
+            process_group,
+            active,
+        ) {
             return true;
         }
-        thread::sleep(Duration::from_millis(10));
     }
-    reconcile_stopped_process_group(child, process_group, active)
+    if !cleanup_deadline_open(cleanup_phase_policy, Instant::now(), deadline) {
+        return false;
+    }
+    signal_active_process_group(active, process_group, SIGKILL);
+    if reconcile_until(
+        deadline,
+        deadline,
+        cleanup_phase_policy,
+        child,
+        process_group,
+        active,
+    ) {
+        return true;
+    }
+    cleanup_deadline_open(cleanup_phase_policy, Instant::now(), deadline)
+        && reconcile_stopped_process_group(child, process_group, active)
 }
 
 fn authenticated_owned_processes_stopped(active: &ActiveRuntime) -> bool {
     active.owned_processes.lock().is_ok_and(|mut owned| {
-        owned.retain(|identity| process_identity(identity.process_id) == Some(*identity));
-        owned.is_empty()
+        retain_unstopped_known_owned_processes(&mut owned) && owned.is_empty()
     })
+}
+
+fn retain_unstopped_known_owned_processes(owned: &mut HashSet<ProcessIdentity>) -> bool {
+    let mut observations_available = true;
+    owned.retain(|identity| match known_owned_process_status(*identity) {
+        KnownOwnedProcessStatus::Alive => true,
+        KnownOwnedProcessStatus::Stopped => false,
+        KnownOwnedProcessStatus::Unavailable => {
+            observations_available = false;
+            true
+        }
+    });
+    observations_available
 }
 
 fn reconcile_retained_process_group(active: &ActiveRuntime, deadline: Instant) -> bool {
@@ -2991,21 +3112,48 @@ fn retire_retained_process_group_if_stopped(active: &ActiveRuntime, process_grou
         return true;
     }
     let _ = refresh_owned_processes(active);
-    let owned_alive = active.owned_processes.lock().map_or(true, |mut owned| {
-        owned.retain(|identity| process_identity(identity.process_id) == Some(*identity));
-        !owned.is_empty()
-    });
-    let group_exists = process_group_exists(process_group);
-    let descendants_alive =
-        process_group_has_descendants(process_group, process_group).unwrap_or(group_exists);
-    let child_exited = child_exited_without_reaping(process_group).unwrap_or(!group_exists);
-    if owned_alive || descendants_alive || !child_exited {
+    let owned_alive = !authenticated_owned_processes_stopped(active);
+    let Ok(descendants_alive) = process_group_has_descendants(process_group, process_group) else {
+        return false;
+    };
+    let child_state = retained_child_reap_state(process_group);
+    if owned_alive || descendants_alive {
         return false;
     }
-    if group_exists && !reap_child(process_group) {
+    match child_state {
+        RetainedChildReapState::ExitedNeedsReap if !reap_child(process_group) => return false,
+        RetainedChildReapState::ExitedNeedsReap | RetainedChildReapState::AlreadyReaped => {}
+        RetainedChildReapState::Live | RetainedChildReapState::Unavailable => return false,
+    }
+    if process_group_presence(process_group) != ProcessPresenceStatus::Absent
+        || !authenticated_owned_processes_stopped(active)
+    {
         return false;
     }
     retire_active_process_group(active, active_identity)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RetainedChildReapState {
+    ExitedNeedsReap,
+    AlreadyReaped,
+    Live,
+    Unavailable,
+}
+
+fn retained_child_reap_state(child: i32) -> RetainedChildReapState {
+    classify_retained_child_reap_state(child_exited_without_reaping(child))
+}
+
+fn classify_retained_child_reap_state(observation: io::Result<bool>) -> RetainedChildReapState {
+    match observation {
+        Ok(true) => RetainedChildReapState::ExitedNeedsReap,
+        Ok(false) => RetainedChildReapState::Live,
+        Err(error) if error.raw_os_error() == Some(MACOS_ECHILD) => {
+            RetainedChildReapState::AlreadyReaped
+        }
+        Err(_) => RetainedChildReapState::Unavailable,
+    }
 }
 
 fn reap_child(child: i32) -> bool {
@@ -3124,7 +3272,9 @@ fn reconcile_stopped_process_group(
     if !ready_to_reap(child.id() as i32, process_group, active) || child.wait().is_err() {
         return false;
     }
-    if process_group_exists(process_group) || !authenticated_owned_processes_stopped(active) {
+    if process_group_presence(process_group) != ProcessPresenceStatus::Absent
+        || !authenticated_owned_processes_stopped(active)
+    {
         return false;
     }
     retire_active_process_group(active, active_identity)
@@ -3164,7 +3314,9 @@ fn refresh_owned_processes(active: &ActiveRuntime) -> bool {
     let Ok(mut owned) = active.owned_processes.lock() else {
         return false;
     };
-    owned.retain(|identity| process_identity(identity.process_id) == Some(*identity));
+    if !retain_unstopped_known_owned_processes(&mut owned) {
+        return false;
+    }
     let mut pending = owned.iter().copied().collect::<Vec<_>>();
     let mut parent_processes = vec![leader];
     let mut inspected = HashSet::from([leader]);
@@ -3212,6 +3364,46 @@ fn retained_process_identity_status(identity: ProcessIdentity) -> RetainedProces
             RetainedProcessIdentityStatus::Current
         }
         None => RetainedProcessIdentityStatus::Unavailable,
+    }
+}
+
+fn classify_known_owned_process<F>(
+    identity_status: RetainedProcessIdentityStatus,
+    presence: F,
+) -> KnownOwnedProcessStatus
+where
+    F: FnOnce() -> io::Result<bool>,
+{
+    match identity_status {
+        RetainedProcessIdentityStatus::Current => KnownOwnedProcessStatus::Alive,
+        RetainedProcessIdentityStatus::Reused => KnownOwnedProcessStatus::Stopped,
+        RetainedProcessIdentityStatus::Unavailable => match presence() {
+            Ok(false) => KnownOwnedProcessStatus::Stopped,
+            Ok(true) | Err(_) => KnownOwnedProcessStatus::Unavailable,
+        },
+    }
+}
+
+fn known_owned_process_status(identity: ProcessIdentity) -> KnownOwnedProcessStatus {
+    classify_known_owned_process(retained_process_identity_status(identity), || {
+        process_presence(identity.process_id)
+    })
+}
+
+fn process_presence(process: i32) -> io::Result<bool> {
+    if process <= 0 {
+        return Err(io::Error::other("process presence"));
+    }
+    // SAFETY: signal 0 performs existence/permission checking only for a PID
+    // previously authenticated as part of the owned runtime ancestry.
+    let result = unsafe { keiko_kill(process, 0) };
+    let error = (result != 0).then(io::Error::last_os_error);
+    match classify_process_presence(result, error.as_ref().and_then(io::Error::raw_os_error)) {
+        ProcessPresenceStatus::Present => Ok(true),
+        ProcessPresenceStatus::Absent => Ok(false),
+        ProcessPresenceStatus::Unavailable => {
+            Err(error.unwrap_or_else(|| io::Error::other("process presence")))
+        }
     }
 }
 
@@ -3383,10 +3575,30 @@ fn signal_process(process: i32, signal: i32) {
 }
 
 fn process_group_exists(process_group: i32) -> bool {
+    process_group_presence(process_group) == ProcessPresenceStatus::Present
+}
+
+fn process_group_presence(process_group: i32) -> ProcessPresenceStatus {
     // SAFETY: signal 0 performs existence/permission checking only. The process
     // group ID came directly from the child created by this supervisor.
     let result = unsafe { keiko_kill(-process_group, 0) };
-    result == 0
+    let raw_os_error = (result != 0)
+        .then(io::Error::last_os_error)
+        .and_then(|error| error.raw_os_error());
+    classify_process_presence(result, raw_os_error)
+}
+
+fn classify_process_presence(
+    signal_zero_result: i32,
+    raw_os_error: Option<i32>,
+) -> ProcessPresenceStatus {
+    if signal_zero_result == 0 {
+        ProcessPresenceStatus::Present
+    } else if raw_os_error == Some(MACOS_ESRCH) {
+        ProcessPresenceStatus::Absent
+    } else {
+        ProcessPresenceStatus::Unavailable
+    }
 }
 
 #[cfg(test)]
@@ -4713,6 +4925,52 @@ mod tests {
         assert!(validated_child_count(-1, 512).is_err());
         assert!(validated_child_count(512, 512).is_err());
         assert_eq!(validated_child_count(0, 512).expect("empty child list"), 0);
+    }
+
+    #[test]
+    fn known_owned_process_status_requires_positive_absence_proof() {
+        assert_eq!(
+            classify_known_owned_process(RetainedProcessIdentityStatus::Current, || Ok(false)),
+            KnownOwnedProcessStatus::Alive
+        );
+        assert_eq!(
+            classify_known_owned_process(RetainedProcessIdentityStatus::Reused, || Ok(true)),
+            KnownOwnedProcessStatus::Stopped
+        );
+        assert_eq!(
+            classify_known_owned_process(RetainedProcessIdentityStatus::Unavailable, || Ok(false)),
+            KnownOwnedProcessStatus::Stopped
+        );
+        assert_eq!(
+            classify_known_owned_process(RetainedProcessIdentityStatus::Unavailable, || Ok(true)),
+            KnownOwnedProcessStatus::Unavailable
+        );
+        assert_eq!(
+            classify_known_owned_process(RetainedProcessIdentityStatus::Unavailable, || {
+                Err(io::Error::from_raw_os_error(1))
+            }),
+            KnownOwnedProcessStatus::Unavailable
+        );
+    }
+
+    #[test]
+    fn process_presence_status_requires_exact_esrch_for_absence() {
+        assert_eq!(
+            classify_process_presence(0, None),
+            ProcessPresenceStatus::Present
+        );
+        assert_eq!(
+            classify_process_presence(-1, Some(MACOS_ESRCH)),
+            ProcessPresenceStatus::Absent
+        );
+        assert_eq!(
+            classify_process_presence(-1, Some(1)),
+            ProcessPresenceStatus::Unavailable
+        );
+        assert_eq!(
+            classify_process_presence(-1, None),
+            ProcessPresenceStatus::Unavailable
+        );
     }
 
     #[test]
@@ -6526,7 +6784,7 @@ while :; do /bin/sleep 1; done
 
         assert_eq!(
             descendant_reap_deadline(
-                DescendantReapPolicy::PreserveFinalReconciliation,
+                CleanupPhasePolicy::PreserveFinalReconciliation,
                 descendant_started,
                 deadline,
             ),
@@ -6534,7 +6792,7 @@ while :; do /bin/sleep 1; done
         );
         assert_eq!(
             descendant_reap_deadline(
-                DescendantReapPolicy::AllowParentReap,
+                CleanupPhasePolicy::AllowParentReap,
                 descendant_started,
                 deadline,
             ),
@@ -6542,12 +6800,84 @@ while :; do /bin/sleep 1; done
         );
         assert_eq!(
             descendant_reap_deadline(
-                DescendantReapPolicy::AllowParentReap,
+                CleanupPhasePolicy::AllowParentReap,
                 descendant_started,
                 descendant_started + Duration::from_secs(1),
             ),
             descendant_started + DESCENDANT_REAP_GRACE
         );
+    }
+
+    #[test]
+    fn readiness_term_phase_does_not_drift_after_eof_oversleep() {
+        let cleanup_started = Instant::now();
+        let deadline = cleanup_started + READINESS_CLEANUP_RESERVE;
+        let observed_after_eof = cleanup_started + Duration::from_millis(250);
+
+        assert_eq!(
+            cleanup_term_deadline(
+                CleanupPhasePolicy::PreserveFinalReconciliation,
+                cleanup_started,
+                observed_after_eof,
+                deadline,
+                Duration::from_millis(100),
+                Duration::from_millis(100),
+            ),
+            cleanup_started + Duration::from_millis(200)
+        );
+        assert_eq!(
+            cleanup_term_deadline(
+                CleanupPhasePolicy::AllowParentReap,
+                cleanup_started,
+                observed_after_eof,
+                deadline,
+                Duration::from_millis(100),
+                Duration::from_millis(100),
+            ),
+            deadline
+        );
+    }
+
+    #[test]
+    fn readiness_term_grace_is_clamped_to_the_actual_remaining_budget() {
+        let remaining = Duration::from_millis(90);
+
+        assert_eq!(
+            cleanup_term_grace(
+                CleanupPhasePolicy::PreserveFinalReconciliation,
+                Some(Duration::from_millis(100)),
+                remaining,
+            ),
+            Duration::from_millis(30)
+        );
+        assert_eq!(
+            cleanup_term_grace(
+                CleanupPhasePolicy::AllowParentReap,
+                Some(Duration::from_millis(100)),
+                remaining,
+            ),
+            Duration::from_millis(100)
+        );
+    }
+
+    #[test]
+    fn readiness_cleanup_does_not_escalate_after_its_deadline() {
+        let mut invocations = 0;
+        let expired = Instant::now() - Duration::from_millis(1);
+        let observed_at = Instant::now();
+
+        if cleanup_deadline_open(
+            CleanupPhasePolicy::PreserveFinalReconciliation,
+            observed_at,
+            expired,
+        ) {
+            invocations += 1;
+        }
+        assert_eq!(invocations, 0);
+        if cleanup_deadline_open(CleanupPhasePolicy::AllowParentReap, observed_at, expired) {
+            invocations += 1;
+        }
+        assert_eq!(invocations, 1);
     }
 
     #[test]
@@ -6581,13 +6911,28 @@ while :; do /bin/sleep 1; done
             &active,
             Instant::now() + READINESS_CLEANUP_RESERVE,
         );
+        let original_cleaned = outcome.cleaned;
+        if !original_cleaned {
+            let recovered =
+                reconcile_retained_process_group(&active, Instant::now() + Duration::from_secs(5));
+            if !recovered {
+                let _ = signal_active_process_group(&active, process_group, SIGKILL);
+                let _ = reconcile_retained_process_group(
+                    &active,
+                    Instant::now() + Duration::from_secs(5),
+                );
+            }
+        }
         assert_eq!(outcome.state, RuntimeReadinessState::TimedOut);
-        assert!(outcome.cleaned);
+        assert!(!process_group_exists(process_group));
         assert_eq!(
             *active.process_group.lock().expect("process-group state"),
             None
         );
-        assert!(!process_group_exists(process_group));
+        assert!(
+            original_cleaned,
+            "readiness cleanup exceeded its product deadline"
+        );
     }
 
     #[test]
@@ -6772,6 +7117,76 @@ while :; do /bin/sleep 1; done
     }
 
     #[test]
+    fn retained_ownership_reaps_an_exited_direct_child_after_handle_drop() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("printf 'ready\\n'; read -r line")
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("unreaped retained reconciliation process");
+        let process_group = child.id() as i32;
+        let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+        let mut ready = String::new();
+        stdout.read_line(&mut ready).expect("readiness handshake");
+        assert_eq!(ready, "ready\n");
+
+        let active = ActiveRuntime::default();
+        assert!(publish_active_process_group(&active, process_group));
+        drop(child.stdin.take());
+        let exit_deadline = Instant::now() + Duration::from_secs(1);
+        while !child_exited_without_reaping(process_group).expect("direct-child exit state") {
+            assert!(Instant::now() < exit_deadline, "direct child did not exit");
+            thread::yield_now();
+        }
+        assert!(!process_group_exists(process_group));
+        drop(child);
+
+        let reconciled =
+            reconcile_retained_process_group(&active, Instant::now() + Duration::from_secs(1));
+        let reap_observation = child_exited_without_reaping(process_group);
+        if reap_observation.as_ref().is_ok_and(|exited| *exited) {
+            let _ = reap_child(process_group);
+        }
+
+        assert!(reconciled);
+        assert_eq!(
+            reap_observation
+                .expect_err("retained recovery must reap the direct child")
+                .raw_os_error(),
+            Some(MACOS_ECHILD)
+        );
+        assert_eq!(
+            *active.process_group.lock().expect("process-group state"),
+            None
+        );
+    }
+
+    #[test]
+    fn retained_child_reap_state_distinguishes_every_wait_observation() {
+        assert_eq!(
+            classify_retained_child_reap_state(Ok(true)),
+            RetainedChildReapState::ExitedNeedsReap
+        );
+        assert_eq!(
+            classify_retained_child_reap_state(Ok(false)),
+            RetainedChildReapState::Live
+        );
+        assert_eq!(
+            classify_retained_child_reap_state(Err(io::Error::from_raw_os_error(MACOS_ECHILD))),
+            RetainedChildReapState::AlreadyReaped
+        );
+        assert_eq!(
+            classify_retained_child_reap_state(Err(io::Error::other("wait unavailable"))),
+            RetainedChildReapState::Unavailable
+        );
+    }
+
+    #[test]
     fn already_expired_deadline_never_creates_runtime_work() {
         let fixture = Fixture::new();
         let host = fixture.scripted_host("#!/bin/sh\nexit 0\n");
@@ -6888,7 +7303,7 @@ while :; do /bin/sleep 1; done
             &active,
             Instant::now() + Duration::from_secs(1),
             Some(Duration::from_millis(200)),
-            DescendantReapPolicy::AllowParentReap,
+            CleanupPhasePolicy::AllowParentReap,
         ));
         assert!(!term_marker.exists());
         assert!(!process_group_exists(process_group));
@@ -6925,7 +7340,7 @@ while :; do /bin/sleep 1; done
             &active,
             Instant::now() + Duration::from_secs(1),
             Some(Duration::from_millis(20)),
-            DescendantReapPolicy::AllowParentReap,
+            CleanupPhasePolicy::AllowParentReap,
         ));
         assert_eq!(
             fs::read_to_string(term_marker).expect("TERM marker"),
