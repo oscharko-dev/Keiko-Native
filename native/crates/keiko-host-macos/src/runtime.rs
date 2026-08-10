@@ -6750,7 +6750,7 @@ exit 9
         let host = fixture.scripted_host(
             r#"#!/bin/sh
 read -r initialize
-while :; do /bin/sleep 1; done
+exec /bin/sleep 30
 "#,
         );
         let started = Instant::now();
@@ -6928,6 +6928,14 @@ while :; do /bin/sleep 1; done
             Some(Duration::ZERO),
             CleanupPhasePolicy::PreserveFinalReconciliation,
         );
+        let late_reconciled = reconcile_until(
+            Instant::now() + Duration::from_millis(20),
+            Instant::now() - Duration::from_millis(1),
+            CleanupPhasePolicy::PreserveFinalReconciliation,
+            &mut child,
+            process_group,
+            &active,
+        );
         let retained = active.process_group.lock().ok().and_then(|group| *group);
         let still_running = process_group_exists(process_group);
         let recovered = stop_process_group(
@@ -6946,9 +6954,13 @@ while :; do /bin/sleep 1; done
 
         assert!(published);
         assert!(!cleaned);
+        assert!(!late_reconciled);
         assert_eq!(retained, retained_identity);
         assert!(still_running);
-        assert!(recovered, "test-owned fallback must not count as product success");
+        assert!(
+            recovered,
+            "test-owned fallback must not count as product success"
+        );
         assert!(fallback_reaped);
         assert!(group_absent);
     }
