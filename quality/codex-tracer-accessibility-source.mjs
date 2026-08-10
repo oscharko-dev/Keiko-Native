@@ -5,7 +5,6 @@ export const tracerAccessibilityActions = Object.freeze([
   "open-workspace-picker",
   "select-workspace",
   "cancel-workspace-picker",
-  "observe-workspace-selected",
   "observe-workspace-cancelled",
   "observe-workspace-permission-denied",
   "check-runtime",
@@ -785,101 +784,6 @@ static BOOL PressEither(
   return Press(application, first) || Press(application, second);
 }
 
-static BOOL StringAttributeHasPrefix(
-    AXUIElementRef element, CFStringRef attribute, CFStringRef prefix) {
-  CFTypeRef value = NULL;
-  AXError error = AXUIElementCopyAttributeValue(element, attribute, &value);
-  BOOL matches = NO;
-  if (error == kAXErrorSuccess && value != NULL &&
-      CFGetTypeID(value) == CFStringGetTypeID()) {
-    CFStringRef string = (CFStringRef)value;
-    CFRange range = CFRangeMake(0, CFStringGetLength(prefix));
-    matches = CFStringGetLength(string) >= CFStringGetLength(prefix) &&
-        CFStringCompareWithOptions(string, prefix, range, 0) ==
-            kCFCompareEqualTo;
-  }
-  if (value != NULL) CFRelease(value);
-  return matches;
-}
-
-static BOOL ElementHasPrefix(AXUIElementRef element, CFStringRef prefix) {
-  const CFStringRef attributes[] = {
-    kAXTitleAttribute,
-    kAXDescriptionAttribute,
-    kAXValueAttribute,
-  };
-  for (NSUInteger index = 0;
-       index < sizeof(attributes) / sizeof(attributes[0]);
-       index += 1) {
-    if (StringAttributeHasPrefix(element, attributes[index], prefix)) return YES;
-  }
-  return NO;
-}
-
-static void CollectPrefixMatches(
-    AXUIElementRef root,
-    CFStringRef prefix,
-    NSUInteger depth,
-    CFMutableArrayRef matches,
-    NSUInteger *visited) {
-  if (depth > kMaximumDepth || *visited >= kMaximumElements ||
-      CFArrayGetCount(matches) > 1)
-    return;
-  *visited += 1;
-  if (ElementHasPrefix(root, prefix) &&
-      !CFArrayContainsValue(
-          matches, CFRangeMake(0, CFArrayGetCount(matches)), root))
-    CFArrayAppendValue(matches, root);
-  const CFStringRef rootContainers[] = {kAXWindowsAttribute};
-  const CFStringRef childContainers[] = {
-    kAXChildrenAttribute,
-    kAXRowsAttribute,
-    kAXColumnsAttribute,
-    kAXVisibleChildrenAttribute,
-    kAXContentsAttribute,
-  };
-  const CFStringRef *containers =
-      depth == 0 ? rootContainers : childContainers;
-  NSUInteger containerCount = depth == 0 ? 1 : 5;
-  for (NSUInteger containerIndex = 0;
-       containerIndex < containerCount;
-       containerIndex += 1) {
-    BOOL traversedChildren = NO;
-    CFTypeRef value = NULL;
-    if (AXUIElementCopyAttributeValue(
-            root, containers[containerIndex], &value) != kAXErrorSuccess ||
-        value == NULL)
-      continue;
-    if (CFGetTypeID(value) == CFArrayGetTypeID()) {
-      CFArrayRef children = (CFArrayRef)value;
-      CFIndex count = MIN(CFArrayGetCount(children), 512);
-      traversedChildren = count > 0;
-      for (CFIndex index = 0; index < count; index += 1) {
-        CollectPrefixMatches(
-            (AXUIElementRef)CFArrayGetValueAtIndex(children, index),
-            prefix,
-            depth + 1,
-            matches,
-            visited);
-        if (CFArrayGetCount(matches) > 1) break;
-      }
-    }
-    CFRelease(value);
-    if (traversedChildren || CFArrayGetCount(matches) > 1) break;
-  }
-}
-
-static BOOL HasUniquePrefix(
-    AXUIElementRef application, CFStringRef prefix) {
-  CFMutableArrayRef matches =
-      CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
-  NSUInteger visited = 0;
-  CollectPrefixMatches(application, prefix, 0, matches, &visited);
-  BOOL result = CFArrayGetCount(matches) == 1;
-  CFRelease(matches);
-  return result;
-}
-
 static BOOL SetValue(
     AXUIElementRef application, CFStringRef expected, CFStringRef value) {
   AXUIElementRef element = FindUnique(application, expected);
@@ -1168,9 +1072,6 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
         projectionStartedAt = MonotonicSeconds();
         passed = PressEither(application, CFSTR("Cancel"), CFSTR("Abbrechen"));
       }
-    } else if ([action isEqualToString:@"observe-workspace-selected"]) {
-      passed = HasUniquePrefix(
-          application, CFSTR("Ausgewählt: KeikoAcceptanceIdentity104"));
     } else if ([action isEqualToString:@"observe-workspace-cancelled"]) {
       passed = HasUnique(
           application,

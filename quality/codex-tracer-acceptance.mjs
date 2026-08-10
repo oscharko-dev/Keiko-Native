@@ -16,7 +16,7 @@ export const acceptanceIdentityContract = Object.freeze({
   issueReadinessFingerprint:
     "1a0be864b3855b81c649c5843e936828ebaeb27477463ccf0af86f9da61d3391",
   parentReadinessFingerprint:
-    "261b5711a21e76f79987d955960a7c7fbf46561c8ff34188ed38f54eec19d7b5",
+    "636838fca50c74fc4e9b7342a678a7c53a87435607a42003057e1e1b2c78b679",
   promptSha256:
     "e1a92579b1ca673135331829beb97792c1289a6bccdfe0303302256c546960f6",
   runtimeArtifactSha256:

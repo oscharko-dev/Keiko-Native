@@ -19,7 +19,6 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
     "open-workspace-picker",
     "select-workspace",
     "cancel-workspace-picker",
-    "observe-workspace-selected",
     "observe-workspace-cancelled",
     "observe-workspace-permission-denied",
     "check-runtime",
@@ -57,7 +56,6 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
     [
       "probe-start",
       "probe-canvas",
-      "observe-workspace-selected",
       "observe-workspace-cancelled",
       "observe-workspace-permission-denied",
       "observe-runtime-ready",
@@ -262,6 +260,18 @@ test("successful workspace projection rejects a stale accepted-prefix sibling", 
     /exactWorkspaceProjection != nil[\s\S]*?HasUnique\([\s\S]*?exactWorkspaceProjection/u,
   );
   assert.doesNotMatch(selectedProjection ?? "", /HasUniquePrefix/u);
+});
+
+test("the obsolete standalone selected-workspace probe is closed", () => {
+  assert.equal(
+    tracerAccessibilityActions.includes("observe-workspace-selected"),
+    false,
+  );
+  assert.doesNotMatch(
+    tracerAccessibilitySource,
+    /else if \(\[action isEqualToString:@"observe-workspace-selected"\]\)/u,
+  );
+  assert.doesNotMatch(tracerAccessibilitySource, /HasUniquePrefix/u);
 });
 
 const macArm64Test =

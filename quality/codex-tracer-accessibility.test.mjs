@@ -190,6 +190,7 @@ test("the action boundary accepts only the frozen task and bounded workspace ide
       observation: "observe-workspace-selected",
       pid: 1,
     },
+    { action: "observe-workspace-selected", input: undefined, pid: 1 },
     { action: "set-task", input: "", pid: 1 },
     { action: "set-task", input: "x".repeat(4_097), pid: 1 },
     { action: "set-task", input: "bounded", pid: 1 },

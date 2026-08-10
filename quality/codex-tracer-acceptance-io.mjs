@@ -1295,7 +1295,7 @@ export function createCodexTracerAcceptanceIo() {
             packageExecutableSha256: inspected.executableSha256,
             packageManifestSha256: inspected.packageManifestSha256,
             parentReadinessFingerprint:
-              "261b5711a21e76f79987d955960a7c7fbf46561c8ff34188ed38f54eec19d7b5",
+              "636838fca50c74fc4e9b7342a678a7c53a87435607a42003057e1e1b2c78b679",
             promptSha256: acceptedEnvironment.promptSha256,
             runtimeArtifactSha256: acceptedEnvironment.runtimeSha256,
             runtimePackage: "@openai/codex",

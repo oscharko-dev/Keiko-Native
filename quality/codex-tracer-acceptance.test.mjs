@@ -167,7 +167,7 @@ test("identity evidence is closed and binds the exact accepted composition", () 
   );
   assert.equal(
     acceptanceIdentityContract.parentReadinessFingerprint,
-    "261b5711a21e76f79987d955960a7c7fbf46561c8ff34188ed38f54eec19d7b5",
+    "636838fca50c74fc4e9b7342a678a7c53a87435607a42003057e1e1b2c78b679",
   );
 
   for (const key of Object.keys(bindings)) {
