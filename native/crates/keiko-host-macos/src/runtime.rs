@@ -4397,15 +4397,49 @@ mod tests {
         }
         let _ = child.kill();
         let reaped = bounded_owned_child_exit(child);
-        let retired =
-            stored_identity.is_none_or(|identity| retire_active_process_group(active, identity));
-        let group_absent = !process_group_exists(process_group);
+        let initially_absent =
+            reaped && process_group_presence(process_group) == ProcessPresenceStatus::Absent;
+        let recovered = initially_absent
+            || stored_identity.is_some_and(|identity| {
+                retained_process_identity_status(identity) == RetainedProcessIdentityStatus::Current
+                    && stop_process_group(
+                        child,
+                        process_group,
+                        active,
+                        Instant::now() + Duration::from_secs(5),
+                    )
+            });
+        let group_absent = process_group_presence(process_group) == ProcessPresenceStatus::Absent;
+        let retired = recovered
+            && group_absent
+            && stored_identity.is_none_or(|identity| {
+                active
+                    .process_group
+                    .lock()
+                    .ok()
+                    .and_then(|group| *group)
+                    .is_none()
+                    || retire_active_process_group(active, identity)
+            });
         let ownership_absent = active
             .process_group
             .lock()
             .is_ok_and(|group| group.is_none());
-        assert!(reaped && retired && group_absent && ownership_absent);
-        panic!("fixture process-group publication was not current");
+        if !(reaped && recovered && group_absent && retired && ownership_absent)
+            && stored_identity.is_some_and(|identity| {
+                active.process_group.lock().ok().and_then(|group| *group) == Some(identity)
+                    && retained_process_identity_status(identity)
+                        == RetainedProcessIdentityStatus::Current
+            })
+        {
+            let _ = stop_process_group(
+                child,
+                process_group,
+                active,
+                Instant::now() + Duration::from_secs(5),
+            );
+        }
+        None
     }
 
     #[test]
@@ -9550,18 +9584,27 @@ exit 9
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut child = Command::new("/bin/sh")
             .arg("-c")
-            .arg("read -r release; exec /bin/sleep 30")
+            .arg("read -r release || exit 0; exec /bin/sleep 30")
             .process_group(0)
             .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
             .spawn()
             .expect("expired readiness cleanup process");
         let process_group = child.id() as i32;
+        let (stdout_sender, stdout_receiver) = mpsc::sync_channel(1);
+        let stdout_available = child.stdout.take().is_some_and(|stdout| {
+            spawn_stdout_reader(stdout, stdout_sender, Arc::new(AtomicUsize::new(0)));
+            true
+        });
         let active = ActiveRuntime::default();
         let retained_identity = publish_blocked_fixture(&mut child, process_group, &active);
         let release = child
             .stdin
             .as_mut()
             .is_some_and(|stdin| writeln!(stdin, "release").is_ok());
+        let readiness_timeout = (release && stdout_available)
+            .then(|| stdout_receiver.recv_timeout(Duration::from_millis(10)));
+        drop(child.stdin.take());
 
         let cleaned = stop_process_group_with_term_grace(
             &mut child,
@@ -9599,6 +9642,10 @@ exit 9
         let owned_stopped = authenticated_owned_processes_status(&active);
 
         assert!(release);
+        assert!(matches!(
+            readiness_timeout,
+            Some(Err(RecvTimeoutError::Timeout))
+        ));
         assert!(!cleaned);
         assert!(!late_reconciled);
         assert_eq!(retained, retained_identity);
@@ -9617,10 +9664,11 @@ exit 9
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let fixture = Fixture::new();
         let work_directory = fixture.work.join("readiness-cleanup-smoke");
+        fs::create_dir(&work_directory).expect("readiness cleanup work");
         let mut child = Command::new("/bin/sh")
             .arg("-c")
             .arg(
-                "trap '' TERM; read -r release; /bin/sh -c \"trap '' TERM; printf 'ready\\n'; while :; do read -r line; done\" <&0 & wait; printf 'reaped\\n'",
+                "trap '' TERM; read -r release || exit 0; /bin/sh -c \"trap '' TERM; printf 'ready\\n'; while read -r line; do :; done\" <&0 & wait; printf 'reaped\\n'",
             )
             .process_group(0)
             .stdin(Stdio::piped())
@@ -9628,24 +9676,26 @@ exit 9
             .spawn()
             .expect("TERM-resistant readiness process");
         let process_group = child.id() as i32;
-        let mut stdout = child.stdout.take().map(BufReader::new);
+        let (stdout_sender, stdout_receiver) = mpsc::sync_channel(2);
+        let stdout_available = child.stdout.take().is_some_and(|stdout| {
+            spawn_stdout_reader(stdout, stdout_sender, Arc::new(AtomicUsize::new(0)));
+            true
+        });
         let active = ActiveRuntime::default();
         let exact_identity = publish_blocked_fixture(&mut child, process_group, &active);
         let published = exact_identity.is_some();
-        fs::create_dir(&work_directory).expect("readiness cleanup work");
         let release = child
             .stdin
             .as_mut()
             .is_some_and(|stdin| writeln!(stdin, "release").is_ok());
-        let mut ready = String::new();
-        let readiness = release
-            .then(|| {
-                stdout
-                    .as_mut()
-                    .ok_or_else(|| io::Error::other("child stdout"))
-                    .and_then(|stdout| stdout.read_line(&mut ready))
-            })
-            .unwrap_or_else(|| Err(io::Error::other("release handshake")));
+        let readiness = (release && stdout_available)
+            .then(|| stdout_receiver.recv_timeout(Duration::from_secs(1)));
+        let ready = readiness.as_ref().is_some_and(
+            |event| matches!(event, Ok(FrameEvent::Frame(frame)) if frame == b"ready"),
+        );
+        if !ready {
+            drop(child.stdin.take());
+        }
         let outcome = cleanup_after(
             child,
             process_group,
@@ -9705,8 +9755,7 @@ exit 9
             && final_owned_stopped == Some(true)
             && final_work_absent;
 
-        assert!(readiness.is_ok());
-        assert_eq!(ready, "ready\n");
+        assert!(ready);
         assert!(published);
         assert!(exact_identity.is_some());
         match product_state {
@@ -9740,7 +9789,7 @@ exit 9
         let mut child = Command::new("/bin/sh")
             .arg("-c")
             .arg(
-                "trap '' TERM; read -r release; /bin/sh -c \"trap '' TERM; printf 'ready\\n'; while :; do read -r line; done\" <&0 & wait; printf 'reaped\\n'",
+                "trap '' TERM; read -r release || exit 0; /bin/sh -c \"trap '' TERM; printf 'ready\\n'; while read -r line; do :; done\" <&0 & wait; printf 'reaped\\n'",
             )
             .process_group(0)
             .stdin(Stdio::piped())
@@ -9748,7 +9797,11 @@ exit 9
             .spawn()
             .expect("TERM-resistant parent and descendant");
         let process_group = child.id() as i32;
-        let mut stdout = child.stdout.take().map(BufReader::new);
+        let (stdout_sender, stdout_receiver) = mpsc::sync_channel(2);
+        let stdout_available = child.stdout.take().is_some_and(|stdout| {
+            spawn_stdout_reader(stdout, stdout_sender, Arc::new(AtomicUsize::new(0)));
+            true
+        });
         let active = ActiveRuntime::default();
         let exact_identity = publish_blocked_fixture(&mut child, process_group, &active);
         let published = exact_identity.is_some();
@@ -9756,15 +9809,14 @@ exit 9
             .stdin
             .as_mut()
             .is_some_and(|stdin| writeln!(stdin, "release").is_ok());
-        let mut ready = String::new();
-        let readiness = release
-            .then(|| {
-                stdout
-                    .as_mut()
-                    .ok_or_else(|| io::Error::other("child stdout"))
-                    .and_then(|stdout| stdout.read_line(&mut ready))
-            })
-            .unwrap_or_else(|| Err(io::Error::other("release handshake")));
+        let readiness = (release && stdout_available)
+            .then(|| stdout_receiver.recv_timeout(Duration::from_secs(1)));
+        let ready = readiness.as_ref().is_some_and(
+            |event| matches!(event, Ok(FrameEvent::Frame(frame)) if frame == b"ready"),
+        );
+        if !ready {
+            drop(child.stdin.take());
+        }
         let refreshed = refresh_owned_processes(&active);
         let term_signalled = signal_active_process_group(&active, process_group, SIGTERM);
         let group_survived_term = process_group_exists(process_group);
@@ -9804,22 +9856,17 @@ exit 9
             .lock()
             .ok()
             .is_some_and(|retained| retained.is_empty());
-        let mut reaped = String::new();
         let reap_marker = if group_presence == ProcessPresenceStatus::Absent
             && direct_child_reaped
             && owned_stopped == Some(true)
         {
-            stdout
-                .as_mut()
-                .ok_or_else(|| io::Error::other("child stdout"))
-                .and_then(|stdout| stdout.read_line(&mut reaped))
+            stdout_receiver.recv_timeout(Duration::from_secs(1))
         } else {
-            Err(io::Error::other("fixture teardown was not proven"))
+            Err(RecvTimeoutError::Disconnected)
         };
 
         assert!(release);
-        assert!(readiness.is_ok());
-        assert_eq!(ready, "ready\n");
+        assert!(ready);
         assert!(published);
         assert!(refreshed);
         assert!(term_signalled);
@@ -9837,8 +9884,10 @@ exit 9
         assert_eq!(group_presence, ProcessPresenceStatus::Absent);
         assert!(direct_child_reaped);
         assert!(no_retained_work);
-        assert!(reap_marker.is_ok());
-        assert_eq!(reaped, "reaped\n");
+        assert!(matches!(
+            reap_marker,
+            Ok(FrameEvent::Frame(frame)) if frame == b"reaped"
+        ));
     }
 
     #[test]
@@ -10166,7 +10215,7 @@ exit 9
         let descendant_marker = fixture.work.join("descendant-released");
         let mut child = Command::new("/bin/sh")
             .arg("-c")
-            .arg("read -r release; printf released > \"$DESCENDANT_MARKER\"; /bin/sleep 30 & wait")
+            .arg("read -r release || exit 0; printf released > \"$DESCENDANT_MARKER\"")
             .env("DESCENDANT_MARKER", &descendant_marker)
             .process_group(0)
             .stdin(Stdio::piped())
@@ -10183,8 +10232,10 @@ exit 9
             panic!("make readiness publication unavailable");
         }));
         let published = publish_active_process_group(&active, process_group);
+        drop(child.stdin.take());
+        let eof_reaped = bounded_owned_child_exit(&mut child);
         let _ = child.kill();
-        let reaped = bounded_owned_child_exit(&mut child);
+        let reaped = eof_reaped || bounded_owned_child_exit(&mut child);
         let group_absent = !process_group_exists(process_group);
         drop(clear_poison);
         let ownership_absent = active
@@ -10202,6 +10253,7 @@ exit 9
                 .is_ok_and(|retained| retained.is_empty());
 
         assert!(!published);
+        assert!(eof_reaped);
         assert!(reaped);
         assert!(group_absent);
         assert!(ownership_absent && owned_absent);
