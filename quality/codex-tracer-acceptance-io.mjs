@@ -1198,6 +1198,12 @@ export async function inspectReferenceEnvironment(runCommand = run) {
   return environment;
 }
 
+export function assertStableReferenceEnvironment(before, after) {
+  if (JSON.stringify(before) !== JSON.stringify(after))
+    throw new Error("acceptance-reference-environment-changed");
+  return before;
+}
+
 function normalizedReferenceEnvironment([
   hardware,
   version,
@@ -1374,12 +1380,12 @@ export function createCodexTracerAcceptanceIo() {
         ),
         "utf8",
       );
+      const referenceEnvironmentBefore = await inspectReferenceEnvironment();
       const firstVisibleKeikoOverheadP95Ms = await measureFirstVisibleP95(
         prepared.internal,
         adapter.binary,
         cleanupDependencies,
       );
-      const referenceEnvironment = await inspectReferenceEnvironment();
       const nativePickerCancellation =
         await measureNativePickerCancellationDistribution(
           prepared.internal,
@@ -1440,6 +1446,10 @@ export function createCodexTracerAcceptanceIo() {
           snapshotDirectory(prepared.internal.runtimeWorkRoot),
           snapshotDirectory(prepared.internal.workspaceRoot),
         ]);
+        const referenceEnvironment = assertStableReferenceEnvironment(
+          referenceEnvironmentBefore,
+          await inspectReferenceEnvironment(),
+        );
         const physicalObservation = JSON.parse(
           await readFile(physicalObservationPath, "utf8"),
         );

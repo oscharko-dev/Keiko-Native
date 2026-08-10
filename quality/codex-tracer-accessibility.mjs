@@ -18,6 +18,7 @@ const reasonCodes = new Set([
 ]);
 const acceptedPromptSha256 =
   "e1a92579b1ca673135331829beb97792c1289a6bccdfe0303302256c546960f6";
+const successfulWorkspaceInvocationTimeoutMs = 15_000;
 const projectionPairs = new Set([
   "cancel-turn\0observe-stopping",
   "cancel-workspace-picker\0observe-workspace-cancelled",
@@ -272,8 +273,8 @@ export async function runPackagedTracerJourney({
     timings.push({ action, elapsedMs: result.elapsedMs });
     return result;
   };
-  const project = async (action, observation, input) => {
-    const projected = await step(action, input, 5_000, observation);
+  const project = async (action, observation, input, timeoutMs = 5_000) => {
+    const projected = await step(action, input, timeoutMs, observation);
     const elapsedMs = projected.projectedMs;
     if (
       !Number.isSafeInteger(elapsedMs) ||
@@ -285,8 +286,13 @@ export async function runPackagedTracerJourney({
     timings.push({ action: observation, elapsedMs });
     return projected;
   };
-  const recordLocalProjection = async (action, observation, input) => {
-    const projected = await project(action, observation, input);
+  const recordLocalProjection = async (
+    action,
+    observation,
+    input,
+    timeoutMs = 5_000,
+  ) => {
+    const projected = await project(action, observation, input, timeoutMs);
     localProjectionMeasurements.push({
       action,
       observation,
@@ -315,6 +321,7 @@ export async function runPackagedTracerJourney({
     "select-workspace",
     "observe-workspace-selected",
     workspaceLabel,
+    successfulWorkspaceInvocationTimeoutMs,
   );
   if (
     !Number.isSafeInteger(workspaceSelection.nativeActionMs) ||

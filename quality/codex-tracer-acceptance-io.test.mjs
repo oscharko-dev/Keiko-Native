@@ -9,6 +9,7 @@ import test from "node:test";
 import {
   acceptanceProcessEnvironment,
   acceptanceEnvironmentFailures,
+  assertStableReferenceEnvironment,
   canonicalRuntimeRoot,
   canonicalRuntimeResources,
   cleanupAcceptanceFixture,
@@ -351,6 +352,33 @@ test("reference Mac inspection rejects malformed or changed platform output", as
     inspectReferenceEnvironment(async () => "unexpected"),
     /acceptance-reference-environment-invalid/u,
   );
+});
+
+test("reference Mac evidence fails closed when conditions change during measurement", () => {
+  const reference = {
+    display: "built-in-main-3024x1964-120hz",
+    hardware: "apple-m4-16-gib-mac16-1",
+    operatingSystem: "macos-26.5.1-25f80",
+    power: "ac-power-standard",
+    referenceClass: "owner-m4-16gib-macos26",
+    scaling: "logical-1512x982-2x-default",
+    thermal: "nominal",
+  };
+
+  assert.deepEqual(
+    assertStableReferenceEnvironment(reference, structuredClone(reference)),
+    reference,
+  );
+  for (const changed of [
+    { ...reference, power: null },
+    { ...reference, thermal: null },
+    { ...reference, scaling: null },
+  ]) {
+    assert.throws(
+      () => assertStableReferenceEnvironment(reference, changed),
+      /acceptance-reference-environment-changed/u,
+    );
+  }
 });
 
 test("a launched app is rejected when ownership authentication fails", async () => {

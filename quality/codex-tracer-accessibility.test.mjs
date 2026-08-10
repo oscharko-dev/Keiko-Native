@@ -370,6 +370,7 @@ test("the packaged journey drives the fixed sequence and excludes observer start
         action: request.action,
         input: request.input,
         observation: request.observation,
+        timeoutMs: request.timeoutMs,
       });
       const elapsedMs =
         request.action === "probe-start"
@@ -460,6 +461,24 @@ test("the packaged journey drives the fixed sequence and excludes observer start
       "select-workspace->observe-workspace-selected",
       "cancel-turn->observe-stopping",
     ],
+  );
+  assert.equal(
+    calls.find(
+      ({ action, observation }) =>
+        action === "select-workspace" &&
+        observation === "observe-workspace-selected",
+    ).timeoutMs,
+    15_000,
+  );
+  assert.ok(
+    calls
+      .filter(
+        ({ action, observation }) =>
+          observation !== undefined &&
+          (action !== "select-workspace" ||
+            observation !== "observe-workspace-selected"),
+      )
+      .every(({ timeoutMs }) => timeoutMs === 5_000),
   );
   assert.equal(result.nativePickerCancellationProjectionMs, 500);
   assert.deepEqual(result.localProjectionMeasurements, [

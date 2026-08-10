@@ -274,6 +274,13 @@ test("the obsolete standalone selected-workspace probe is closed", () => {
   assert.doesNotMatch(tracerAccessibilitySource, /HasUniquePrefix/u);
 });
 
+test("a supplied invalid UTF-8 observation fails closed", () => {
+  assert.match(
+    tracerAccessibilitySource,
+    /NSString \*observation =[\s\S]*?argc == 4 && observation == nil/u,
+  );
+});
+
 const macArm64Test =
   process.platform === "darwin" && process.arch === "arm64"
     ? test

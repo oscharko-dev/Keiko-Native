@@ -971,7 +971,8 @@ ${tracerAccessibilityActions.map((action) => `      @"${action}",`).join("\n")}
     NSSet<NSString *> *activatingActions = [NSSet setWithArray:@[
 ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).join("\n")}
     ]];
-    if (pid < 1 || action == nil || ![allowed containsObject:action] ||
+    if (pid < 1 || action == nil || (argc == 4 && observation == nil) ||
+        ![allowed containsObject:action] ||
         !ProjectionPairIsAllowed(action, observation)) {
       Emit(NO, "invalid-invocation");
       return 2;
