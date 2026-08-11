@@ -4381,6 +4381,45 @@ mod tests {
 
     struct AuthenticatedDirectChild(ProcessIdentity);
 
+    enum DirectChildFinalization {
+        Settled,
+        StillDirectlyOwned(AuthenticatedDirectChild),
+        OwnershipLostOrUnavailable,
+    }
+
+    const DIRECT_CHILD_TERMINAL_INTERRUPTS: usize = 16;
+    const TEST_MACOS_EINTR: i32 = 4;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum DirectChildState {
+        Waiting(bool),
+        Reaping,
+        Verifying,
+        Settled,
+        Lost,
+    }
+
+    fn reduce_direct_child(
+        state: DirectChildState,
+        result: io::Result<bool>,
+        group: ProcessPresenceStatus,
+    ) -> DirectChildState {
+        use DirectChildState as State;
+        match (state, result) {
+            (state, Err(error)) if error.raw_os_error() == Some(TEST_MACOS_EINTR) => state,
+            (State::Waiting(_), Ok(false)) => State::Waiting(true),
+            (State::Waiting(_), Ok(true)) => State::Reaping,
+            (State::Reaping, Ok(true)) => State::Verifying,
+            (State::Waiting(_) | State::Verifying, Err(error))
+                if error.raw_os_error() == Some(MACOS_ECHILD)
+                    && group == ProcessPresenceStatus::Absent =>
+            {
+                State::Settled
+            }
+            _ => State::Lost,
+        }
+    }
+
     fn authenticated_direct_child(
         child: &Child,
         process_group: i32,
@@ -4392,22 +4431,98 @@ mod tests {
         .then_some(AuthenticatedDirectChild(identity))
     }
 
-    fn finalize_exact_child_after_eof(child: AuthenticatedDirectChild) -> bool {
-        const MACOS_EINTR: i32 = 4;
-        let identity = child.0;
+    fn reap_exact_child(child: i32) -> io::Result<bool> {
+        let mut information = WaitInformation::default();
+        // SAFETY: the authenticated PID belongs to this serialized test's direct child.
+        let result = unsafe { keiko_waitid(P_PID, child as u32, &mut information, WEXITED) };
+        if result == 0 {
+            Ok(information.process_id == child)
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    fn observe_direct_child(
+        state: DirectChildState,
+        process: i32,
+    ) -> (io::Result<bool>, ProcessPresenceStatus) {
+        let result = match state {
+            DirectChildState::Waiting(_) | DirectChildState::Verifying => {
+                child_exited_without_reaping(process)
+            }
+            DirectChildState::Reaping => reap_exact_child(process),
+            DirectChildState::Settled | DirectChildState::Lost => unreachable!("terminal state"),
+        };
+        let group = match &result {
+            Err(error) if error.raw_os_error() == Some(MACOS_ECHILD) => {
+                process_group_presence(process)
+            }
+            _ => ProcessPresenceStatus::Unavailable,
+        };
+        (result, group)
+    }
+
+    fn continue_direct_child(
+        state: DirectChildState,
+        waiting_deadline_open: bool,
+        terminal_interruptions: usize,
+    ) -> bool {
+        match state {
+            DirectChildState::Waiting(_) => waiting_deadline_open,
+            DirectChildState::Reaping | DirectChildState::Verifying => {
+                terminal_interruptions < DIRECT_CHILD_TERMINAL_INTERRUPTS
+            }
+            DirectChildState::Settled | DirectChildState::Lost => false,
+        }
+    }
+
+    fn finalize_exact_child_after_eof(child: AuthenticatedDirectChild) -> DirectChildFinalization {
+        let process = child.0.process_id;
         let deadline = Instant::now() + Duration::from_secs(1);
-        while Instant::now() < deadline {
-            match child_exited_without_reaping(identity.process_id) {
-                Ok(true) if reap_child(identity.process_id) => break,
-                Err(error) if error.raw_os_error() == Some(MACOS_ECHILD) => break,
-                Ok(false) | Ok(true) => thread::yield_now(),
-                Err(error) if error.raw_os_error() == Some(MACOS_EINTR) => thread::yield_now(),
-                Err(_) => return false,
+        let mut state = DirectChildState::Waiting(false);
+        let mut interruptions = 0;
+        while continue_direct_child(state, Instant::now() < deadline, interruptions) {
+            let terminal = matches!(
+                state,
+                DirectChildState::Reaping | DirectChildState::Verifying
+            );
+            let (result, group) = observe_direct_child(state, process);
+            if terminal
+                && result
+                    .as_ref()
+                    .is_err_and(|error| error.raw_os_error() == Some(TEST_MACOS_EINTR))
+            {
+                interruptions += 1;
+            }
+            state = reduce_direct_child(state, result, group);
+            if matches!(state, DirectChildState::Waiting(_)) {
+                thread::yield_now();
             }
         }
-        child_exited_without_reaping(identity.process_id)
-            .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD))
-            && process_group_presence(identity.process_id) == ProcessPresenceStatus::Absent
+        match state {
+            DirectChildState::Settled => DirectChildFinalization::Settled,
+            DirectChildState::Waiting(true) => DirectChildFinalization::StillDirectlyOwned(child),
+            _ => DirectChildFinalization::OwnershipLostOrUnavailable,
+        }
+    }
+
+    fn finish_owned_child_outcome(
+        outcome: DirectChildFinalization,
+        child: &mut Child,
+        process_group: i32,
+        active: &ActiveRuntime,
+    ) -> bool {
+        match outcome {
+            DirectChildFinalization::Settled => true,
+            DirectChildFinalization::StillDirectlyOwned(token)
+                if token.0.process_id == child.id() as i32
+                    && token.0.process_id == process_group =>
+            {
+                settle_unpublished_fixture(child, process_group, active)
+            }
+            DirectChildFinalization::StillDirectlyOwned(_)
+            | DirectChildFinalization::OwnershipLostOrUnavailable => false,
+        }
     }
 
     fn finish_owned_child(
@@ -4416,8 +4531,8 @@ mod tests {
         process_group: i32,
         active: &ActiveRuntime,
     ) -> bool {
-        finalize_exact_child_after_eof(token)
-            || settle_unpublished_fixture(child, process_group, active)
+        let outcome = finalize_exact_child_after_eof(token);
+        finish_owned_child_outcome(outcome, child, process_group, active)
     }
 
     fn publish_blocked_fixture(
@@ -4438,49 +4553,68 @@ mod tests {
             })
             .and_then(|identity| authenticated_direct_child(child, process_group, identity))
     }
+    fn stop_published_fixture_group(
+        child: &mut Child,
+        process_group: i32,
+        active: &ActiveRuntime,
+    ) -> bool {
+        let Some(identity) = active.process_group.lock().ok().and_then(|group| *group) else {
+            return false;
+        };
+        if identity.process_id != process_group
+            || retained_process_identity_status(identity) != RetainedProcessIdentityStatus::Current
+        {
+            return false;
+        }
+        stop_process_group(
+            child,
+            process_group,
+            active,
+            Instant::now() + Duration::from_secs(5),
+        )
+    }
+
+    fn settle_owned_fixture_process(
+        child: &mut Child,
+        process_group: i32,
+        active: &ActiveRuntime,
+    ) -> bool {
+        drop(child.stdin.take());
+        let _ = child.kill();
+        if bounded_owned_child_exit(child)
+            && process_group_presence(process_group) == ProcessPresenceStatus::Absent
+        {
+            return true;
+        }
+        let _ = stop_published_fixture_group(child, process_group, active);
+        child_exited_without_reaping(process_group)
+            .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD))
+            && process_group_presence(process_group) == ProcessPresenceStatus::Absent
+    }
+
+    fn retire_settled_fixture(active: &ActiveRuntime) -> bool {
+        let stored_identity = active.process_group.lock().ok().and_then(|group| *group);
+        let retired =
+            stored_identity.is_none_or(|identity| retire_active_process_group(active, identity));
+        retired
+            && active
+                .process_group
+                .lock()
+                .is_ok_and(|group| group.is_none())
+            && active
+                .owned_processes
+                .lock()
+                .is_ok_and(|owned| owned.is_empty())
+    }
+
     fn settle_unpublished_fixture(
         child: &mut Child,
         process_group: i32,
         active: &ActiveRuntime,
     ) -> bool {
-        if child.id() as i32 != process_group {
-            return false;
-        }
-        drop(child.stdin.take());
-        let _ = child.kill();
-        let mut direct_reaped = bounded_owned_child_exit(child);
-        let mut group_absent =
-            process_group_presence(process_group) == ProcessPresenceStatus::Absent;
-        if !direct_reaped || !group_absent {
-            let stored_identity = active.process_group.lock().ok().and_then(|group| *group);
-            let _ = stored_identity.is_some_and(|identity| {
-                identity.process_id == process_group
-                    && retained_process_identity_status(identity)
-                        == RetainedProcessIdentityStatus::Current
-                    && stop_process_group(
-                        child,
-                        process_group,
-                        active,
-                        Instant::now() + Duration::from_secs(5),
-                    )
-            });
-            direct_reaped = child_exited_without_reaping(process_group)
-                .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD));
-            group_absent = process_group_presence(process_group) == ProcessPresenceStatus::Absent;
-        }
-        let stored_identity = active.process_group.lock().ok().and_then(|group| *group);
-        let retired = direct_reaped
-            && group_absent
-            && stored_identity.is_none_or(|identity| retire_active_process_group(active, identity));
-        let ownership_absent = active
-            .process_group
-            .lock()
-            .is_ok_and(|group| group.is_none());
-        let owned_absent = active
-            .owned_processes
-            .lock()
-            .is_ok_and(|owned| owned.is_empty());
-        direct_reaped && group_absent && retired && ownership_absent && owned_absent
+        child.id() as i32 == process_group
+            && settle_owned_fixture_process(child, process_group, active)
+            && retire_settled_fixture(active)
     }
 
     #[test]
@@ -9787,7 +9921,10 @@ exit 9
                 );
             }
         }
-        let eof_finalized = finalize_exact_child_after_eof(token);
+        let eof_finalized = matches!(
+            finalize_exact_child_after_eof(token),
+            DirectChildFinalization::Settled
+        );
         let work_recovered = reconcile_retained_work_directories(&active);
         let final_ownership = active.process_group.lock().ok().and_then(|group| *group);
         let final_group_presence = process_group_presence(process_group);
@@ -10371,6 +10508,117 @@ exit 9
                 && reaped
                 && group_absent
         );
+    }
+
+    #[test]
+    fn direct_child_finalization_reducer_fails_closed() {
+        use DirectChildState as State;
+        let error = |code| Err(io::Error::from_raw_os_error(code));
+        for (state, result, group, expected) in [
+            (
+                State::Waiting(false),
+                error(MACOS_ECHILD),
+                ProcessPresenceStatus::Present,
+                State::Lost,
+            ),
+            (
+                State::Waiting(false),
+                error(MACOS_ECHILD),
+                ProcessPresenceStatus::Unavailable,
+                State::Lost,
+            ),
+            (
+                State::Waiting(false),
+                Ok(false),
+                ProcessPresenceStatus::Unavailable,
+                State::Waiting(true),
+            ),
+            (
+                State::Verifying,
+                Ok(false),
+                ProcessPresenceStatus::Unavailable,
+                State::Lost,
+            ),
+        ] {
+            assert_eq!(reduce_direct_child(state, result, group), expected);
+        }
+    }
+
+    #[test]
+    fn direct_child_terminal_drain_is_independent_of_wait_deadline() {
+        use DirectChildState as State;
+        let interrupted = || Err(io::Error::from_raw_os_error(TEST_MACOS_EINTR));
+        let no_child = || Err(io::Error::from_raw_os_error(MACOS_ECHILD));
+        assert!(!continue_direct_child(State::Waiting(false), false, 0));
+        let after_cutoff = reduce_direct_child(
+            State::Waiting(false),
+            Ok(true),
+            ProcessPresenceStatus::Unavailable,
+        );
+        assert!(continue_direct_child(after_cutoff, false, 0));
+        let after_reap =
+            reduce_direct_child(after_cutoff, Ok(true), ProcessPresenceStatus::Unavailable);
+        assert!(continue_direct_child(after_reap, false, 0));
+        let after_interrupt = reduce_direct_child(
+            after_reap,
+            interrupted(),
+            ProcessPresenceStatus::Unavailable,
+        );
+        assert!(continue_direct_child(after_interrupt, false, 1));
+        let settled =
+            reduce_direct_child(after_interrupt, no_child(), ProcessPresenceStatus::Absent);
+        assert_eq!(settled, State::Settled);
+        let exhausted = (0..DIRECT_CHILD_TERMINAL_INTERRUPTS).fold(after_cutoff, |state, _| {
+            reduce_direct_child(state, interrupted(), ProcessPresenceStatus::Unavailable)
+        });
+        assert_eq!(exhausted, State::Reaping);
+        assert!(!continue_direct_child(
+            exhausted,
+            false,
+            DIRECT_CHILD_TERMINAL_INTERRUPTS,
+        ));
+    }
+
+    #[test]
+    fn direct_child_outcome_allows_only_exact_owned_settlement() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("read -r control || exit 0")
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("owned outcome fixture");
+        let process_group = child.id() as i32;
+        let identity = process_identity(process_group).expect("owned outcome identity");
+        let active = ActiveRuntime::default();
+        let lost_refused = !finish_owned_child_outcome(
+            DirectChildFinalization::OwnershipLostOrUnavailable,
+            &mut child,
+            process_group,
+            &active,
+        );
+        let mismatch = authenticated_direct_child(&child, process_group, identity)
+            .expect("mismatch outcome token");
+        let mismatch_refused = !finish_owned_child_outcome(
+            DirectChildFinalization::StillDirectlyOwned(mismatch),
+            &mut child,
+            process_group + 1,
+            &active,
+        );
+        let remained_live = child.try_wait().is_ok_and(|status| status.is_none());
+        let exact = authenticated_direct_child(&child, process_group, identity)
+            .expect("exact outcome token");
+        let settled = finish_owned_child_outcome(
+            DirectChildFinalization::StillDirectlyOwned(exact),
+            &mut child,
+            process_group,
+            &active,
+        );
+        assert!(lost_refused && mismatch_refused && remained_live && settled);
+        assert!(!process_group_exists(process_group));
     }
 
     #[test]
