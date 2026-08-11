@@ -10509,31 +10509,34 @@ exit 9
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut child = Command::new("/bin/sh")
-            .arg("-c")
-            .arg("read -r control || exit 0")
-            .process_group(0)
-            .stdin(Stdio::piped())
-            .spawn()
-            .expect("reused identity fixture");
-        let process_group = child.id() as i32;
+        let mut child = OwnedFixtureChild(
+            Command::new("/bin/sh")
+                .arg("-c")
+                .arg("read -r control || exit 0")
+                .process_group(0)
+                .stdin(Stdio::piped())
+                .spawn()
+                .expect("reused identity fixture"),
+        );
+        let process_group = child.0.id() as i32;
         let exact_identity = process_identity(process_group).expect("exact child identity");
         let reused_identity = ProcessIdentity {
             started_microseconds: exact_identity.started_microseconds.wrapping_add(1),
             ..exact_identity
         };
-        let refused = authenticated_direct_child(&child, process_group, reused_identity).is_none();
+        let refused =
+            authenticated_direct_child(&child.0, process_group, reused_identity).is_none();
         let unavailable_identity = unavailable_process_identity(i32::MAX);
         let unavailable_refused =
-            authenticated_direct_child(&child, process_group, unavailable_identity).is_none();
+            authenticated_direct_child(&child.0, process_group, unavailable_identity).is_none();
         let active = ActiveRuntime::default();
         let mismatch_refused =
-            authenticated_direct_child(&child, process_group + 1, exact_identity).is_none()
-                && !settle_unpublished_fixture(&mut child, process_group + 1, &active);
-        let remained_live = child.try_wait().is_ok_and(|status| status.is_none());
-        drop(child.stdin.take());
-        let _ = child.kill();
-        let reaped = bounded_owned_child_exit(&mut child);
+            authenticated_direct_child(&child.0, process_group + 1, exact_identity).is_none()
+                && !settle_unpublished_fixture(&mut child.0, process_group + 1, &active);
+        let remained_live = child.0.try_wait().is_ok_and(|status| status.is_none());
+        drop(child.0.stdin.take());
+        let _ = child.0.kill();
+        let reaped = bounded_owned_child_exit(&mut child.0);
         let group_absent = !process_group_exists(process_group);
         assert!(
             refused
@@ -10877,36 +10880,38 @@ exit 9
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut child = Command::new("/bin/sh")
-            .arg("-c")
-            .arg("read -r control || exit 0")
-            .process_group(0)
-            .stdin(Stdio::piped())
-            .spawn()
-            .expect("owned outcome fixture");
-        let process_group = child.id() as i32;
+        let mut child = OwnedFixtureChild(
+            Command::new("/bin/sh")
+                .arg("-c")
+                .arg("read -r control || exit 0")
+                .process_group(0)
+                .stdin(Stdio::piped())
+                .spawn()
+                .expect("owned outcome fixture"),
+        );
+        let process_group = child.0.id() as i32;
         let identity = process_identity(process_group).expect("owned outcome identity");
         let active = ActiveRuntime::default();
         let lost_refused = !finish_owned_child_outcome(
             DirectChildFinalization::OwnershipLostOrUnavailable,
-            &mut child,
+            &mut child.0,
             process_group,
             &active,
         );
-        let mismatch = authenticated_direct_child(&child, process_group, identity)
+        let mismatch = authenticated_direct_child(&child.0, process_group, identity)
             .expect("mismatch outcome token");
         let mismatch_refused = !finish_owned_child_outcome(
             DirectChildFinalization::StillDirectlyOwned(mismatch),
-            &mut child,
+            &mut child.0,
             process_group + 1,
             &active,
         );
-        let remained_live = child.try_wait().is_ok_and(|status| status.is_none());
-        let exact = authenticated_direct_child(&child, process_group, identity)
+        let remained_live = child.0.try_wait().is_ok_and(|status| status.is_none());
+        let exact = authenticated_direct_child(&child.0, process_group, identity)
             .expect("exact outcome token");
         let settled = finish_owned_child_outcome(
             DirectChildFinalization::StillDirectlyOwned(exact),
-            &mut child,
+            &mut child.0,
             process_group,
             &active,
         );
