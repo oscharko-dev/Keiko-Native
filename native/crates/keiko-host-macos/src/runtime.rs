@@ -11225,32 +11225,147 @@ exit 9
 
     #[test]
     fn owned_descendant_tracking_is_independent_of_process_group_membership() {
-        let _process_guard = PROCESS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut escaped = Command::new("/bin/sleep")
-            .arg("30")
-            .process_group(0)
-            .spawn()
-            .expect("independent descendant fixture");
+        let mut leader = OwnedFixtureChild(
+            Command::new("/bin/sh")
+                .arg("-c")
+                .arg("child=''; cleanup() { if [ -n \"$child\" ]; then owned=$child; child=''; kill \"$owned\" 2>/dev/null; wait \"$owned\" 2>/dev/null; fi; }; trap cleanup EXIT; trap 'cleanup; exit 0' TERM INT HUP; exec 3<&0; printf 'leader-ready\\n'; read -r start || exit 0; set -m; /bin/sh -c 'trap \"exit 0\" TERM INT HUP; printf \"child-ready\\n\"; read -r stop <&3 || exit 0' 3<&3 & child=$!; wait \"$child\"; child=''; printf 'child-stopped\\n'; read -r release || exit 0")
+                .process_group(0)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .expect("independent descendant leader"),
+        );
+        let leader_process = leader.0.id() as i32;
+        let stdout = leader.0.stdout.take().expect("leader stdout");
+        let mut control = leader.0.stdin.take().expect("leader stdin");
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let reader = thread::spawn(move || {
+            let mut stdout = BufReader::new(stdout);
+            let mut line = String::new();
+            let _ = sender.send(stdout.read_line(&mut line).map(|_| line));
+            let mut line = String::new();
+            let _ = sender.send(stdout.read_line(&mut line).map(|_| line));
+            let mut line = String::new();
+            let _ = sender.send(stdout.read_line(&mut line).map(|_| line));
+        });
+        let leader_ready = receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("bounded leader handshake")
+            .expect("leader readiness read");
         let active = ActiveRuntime::default();
-        let leader = std::process::id() as i32;
-        assert!(publish_active_process_group(&active, leader));
-        assert_eq!(owned_descendants_alive(&active, leader), Some(true));
-        let escaped_identity = process_identity(escaped.id() as i32).expect("escaped identity");
-        let reused = ProcessIdentity {
-            started_microseconds: escaped_identity.started_microseconds.wrapping_add(1),
-            ..escaped_identity
-        };
-        active
+        let token = publish_blocked_fixture(&leader.0, leader_process, &active)
+            .expect("authenticated descendant leader");
+        let leader_identity = token.0;
+        let stored_identity = *active.process_group.lock().expect("stored leader identity");
+        let current_before_release = retained_process_identity_status(leader_identity);
+        control = (stored_identity, current_before_release)
+            .eq(&(
+                Some(leader_identity),
+                RetainedProcessIdentityStatus::Current,
+            ))
+            .then_some(control)
+            .expect("current stored leader before child creation");
+        writeln!(control, "start").expect("release child creation");
+        control.flush().expect("flush child creation");
+        let child_ready = receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("bounded child handshake")
+            .expect("child readiness read");
+        let alive_before_stop = owned_descendants_alive(&active, leader_process);
+        let child_identity = active
             .owned_processes
             .lock()
-            .expect("owned process state")
-            .insert(reused);
-        assert_ne!(process_identity(reused.process_id), Some(reused));
-        signal_process(escaped.id() as i32, SIGKILL);
-        let _ = escaped.wait();
-        assert_eq!(owned_descendants_alive(&active, leader), Some(false));
+            .expect("owned child identity")
+            .iter()
+            .copied()
+            .next()
+            .expect("tracked child");
+        let child_information = process_information(child_identity.process_id)
+            .expect("tracked child process information");
+        let child_current = process_identity(child_identity.process_id) == Some(child_identity);
+        writeln!(control, "stop").expect("stop fixture-owned child");
+        control.flush().expect("flush child stop");
+        let child_stopped = receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("bounded child-stop handshake")
+            .expect("child-stop read");
+        let reader_joined = reader.join().is_ok();
+        let leader_after_child = retained_process_identity_status(leader_identity);
+        let alive_after_stop = owned_descendants_alive(&active, leader_process);
+        let stored_after_child = *active
+            .process_group
+            .lock()
+            .expect("retained leader identity");
+        control = (stored_after_child, leader_after_child)
+            .eq(&(
+                Some(leader_identity),
+                RetainedProcessIdentityStatus::Current,
+            ))
+            .then_some(control)
+            .expect("current leader before final release");
+        writeln!(control, "release").expect("release descendant leader");
+        control.flush().expect("flush leader release");
+        drop(control);
+        let finalized = finish_owned_child(token, &mut leader.0, leader_process, &active);
+        drop(leader);
+        let leader_reaped = child_exited_without_reaping(leader_process)
+            .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD));
+        let leader_group = process_group_presence(leader_process);
+        let child_group = process_group_presence(child_information.process_group as i32);
+        let owned_before_retire = active
+            .owned_processes
+            .lock()
+            .is_ok_and(|owned| owned.is_empty());
+        let retired = (
+            leader_reaped,
+            leader_group,
+            child_group,
+            alive_after_stop,
+            owned_before_retire,
+        )
+            .eq(&(
+                true,
+                ProcessPresenceStatus::Absent,
+                ProcessPresenceStatus::Absent,
+                Some(false),
+                true,
+            ))
+            .then_some(leader_identity)
+            .is_some_and(|identity| retire_active_process_group(&active, identity));
+        let ownership_absent = active
+            .process_group
+            .lock()
+            .is_ok_and(|group| group.is_none());
+        let owned_absent = active
+            .owned_processes
+            .lock()
+            .is_ok_and(|owned| owned.is_empty());
+
+        assert_eq!(leader_ready, "leader-ready\n");
+        assert_eq!(stored_identity, Some(leader_identity));
+        assert_eq!(
+            current_before_release,
+            RetainedProcessIdentityStatus::Current
+        );
+        assert_eq!(child_ready, "child-ready\n");
+        assert_eq!(alive_before_stop, Some(true));
+        assert_eq!(child_current, true);
+        assert_eq!(child_information.parent_process_id, leader_process as u32);
+        assert_ne!(child_information.process_group, leader_process as u32);
+        assert_eq!(child_stopped, "child-stopped\n");
+        assert_eq!(
+            (reader_joined, finalized, leader_reaped, retired),
+            (true, true, true, true)
+        );
+        assert_eq!(leader_after_child, RetainedProcessIdentityStatus::Current);
+        assert_eq!(stored_after_child, Some(leader_identity));
+        assert_eq!(alive_after_stop, Some(false));
+        assert_eq!(leader_group, ProcessPresenceStatus::Absent);
+        assert_eq!(child_group, ProcessPresenceStatus::Absent);
+        assert_eq!(
+            (owned_before_retire, ownership_absent, owned_absent),
+            (true, true, true)
+        );
     }
 
     struct Fixture {
