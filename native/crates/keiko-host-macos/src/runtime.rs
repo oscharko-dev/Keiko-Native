@@ -4526,12 +4526,12 @@ mod tests {
     }
 
     fn finish_owned_child(
-        token: AuthenticatedDirectChild,
+        authority: AuthenticatedDirectChild,
         child: &mut Child,
         process_group: i32,
         active: &ActiveRuntime,
     ) -> bool {
-        let outcome = finalize_exact_child_after_eof(token);
+        let outcome = finalize_exact_child_after_eof(authority);
         finish_owned_child_outcome(outcome, child, process_group, active)
     }
 
@@ -10690,9 +10690,9 @@ exit 9
         assert_eq!(waiting, Some(false));
         assert_eq!(group, ProcessPresenceStatus::Unavailable);
         assert_eq!(nonchild_error, Some(MACOS_ECHILD));
-        assert_eq!(refused, false);
-        assert_eq!(remained_live, true);
-        assert_eq!(settled, true);
+        assert!(!refused);
+        assert!(remained_live);
+        assert!(settled);
         assert_eq!(
             process_group_presence(process_group),
             ProcessPresenceStatus::Absent
@@ -10774,12 +10774,12 @@ exit 9
         drop(member.0.stdin.take());
         let _ = member.0.kill();
         let member_reaped = bounded_owned_child_exit(&mut member.0);
-        assert_eq!(refused, false);
+        assert!(!refused);
         assert_eq!(leader_error, Some(MACOS_ECHILD));
         assert_eq!(group_present, ProcessPresenceStatus::Present);
-        assert_eq!(member_live, true);
-        assert_eq!(leader_reaped, true);
-        assert_eq!(member_reaped, true);
+        assert!(member_live);
+        assert!(leader_reaped);
+        assert!(member_reaped);
         assert_eq!(
             process_group_presence(process_group),
             ProcessPresenceStatus::Absent
@@ -10809,7 +10809,7 @@ exit 9
                 .expect("group poison lock");
             panic!("poison group ownership");
         });
-        assert_eq!(retire_settled_fixture(&group_poisoned), false);
+        assert!(!retire_settled_fixture(&group_poisoned));
         drop(group_clear);
 
         let owned_poisoned = ActiveRuntime::default();
@@ -10825,9 +10825,9 @@ exit 9
                 .expect("owned poison lock");
             panic!("poison owned processes");
         });
-        assert_eq!(retire_settled_fixture(&owned_poisoned), false);
+        assert!(!retire_settled_fixture(&owned_poisoned));
         drop(owned_clear);
-        assert_eq!(retire_settled_fixture(&owned_poisoned), true);
+        assert!(retire_settled_fixture(&owned_poisoned));
         assert_eq!(
             *owned_poisoned
                 .process_group

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -2100,10 +2100,9 @@ test("fails closed when provider issue identity is unavailable", async (t) => {
 });
 
 test("runs the CLI wrapper with a hermetic event file", async (t) => {
-  const eventPath = join(
-    await mkdtemp(join(tmpdir(), "keiko-lifecycle-")),
-    "event.json",
-  );
+  const root = await mkdtemp(join(tmpdir(), "keiko-lifecycle-"));
+  t.after(() => rm(root, { force: true, recursive: true }));
+  const eventPath = join(root, "event.json");
   await writeFile(eventPath, JSON.stringify(reopenedEvent));
   const { request } = requestMock(t, { issueLabels: ["status: ready"] });
   const writes = [];
@@ -2593,10 +2592,9 @@ test("covers alternate fail-closed and no-op lifecycle branches", async (t) => {
   });
   assert.equal(noopResult.outcome, "applied");
 
-  const eventPath = join(
-    await mkdtemp(join(tmpdir(), "keiko-lifecycle-fail-")),
-    "event.json",
-  );
+  const root = await mkdtemp(join(tmpdir(), "keiko-lifecycle-fail-"));
+  t.after(() => rm(root, { force: true, recursive: true }));
+  const eventPath = join(root, "event.json");
   await writeFile(eventPath, JSON.stringify(labeledEvent));
   const failed = requestMock(t, { issueLabels: [] });
   await assert.rejects(

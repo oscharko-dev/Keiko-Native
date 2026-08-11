@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -67,11 +67,13 @@ function comment() {
   };
 }
 
-test("publishes one canonical comment and prepares exact anchor inputs", async () => {
+test("publishes one canonical comment and prepares exact anchor inputs", async (t) => {
   const calls = [];
+  const root = await mkdtemp(join(tmpdir(), "keiko-record-writer-"));
+  t.after(() => rm(root, { force: true, recursive: true }));
   const prepared = await prepareLifecycleRecordPublication({
     encodedPlan: encodedPlan(),
-    outputDirectory: await mkdtemp(join(tmpdir(), "keiko-record-writer-")),
+    outputDirectory: root,
     providerRequest: async (path, options = {}) => {
       calls.push({ options, path });
       return comment();
@@ -93,18 +95,21 @@ test("publishes one canonical comment and prepares exact anchor inputs", async (
     await readFile(prepared.checksumsPath, "utf8"),
     `${prepared.anchorIdentity}  ${prepared.subject}\n`,
   );
+  const invalidRoot = await mkdtemp(join(tmpdir(), "keiko-record-writer-"));
+  t.after(() => rm(invalidRoot, { force: true, recursive: true }));
   await assert.rejects(
     prepareLifecycleRecordPublication({
       encodedPlan: encodedPlan(),
-      outputDirectory: await mkdtemp(join(tmpdir(), "keiko-record-writer-")),
+      outputDirectory: invalidRoot,
       providerRequest: async () => ({ ...comment(), id: undefined }),
     }),
     /record comment identity is invalid/u,
   );
 });
 
-test("verifies exact final provider records and rejects malformed plans", async () => {
+test("verifies exact final provider records and rejects malformed plans", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "keiko-record-verify-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
   const prepared = await prepareLifecycleRecordPublication({
     encodedPlan: encodedPlan(),
     outputDirectory: directory,
@@ -186,8 +191,9 @@ test("verifies exact final provider records and rejects malformed plans", async 
   assert.equal(providerCalls, 0);
 });
 
-test("rejects unknown and non-protected writer run event/ref combinations", async () => {
+test("rejects unknown and non-protected writer run event/ref combinations", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "keiko-record-invalid-run-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
   const prepared = await prepareLifecycleRecordPublication({
     encodedPlan: encodedPlan(),
     outputDirectory: directory,
@@ -235,8 +241,9 @@ test("rejects unknown and non-protected writer run event/ref combinations", asyn
     );
 });
 
-test("accepts pull_request_target REST source-branch metadata only with protected record evidence", async () => {
+test("accepts pull_request_target REST source-branch metadata only with protected record evidence", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "keiko-record-pr-target-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
   const prepared = await prepareLifecycleRecordPublication({
     encodedPlan: encodedPlan(),
     outputDirectory: directory,
@@ -280,8 +287,9 @@ test("accepts pull_request_target REST source-branch metadata only with protecte
   assert.equal(result.commentId, 99);
 });
 
-test("rejects pull_request_target publication with a non-exact static workflow graph", async () => {
+test("rejects pull_request_target publication with a non-exact static workflow graph", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "keiko-record-pr-graph-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
   const prepared = await prepareLifecycleRecordPublication({
     encodedPlan: encodedPlan(),
     outputDirectory: directory,
@@ -325,8 +333,9 @@ test("rejects pull_request_target publication with a non-exact static workflow g
   );
 });
 
-test("rejects a pull_request_target writer run response with the wrong run identity", async () => {
+test("rejects a pull_request_target writer run response with the wrong run identity", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "keiko-record-pr-run-id-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
   const prepared = await prepareLifecycleRecordPublication({
     encodedPlan: encodedPlan(),
     outputDirectory: directory,
@@ -372,8 +381,9 @@ test("rejects a pull_request_target writer run response with the wrong run ident
   );
 });
 
-test("rejects a non-PR writer run whose event SHA differs from protected dev", async () => {
+test("rejects a non-PR writer run whose event SHA differs from protected dev", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "keiko-record-event-sha-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
   const prepared = await prepareLifecycleRecordPublication({
     encodedPlan: encodedPlan(),
     outputDirectory: directory,

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -53,8 +53,9 @@ function emptyProvider() {
   };
 }
 
-test("writes the exact coordinator record outputs for an empty history", async () => {
+test("writes the exact coordinator record outputs for an empty history", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "keiko-coordinator-"));
+  t.after(() => rm(root, { force: true, recursive: true }));
   const githubOutput = join(root, "output");
   await writeFile(githubOutput, "");
   const result = await runLifecycleCoordinatorAction({
