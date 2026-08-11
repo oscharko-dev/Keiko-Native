@@ -5668,29 +5668,42 @@ mod tests {
 
     #[test]
     fn runtime_process_publication_rejects_a_nonleader_and_dead_identity_is_already_reconciled() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let fixture = Fixture::new();
-        let mut child = Command::new("/bin/sleep")
-            .arg("30")
-            .spawn()
-            .expect("nonleader runtime");
-        let child_identity =
-            process_identity(child.id() as i32).expect("nonleader runtime identity");
-        assert!(
-            write_runtime_process_record(&fixture.work, child.id() as i32).is_err(),
-            "a process outside its own group cannot become runtime ownership"
+        let mut child = OwnedFixtureChild(
+            Command::new("/bin/sleep")
+                .arg("30")
+                .spawn()
+                .expect("nonleader runtime"),
         );
-        assert!(!reconcile_orphaned_runtime_process_group(child_identity));
-        assert!(!reconcile_orphaned_runtime_process_group(ProcessIdentity {
+        let process = child.0.id() as i32;
+        let child_identity = process_identity(process).expect("nonleader runtime identity");
+        let publication_rejected = write_runtime_process_record(&fixture.work, process).is_err();
+        let live_not_reconciled = !reconcile_orphaned_runtime_process_group(child_identity);
+        let reused_not_reconciled = !reconcile_orphaned_runtime_process_group(ProcessIdentity {
             started_microseconds: child_identity.started_microseconds.wrapping_add(1),
             ..child_identity
-        }));
-        let _ = child.kill();
-        let _ = child.wait();
-        assert!(reconcile_orphaned_runtime_process_group(ProcessIdentity {
+        });
+        let _ = child.0.kill();
+        let reaped = bounded_owned_child_exit(&mut child.0);
+        let child_absent = child_exited_without_reaping(process)
+            .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD));
+        let group_absent = process_group_presence(process);
+        let dead_reconciled = reconcile_orphaned_runtime_process_group(ProcessIdentity {
             process_id: i32::MAX,
             started_seconds: 1,
             started_microseconds: 0,
-        }));
+        });
+
+        assert!(publication_rejected, "a nonleader cannot own a runtime");
+        assert!(live_not_reconciled);
+        assert!(reused_not_reconciled);
+        assert!(reaped);
+        assert!(child_absent);
+        assert_eq!(group_absent, ProcessPresenceStatus::Absent);
+        assert!(dead_reconciled);
     }
 
     #[test]
@@ -9741,25 +9754,37 @@ exit 9
 
     #[test]
     fn real_cleanup_executor_refuses_an_expired_sleep_without_invoking_it() {
-        let mut child = Command::new("/usr/bin/true")
-            .spawn()
-            .expect("executor guard child");
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child = OwnedFixtureChild(
+            Command::new("/usr/bin/true")
+                .spawn()
+                .expect("executor guard child"),
+        );
         let active = ActiveRuntime::default();
-        let process_group = child.id() as i32;
-        let mut executor = RealCleanupExecutor {
-            child: &mut child,
-            process_group,
-            active: &active,
+        let process_group = child.0.id() as i32;
+        let observation = {
+            let mut executor = RealCleanupExecutor {
+                child: &mut child.0,
+                process_group,
+                active: &active,
+            };
+            executor.execute(CleanupCommand::Sleep {
+                guard: Some(Instant::now() - Duration::from_nanos(1)),
+                duration: Duration::from_millis(1),
+            })
         };
-        let observation = executor.execute(CleanupCommand::Sleep {
-            guard: Some(Instant::now() - Duration::from_nanos(1)),
-            duration: Duration::from_millis(1),
-        });
+        let reaped = bounded_owned_child_exit(&mut child.0);
+        let child_absent = child_exited_without_reaping(process_group)
+            .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD));
+
         assert!(matches!(
             observation,
             CleanupObservation::DeadlineClosed { .. }
         ));
-        child.wait().expect("executor guard child reap");
+        assert!(reaped);
+        assert!(child_absent);
     }
 
     #[test]
@@ -11225,113 +11250,42 @@ exit 9
 
     #[test]
     fn owned_descendant_tracking_is_independent_of_process_group_membership() {
-        let mut leader = OwnedFixtureChild(
-            Command::new("/bin/sh")
-                .arg("-c")
-                .arg("child=''; cleanup() { if [ -n \"$child\" ]; then owned=$child; child=''; kill \"$owned\" 2>/dev/null; wait \"$owned\" 2>/dev/null; fi; }; trap cleanup EXIT; trap 'cleanup; exit 0' TERM INT HUP; exec 3<&0; printf 'leader-ready\\n'; read -r start || exit 0; set -m; /bin/sh -c 'trap \"exit 0\" TERM INT HUP; printf \"child-ready\\n\"; read -r stop <&3 || exit 0' 3<&3 & child=$!; wait \"$child\"; child=''; printf 'child-stopped\\n'; read -r release || exit 0")
-                .process_group(0)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .spawn()
-                .expect("independent descendant leader"),
-        );
-        let leader_process = leader.0.id() as i32;
-        let stdout = leader.0.stdout.take().expect("leader stdout");
-        let mut control = leader.0.stdin.take().expect("leader stdin");
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let reader = thread::spawn(move || {
-            let mut stdout = BufReader::new(stdout);
-            let mut line = String::new();
-            let _ = sender.send(stdout.read_line(&mut line).map(|_| line));
-            let mut line = String::new();
-            let _ = sender.send(stdout.read_line(&mut line).map(|_| line));
-            let mut line = String::new();
-            let _ = sender.send(stdout.read_line(&mut line).map(|_| line));
-        });
-        let leader_ready = receiver
-            .recv_timeout(Duration::from_secs(1))
-            .expect("bounded leader handshake")
-            .expect("leader readiness read");
-        let active = ActiveRuntime::default();
-        let token = publish_blocked_fixture(&leader.0, leader_process, &active)
-            .expect("authenticated descendant leader");
-        let leader_identity = token.0;
-        let stored_identity = *active.process_group.lock().expect("stored leader identity");
-        let current_before_release = retained_process_identity_status(leader_identity);
-        control = (stored_identity, current_before_release)
-            .eq(&(
-                Some(leader_identity),
-                RetainedProcessIdentityStatus::Current,
-            ))
-            .then_some(control)
-            .expect("current stored leader before child creation");
-        writeln!(control, "start").expect("release child creation");
-        control.flush().expect("flush child creation");
-        let child_ready = receiver
-            .recv_timeout(Duration::from_secs(1))
-            .expect("bounded child handshake")
-            .expect("child readiness read");
-        let alive_before_stop = owned_descendants_alive(&active, leader_process);
-        let child_identity = active
-            .owned_processes
+        let _process_guard = PROCESS_TEST_LOCK
             .lock()
-            .expect("owned child identity")
-            .iter()
-            .copied()
-            .next()
-            .expect("tracked child");
-        let child_information = process_information(child_identity.process_id)
-            .expect("tracked child process information");
-        let child_current = process_identity(child_identity.process_id) == Some(child_identity);
-        writeln!(control, "stop").expect("stop fixture-owned child");
-        control.flush().expect("flush child stop");
-        let child_stopped = receiver
-            .recv_timeout(Duration::from_secs(1))
-            .expect("bounded child-stop handshake")
-            .expect("child-stop read");
-        let reader_joined = reader.join().is_ok();
-        let leader_after_child = retained_process_identity_status(leader_identity);
-        let alive_after_stop = owned_descendants_alive(&active, leader_process);
-        let stored_after_child = *active
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut escaped = OwnedFixtureChild(
+            Command::new("/bin/sleep")
+                .arg("30")
+                .process_group(0)
+                .spawn()
+                .expect("independent descendant fixture"),
+        );
+        let active = ActiveRuntime::default();
+        let leader = std::process::id() as i32;
+        let escaped_process = escaped.0.id() as i32;
+        let escaped_information =
+            process_information(escaped_process).expect("escaped process information");
+        let published = publish_active_process_group(&active, leader);
+        let leader_identity = active
             .process_group
             .lock()
-            .expect("retained leader identity");
-        control = (stored_after_child, leader_after_child)
-            .eq(&(
-                Some(leader_identity),
-                RetainedProcessIdentityStatus::Current,
-            ))
-            .then_some(control)
-            .expect("current leader before final release");
-        writeln!(control, "release").expect("release descendant leader");
-        control.flush().expect("flush leader release");
-        drop(control);
-        let finalized = finish_owned_child(token, &mut leader.0, leader_process, &active);
-        drop(leader);
-        let leader_reaped = child_exited_without_reaping(leader_process)
+            .expect("published test-process leader")
+            .expect("test-process identity");
+        let alive_before_stop = owned_descendants_alive(&active, leader);
+        let escaped_identity = process_identity(escaped_process).expect("escaped process identity");
+        let reused = ProcessIdentity {
+            started_microseconds: escaped_identity.started_microseconds.wrapping_add(1),
+            ..escaped_identity
+        };
+        let reused_status = known_owned_process_status(reused);
+        let _ = escaped.0.kill();
+        let escaped_reaped = bounded_owned_child_exit(&mut escaped.0);
+        let escaped_echild = child_exited_without_reaping(escaped_process)
             .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD));
-        let leader_group = process_group_presence(leader_process);
-        let child_group = process_group_presence(child_information.process_group as i32);
-        let owned_before_retire = active
-            .owned_processes
-            .lock()
-            .is_ok_and(|owned| owned.is_empty());
-        let retired = (
-            leader_reaped,
-            leader_group,
-            child_group,
-            alive_after_stop,
-            owned_before_retire,
-        )
-            .eq(&(
-                true,
-                ProcessPresenceStatus::Absent,
-                ProcessPresenceStatus::Absent,
-                Some(false),
-                true,
-            ))
-            .then_some(leader_identity)
-            .is_some_and(|identity| retire_active_process_group(&active, identity));
+        let escaped_group = process_group_presence(escaped_process);
+        let alive_after_stop = owned_descendants_alive(&active, leader);
+        let owned_before_retire = authenticated_owned_processes_status(&active);
+        let retired = retire_active_process_group(&active, leader_identity);
         let ownership_absent = active
             .process_group
             .lock()
@@ -11341,31 +11295,19 @@ exit 9
             .lock()
             .is_ok_and(|owned| owned.is_empty());
 
-        assert_eq!(leader_ready, "leader-ready\n");
-        assert_eq!(stored_identity, Some(leader_identity));
-        assert_eq!(
-            current_before_release,
-            RetainedProcessIdentityStatus::Current
-        );
-        assert_eq!(child_ready, "child-ready\n");
+        assert!(published);
+        assert_eq!(escaped_information.parent_process_id, leader as u32);
+        assert_ne!(escaped_information.process_group, leader as u32);
         assert_eq!(alive_before_stop, Some(true));
-        assert_eq!(child_current, true);
-        assert_eq!(child_information.parent_process_id, leader_process as u32);
-        assert_ne!(child_information.process_group, leader_process as u32);
-        assert_eq!(child_stopped, "child-stopped\n");
-        assert_eq!(
-            (reader_joined, finalized, leader_reaped, retired),
-            (true, true, true, true)
-        );
-        assert_eq!(leader_after_child, RetainedProcessIdentityStatus::Current);
-        assert_eq!(stored_after_child, Some(leader_identity));
+        assert_eq!(reused_status, KnownOwnedProcessStatus::Stopped);
+        assert!(escaped_reaped);
+        assert!(escaped_echild);
+        assert_eq!(escaped_group, ProcessPresenceStatus::Absent);
         assert_eq!(alive_after_stop, Some(false));
-        assert_eq!(leader_group, ProcessPresenceStatus::Absent);
-        assert_eq!(child_group, ProcessPresenceStatus::Absent);
-        assert_eq!(
-            (owned_before_retire, ownership_absent, owned_absent),
-            (true, true, true)
-        );
+        assert_eq!(owned_before_retire, Some(true));
+        assert!(retired);
+        assert!(ownership_absent);
+        assert!(owned_absent);
     }
 
     struct Fixture {
