@@ -216,11 +216,31 @@ struct ProcessIdentity {
     started_seconds: u64,
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReadinessDeadlineStage {
+    Request,
+    PerformCheck,
+    RunProtocol,
+    CleanupAfter,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ReadinessDeadlineObservation {
+    stage: ReadinessDeadlineStage,
+    started_at: Option<Instant>,
+    timeout: Option<Duration>,
+    deadline: Instant,
+}
+
 #[derive(Debug, Default)]
 struct ActiveRuntime {
     process_group: Mutex<Option<ProcessIdentity>>,
     #[cfg(test)]
     process_group_observer: Mutex<Option<SyncSender<ProcessIdentity>>>,
+    #[cfg(test)]
+    readiness_deadline_trace: Mutex<Vec<ReadinessDeadlineObservation>>,
     owned_processes: Mutex<HashSet<ProcessIdentity>>,
     retained_work_directories: Mutex<HashSet<PathBuf>>,
     control: Mutex<RuntimeControl>,
@@ -298,6 +318,24 @@ impl RuntimeCancellation {
 }
 
 impl ActiveRuntime {
+    #[cfg(test)]
+    fn record_readiness_deadline(&self, observation: ReadinessDeadlineObservation) {
+        self.readiness_deadline_trace
+            .lock()
+            .expect("readiness deadline trace")
+            .push(observation);
+    }
+
+    #[cfg(test)]
+    fn take_readiness_deadline_trace(&self) -> Vec<ReadinessDeadlineObservation> {
+        std::mem::take(
+            &mut *self
+                .readiness_deadline_trace
+                .lock()
+                .expect("readiness deadline trace"),
+        )
+    }
+
     #[cfg(test)]
     fn observe_next_process_group(&self) -> mpsc::Receiver<ProcessIdentity> {
         let (sender, receiver) = mpsc::sync_channel(1);
@@ -458,7 +496,16 @@ impl RuntimeHost {
         selected_workspace: Option<&Path>,
         timeout: Duration,
     ) -> RuntimeReadinessView {
-        let deadline = Instant::now() + timeout;
+        let started_at = Instant::now();
+        let deadline = started_at + timeout;
+        #[cfg(test)]
+        self.active
+            .record_readiness_deadline(ReadinessDeadlineObservation {
+                stage: ReadinessDeadlineStage::Request,
+                started_at: Some(started_at),
+                timeout: Some(timeout),
+                deadline,
+            });
         if !self.active.claim_request(request_id) {
             return RuntimeReadinessView::terminal(RuntimeReadinessState::ContainmentFailed, 0);
         }
@@ -742,6 +789,13 @@ fn perform_check(
     work_generation: &AtomicU64,
     deadline: Instant,
 ) -> RuntimeReadinessView {
+    #[cfg(test)]
+    active.record_readiness_deadline(ReadinessDeadlineObservation {
+        stage: ReadinessDeadlineStage::PerformCheck,
+        started_at: None,
+        timeout: None,
+        deadline,
+    });
     let mut verified = match bind_configuration(configuration, selected_workspace) {
         Ok(verified) => verified,
         Err(state) => return RuntimeReadinessView::terminal(state, 0),
@@ -1852,6 +1906,13 @@ fn run_protocol(
     active: &ActiveRuntime,
     deadline: Instant,
 ) -> ProtocolOutcome {
+    #[cfg(test)]
+    active.record_readiness_deadline(ReadinessDeadlineObservation {
+        stage: ReadinessDeadlineStage::RunProtocol,
+        started_at: None,
+        timeout: None,
+        deadline,
+    });
     let executable = match configuration.stage_verified_binary(work_directory) {
         Ok(executable) => executable,
         Err(state) => {
@@ -2852,6 +2913,13 @@ fn cleanup_after(
     active: &ActiveRuntime,
     deadline: Instant,
 ) -> ProtocolOutcome {
+    #[cfg(test)]
+    active.record_readiness_deadline(ReadinessDeadlineObservation {
+        stage: ReadinessDeadlineStage::CleanupAfter,
+        started_at: None,
+        timeout: None,
+        deadline,
+    });
     let cleanup_remaining = deadline.saturating_duration_since(Instant::now());
     let cleaned = stop_process_group_with_term_grace(
         &mut child,
@@ -8260,6 +8328,56 @@ exit 9
         assert_eq!(host.work_generation.load(Ordering::Acquire), 2);
         assert!(!host.active.running.load(Ordering::Acquire));
         assert_eq!(*host.active.process_group.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn request_deadline_is_forwarded_unchanged_through_readiness_composition() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let host = fixture.scripted_host("#!/bin/sh\nIFS= read -r initialize || exit 0\nexit 9\n");
+        let timeout = Duration::from_secs(2);
+        let result = host.check_with_timeout("deadline-composition", None, timeout);
+        let trace = host.active.take_readiness_deadline_trace();
+        let request = trace.first().copied();
+        let active = &host.active;
+        let running = active.running.load(Ordering::Acquire);
+        let process_group = active.process_group.lock().ok().and_then(|group| *group);
+        let owned_empty = active
+            .owned_processes
+            .lock()
+            .is_ok_and(|owned| owned.is_empty());
+        let retained_work_empty = active
+            .retained_work_directories
+            .lock()
+            .is_ok_and(|retained| retained.is_empty());
+        let work_empty = fs::read_dir(&fixture.work).is_ok_and(|entries| entries.count() == 0);
+        assert_eq!(result.state, RuntimeReadinessState::Incompatible);
+        assert!(!running);
+        assert_eq!(process_group, None);
+        assert!(owned_empty);
+        assert!(retained_work_empty);
+        assert!(work_empty);
+        assert_eq!(trace.len(), 4, "missing readiness deadline sequence");
+        let request = request.expect("request deadline observation");
+        assert_eq!(request.stage, ReadinessDeadlineStage::Request);
+        assert_eq!(request.timeout, Some(timeout));
+        assert_eq!(
+            request.deadline,
+            request.started_at.expect("request start") + timeout
+        );
+        let handoff = ReadinessDeadlineObservation {
+            stage: ReadinessDeadlineStage::PerformCheck,
+            started_at: None,
+            timeout: None,
+            deadline: request.deadline,
+        };
+        let mut protocol = handoff;
+        protocol.stage = ReadinessDeadlineStage::RunProtocol;
+        let mut cleanup = handoff;
+        cleanup.stage = ReadinessDeadlineStage::CleanupAfter;
+        assert_eq!(trace, vec![request, handoff, protocol, cleanup]);
     }
 
     #[test]
