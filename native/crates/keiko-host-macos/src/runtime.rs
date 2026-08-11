@@ -4617,6 +4617,16 @@ mod tests {
             && retire_settled_fixture(active)
     }
 
+    struct OwnedFixtureChild(Child);
+
+    impl Drop for OwnedFixtureChild {
+        fn drop(&mut self) {
+            drop(self.0.stdin.take());
+            let _ = self.0.kill();
+            let _ = bounded_owned_child_exit(&mut self.0);
+        }
+    }
+
     #[test]
     fn runtime_boundary_counts_and_rejects_structural_repository_context() {
         let workspace = Path::new("/private/KeikoRepositoryCanary");
@@ -10517,6 +10527,12 @@ exit 9
         for (state, result, group, expected) in [
             (
                 State::Waiting(false),
+                error(1),
+                ProcessPresenceStatus::Absent,
+                State::Lost,
+            ),
+            (
+                State::Waiting(false),
                 error(MACOS_ECHILD),
                 ProcessPresenceStatus::Present,
                 State::Lost,
@@ -10542,6 +10558,254 @@ exit 9
         ] {
             assert_eq!(reduce_direct_child(state, result, group), expected);
         }
+    }
+
+    #[test]
+    fn cleanup_reconciliation_poll_failure_preserves_policy_and_cutoff() {
+        let started_at = Instant::now();
+        let phase_deadline = started_at + Duration::from_millis(10);
+        let deadline = started_at + Duration::from_secs(1);
+        let continuation = CleanupContinuation::Poll {
+            phase_deadline,
+            after: CleanupAfterPoll::SignalTerm,
+        };
+        let controller = |policy| CleanupController {
+            policy,
+            process_group: 41,
+            deadline,
+            cleanup_started: started_at,
+            eof_grace: Duration::ZERO,
+            term_grace: Duration::ZERO,
+        };
+        let (_, before) = expect_cleanup_command(cleanup_reconciliation_failed(
+            controller(CleanupPhasePolicy::PreserveFinalReconciliation),
+            continuation,
+            started_at,
+        ));
+        assert_eq!(
+            before,
+            CleanupCommand::Sleep {
+                guard: Some(phase_deadline),
+                duration: Duration::from_millis(10),
+            }
+        );
+        let (_, parent_reap) = expect_cleanup_command(cleanup_reconciliation_failed(
+            controller(CleanupPhasePolicy::AllowParentReap),
+            continuation,
+            phase_deadline,
+        ));
+        assert_eq!(
+            parent_reap,
+            CleanupCommand::Sleep {
+                guard: None,
+                duration: Duration::from_millis(10),
+            }
+        );
+    }
+
+    #[test]
+    fn cleanup_reconciliation_poll_failure_advances_at_preserved_phase_cutoff() {
+        let started_at = Instant::now();
+        let phase_deadline = started_at + Duration::from_millis(10);
+        let deadline = started_at + Duration::from_secs(1);
+        let controller = CleanupController {
+            policy: CleanupPhasePolicy::PreserveFinalReconciliation,
+            process_group: 41,
+            deadline,
+            cleanup_started: started_at,
+            eof_grace: Duration::ZERO,
+            term_grace: Duration::ZERO,
+        };
+        let (_, command) = expect_cleanup_command(cleanup_reconciliation_failed(
+            controller,
+            CleanupContinuation::Poll {
+                phase_deadline,
+                after: CleanupAfterPoll::SignalTerm,
+            },
+            phase_deadline,
+        ));
+        assert_eq!(
+            command,
+            CleanupCommand::SignalProcessGroup {
+                guard: Some(deadline),
+                signal: SIGTERM,
+            }
+        );
+    }
+
+    #[test]
+    fn direct_child_helpers_reject_nonchild_and_foreign_authority() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child = Command::new("/bin/cat")
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("foreign direct-child fixture");
+        let process_group = child.id() as i32;
+        let (waiting, group) =
+            observe_direct_child(DirectChildState::Waiting(false), process_group);
+        let waiting = waiting.ok();
+        let nonchild_error = reap_exact_child(i32::MAX)
+            .err()
+            .and_then(|error| error.raw_os_error());
+        let foreign = AuthenticatedDirectChild(unavailable_process_identity(i32::MAX));
+        let refused = finish_owned_child_outcome(
+            DirectChildFinalization::StillDirectlyOwned(foreign),
+            &mut child,
+            process_group,
+            &ActiveRuntime::default(),
+        );
+        let remained_live = child.try_wait().ok().flatten().is_none();
+        let settled =
+            settle_unpublished_fixture(&mut child, process_group, &ActiveRuntime::default());
+        assert_eq!(waiting, Some(false));
+        assert_eq!(group, ProcessPresenceStatus::Unavailable);
+        assert_eq!(nonchild_error, Some(MACOS_ECHILD));
+        assert_eq!(refused, false);
+        assert_eq!(remained_live, true);
+        assert_eq!(settled, true);
+        assert_eq!(
+            process_group_presence(process_group),
+            ProcessPresenceStatus::Absent
+        );
+    }
+
+    #[test]
+    fn published_fixture_stop_requires_current_exact_identity() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child = OwnedFixtureChild(
+            Command::new("/bin/cat")
+                .process_group(0)
+                .stdin(Stdio::piped())
+                .spawn()
+                .expect("published stop fixture"),
+        );
+        let process_group = child.0.id() as i32;
+        let active = ActiveRuntime::default();
+        let identity = process_identity(process_group).expect("published stop identity");
+        let missing = stop_published_fixture_group(&mut child.0, process_group, &active);
+        let live_after_missing = child.0.try_wait().ok().flatten().is_none();
+        *active.process_group.lock().expect("wrong ownership state") =
+            Some(unavailable_process_identity(process_group + 1));
+        let wrong = stop_published_fixture_group(&mut child.0, process_group, &active);
+        let live_after_wrong = child.0.try_wait().ok().flatten().is_none();
+        *active.process_group.lock().expect("reused ownership state") = Some(ProcessIdentity {
+            started_microseconds: identity.started_microseconds.wrapping_add(1),
+            ..identity
+        });
+        let reused = stop_published_fixture_group(&mut child.0, process_group, &active);
+        let live_after_reused = child.0.try_wait().ok().flatten().is_none();
+        *active
+            .process_group
+            .lock()
+            .expect("current ownership state") = Some(identity);
+        let current = stop_published_fixture_group(&mut child.0, process_group, &active);
+        let settled = settle_unpublished_fixture(&mut child.0, process_group, &active);
+        assert_eq!((missing, live_after_missing), (false, true));
+        assert_eq!((wrong, live_after_wrong), (false, true));
+        assert_eq!((reused, live_after_reused), (false, true));
+        assert_eq!((current, settled), (true, true));
+        assert_eq!(
+            process_group_presence(process_group),
+            ProcessPresenceStatus::Absent
+        );
+    }
+
+    #[test]
+    fn owned_settlement_refuses_a_live_group_member_then_cleans_both_children() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut leader = OwnedFixtureChild(
+            Command::new("/bin/cat")
+                .process_group(0)
+                .stdin(Stdio::piped())
+                .spawn()
+                .expect("settlement leader"),
+        );
+        let process_group = leader.0.id() as i32;
+        let mut member = Command::new("/bin/cat")
+            .process_group(process_group)
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("settlement member");
+        let active = ActiveRuntime::default();
+        let refused = settle_unpublished_fixture(&mut leader.0, process_group, &active);
+        let leader_error = child_exited_without_reaping(process_group)
+            .err()
+            .and_then(|error| error.raw_os_error());
+        let group_present = process_group_presence(process_group);
+        let member_live = member.try_wait().ok().flatten().is_none();
+        let _ = leader.0.kill();
+        let leader_reaped = bounded_owned_child_exit(&mut leader.0);
+        drop(member.stdin.take());
+        let _ = member.kill();
+        let member_reaped = bounded_owned_child_exit(&mut member);
+        assert_eq!(refused, false);
+        assert_eq!(leader_error, Some(MACOS_ECHILD));
+        assert_eq!(group_present, ProcessPresenceStatus::Present);
+        assert_eq!(member_live, true);
+        assert_eq!(leader_reaped, true);
+        assert_eq!(member_reaped, true);
+        assert_eq!(
+            process_group_presence(process_group),
+            ProcessPresenceStatus::Absent
+        );
+    }
+
+    #[test]
+    fn settled_fixture_retirement_fails_closed_on_poisoned_ownership() {
+        struct ClearProcessGroupPoison<'a>(&'a Mutex<Option<ProcessIdentity>>);
+        impl Drop for ClearProcessGroupPoison<'_> {
+            fn drop(&mut self) {
+                self.0.clear_poison();
+            }
+        }
+        struct ClearOwnedProcessesPoison<'a>(&'a Mutex<HashSet<ProcessIdentity>>);
+        impl Drop for ClearOwnedProcessesPoison<'_> {
+            fn drop(&mut self) {
+                self.0.clear_poison();
+            }
+        }
+        let group_poisoned = ActiveRuntime::default();
+        let group_clear = ClearProcessGroupPoison(&group_poisoned.process_group);
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = group_poisoned
+                .process_group
+                .lock()
+                .expect("group poison lock");
+            panic!("poison group ownership");
+        });
+        assert_eq!(retire_settled_fixture(&group_poisoned), false);
+        drop(group_clear);
+
+        let owned_poisoned = ActiveRuntime::default();
+        *owned_poisoned
+            .process_group
+            .lock()
+            .expect("stored ownership") = Some(unavailable_process_identity(i32::MAX));
+        let owned_clear = ClearOwnedProcessesPoison(&owned_poisoned.owned_processes);
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = owned_poisoned
+                .owned_processes
+                .lock()
+                .expect("owned poison lock");
+            panic!("poison owned processes");
+        });
+        assert_eq!(retire_settled_fixture(&owned_poisoned), false);
+        drop(owned_clear);
+        assert_eq!(retire_settled_fixture(&owned_poisoned), true);
+        assert_eq!(
+            *owned_poisoned
+                .process_group
+                .lock()
+                .expect("retired poison ownership"),
+            None
+        );
     }
 
     #[test]
