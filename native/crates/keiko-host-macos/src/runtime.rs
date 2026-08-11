@@ -10638,12 +10638,14 @@ exit 9
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut child = Command::new("/bin/cat")
-            .process_group(0)
-            .stdin(Stdio::piped())
-            .spawn()
-            .expect("foreign direct-child fixture");
-        let process_group = child.id() as i32;
+        let mut child = OwnedFixtureChild(
+            Command::new("/bin/cat")
+                .process_group(0)
+                .stdin(Stdio::piped())
+                .spawn()
+                .expect("foreign direct-child fixture"),
+        );
+        let process_group = child.0.id() as i32;
         let (waiting, group) =
             observe_direct_child(DirectChildState::Waiting(false), process_group);
         let waiting = waiting.ok();
@@ -10653,13 +10655,13 @@ exit 9
         let foreign = AuthenticatedDirectChild(unavailable_process_identity(i32::MAX));
         let refused = finish_owned_child_outcome(
             DirectChildFinalization::StillDirectlyOwned(foreign),
-            &mut child,
+            &mut child.0,
             process_group,
             &ActiveRuntime::default(),
         );
-        let remained_live = child.try_wait().ok().flatten().is_none();
+        let remained_live = child.0.try_wait().ok().flatten().is_none();
         let settled =
-            settle_unpublished_fixture(&mut child, process_group, &ActiveRuntime::default());
+            settle_unpublished_fixture(&mut child.0, process_group, &ActiveRuntime::default());
         assert_eq!(waiting, Some(false));
         assert_eq!(group, ProcessPresenceStatus::Unavailable);
         assert_eq!(nonchild_error, Some(MACOS_ECHILD));
@@ -10728,23 +10730,25 @@ exit 9
                 .expect("settlement leader"),
         );
         let process_group = leader.0.id() as i32;
-        let mut member = Command::new("/bin/cat")
-            .process_group(process_group)
-            .stdin(Stdio::piped())
-            .spawn()
-            .expect("settlement member");
+        let mut member = OwnedFixtureChild(
+            Command::new("/bin/cat")
+                .process_group(process_group)
+                .stdin(Stdio::piped())
+                .spawn()
+                .expect("settlement member"),
+        );
         let active = ActiveRuntime::default();
         let refused = settle_unpublished_fixture(&mut leader.0, process_group, &active);
         let leader_error = child_exited_without_reaping(process_group)
             .err()
             .and_then(|error| error.raw_os_error());
         let group_present = process_group_presence(process_group);
-        let member_live = member.try_wait().ok().flatten().is_none();
+        let member_live = member.0.try_wait().ok().flatten().is_none();
         let _ = leader.0.kill();
         let leader_reaped = bounded_owned_child_exit(&mut leader.0);
-        drop(member.stdin.take());
-        let _ = member.kill();
-        let member_reaped = bounded_owned_child_exit(&mut member);
+        drop(member.0.stdin.take());
+        let _ = member.0.kill();
+        let member_reaped = bounded_owned_child_exit(&mut member.0);
         assert_eq!(refused, false);
         assert_eq!(leader_error, Some(MACOS_ECHILD));
         assert_eq!(group_present, ProcessPresenceStatus::Present);
