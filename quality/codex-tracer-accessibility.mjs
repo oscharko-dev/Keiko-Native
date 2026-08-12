@@ -18,6 +18,14 @@ const reasonCodes = new Set([
 ]);
 const acceptedPromptSha256 =
   "e1a92579b1ca673135331829beb97792c1289a6bccdfe0303302256c546960f6";
+const successfulWorkspaceInvocationTimeoutMs = 15_000;
+const projectionPairs = new Set([
+  "cancel-turn\0observe-stopping",
+  "cancel-workspace-picker\0observe-workspace-cancelled",
+  "open-canvas\0probe-canvas",
+  "select-workspace\0observe-workspace-permission-denied",
+  "select-workspace\0observe-workspace-selected",
+]);
 
 function sha256(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
@@ -25,6 +33,8 @@ function sha256(value) {
 
 export function classifyTracerAccessibilityResult({
   exitCode,
+  nativeAction = false,
+  projected = false,
   stderr,
   stdout,
   timedOut,
@@ -45,16 +55,38 @@ export function classifyTracerAccessibilityResult({
       typeof parsed !== "object" ||
       parsed === null ||
       Array.isArray(parsed) ||
-      JSON.stringify(Object.keys(parsed).toSorted(compareCodeUnits)) !==
-        JSON.stringify(["prompted", "reasonCode", "status"]) ||
       parsed.prompted !== false
+    ) {
+      return failed("adapter-output-invalid");
+    }
+    const expectedKeys =
+      projected && exitCode === 0
+        ? [
+            ...(nativeAction ? ["nativeActionMs"] : []),
+            "projectedMs",
+            "prompted",
+            "reasonCode",
+            "status",
+          ]
+        : ["prompted", "reasonCode", "status"];
+    if (
+      JSON.stringify(Object.keys(parsed).toSorted(compareCodeUnits)) !==
+      JSON.stringify(expectedKeys)
     ) {
       return failed("adapter-output-invalid");
     }
     if (
       exitCode === 0 &&
       parsed.status === "passed" &&
-      parsed.reasonCode === null
+      parsed.reasonCode === null &&
+      (!projected ||
+        (Number.isSafeInteger(parsed.projectedMs) &&
+          parsed.projectedMs >= 0 &&
+          parsed.projectedMs <= 5_000)) &&
+      (!nativeAction ||
+        (Number.isSafeInteger(parsed.nativeActionMs) &&
+          parsed.nativeActionMs >= 0 &&
+          parsed.nativeActionMs <= 5_000))
     ) {
       return parsed;
     }
@@ -75,6 +107,7 @@ export function executeTracerAccessibilityAction({
   action,
   binary,
   input,
+  observation,
   pid,
   run = spawnSync,
   timeoutMs = 5_000,
@@ -91,6 +124,9 @@ export function executeTracerAccessibilityAction({
     action === "select-workspace" &&
     typeof input === "string" &&
     /^KeikoAcceptanceIdentity104[A-Za-z0-9]+$/u.test(input);
+  const projectionValid =
+    observation === undefined ||
+    projectionPairs.has(`${action}\0${observation}`);
   if (
     typeof binary !== "string" ||
     binary.length === 0 ||
@@ -100,21 +136,30 @@ export function executeTracerAccessibilityAction({
     timeoutMs < 1 ||
     timeoutMs > 120_000 ||
     !tracerAccessibilityActions.includes(action) ||
+    !projectionValid ||
     (action === "set-task" || action === "select-workspace"
       ? !taskInputValid && !workspaceInputValid
       : input !== undefined)
   ) {
     throw new TypeError("adapter-action-invalid");
   }
-  const result = run(binary, [String(pid), action], {
-    encoding: "utf8",
-    input,
-    maxBuffer: 16 * 1024,
-    shell: false,
-    timeout: timeoutMs,
-  });
+  const result = run(
+    binary,
+    [String(pid), action, ...(observation === undefined ? [] : [observation])],
+    {
+      encoding: "utf8",
+      input,
+      maxBuffer: 16 * 1024,
+      shell: false,
+      timeout: timeoutMs,
+    },
+  );
   return classifyTracerAccessibilityResult({
     exitCode: result.status,
+    nativeAction:
+      action === "select-workspace" &&
+      observation === "observe-workspace-selected",
+    projected: observation !== undefined,
     stderr: String(result.stderr ?? ""),
     stdout: String(result.stdout ?? ""),
     timedOut: result.error?.code === "ETIMEDOUT",
@@ -144,6 +189,7 @@ export async function waitForTracerAccessibilityAction({
   input,
   monotonicNow = () => performance.now(),
   pid,
+  observation,
   timeoutMs,
   wait = waitForTurn,
 }) {
@@ -162,6 +208,7 @@ export async function waitForTracerAccessibilityAction({
       action,
       binary,
       input,
+      observation,
       pid,
       timeoutMs: remainingMs,
     });
@@ -181,6 +228,109 @@ export async function waitForTracerAccessibilityAction({
     prompted: false,
     reasonCode: "bounded-wait-expired",
     status: "failed",
+  };
+}
+
+async function runWorkspaceStep(execute, request) {
+  const result = await execute({ timeoutMs: 5_000, ...request });
+  if (
+    result?.status !== "passed" ||
+    result.reasonCode !== null ||
+    result.prompted !== false ||
+    !Number.isSafeInteger(result.elapsedMs) ||
+    result.elapsedMs < 0 ||
+    result.elapsedMs > (request.timeoutMs ?? 5_000)
+  ) {
+    throw new Error("packaged-workspace-checkpoint-failed");
+  }
+  return result;
+}
+
+async function runWorkspaceProjection(execute, request) {
+  const result = await runWorkspaceStep(execute, request);
+  if (
+    !Number.isSafeInteger(result.projectedMs) ||
+    result.projectedMs < 0 ||
+    result.projectedMs > 5_000
+  ) {
+    throw new Error("packaged-workspace-measurement-invalid");
+  }
+  return result;
+}
+
+async function measureWorkspaceSelections(execute, workspaceLabels) {
+  const selections = [];
+  for (const [index, workspaceLabel] of workspaceLabels.entries()) {
+    await runWorkspaceStep(execute, { action: "open-workspace-picker" });
+    const selected = await runWorkspaceProjection(execute, {
+      action: "select-workspace",
+      input: workspaceLabel,
+      observation: "observe-workspace-selected",
+      timeoutMs: successfulWorkspaceInvocationTimeoutMs,
+    });
+    if (
+      !Number.isSafeInteger(selected.nativeActionMs) ||
+      selected.nativeActionMs < 0 ||
+      selected.nativeActionMs > 5_000
+    ) {
+      throw new Error("packaged-workspace-measurement-invalid");
+    }
+    selections.push({
+      nativeActionMs: selected.nativeActionMs,
+      projectedMs: selected.projectedMs,
+      sample: index + 1,
+    });
+  }
+  return selections;
+}
+
+export async function runPackagedWorkspaceJourney({
+  deniedWorkspaceLabel,
+  execute,
+  workspaceLabels,
+}) {
+  const labelPattern = /^KeikoAcceptanceIdentity104[A-Za-z0-9]+$/u;
+  const selectedLabels = Array.isArray(workspaceLabels)
+    ? new Set(workspaceLabels)
+    : new Set();
+  if (
+    typeof execute !== "function" ||
+    workspaceLabels?.length !== 4 ||
+    selectedLabels.size !== 4 ||
+    workspaceLabels.some((label) => !labelPattern.test(label)) ||
+    !labelPattern.test(deniedWorkspaceLabel ?? "") ||
+    selectedLabels.has(deniedWorkspaceLabel)
+  ) {
+    throw new TypeError("packaged-workspace-invalid");
+  }
+  await runWorkspaceStep(execute, { action: "probe-start" });
+  await runWorkspaceProjection(execute, {
+    action: "open-canvas",
+    observation: "probe-canvas",
+  });
+  await runWorkspaceStep(execute, { action: "open-workspace-picker" });
+  await runWorkspaceProjection(execute, {
+    action: "cancel-workspace-picker",
+    observation: "observe-workspace-cancelled",
+  });
+  await runWorkspaceStep(execute, { action: "open-workspace-picker" });
+  await runWorkspaceProjection(execute, {
+    action: "select-workspace",
+    input: deniedWorkspaceLabel,
+    observation: "observe-workspace-permission-denied",
+  });
+  const selections = await measureWorkspaceSelections(execute, workspaceLabels);
+  await runWorkspaceStep(execute, { action: "quit" });
+  return {
+    workspaceProjectionMeasurements: selections.map(
+      ({ projectedMs, sample }) => ({ projectedMs, sample }),
+    ),
+    workspaceProjectionP95Ms: percentile95(
+      selections.map(({ projectedMs }) => projectedMs),
+    ),
+    workspaceSelectionNativeActionMeasurements: selections.map(
+      ({ nativeActionMs, sample }) => ({ nativeActionMs, sample }),
+    ),
   };
 }
 
@@ -211,8 +361,8 @@ export async function runPackagedTracerJourney({
   }
   const timings = [];
   const localProjectionMeasurements = [];
-  const step = async (action, input, timeoutMs = 5_000) => {
-    const result = await execute({ action, input, timeoutMs });
+  const step = async (action, input, timeoutMs = 5_000, observation) => {
+    const result = await execute({ action, input, observation, timeoutMs });
     if (
       result?.status !== "passed" ||
       result.reasonCode !== null ||
@@ -226,36 +376,63 @@ export async function runPackagedTracerJourney({
     timings.push({ action, elapsedMs: result.elapsedMs });
     return result;
   };
-  const project = async (action, observation, input) => {
-    const startedAt = monotonicNow();
-    await step(action, input);
-    await step(observation);
-    const elapsedMs = Math.round(monotonicNow() - startedAt);
-    if (!Number.isSafeInteger(elapsedMs) || elapsedMs < 0)
+  const project = async (action, observation, input, timeoutMs = 5_000) => {
+    const projected = await step(action, input, timeoutMs, observation);
+    const elapsedMs = projected.projectedMs;
+    if (
+      !Number.isSafeInteger(elapsedMs) ||
+      elapsedMs < 0 ||
+      elapsedMs > 5_000
+    ) {
       throw new Error("packaged-journey-measurement-invalid");
-    localProjectionMeasurements.push(elapsedMs);
-    return elapsedMs;
+    }
+    timings.push({ action: observation, elapsedMs });
+    return projected;
+  };
+  const recordLocalProjection = async (
+    action,
+    observation,
+    input,
+    timeoutMs = 5_000,
+  ) => {
+    const projected = await project(action, observation, input, timeoutMs);
+    localProjectionMeasurements.push({
+      action,
+      observation,
+      projectedMs: projected.projectedMs,
+    });
+    return projected;
   };
 
   await step("probe-start");
-  await project("open-canvas", "probe-canvas");
+  await recordLocalProjection("open-canvas", "probe-canvas");
 
   await step("open-workspace-picker");
-  await project("cancel-workspace-picker", "observe-workspace-cancelled");
+  const nativePickerCancellationProjectionMs = (
+    await project("cancel-workspace-picker", "observe-workspace-cancelled")
+  ).projectedMs;
 
   await step("open-workspace-picker");
-  await project(
+  await recordLocalProjection(
     "select-workspace",
     "observe-workspace-permission-denied",
     deniedWorkspaceLabel,
   );
 
   await step("open-workspace-picker");
-  await project(
+  const workspaceSelection = await recordLocalProjection(
     "select-workspace",
     "observe-workspace-selected",
     workspaceLabel,
+    successfulWorkspaceInvocationTimeoutMs,
   );
+  if (
+    !Number.isSafeInteger(workspaceSelection.nativeActionMs) ||
+    workspaceSelection.nativeActionMs < 0 ||
+    workspaceSelection.nativeActionMs > 5_000
+  ) {
+    throw new Error("packaged-journey-measurement-invalid");
+  }
 
   await step("check-runtime");
   await step("observe-runtime-ready");
@@ -276,10 +453,9 @@ export async function runPackagedTracerJourney({
   await step("submit-task");
   await step("observe-streaming", undefined, 120_000);
   await observeRuntime();
-  const cancellationProjectionMs = await project(
-    "cancel-turn",
-    "observe-stopping",
-  );
+  const turnCancellationProjectionMs = (
+    await recordLocalProjection("cancel-turn", "observe-stopping")
+  ).projectedMs;
   await step("observe-cancelled");
 
   await step("focus-task");
@@ -294,13 +470,18 @@ export async function runPackagedTracerJourney({
   await step("quit");
 
   return {
-    cancellationProjectionMs,
-    localProjectionP95Ms: percentile95(localProjectionMeasurements),
+    localProjectionMeasurements,
+    localProjectionP95Ms: percentile95(
+      localProjectionMeasurements.map(({ projectedMs }) => projectedMs),
+    ),
     localProjectionSamples: localProjectionMeasurements.length,
+    nativePickerCancellationProjectionMs,
     status: "passed",
     repositoryContextBytesToRuntime: 0,
     timings,
+    turnCancellationProjectionMs,
     turnDurationMs,
+    workspaceSelectionNativeActionMs: workspaceSelection.nativeActionMs,
   };
 }
 

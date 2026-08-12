@@ -19,7 +19,6 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
     "open-workspace-picker",
     "select-workspace",
     "cancel-workspace-picker",
-    "observe-workspace-selected",
     "observe-workspace-cancelled",
     "observe-workspace-permission-denied",
     "check-runtime",
@@ -57,7 +56,6 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
     [
       "probe-start",
       "probe-canvas",
-      "observe-workspace-selected",
       "observe-workspace-cancelled",
       "observe-workspace-permission-denied",
       "observe-runtime-ready",
@@ -91,6 +89,22 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
     assert.match(tracerAccessibilitySource, new RegExp(attribute, "u"));
   }
   assert.match(tracerAccessibilitySource, /CFArrayContainsValue/u);
+  assert.match(tracerAccessibilitySource, /ProjectionPairIsAllowed/u);
+  assert.match(tracerAccessibilitySource, /WaitForProjection/u);
+  assert.match(tracerAccessibilitySource, /clock_gettime\(CLOCK_MONOTONIC/u);
+  assert.doesNotMatch(tracerAccessibilitySource, /CFAbsoluteTimeGetCurrent/u);
+  const timedPickerAction = tracerAccessibilitySource.match(
+    /static BOOL PressPickerControlWithProjectionTiming\([\s\S]*?\n\}\n\nstatic/u,
+  )?.[0];
+  assert.match(
+    timedPickerAction ?? "",
+    /actionStartedAt = MonotonicSeconds\(\);[\s\S]*?AXUIElementPerformAction\(control, kAXPressAction\);[\s\S]*?actionReturnedAt = MonotonicSeconds\(\);[\s\S]*?\*projectionStartedAt = actionReturnedAt/u,
+  );
+  assert.match(
+    timedPickerAction ?? "",
+    /\*nativeActionMs = \(NSUInteger\)\([\s\S]*?MAX\(0\.0, actionReturnedAt - actionStartedAt\) \* 1000\.0 \+ 0\.5\)/u,
+  );
+  assert.match(tracerAccessibilitySource, /\\"projectedMs\\":%lu/u);
   assert.match(tracerAccessibilitySource, /kAXTextFieldRole/u);
   assert.match(tracerAccessibilitySource, /kAXMenuItemRole/u);
   assert.match(tracerAccessibilitySource, /CFSTR\("ListView"\)/u);
@@ -119,8 +133,12 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
     /OpenPickerItem\(\s*application,\s*\(__bridge CFStringRef\)label\)/u,
   );
   assert.match(
+    selectWorkspace ?? "",
+    /\[observation isEqualToString:@"observe-workspace-selected"\][\s\S]*?PressPickerControlWithProjectionTiming\([\s\S]*?&nativeActionMs,[\s\S]*?&projectionStartedAt\)[\s\S]*?else[\s\S]*?projectionStartedAt = MonotonicSeconds\(\);[\s\S]*?PressPickerControl\(application, CFSTR\("OKButton"\)\)/u,
+  );
+  assert.match(
     tracerAccessibilitySource,
-    /PressPickerControl\(application, CFSTR\("OKButton"\)\)/u,
+    /PressPickerControlWithProjectionTiming\(/u,
   );
   assert.match(
     tracerAccessibilitySource,
@@ -174,6 +192,42 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
   );
 });
 
+test("canvas projection starts with a real timed welcome action", () => {
+  assert.match(
+    tracerAccessibilitySource,
+    /BOOL welcome = HasUnique\(application, CFSTR\("Foundation öffnen"\)\)[\s\S]{0,1000}projectionStartedAt = MonotonicSeconds\(\);[\s\S]{0,300}welcome[\s\S]{0,120}Press\(application, CFSTR\("Foundation öffnen"\)\)/u,
+  );
+});
+
+test("persisted canvas is preconditioned through About before a timed canvas action", () => {
+  assert.match(
+    tracerAccessibilitySource,
+    /HasUnique\(application, CFSTR\("codex-task"\)\)[\s\S]{0,250}Press\(application, CFSTR\("Über Keiko Native"\)\)[\s\S]{0,250}WaitForUnique\(application, CFSTR\("ÜBER DIESE VERSION"\)\)[\s\S]{0,500}projectionStartedAt = MonotonicSeconds\(\);[\s\S]{0,300}Press\(application, CFSTR\("Leere Fläche"\)\)/u,
+  );
+  assert.doesNotMatch(
+    tracerAccessibilitySource,
+    /passed = HasUnique\(application, CFSTR\("codex-task"\)\);[\s\S]{0,120}EmitProjection/u,
+  );
+});
+
+test("persisted About and Update starts remain driveable through a timed canvas action", () => {
+  const probeStart = tracerAccessibilitySource.match(
+    /if \(\[action isEqualToString:@"probe-start"\]\) \{[\s\S]*?\n    \} else if/u,
+  )?.[0];
+  const openCanvas = tracerAccessibilitySource.match(
+    /else if \(\[action isEqualToString:@"open-canvas"\]\) \{[\s\S]*?\n    \} else if/u,
+  )?.[0];
+
+  for (const checkpoint of ["ÜBER DIESE VERSION", "UPDATE-STATUS"]) {
+    assert.match(probeStart ?? "", new RegExp(checkpoint, "u"));
+    assert.match(openCanvas ?? "", new RegExp(checkpoint, "u"));
+  }
+  assert.match(
+    openCanvas ?? "",
+    /Press\(application, CFSTR\("Leere Fläche"\)\)/u,
+  );
+});
+
 test("the canvas probe verifies its semantic set in one bounded tree traversal", () => {
   const probeCanvas = tracerAccessibilitySource.match(
     /else if \(\[action isEqualToString:@"probe-canvas"\]\) \{[\s\S]*?\n    \} else if/u,
@@ -191,6 +245,40 @@ test("the cancellation probe checks alternative terminal states in one traversal
 
   assert.match(cancellationProbe ?? "", /HasAnyUniqueValue\(/u);
   assert.doesNotMatch(cancellationProbe ?? "", /HasUnique\(/u);
+});
+
+test("successful workspace projection rejects a stale accepted-prefix sibling", () => {
+  const selectedProjection = tracerAccessibilitySource.match(
+    /if \(\[observation isEqualToString:@"observe-workspace-selected"\]\) \{[\s\S]*?\n  \}/u,
+  )?.[0];
+  assert.match(
+    tracerAccessibilitySource,
+    /selectedWorkspaceProjection =\s*\[NSString stringWithFormat:@"Ausgewählt: %@", label\]/u,
+  );
+  assert.match(
+    selectedProjection ?? "",
+    /exactWorkspaceProjection != nil[\s\S]*?HasUnique\([\s\S]*?exactWorkspaceProjection/u,
+  );
+  assert.doesNotMatch(selectedProjection ?? "", /HasUniquePrefix/u);
+});
+
+test("the obsolete standalone selected-workspace probe is closed", () => {
+  assert.equal(
+    tracerAccessibilityActions.includes("observe-workspace-selected"),
+    false,
+  );
+  assert.doesNotMatch(
+    tracerAccessibilitySource,
+    /else if \(\[action isEqualToString:@"observe-workspace-selected"\]\)/u,
+  );
+  assert.doesNotMatch(tracerAccessibilitySource, /HasUniquePrefix/u);
+});
+
+test("a supplied invalid UTF-8 observation fails closed", () => {
+  assert.match(
+    tracerAccessibilitySource,
+    /NSString \*observation =[\s\S]*?argc == 4 && observation == nil/u,
+  );
 });
 
 const macArm64Test =

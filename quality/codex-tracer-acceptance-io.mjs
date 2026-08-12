@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createReadStream } from "node:fs";
 import {
   chmod,
   lstat,
   mkdir,
   mkdtemp,
+  open,
   opendir,
   readFile,
   readlink,
@@ -28,11 +29,17 @@ import {
   acceptanceJourneyContract,
   acceptancePackageInspectionContract,
   acceptancePhysicalContract,
+  referenceEnvironmentFailures,
+  workspaceAcceptanceBudgetLimits,
+  workspaceAcceptanceIdentityContract,
+  workspaceAcceptanceJourneyContract,
+  workspaceAcceptanceSafeguardContract,
 } from "./codex-tracer-acceptance.mjs";
 import {
   compileTracerAccessibility,
   percentile95,
   runPackagedTracerJourney,
+  runPackagedWorkspaceJourney,
   waitForTracerAccessibilityAction,
 } from "./codex-tracer-accessibility.mjs";
 import {
@@ -84,6 +91,21 @@ const acceptanceSubprocessTimeouts = Object.freeze({
   acceptance: 10 * 60 * 1_000,
   inspection: 10_000,
 });
+const referenceEnvironmentCommands = Object.freeze([
+  [
+    "/usr/sbin/sysctl",
+    ["-n", "machdep.cpu.brand_string", "hw.memsize", "hw.model"],
+  ],
+  ["/usr/bin/sw_vers", ["-productVersion"]],
+  ["/usr/bin/sw_vers", ["-buildVersion"]],
+  [
+    "/usr/sbin/system_profiler",
+    ["SPDisplaysDataType", "-json", "-detailLevel", "mini"],
+  ],
+  ["/usr/bin/pmset", ["-g", "batt"]],
+  ["/usr/bin/pmset", ["-g", "custom"]],
+  ["/usr/bin/pmset", ["-g", "therm"]],
+]);
 const acceptanceProcessEnvironmentKeys = Object.freeze([
   "HOME",
   "LANG",
@@ -373,6 +395,14 @@ export async function runAcceptanceSubprocess(
 ) {
   if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0)
     throw new TypeError("acceptance-subprocess-timeout-invalid");
+  const maxOutputBytes = options.maxOutputBytes ?? 50 * 1024 * 1024;
+  if (
+    !Number.isSafeInteger(maxOutputBytes) ||
+    maxOutputBytes < 1 ||
+    maxOutputBytes > 50 * 1024 * 1024
+  ) {
+    throw new TypeError("acceptance-subprocess-output-bound-invalid");
+  }
   const dependencies = {
     ...defaultAcceptanceSubprocessDependencies(),
     ...providedDependencies,
@@ -408,7 +438,7 @@ export async function runAcceptanceSubprocess(
   const append = (channel, chunk) => {
     if (outputExceeded) return channel;
     const next = channel + chunk.toString("utf8");
-    if (Buffer.byteLength(next, "utf8") > 50 * 1024 * 1024) {
+    if (Buffer.byteLength(next, "utf8") > maxOutputBytes) {
       outputExceeded = true;
       signalOwnedGroup();
       return channel;
@@ -970,16 +1000,65 @@ async function crashOwnedRuntime(options) {
   process.kill(-ownership.processGroupId, "SIGKILL");
 }
 
-async function createIdentityWorkspace(prefix) {
-  const root = await mkdtemp(join(homedir(), "Documents", prefix));
-  await chmod(root, 0o700);
-  await mkdir(join(root, ".git"), { mode: 0o700 });
-  await writeFile(
-    join(root, "repository-context-canary.txt"),
-    "KeikoRepositoryContextCanary104",
-    { encoding: "utf8", mode: 0o600 },
-  );
-  return root;
+export async function createIdentityWorkspace(prefix, dependencies = {}) {
+  if (!/^KeikoAcceptanceIdentity104[A-Za-z0-9]*$/u.test(prefix))
+    throw new TypeError("acceptance-workspace-prefix-invalid");
+  const createTemporaryDirectory = dependencies.mkdtemp ?? mkdtemp;
+  const setMode = dependencies.chmod ?? chmod;
+  const createDirectory = dependencies.mkdir ?? mkdir;
+  const write = dependencies.writeFile ?? writeFile;
+  const remove = dependencies.rm ?? rm;
+  let root;
+  try {
+    root = await createTemporaryDirectory(join(homedir(), "Documents", prefix));
+    await setMode(root, 0o700);
+    await createDirectory(join(root, ".git"), { mode: 0o700 });
+    await write(
+      join(root, "repository-context-canary.txt"),
+      "KeikoRepositoryContextCanary104",
+      { encoding: "utf8", mode: 0o600 },
+    );
+    return root;
+  } catch {
+    if (root !== undefined) {
+      try {
+        await remove(root, { force: true, recursive: true });
+      } catch {
+        throw new Error("acceptance-workspace-fixture-cleanup-failed");
+      }
+    }
+    throw new Error("acceptance-workspace-fixture-unavailable");
+  }
+}
+
+export async function createAcceptanceRunRoot(prefix, dependencies = {}) {
+  if (
+    !["keiko-native-codex-tracer-104-", "keiko-native-workspace-187-"].includes(
+      prefix,
+    )
+  ) {
+    throw new TypeError("acceptance-run-root-prefix-invalid");
+  }
+  const createTemporaryDirectory = dependencies.mkdtemp ?? mkdtemp;
+  const canonicalize = dependencies.canonicalize ?? realpath;
+  const setMode = dependencies.chmod ?? chmod;
+  const remove = dependencies.rm ?? rm;
+  let root;
+  try {
+    root = await createTemporaryDirectory(join(tmpdir(), prefix));
+    const canonicalRoot = await canonicalRuntimeRoot(root, canonicalize);
+    await setMode(canonicalRoot, 0o700);
+    return canonicalRoot;
+  } catch {
+    if (root !== undefined) {
+      try {
+        await remove(root, { force: true, recursive: true });
+      } catch {
+        throw new Error("acceptance-run-root-cleanup-failed");
+      }
+    }
+    throw new Error("acceptance-run-root-unavailable");
+  }
 }
 
 function launchPackagedApp(internal) {
@@ -992,6 +1071,408 @@ function launchPackagedApp(internal) {
     }),
     stdio: "ignore",
   });
+}
+
+function launchWorkspacePackagedApp(internal) {
+  return spawn(internal.packageExecutable, [], {
+    detached: true,
+    env: acceptanceProcessEnvironment(process.env, {
+      KEIKO_CODEX_0_145_0_WORK_ROOT: internal.runtimeWorkRoot,
+    }),
+    stdio: "ignore",
+  });
+}
+
+async function removeWorkspaceRoots(workspaceRoots) {
+  let firstFailure;
+  for (const workspaceRoot of workspaceRoots) {
+    try {
+      await rm(workspaceRoot, { force: true, recursive: true });
+    } catch (error) {
+      firstFailure ??= error;
+    }
+  }
+  if (firstFailure !== undefined) throw firstFailure;
+}
+
+export async function cleanupWorkspacePreparation(
+  { deniedWorkspaceRoot, runRoot, workspaceRoots },
+  dependencies = {},
+) {
+  const actions = [
+    () =>
+      (dependencies.removeWorkspaceRoots ?? removeWorkspaceRoots)(
+        workspaceRoots,
+      ),
+    ...(deniedWorkspaceRoot === undefined
+      ? []
+      : [
+          () => (dependencies.chmod ?? chmod)(deniedWorkspaceRoot, 0o700),
+          () =>
+            (dependencies.rm ?? rm)(deniedWorkspaceRoot, {
+              force: true,
+              recursive: true,
+            }),
+        ]),
+    () => (dependencies.rm ?? rm)(runRoot, { force: true, recursive: true }),
+  ];
+  let failed = false;
+  for (const action of actions) {
+    try {
+      await action();
+    } catch {
+      failed = true;
+    }
+  }
+  if (failed) throw new Error("acceptance-workspace-fixture-cleanup-failed");
+}
+
+const workspaceEvidencePublisherSource = String.raw`
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+static void fail(const char *reason) {
+  fprintf(stderr, "workspace-publisher:%s\n", reason);
+  exit(1);
+}
+
+static int same(const struct stat *left, const struct stat *right) {
+  return left->st_dev == right->st_dev && left->st_ino == right->st_ino &&
+         left->st_mode == right->st_mode && left->st_size == right->st_size;
+}
+
+static int same_object(const struct stat *left, const struct stat *right) {
+  return left->st_dev == right->st_dev && left->st_ino == right->st_ino &&
+         left->st_mode == right->st_mode;
+}
+
+static unsigned long long number(const char *value) {
+  char *end = NULL;
+  errno = 0;
+  unsigned long long parsed = strtoull(value, &end, 10);
+  if (errno || !end || *end) fail("identity");
+  return parsed;
+}
+
+static void restore_replaced(int parent, const char *stage_name,
+                             const char *final_name,
+                             const struct stat *staged,
+                             const struct stat *prior) {
+  struct stat restored_stage, restored_final;
+  if (renameatx_np(parent, stage_name, parent, final_name, RENAME_SWAP) ||
+      fstatat(parent, stage_name, &restored_stage, AT_SYMLINK_NOFOLLOW) ||
+      fstatat(parent, final_name, &restored_final, AT_SYMLINK_NOFOLLOW) ||
+      !same(staged, &restored_stage) || !same(prior, &restored_final) ||
+      fsync(parent))
+    fail("rollback");
+}
+
+static void restore_created(int parent, const char *stage_name,
+                            const char *final_name,
+                            const struct stat *staged) {
+  struct stat restored_stage, unexpected_final;
+  if (renameat(parent, final_name, parent, stage_name) ||
+      fstatat(parent, stage_name, &restored_stage, AT_SYMLINK_NOFOLLOW) ||
+      !same(staged, &restored_stage) ||
+      (!fstatat(parent, final_name, &unexpected_final, AT_SYMLINK_NOFOLLOW) ||
+       errno != ENOENT) ||
+      fsync(parent))
+    fail("rollback");
+}
+
+int main(int argc, char **argv) {
+  if (argc != 10) fail("usage");
+  int parent = open(argv[1], O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+  struct stat parent_descriptor, parent_named;
+  if (parent < 0 || fstat(parent, &parent_descriptor) ||
+      lstat(argv[1], &parent_named) || !same(&parent_descriptor, &parent_named))
+    fail("parent-identity");
+  int stage = openat(parent, argv[2], O_RDONLY | O_NOFOLLOW);
+  struct stat staged;
+  if (stage < 0 || fstat(stage, &staged) || !S_ISREG(staged.st_mode) ||
+      (staged.st_mode & 0777) != 0600 ||
+      (unsigned long long)staged.st_dev != number(argv[4]) ||
+      (unsigned long long)staged.st_ino != number(argv[5]) ||
+      (unsigned long long)staged.st_size != number(argv[6]))
+    fail("stage-identity");
+  int prior = openat(parent, argv[3], O_RDONLY | O_NOFOLLOW);
+  struct stat prior_identity;
+  int replaced = prior >= 0;
+  if (!replaced && errno != ENOENT) fail("final-open");
+  if (replaced &&
+      (fstat(prior, &prior_identity) || !S_ISREG(prior_identity.st_mode)))
+    fail("final-type");
+
+  int build = open(argv[7], O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+  struct stat build_descriptor, build_named;
+  if (build < 0 || fstat(build, &build_descriptor) ||
+      lstat(argv[7], &build_named) ||
+      !same_object(&build_descriptor, &build_named) ||
+      (unsigned long long)build_descriptor.st_dev != number(argv[8]) ||
+      (unsigned long long)build_descriptor.st_ino != number(argv[9]) ||
+      unlinkat(build, "publisher", 0) || fsync(build) || close(build) ||
+      rmdir(argv[7]))
+    fail("build-cleanup");
+
+  if (lstat(argv[1], &parent_named) ||
+      !same_object(&parent_descriptor, &parent_named))
+    fail("parent-identity");
+  struct stat staged_named, prior_named;
+  if (fstatat(parent, argv[2], &staged_named, AT_SYMLINK_NOFOLLOW) ||
+      !same(&staged, &staged_named))
+    fail("stage-identity");
+  if (replaced) {
+    if (fstatat(parent, argv[3], &prior_named, AT_SYMLINK_NOFOLLOW) ||
+        !same(&prior_identity, &prior_named))
+      fail("final-identity");
+  } else {
+    errno = 0;
+    if (!fstatat(parent, argv[3], &prior_named, AT_SYMLINK_NOFOLLOW) ||
+        errno != ENOENT)
+      fail("final-identity");
+  }
+  if (replaced) {
+    if (renameatx_np(parent, argv[2], parent, argv[3], RENAME_SWAP))
+      fail("swap");
+  } else {
+    if (renameatx_np(parent, argv[2], parent, argv[3], RENAME_EXCL))
+      fail("rename");
+  }
+  struct stat published, retained;
+  int valid = !fstatat(parent, argv[3], &published, AT_SYMLINK_NOFOLLOW) &&
+              same(&staged, &published);
+  if (replaced)
+    valid = valid &&
+            !fstatat(parent, argv[2], &retained, AT_SYMLINK_NOFOLLOW) &&
+            same(&prior_identity, &retained);
+  if (!valid || fsync(parent)) {
+    if (replaced) restore_replaced(parent, argv[2], argv[3], &staged,
+                                   &prior_identity);
+    else restore_created(parent, argv[2], argv[3], &staged);
+    fail("postcondition");
+  }
+  if (replaced && unlinkat(parent, argv[2], 0)) {
+    restore_replaced(parent, argv[2], argv[3], &staged, &prior_identity);
+    fail("retained-cleanup");
+  }
+  close(stage);
+  if (prior >= 0) close(prior);
+  close(parent);
+  return 0;
+}
+`;
+
+async function publishBoundWorkspaceEvidence(
+  stagePath,
+  finalPath,
+  expected,
+  dependencies = {},
+) {
+  if (process.platform !== "darwin")
+    throw new Error("workspace-evidence-publication-platform");
+  const buildRoot = await (dependencies.mkdtemp ?? mkdtemp)(
+    join(tmpdir(), "keiko-workspace-publisher-"),
+  );
+  const helper = join(buildRoot, "publisher");
+  let published = false;
+  try {
+    const invoke = dependencies.spawnSync ?? spawnSync;
+    const compile = invoke(
+      "/usr/bin/cc",
+      [
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-O2",
+        "-x",
+        "c",
+        "-",
+        "-o",
+        helper,
+      ],
+      {
+        encoding: "utf8",
+        input: workspaceEvidencePublisherSource,
+        maxBuffer: 1024 * 1024,
+      },
+    );
+    if (compile.status !== 0 || compile.error)
+      throw new Error("workspace-evidence-publication-compile");
+    await (dependencies.chmod ?? chmod)(helper, 0o700);
+    const buildIdentity = await (dependencies.lstat ?? lstat)(buildRoot);
+    if (buildIdentity.isSymbolicLink() || !buildIdentity.isDirectory())
+      throw new Error("workspace-evidence-publication-build-root");
+    const execute = invoke(
+      helper,
+      [
+        dirname(finalPath),
+        basename(stagePath),
+        basename(finalPath),
+        String(expected.dev),
+        String(expected.ino),
+        String(expected.size),
+        buildRoot,
+        String(buildIdentity.dev),
+        String(buildIdentity.ino),
+      ],
+      { encoding: "utf8", maxBuffer: 1024 * 1024 },
+    );
+    if (execute.status !== 0 || execute.error)
+      throw new Error("workspace-evidence-publication-rejected");
+    published = true;
+  } finally {
+    if (!published)
+      await (dependencies.rm ?? rm)(buildRoot, {
+        force: true,
+        recursive: true,
+      });
+  }
+}
+
+function sameWorkspaceFileIdentity(left, right) {
+  return sameWorkspaceObjectIdentity(left, right) && left.size === right.size;
+}
+
+function sameWorkspaceObjectIdentity(left, right) {
+  return (
+    left.dev === right.dev && left.ino === right.ino && left.mode === right.mode
+  );
+}
+
+async function workspaceEvidenceSettled(
+  stagePath,
+  finalPath,
+  stageIdentity,
+  dependencies,
+) {
+  const inspect = dependencies.lstat ?? lstat;
+  const finalEntry = await inspect(finalPath);
+  const retainedStage = await inspect(stagePath).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  return (
+    retainedStage === null &&
+    finalEntry.isFile() &&
+    !finalEntry.isSymbolicLink() &&
+    sameWorkspaceFileIdentity(stageIdentity, finalEntry)
+  );
+}
+
+export async function publishWorkspaceEvidenceAtomically(
+  contents,
+  finalPath,
+  dependencies = {},
+) {
+  const stageName =
+    dependencies.stageName ??
+    `.${basename(finalPath)}.workspace-evidence-${String(process.pid)}.tmp`;
+  const stagePath = join(dirname(finalPath), stageName);
+  const encoded =
+    typeof contents === "string" ? Buffer.from(contents, "utf8") : null;
+  let handle;
+  let stageIdentity;
+  let stageOwned = false;
+  let published = false;
+  let failed = false;
+  try {
+    if (
+      encoded === null ||
+      stageName.length === 0 ||
+      basename(stageName) !== stageName ||
+      stagePath === finalPath
+    ) {
+      throw new Error("workspace-evidence-publication-invalid");
+    }
+    handle = await (dependencies.open ?? open)(stagePath, "wx", 0o600);
+    stageOwned = true;
+    stageIdentity = await handle.stat();
+    const stagedEntry = await (dependencies.lstat ?? lstat)(stagePath);
+    if (
+      stagedEntry.isSymbolicLink() ||
+      !stagedEntry.isFile() ||
+      (stagedEntry.mode & 0o777) !== 0o600 ||
+      !sameWorkspaceFileIdentity(stageIdentity, stagedEntry)
+    ) {
+      throw new Error("workspace-evidence-publication-stage-invalid");
+    }
+    await handle.writeFile(encoded);
+    await handle.sync();
+    stageIdentity = await handle.stat();
+    await handle.close();
+    handle = undefined;
+    const readBack = await (dependencies.readFile ?? readFile)(stagePath);
+    const readBackEntry = await (dependencies.lstat ?? lstat)(stagePath);
+    if (
+      !Buffer.isBuffer(readBack) ||
+      !readBack.equals(encoded) ||
+      !sameWorkspaceFileIdentity(stageIdentity, readBackEntry)
+    )
+      throw new Error("workspace-evidence-publication-readback-invalid");
+    let finalEntry;
+    try {
+      finalEntry = await (dependencies.lstat ?? lstat)(finalPath);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    if (
+      finalEntry !== undefined &&
+      (finalEntry.isSymbolicLink() || !finalEntry.isFile())
+    ) {
+      throw new Error("workspace-evidence-publication-final-invalid");
+    }
+    try {
+      await (dependencies.publish ?? publishBoundWorkspaceEvidence)(
+        stagePath,
+        finalPath,
+        stageIdentity,
+        dependencies,
+      );
+      published = true;
+    } catch {
+      published = await workspaceEvidenceSettled(
+        stagePath,
+        finalPath,
+        stageIdentity,
+        dependencies,
+      ).catch(() => false);
+      failed = !published;
+    }
+  } catch {
+    failed = true;
+  } finally {
+    if (handle !== undefined) {
+      try {
+        await handle.close();
+      } catch {
+        failed = true;
+      }
+    }
+    if (stageOwned && !published) {
+      try {
+        const retained = await (dependencies.lstat ?? lstat)(stagePath).catch(
+          (error) => {
+            if (error?.code === "ENOENT") return null;
+            throw error;
+          },
+        );
+        if (
+          retained !== null &&
+          sameWorkspaceObjectIdentity(stageIdentity, retained)
+        ) {
+          await (dependencies.rm ?? rm)(stagePath, { force: true });
+        }
+      } catch {
+        failed = true;
+      }
+    }
+  }
+  if (failed) throw new Error("workspace-evidence-publication-failed");
 }
 
 export async function measureFirstVisibleP95(
@@ -1008,12 +1489,50 @@ export async function measureFirstVisibleP95(
   const terminate = dependencies.terminate ?? terminateOwnedProcess;
   const reject = dependencies.reject ?? rejectUnauthenticatedLauncher;
   const waitForExit = dependencies.waitForExit ?? waitForProcessExit;
+  return percentile95(
+    await measureFreshLaunches({
+      adapterBinary,
+      authenticate,
+      cleanupDependencies,
+      internal,
+      launch,
+      measure: async ({ child, startedAt }) => {
+        const visible = await observe({
+          action: "probe-start",
+          binary: adapterBinary,
+          pid: child.pid,
+          timeoutMs: 5_000,
+        });
+        if (visible.status !== "passed")
+          throw new Error("acceptance-first-visible-failed");
+        return Math.round(monotonicNow() - startedAt);
+      },
+      monotonicNow,
+      observe,
+      reject,
+      samples: acceptanceBudgetLimits.firstVisibleKeikoOverheadSamples,
+      terminate,
+      waitForExit,
+    }),
+  );
+}
+
+async function measureFreshLaunches({
+  adapterBinary,
+  authenticate,
+  cleanupDependencies,
+  internal,
+  launch,
+  measure,
+  monotonicNow,
+  observe,
+  reject,
+  samples,
+  terminate,
+  waitForExit,
+}) {
   const observations = [];
-  for (
-    let repetition = 0;
-    repetition < acceptanceBudgetLimits.firstVisibleKeikoOverheadSamples;
-    repetition += 1
-  ) {
+  for (let repetition = 0; repetition < samples; repetition += 1) {
     const startedAt = monotonicNow();
     const { child, ownership } = await establishOwnedProcess({
       authenticate: (candidate) => authenticate(candidate, cleanupDependencies),
@@ -1021,17 +1540,9 @@ export async function measureFirstVisibleP95(
       reject,
     });
     try {
-      const visible = await observe({
-        action: "probe-start",
-        binary: adapterBinary,
-        pid: child.pid,
-        timeoutMs: 5_000,
-      });
-      if (visible.status !== "passed")
-        throw new Error("acceptance-first-visible-failed");
-      const elapsedMs = Math.round(monotonicNow() - startedAt);
+      const elapsedMs = await measure({ child, startedAt });
       if (!Number.isSafeInteger(elapsedMs) || elapsedMs < 0)
-        throw new Error("acceptance-first-visible-measurement-invalid");
+        throw new Error("acceptance-projection-measurement-invalid");
       observations.push(elapsedMs);
       const quit = await observe({
         action: "quit",
@@ -1045,20 +1556,415 @@ export async function measureFirstVisibleP95(
       await terminate(ownership, cleanupDependencies);
     }
   }
-  return percentile95(observations);
+  return observations;
+}
+
+export async function measureNativePickerCancellationDistribution(
+  internal,
+  adapterBinary,
+  cleanupDependencies,
+  dependencies = {},
+) {
+  const observe = dependencies.observe ?? waitForTracerAccessibilityAction;
+  const passed = async (request) => {
+    const result = await observe({
+      ...request,
+      binary: adapterBinary,
+      timeoutMs: 5_000,
+    });
+    if (result.status !== "passed")
+      throw new Error("acceptance-picker-cancellation-failed");
+    return result;
+  };
+  const measurements = await measureFreshLaunches({
+    adapterBinary,
+    authenticate: dependencies.authenticate ?? authenticateOwnedProcessGroup,
+    cleanupDependencies,
+    internal,
+    launch: dependencies.launch ?? launchPackagedApp,
+    measure: async ({ child }) => {
+      await passed({ action: "probe-start", pid: child.pid });
+      await passed({
+        action: "open-canvas",
+        observation: "probe-canvas",
+        pid: child.pid,
+      });
+      await passed({ action: "open-workspace-picker", pid: child.pid });
+      const cancelled = await passed({
+        action: "cancel-workspace-picker",
+        observation: "observe-workspace-cancelled",
+        pid: child.pid,
+      });
+      return cancelled.projectedMs;
+    },
+    monotonicNow: dependencies.monotonicNow ?? (() => performance.now()),
+    observe,
+    reject: dependencies.reject ?? rejectUnauthenticatedLauncher,
+    samples: acceptanceBudgetLimits.nativePickerCancellationSamples,
+    terminate: dependencies.terminate ?? terminateOwnedProcess,
+    waitForExit: dependencies.waitForExit ?? waitForProcessExit,
+  });
+  return {
+    measurements: measurements.map((projectedMs, index) => ({
+      launch: index + 1,
+      projectedMs,
+    })),
+    p95Ms: percentile95(measurements),
+  };
+}
+
+function normalizedDisplay(serialized) {
+  try {
+    const profile = JSON.parse(serialized);
+    const displays = profile?.SPDisplaysDataType?.flatMap(
+      ({ spdisplays_ndrvs: drivers }) => drivers ?? [],
+    );
+    if (!Array.isArray(displays) || displays.length !== 1) return null;
+    const display = displays[0];
+    if (
+      display?.spdisplays_connection_type !== "spdisplays_internal" ||
+      display?.spdisplays_main !== "spdisplays_yes" ||
+      display?._spdisplays_pixels !== "3024 x 1964" ||
+      display?._spdisplays_resolution !== "1512 x 982 @ 120.00Hz"
+    ) {
+      return null;
+    }
+    return {
+      display: "built-in-main-3024x1964-120hz",
+      scaling: "logical-1512x982-2x-default",
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function inspectReferenceEnvironment(runCommand = run) {
+  const options = {
+    inheritEnvironment: false,
+    maxOutputBytes: 64 * 1024,
+    timeoutMs: acceptanceSubprocessTimeouts.inspection,
+  };
+  const outputs = await Promise.all(
+    referenceEnvironmentCommands.map(([command, args]) =>
+      runCommand(command, args, options),
+    ),
+  );
+  const environment = normalizedReferenceEnvironment(outputs);
+  if (referenceEnvironmentFailures(environment).length > 0)
+    throw new Error("acceptance-reference-environment-invalid");
+  return environment;
+}
+
+export function assertStableReferenceEnvironment(before, after) {
+  if (JSON.stringify(before) !== JSON.stringify(after))
+    throw new Error("acceptance-reference-environment-changed");
+  return before;
+}
+
+function sameSnapshot(before, after) {
+  return JSON.stringify(before) === JSON.stringify(after);
+}
+
+export function observedWorkspaceSafeguards({
+  packageInspection,
+  residualProcesses,
+  runtimeAfter,
+  runtimeBefore,
+  workspaceAfter,
+  workspaceBefore,
+}) {
+  return {
+    ...workspaceAcceptanceSafeguardContract,
+    packageTestHooks: packageInspection.testHookMarkers,
+    residualProcesses,
+    unexpectedWorkspaceMutations:
+      sameSnapshot(runtimeBefore, runtimeAfter) &&
+      sameSnapshot(workspaceBefore, workspaceAfter)
+        ? 0
+        : 1,
+  };
+}
+
+async function prepareWorkspaceJourney(prepared, reportProgress) {
+  const processInspectorRoot = join(
+    prepared.internal.runRoot,
+    "workspace-process-inspector",
+  );
+  await compileProcessGroupInspector(processInspectorRoot);
+  const cleanupDependencies = processCleanupDependencies(processInspectorRoot);
+  const adapter = await compileTracerAccessibility(
+    join(prepared.internal.runRoot, "workspace-accessibility"),
+    (command, args, options) =>
+      runAcceptanceSubprocess(command, args, {
+        output: "stdout",
+        timeoutMs: options.timeoutMs,
+      }).then(() => ({ error: undefined, status: 0 })),
+  );
+  reportProgress("started", "post-observation:reference-environment");
+  const referenceEnvironmentBefore = await inspectReferenceEnvironment();
+  reportProgress("completed", "post-observation:reference-environment");
+  const [runtimeBefore, workspaceBefore] = await Promise.all([
+    snapshotDirectory(prepared.internal.runtimeWorkRoot),
+    Promise.all(
+      prepared.internal.workspaceRoots.map((root) => snapshotDirectory(root)),
+    ),
+  ]);
+  let cancellationSample = 0;
+  const nativePickerCancellation =
+    await measureNativePickerCancellationDistribution(
+      prepared.internal,
+      adapter.binary,
+      cleanupDependencies,
+      {
+        launch: (internal) => {
+          cancellationSample += 1;
+          reportProgress(
+            "started",
+            `picker-cancellation:launch:${cancellationSample}`,
+          );
+          return launchWorkspacePackagedApp(internal);
+        },
+        observe: async (request) => {
+          const checkpoint = `picker-cancellation:${request.observation ?? request.action}:${cancellationSample}`;
+          reportProgress("started", checkpoint);
+          const result = await waitForTracerAccessibilityAction(request);
+          if (result.status === "passed")
+            reportProgress("completed", checkpoint);
+          return result;
+        },
+      },
+    );
+  const launched = await establishOwnedProcess({
+    authenticate: (candidate) =>
+      authenticateOwnedProcessGroup(candidate, cleanupDependencies),
+    launch: () => launchWorkspacePackagedApp(prepared.internal),
+    reject: rejectUnauthenticatedLauncher,
+  });
+  return {
+    ...launched,
+    adapter,
+    cleanupDependencies,
+    nativePickerCancellation,
+    referenceEnvironmentBefore,
+    runtimeBefore,
+    workspaceBefore,
+  };
+}
+
+async function executeWorkspaceJourney(prepared, resources, reportProgress) {
+  const { child, cleanupDependencies, ownership } = resources;
+  let cleaned = false;
+  let selectionSample = 0;
+  try {
+    const journey = await runPackagedWorkspaceJourney({
+      deniedWorkspaceLabel: basename(prepared.internal.deniedWorkspaceRoot),
+      execute: async (request) => {
+        if (request.observation === "observe-workspace-selected")
+          selectionSample += 1;
+        const checkpoint = `workspace:${request.observation ?? request.action}:${selectionSample}`;
+        reportProgress("started", checkpoint);
+        const result = await waitForTracerAccessibilityAction({
+          ...request,
+          binary: resources.adapter.binary,
+          pid: child.pid,
+        });
+        if (result.status === "passed") reportProgress("completed", checkpoint);
+        return result;
+      },
+      workspaceLabels: prepared.internal.workspaceRoots.map((root) =>
+        basename(root),
+      ),
+    });
+    const cleanupStartedAt = performance.now();
+    reportProgress("started", "cleanup:application");
+    if (!(await waitForProcessExit(child.pid, 5_000)))
+      throw new Error("workspace-acceptance-app-quit-failed");
+    await terminateOwnedProcess(ownership, cleanupDependencies);
+    reportProgress("completed", "cleanup:application");
+    const cleanupMs = Math.round(performance.now() - cleanupStartedAt);
+    cleaned = true;
+    reportProgress("started", "post-observation:reference-environment");
+    const [referenceEnvironmentAfter, runtimeAfter, workspaceAfter] =
+      await Promise.all([
+        inspectReferenceEnvironment(),
+        snapshotDirectory(prepared.internal.runtimeWorkRoot),
+        Promise.all(
+          prepared.internal.workspaceRoots.map((root) =>
+            snapshotDirectory(root),
+          ),
+        ),
+      ]);
+    reportProgress("completed", "post-observation:reference-environment");
+    return {
+      cleanupMs,
+      journey,
+      referenceEnvironmentAfter,
+      runtimeAfter,
+      workspaceAfter,
+    };
+  } finally {
+    if (!cleaned) await terminateOwnedProcess(ownership, cleanupDependencies);
+  }
+}
+
+export async function runWorkspaceAcceptanceJourney(
+  prepared,
+  reportProgress = () => undefined,
+) {
+  const resources = await prepareWorkspaceJourney(prepared, reportProgress);
+  const completed = await executeWorkspaceJourney(
+    prepared,
+    resources,
+    reportProgress,
+  );
+  return {
+    budgets: {
+      ...workspaceAcceptanceBudgetLimits,
+      cleanupMs: completed.cleanupMs,
+      nativePickerCancellationMeasurements:
+        resources.nativePickerCancellation.measurements,
+      nativePickerCancellationP95Ms: resources.nativePickerCancellation.p95Ms,
+      workspaceProjectionMeasurements:
+        completed.journey.workspaceProjectionMeasurements,
+      workspaceProjectionP95Ms: completed.journey.workspaceProjectionP95Ms,
+      workspaceSelectionNativeActionMeasurements:
+        completed.journey.workspaceSelectionNativeActionMeasurements,
+    },
+    journey: structuredClone(workspaceAcceptanceJourneyContract),
+    referenceEnvironment: assertStableReferenceEnvironment(
+      resources.referenceEnvironmentBefore,
+      completed.referenceEnvironmentAfter,
+    ),
+    safeguards: observedWorkspaceSafeguards({
+      packageInspection: prepared.packageInspection,
+      residualProcesses: processExists(resources.child.pid) ? 1 : 0,
+      runtimeAfter: completed.runtimeAfter,
+      runtimeBefore: resources.runtimeBefore,
+      workspaceAfter: completed.workspaceAfter,
+      workspaceBefore: resources.workspaceBefore,
+    }),
+  };
+}
+
+function normalizedReferenceEnvironment([
+  hardware,
+  version,
+  build,
+  displayOutput,
+  powerOutput,
+  powerProfiles,
+  thermalOutput,
+]) {
+  const display = normalizedDisplay(displayOutput);
+  const powerMatch = /^Now drawing from '(AC|Battery) Power'(?:\n|$)/u.exec(
+    powerOutput,
+  );
+  const activePower = powerMatch?.[1];
+  const activeProfile = new RegExp(
+    `(?:^|\\n)${activePower} Power:\\n([\\s\\S]*?)(?=\\n(?:AC|Battery) Power:|$)`,
+    "u",
+  ).exec(powerProfiles)?.[1];
+  const lowPowerMode = /(?:^|\n)\s*lowpowermode\s+([01])(?:\n|$)/u.exec(
+    activeProfile ?? "",
+  )?.[1];
+  const nominalThermal = [
+    "Note: No thermal warning level has been recorded",
+    "Note: No performance warning level has been recorded",
+    "Note: No CPU power status has been recorded",
+  ].join("\n");
+  return {
+    ...display,
+    hardware:
+      hardware === "Apple M4\n17179869184\nMac16,1"
+        ? "apple-m4-16-gib-mac16-1"
+        : null,
+    operatingSystem:
+      version === "26.5.1" && build === "25F80" ? "macos-26.5.1-25f80" : null,
+    power:
+      lowPowerMode === "0" && activePower === "AC"
+        ? "ac-power-standard"
+        : lowPowerMode === "0" && activePower === "Battery"
+          ? "battery-power-standard"
+          : null,
+    referenceClass: "owner-m4-16gib-macos26",
+    thermal: thermalOutput === nominalThermal ? "nominal" : null,
+  };
 }
 
 export function createCodexTracerAcceptanceIo() {
   return {
+    async prepareWorkspacePackage() {
+      const runRoot = await createAcceptanceRunRoot(
+        "keiko-native-workspace-187-",
+      );
+      const workspaceRoots = [];
+      let deniedWorkspaceRoot;
+      try {
+        const sourceRevision = await run(
+          "git",
+          hardenedGitArguments(["rev-parse", "HEAD"]),
+          { timeoutMs: acceptanceSubprocessTimeouts.inspection },
+        );
+        if (!REVISION_PATTERN.test(sourceRevision))
+          throw new Error("acceptance-source-revision-invalid");
+        const inspected = await inspectPackage(sourceRevision);
+        const runtimeWorkRoot = join(runRoot, "runtime-work");
+        await mkdir(runtimeWorkRoot, { mode: 0o700 });
+        for (let sample = 1; sample <= 4; sample += 1) {
+          workspaceRoots.push(
+            await createIdentityWorkspace(
+              `KeikoAcceptanceIdentity104Sample${sample}`,
+            ),
+          );
+        }
+        deniedWorkspaceRoot = await createIdentityWorkspace(
+          "KeikoAcceptanceIdentity104Denied",
+        );
+        await chmod(deniedWorkspaceRoot, 0o000);
+        const expected = {
+          packageExecutableSha256: inspected.executableSha256,
+          packageManifestSha256: inspected.packageManifestSha256,
+          sourceRevision,
+        };
+        return {
+          expected,
+          internal: {
+            packageExecutable,
+            packageRoot,
+            deniedWorkspaceRoot,
+            runRoot,
+            runtimeWorkRoot,
+            workspaceRoots,
+          },
+          packageInspection: structuredClone(
+            acceptancePackageInspectionContract,
+          ),
+          workspaceBindings: {
+            ...workspaceAcceptanceIdentityContract,
+            ...expected,
+          },
+        };
+      } catch {
+        try {
+          await cleanupWorkspacePreparation({
+            deniedWorkspaceRoot,
+            runRoot,
+            workspaceRoots,
+          });
+        } catch {
+          throw new Error("acceptance-workspace-fixture-cleanup-failed");
+        }
+        throw new Error("acceptance-workspace-fixture-unavailable");
+      }
+    },
     async preparePackage() {
       const runtime = await canonicalRuntimeResources({
         binary: runtimeBinary,
         home: runtimeHome,
       });
-      const runRoot = await canonicalRuntimeRoot(
-        await mkdtemp(join(tmpdir(), "keiko-native-codex-tracer-104-")),
+      const runRoot = await createAcceptanceRunRoot(
+        "keiko-native-codex-tracer-104-",
       );
-      await chmod(runRoot, 0o700);
       let workspaceRoot;
       let deniedWorkspaceRoot;
       try {
@@ -1096,11 +2002,11 @@ export function createCodexTracerAcceptanceIo() {
             experimentalSchemaSha256:
               "46c4414f08cdbb20e66ce4153ee1edcb865ed5fda67e59511a78939ddb7a82d1",
             issueReadinessFingerprint:
-              "54a50110230af03db88acc3d503f038cb2e4a9557094fcff48ab19c01ee0af24",
+              "1a0be864b3855b81c649c5843e936828ebaeb27477463ccf0af86f9da61d3391",
             packageExecutableSha256: inspected.executableSha256,
             packageManifestSha256: inspected.packageManifestSha256,
             parentReadinessFingerprint:
-              "ff404fd8d0f7b336b997da77e55c5a5abc8c8cab1639b8e708f0b5792c283347",
+              "12ed4a0225fdf1fac2a75731fdbb25e949cf61349cc0a7ab7d8bad09c0eab7a3",
             promptSha256: acceptedEnvironment.promptSha256,
             runtimeArtifactSha256: acceptedEnvironment.runtimeSha256,
             runtimePackage: "@openai/codex",
@@ -1179,11 +2085,18 @@ export function createCodexTracerAcceptanceIo() {
         ),
         "utf8",
       );
+      const referenceEnvironmentBefore = await inspectReferenceEnvironment();
       const firstVisibleKeikoOverheadP95Ms = await measureFirstVisibleP95(
         prepared.internal,
         adapter.binary,
         cleanupDependencies,
       );
+      const nativePickerCancellation =
+        await measureNativePickerCancellationDistribution(
+          prepared.internal,
+          adapter.binary,
+          cleanupDependencies,
+        );
       const { child, ownership } = await establishOwnedProcess({
         authenticate: (candidate) =>
           authenticateOwnedProcessGroup(candidate, cleanupDependencies),
@@ -1238,6 +2151,10 @@ export function createCodexTracerAcceptanceIo() {
           snapshotDirectory(prepared.internal.runtimeWorkRoot),
           snapshotDirectory(prepared.internal.workspaceRoot),
         ]);
+        const referenceEnvironment = assertStableReferenceEnvironment(
+          referenceEnvironmentBefore,
+          await inspectReferenceEnvironment(),
+        );
         const physicalObservation = JSON.parse(
           await readFile(physicalObservationPath, "utf8"),
         );
@@ -1250,12 +2167,18 @@ export function createCodexTracerAcceptanceIo() {
         return {
           budgets: {
             ...acceptanceBudgetLimits,
-            cancellationProjectionMs: journey.cancellationProjectionMs,
             cleanupMs,
             firstVisibleKeikoOverheadP95Ms,
+            localProjectionMeasurements: journey.localProjectionMeasurements,
             localProjectionP95Ms: journey.localProjectionP95Ms,
             localProjectionSamples: journey.localProjectionSamples,
+            nativePickerCancellationMeasurements:
+              nativePickerCancellation.measurements,
+            nativePickerCancellationP95Ms: nativePickerCancellation.p95Ms,
+            turnCancellationProjectionMs: journey.turnCancellationProjectionMs,
             turnDurationMs: journey.turnDurationMs,
+            workspaceSelectionNativeActionMs:
+              journey.workspaceSelectionNativeActionMs,
           },
           journey: structuredClone(acceptanceJourneyContract),
           physical: {
@@ -1265,6 +2188,7 @@ export function createCodexTracerAcceptanceIo() {
               ? `${process.env.ImageOS}-${process.env.ImageVersion ?? "current"}`
               : "local-macos",
           },
+          referenceEnvironment,
           safeguards: observedSafeguards({
             containmentMarkers: prepared.internal.containmentMarkers,
             homeAfter,
@@ -1294,6 +2218,22 @@ export function createCodexTracerAcceptanceIo() {
     },
     async cleanup(prepared) {
       await cleanupAcceptanceFixture(prepared);
+    },
+    async cleanupWorkspacePackage(prepared) {
+      await cleanupAcceptanceFixture(prepared, {
+        removeObservation: async () => undefined,
+        removeWorkspace: async () =>
+          removeWorkspaceRoots(prepared.internal.workspaceRoots),
+      });
+    },
+    async runWorkspaceJourney(prepared, reportProgress) {
+      return runWorkspaceAcceptanceJourney(prepared, reportProgress);
+    },
+    async writeWorkspaceEvidence(evidence) {
+      await publishWorkspaceEvidenceAtomically(
+        `${JSON.stringify(evidence, null, 2)}\n`,
+        join(packageRoot, "codex-tracer-workspace-acceptance-evidence.json"),
+      );
     },
     async writeEvidence(evidence) {
       await writeFile(
