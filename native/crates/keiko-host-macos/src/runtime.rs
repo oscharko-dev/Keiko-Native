@@ -216,11 +216,31 @@ struct ProcessIdentity {
     started_seconds: u64,
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReadinessDeadlineStage {
+    Request,
+    PerformCheck,
+    RunProtocol,
+    CleanupAfter,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ReadinessDeadlineObservation {
+    stage: ReadinessDeadlineStage,
+    started_at: Option<Instant>,
+    timeout: Option<Duration>,
+    deadline: Instant,
+}
+
 #[derive(Debug, Default)]
 struct ActiveRuntime {
     process_group: Mutex<Option<ProcessIdentity>>,
     #[cfg(test)]
     process_group_observer: Mutex<Option<SyncSender<ProcessIdentity>>>,
+    #[cfg(test)]
+    readiness_deadline_trace: Mutex<Vec<ReadinessDeadlineObservation>>,
     owned_processes: Mutex<HashSet<ProcessIdentity>>,
     retained_work_directories: Mutex<HashSet<PathBuf>>,
     control: Mutex<RuntimeControl>,
@@ -298,6 +318,24 @@ impl RuntimeCancellation {
 }
 
 impl ActiveRuntime {
+    #[cfg(test)]
+    fn record_readiness_deadline(&self, observation: ReadinessDeadlineObservation) {
+        self.readiness_deadline_trace
+            .lock()
+            .expect("readiness deadline trace")
+            .push(observation);
+    }
+
+    #[cfg(test)]
+    fn take_readiness_deadline_trace(&self) -> Vec<ReadinessDeadlineObservation> {
+        std::mem::take(
+            &mut *self
+                .readiness_deadline_trace
+                .lock()
+                .expect("readiness deadline trace"),
+        )
+    }
+
     #[cfg(test)]
     fn observe_next_process_group(&self) -> mpsc::Receiver<ProcessIdentity> {
         let (sender, receiver) = mpsc::sync_channel(1);
@@ -458,7 +496,16 @@ impl RuntimeHost {
         selected_workspace: Option<&Path>,
         timeout: Duration,
     ) -> RuntimeReadinessView {
-        let deadline = Instant::now() + timeout;
+        let started_at = Instant::now();
+        let deadline = started_at + timeout;
+        #[cfg(test)]
+        self.active
+            .record_readiness_deadline(ReadinessDeadlineObservation {
+                stage: ReadinessDeadlineStage::Request,
+                started_at: Some(started_at),
+                timeout: Some(timeout),
+                deadline,
+            });
         if !self.active.claim_request(request_id) {
             return RuntimeReadinessView::terminal(RuntimeReadinessState::ContainmentFailed, 0);
         }
@@ -742,6 +789,13 @@ fn perform_check(
     work_generation: &AtomicU64,
     deadline: Instant,
 ) -> RuntimeReadinessView {
+    #[cfg(test)]
+    active.record_readiness_deadline(ReadinessDeadlineObservation {
+        stage: ReadinessDeadlineStage::PerformCheck,
+        started_at: None,
+        timeout: None,
+        deadline,
+    });
     let mut verified = match bind_configuration(configuration, selected_workspace) {
         Ok(verified) => verified,
         Err(state) => return RuntimeReadinessView::terminal(state, 0),
@@ -1852,6 +1906,13 @@ fn run_protocol(
     active: &ActiveRuntime,
     deadline: Instant,
 ) -> ProtocolOutcome {
+    #[cfg(test)]
+    active.record_readiness_deadline(ReadinessDeadlineObservation {
+        stage: ReadinessDeadlineStage::RunProtocol,
+        started_at: None,
+        timeout: None,
+        deadline,
+    });
     let executable = match configuration.stage_verified_binary(work_directory) {
         Ok(executable) => executable,
         Err(state) => {
@@ -2852,6 +2913,13 @@ fn cleanup_after(
     active: &ActiveRuntime,
     deadline: Instant,
 ) -> ProtocolOutcome {
+    #[cfg(test)]
+    active.record_readiness_deadline(ReadinessDeadlineObservation {
+        stage: ReadinessDeadlineStage::CleanupAfter,
+        started_at: None,
+        timeout: None,
+        deadline,
+    });
     let cleanup_remaining = deadline.saturating_duration_since(Instant::now());
     let cleaned = stop_process_group_with_term_grace(
         &mut child,
@@ -4379,6 +4447,254 @@ mod tests {
         false
     }
 
+    struct AuthenticatedDirectChild(ProcessIdentity);
+
+    enum DirectChildFinalization {
+        Settled,
+        StillDirectlyOwned(AuthenticatedDirectChild),
+        OwnershipLostOrUnavailable,
+    }
+
+    const DIRECT_CHILD_TERMINAL_INTERRUPTS: usize = 16;
+    const TEST_MACOS_EINTR: i32 = 4;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum DirectChildState {
+        Waiting(bool),
+        Reaping,
+        Verifying,
+        Settled,
+        Lost,
+    }
+
+    fn reduce_direct_child(
+        state: DirectChildState,
+        result: io::Result<bool>,
+        group: ProcessPresenceStatus,
+    ) -> DirectChildState {
+        use DirectChildState as State;
+        match (state, result) {
+            (state, Err(error)) if error.raw_os_error() == Some(TEST_MACOS_EINTR) => state,
+            (State::Waiting(_), Ok(false)) => State::Waiting(true),
+            (State::Waiting(_), Ok(true)) => State::Reaping,
+            (State::Reaping, Ok(true)) => State::Verifying,
+            (State::Waiting(_) | State::Verifying, Err(error))
+                if error.raw_os_error() == Some(MACOS_ECHILD)
+                    && group == ProcessPresenceStatus::Absent =>
+            {
+                State::Settled
+            }
+            _ => State::Lost,
+        }
+    }
+
+    fn authenticated_direct_child(
+        child: &Child,
+        process_group: i32,
+        identity: ProcessIdentity,
+    ) -> Option<AuthenticatedDirectChild> {
+        (child.id() as i32 == process_group
+            && process_group == identity.process_id
+            && process_start_identity(identity.process_id) == Some(identity))
+        .then_some(AuthenticatedDirectChild(identity))
+    }
+
+    fn reap_exact_child(child: i32) -> io::Result<bool> {
+        let mut information = WaitInformation::default();
+        // SAFETY: the authenticated PID belongs to this serialized test's direct child.
+        let result = unsafe { keiko_waitid(P_PID, child as u32, &mut information, WEXITED) };
+        if result == 0 {
+            Ok(information.process_id == child)
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    fn observe_direct_child(
+        state: DirectChildState,
+        process: i32,
+    ) -> (io::Result<bool>, ProcessPresenceStatus) {
+        let result = match state {
+            DirectChildState::Waiting(_) | DirectChildState::Verifying => {
+                child_exited_without_reaping(process)
+            }
+            DirectChildState::Reaping => reap_exact_child(process),
+            DirectChildState::Settled | DirectChildState::Lost => unreachable!("terminal state"),
+        };
+        let group = match &result {
+            Err(error) if error.raw_os_error() == Some(MACOS_ECHILD) => {
+                process_group_presence(process)
+            }
+            _ => ProcessPresenceStatus::Unavailable,
+        };
+        (result, group)
+    }
+
+    fn continue_direct_child(
+        state: DirectChildState,
+        waiting_deadline_open: bool,
+        terminal_interruptions: usize,
+    ) -> bool {
+        match state {
+            DirectChildState::Waiting(_) => waiting_deadline_open,
+            DirectChildState::Reaping | DirectChildState::Verifying => {
+                terminal_interruptions < DIRECT_CHILD_TERMINAL_INTERRUPTS
+            }
+            DirectChildState::Settled | DirectChildState::Lost => false,
+        }
+    }
+
+    fn finalize_exact_child_after_eof(child: AuthenticatedDirectChild) -> DirectChildFinalization {
+        let process = child.0.process_id;
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut state = DirectChildState::Waiting(false);
+        let mut interruptions = 0;
+        while continue_direct_child(state, Instant::now() < deadline, interruptions) {
+            let terminal = matches!(
+                state,
+                DirectChildState::Reaping | DirectChildState::Verifying
+            );
+            let (result, group) = observe_direct_child(state, process);
+            if terminal
+                && result
+                    .as_ref()
+                    .is_err_and(|error| error.raw_os_error() == Some(TEST_MACOS_EINTR))
+            {
+                interruptions += 1;
+            }
+            state = reduce_direct_child(state, result, group);
+            if matches!(state, DirectChildState::Waiting(_)) {
+                thread::yield_now();
+            }
+        }
+        match state {
+            DirectChildState::Settled => DirectChildFinalization::Settled,
+            DirectChildState::Waiting(true) => DirectChildFinalization::StillDirectlyOwned(child),
+            _ => DirectChildFinalization::OwnershipLostOrUnavailable,
+        }
+    }
+
+    fn finish_owned_child_outcome(
+        outcome: DirectChildFinalization,
+        child: &mut Child,
+        process_group: i32,
+        active: &ActiveRuntime,
+    ) -> bool {
+        match outcome {
+            DirectChildFinalization::Settled => true,
+            DirectChildFinalization::StillDirectlyOwned(token)
+                if token.0.process_id == child.id() as i32
+                    && token.0.process_id == process_group =>
+            {
+                settle_unpublished_fixture(child, process_group, active)
+            }
+            DirectChildFinalization::StillDirectlyOwned(_)
+            | DirectChildFinalization::OwnershipLostOrUnavailable => false,
+        }
+    }
+
+    fn finish_owned_child(
+        authority: AuthenticatedDirectChild,
+        child: &mut Child,
+        process_group: i32,
+        active: &ActiveRuntime,
+    ) -> bool {
+        let outcome = finalize_exact_child_after_eof(authority);
+        finish_owned_child_outcome(outcome, child, process_group, active)
+    }
+
+    fn publish_blocked_fixture(
+        child: &Child,
+        process_group: i32,
+        active: &ActiveRuntime,
+    ) -> Option<AuthenticatedDirectChild> {
+        let captured_identity = process_identity(process_group);
+        if !publish_active_process_group(active, process_group) {
+            return None;
+        }
+        let stored_identity = active.process_group.lock().ok().and_then(|group| *group);
+        stored_identity
+            .filter(|identity| {
+                Some(*identity) == captured_identity
+                    && retained_process_identity_status(*identity)
+                        == RetainedProcessIdentityStatus::Current
+            })
+            .and_then(|identity| authenticated_direct_child(child, process_group, identity))
+    }
+    fn stop_published_fixture_group(
+        child: &mut Child,
+        process_group: i32,
+        active: &ActiveRuntime,
+    ) -> bool {
+        let Some(identity) = active.process_group.lock().ok().and_then(|group| *group) else {
+            return false;
+        };
+        if identity.process_id != process_group
+            || retained_process_identity_status(identity) != RetainedProcessIdentityStatus::Current
+        {
+            return false;
+        }
+        stop_process_group(
+            child,
+            process_group,
+            active,
+            Instant::now() + Duration::from_secs(5),
+        )
+    }
+
+    fn settle_owned_fixture_process(
+        child: &mut Child,
+        process_group: i32,
+        active: &ActiveRuntime,
+    ) -> bool {
+        drop(child.stdin.take());
+        let _ = child.kill();
+        if bounded_owned_child_exit(child)
+            && process_group_presence(process_group) == ProcessPresenceStatus::Absent
+        {
+            return true;
+        }
+        let _ = stop_published_fixture_group(child, process_group, active);
+        child_exited_without_reaping(process_group)
+            .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD))
+            && process_group_presence(process_group) == ProcessPresenceStatus::Absent
+    }
+
+    fn retire_settled_fixture(active: &ActiveRuntime) -> bool {
+        let stored_identity = active.process_group.lock().ok().and_then(|group| *group);
+        let retired =
+            stored_identity.is_none_or(|identity| retire_active_process_group(active, identity));
+        retired
+            && active
+                .process_group
+                .lock()
+                .is_ok_and(|group| group.is_none())
+            && active
+                .owned_processes
+                .lock()
+                .is_ok_and(|owned| owned.is_empty())
+    }
+
+    fn settle_unpublished_fixture(
+        child: &mut Child,
+        process_group: i32,
+        active: &ActiveRuntime,
+    ) -> bool {
+        child.id() as i32 == process_group
+            && settle_owned_fixture_process(child, process_group, active)
+            && retire_settled_fixture(active)
+    }
+
+    struct OwnedFixtureChild(Child);
+
+    impl Drop for OwnedFixtureChild {
+        fn drop(&mut self) {
+            drop(self.0.stdin.take());
+            let _ = self.0.kill();
+            let _ = bounded_owned_child_exit(&mut self.0);
+        }
+    }
+
     #[test]
     fn runtime_boundary_counts_and_rejects_structural_repository_context() {
         let workspace = Path::new("/private/KeikoRepositoryCanary");
@@ -5420,29 +5736,42 @@ mod tests {
 
     #[test]
     fn runtime_process_publication_rejects_a_nonleader_and_dead_identity_is_already_reconciled() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let fixture = Fixture::new();
-        let mut child = Command::new("/bin/sleep")
-            .arg("30")
-            .spawn()
-            .expect("nonleader runtime");
-        let child_identity =
-            process_identity(child.id() as i32).expect("nonleader runtime identity");
-        assert!(
-            write_runtime_process_record(&fixture.work, child.id() as i32).is_err(),
-            "a process outside its own group cannot become runtime ownership"
+        let mut child = OwnedFixtureChild(
+            Command::new("/bin/sleep")
+                .arg("30")
+                .spawn()
+                .expect("nonleader runtime"),
         );
-        assert!(!reconcile_orphaned_runtime_process_group(child_identity));
-        assert!(!reconcile_orphaned_runtime_process_group(ProcessIdentity {
+        let process = child.0.id() as i32;
+        let child_identity = process_identity(process).expect("nonleader runtime identity");
+        let publication_rejected = write_runtime_process_record(&fixture.work, process).is_err();
+        let live_not_reconciled = !reconcile_orphaned_runtime_process_group(child_identity);
+        let reused_not_reconciled = !reconcile_orphaned_runtime_process_group(ProcessIdentity {
             started_microseconds: child_identity.started_microseconds.wrapping_add(1),
             ..child_identity
-        }));
-        let _ = child.kill();
-        let _ = child.wait();
-        assert!(reconcile_orphaned_runtime_process_group(ProcessIdentity {
+        });
+        let _ = child.0.kill();
+        let reaped = bounded_owned_child_exit(&mut child.0);
+        let child_absent = child_exited_without_reaping(process)
+            .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD));
+        let group_absent = process_group_presence(process);
+        let dead_reconciled = reconcile_orphaned_runtime_process_group(ProcessIdentity {
             process_id: i32::MAX,
             started_seconds: 1,
             started_microseconds: 0,
-        }));
+        });
+
+        assert!(publication_rejected, "a nonleader cannot own a runtime");
+        assert!(live_not_reconciled);
+        assert!(reused_not_reconciled);
+        assert!(reaped);
+        assert!(child_absent);
+        assert_eq!(group_absent, ProcessPresenceStatus::Absent);
+        assert!(dead_reconciled);
     }
 
     #[test]
@@ -8002,27 +8331,126 @@ exit 9
     }
 
     #[test]
-    fn request_timeout_is_one_end_to_end_initialization_and_cleanup_deadline() {
+    fn request_deadline_is_forwarded_unchanged_through_readiness_composition() {
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let request_timeout = Duration::from_secs(2);
         let fixture = Fixture::new();
         let host = fixture.scripted_host(
-            r#"#!/bin/sh
-read -r initialize
-exec /bin/sleep 30
-"#,
+            "#!/bin/sh\nIFS= read -r initialize || exit 0\nexec 1>&-\nIFS= read -r cleanup || exit 0\n",
         );
-        let started = Instant::now();
-        let result = host.check_with_timeout("request-timeout", None, request_timeout);
-        assert_eq!(result.state, RuntimeReadinessState::TimedOut);
-        assert!(
-            started.elapsed() < request_timeout + request_timeout / 2,
-            "request deadline was multiplied across phases: {:?}",
-            started.elapsed()
+        let timeout = Duration::from_secs(2);
+        let result = host.check_with_timeout("deadline-composition", None, timeout);
+        let trace = host.active.take_readiness_deadline_trace();
+        let request = trace.first().copied();
+        let active = &host.active;
+        let running = active.running.load(Ordering::Acquire);
+        let process_group = active.process_group.lock().ok().and_then(|group| *group);
+        let owned_empty = active
+            .owned_processes
+            .lock()
+            .is_ok_and(|owned| owned.is_empty());
+        let retained_work_empty = active
+            .retained_work_directories
+            .lock()
+            .is_ok_and(|retained| retained.is_empty());
+        let work_empty = fs::read_dir(&fixture.work).is_ok_and(|entries| entries.count() == 0);
+        assert_eq!(result.state, RuntimeReadinessState::Incompatible);
+        assert!(!running);
+        assert_eq!(process_group, None);
+        assert!(owned_empty);
+        assert!(retained_work_empty);
+        assert!(work_empty);
+        assert_eq!(trace.len(), 4, "missing readiness deadline sequence");
+        let request = request.expect("request deadline observation");
+        assert_eq!(request.stage, ReadinessDeadlineStage::Request);
+        assert_eq!(request.timeout, Some(timeout));
+        assert_eq!(
+            request.deadline,
+            request.started_at.expect("request start") + timeout
         );
-        assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
+        let handoff = ReadinessDeadlineObservation {
+            stage: ReadinessDeadlineStage::PerformCheck,
+            started_at: None,
+            timeout: None,
+            deadline: request.deadline,
+        };
+        let mut protocol = handoff;
+        protocol.stage = ReadinessDeadlineStage::RunProtocol;
+        let mut cleanup = handoff;
+        cleanup.stage = ReadinessDeadlineStage::CleanupAfter;
+        assert_eq!(trace, vec![request, handoff, protocol, cleanup]);
+    }
+
+    #[test]
+    fn request_timeout_is_one_end_to_end_initialization_and_cleanup_deadline() {
+        let request_started = Instant::now();
+        let request_timeout = Duration::from_secs(2);
+        let request_deadline = request_started + request_timeout;
+        let protocol_started = request_started + Duration::from_millis(500);
+        let protocol_deadline = readiness_protocol_deadline(request_deadline, protocol_started);
+        let cleanup_remaining = request_deadline.duration_since(protocol_deadline);
+        let identity = ProcessIdentity {
+            process_id: 41,
+            started_microseconds: 7,
+            started_seconds: 11,
+        };
+        let result = cleanup_reduce(
+            CleanupState::new(
+                CleanupPhasePolicy::PreserveFinalReconciliation,
+                identity.process_id,
+                request_deadline,
+                Some(readiness_term_grace(cleanup_remaining)),
+            ),
+            CleanupObservation::Begin {
+                observed_at: protocol_deadline,
+            },
+        );
+        let (state, command) = expect_cleanup_command(result);
+
+        assert_eq!(READINESS_CLEANUP_RESERVE, Duration::from_millis(300));
+        assert_eq!(READINESS_MAX_TERM_GRACE, Duration::from_millis(100));
+        assert_eq!(cleanup_remaining, READINESS_CLEANUP_RESERVE);
+        assert_eq!(
+            command,
+            CleanupCommand::ObserveActiveIdentity {
+                guard: Some(request_deadline)
+            }
+        );
+        let controller = match state {
+            CleanupState::Reconciling {
+                controller,
+                continuation: CleanupContinuation::Initial,
+                step: CleanupProofStep::ActiveIdentity,
+                ..
+            } => controller,
+            other => panic!("unexpected initial cleanup state: {other:?}"),
+        };
+        assert_eq!(controller.deadline, request_deadline);
+        assert_eq!(controller.cleanup_started, protocol_deadline);
+        assert_eq!(controller.eof_grace, Duration::from_millis(100));
+        assert_eq!(controller.term_grace, Duration::from_millis(100));
+        assert_eq!(
+            cleanup_reduce(
+                state,
+                CleanupObservation::Slept {
+                    started_at: protocol_deadline,
+                    completed_at: protocol_deadline,
+                },
+            ),
+            CleanupResult::Terminal(CleanupTerminal::Retained),
+            "a typed mismatch must fail closed"
+        );
+        assert_eq!(
+            cleanup_reduce(
+                state,
+                CleanupObservation::DeadlineClosed {
+                    closed_at: request_deadline,
+                },
+            ),
+            CleanupResult::Terminal(CleanupTerminal::Retained),
+            "no guarded primitive may start at the absolute request deadline"
+        );
     }
 
     #[test]
@@ -8362,10 +8790,13 @@ exec /bin/sleep 30
 
     #[test]
     fn cleanup_reducer_golden_trace_allocates_and_orders_every_readiness_phase() {
-        let started_at = Instant::now();
+        let request_started = Instant::now();
+        let request_deadline = request_started + Duration::from_secs(2);
+        let protocol_started = request_started + Duration::from_millis(500);
+        let started_at = readiness_protocol_deadline(request_deadline, protocol_started);
         let eof_deadline = started_at + Duration::from_millis(100);
         let term_deadline = started_at + Duration::from_millis(200);
-        let deadline = started_at + READINESS_CLEANUP_RESERVE;
+        let deadline = request_deadline;
         let identity = ProcessIdentity {
             process_id: 41,
             started_microseconds: 7,
@@ -9443,25 +9874,37 @@ exec /bin/sleep 30
 
     #[test]
     fn real_cleanup_executor_refuses_an_expired_sleep_without_invoking_it() {
-        let mut child = Command::new("/usr/bin/true")
-            .spawn()
-            .expect("executor guard child");
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child = OwnedFixtureChild(
+            Command::new("/usr/bin/true")
+                .spawn()
+                .expect("executor guard child"),
+        );
         let active = ActiveRuntime::default();
-        let process_group = child.id() as i32;
-        let mut executor = RealCleanupExecutor {
-            child: &mut child,
-            process_group,
-            active: &active,
+        let process_group = child.0.id() as i32;
+        let observation = {
+            let mut executor = RealCleanupExecutor {
+                child: &mut child.0,
+                process_group,
+                active: &active,
+            };
+            executor.execute(CleanupCommand::Sleep {
+                guard: Some(Instant::now() - Duration::from_nanos(1)),
+                duration: Duration::from_millis(1),
+            })
         };
-        let observation = executor.execute(CleanupCommand::Sleep {
-            guard: Some(Instant::now() - Duration::from_nanos(1)),
-            duration: Duration::from_millis(1),
-        });
+        let reaped = bounded_owned_child_exit(&mut child.0);
+        let child_absent = child_exited_without_reaping(process_group)
+            .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD));
+
         assert!(matches!(
             observation,
             CleanupObservation::DeadlineClosed { .. }
         ));
-        child.wait().expect("executor guard child reap");
+        assert!(reaped);
+        assert!(child_absent);
     }
 
     #[test]
@@ -9469,15 +9912,34 @@ exec /bin/sleep 30
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut child = Command::new("/bin/sleep")
-            .arg("30")
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("read -r release || exit 0; while read -r control; do :; done")
             .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
             .spawn()
             .expect("expired readiness cleanup process");
         let process_group = child.id() as i32;
+        let (stdout_sender, stdout_receiver) = mpsc::sync_channel(1);
+        let stdout_available = child.stdout.take().is_some_and(|stdout| {
+            spawn_stdout_reader(stdout, stdout_sender, Arc::new(AtomicUsize::new(0)));
+            true
+        });
         let active = ActiveRuntime::default();
-        let published = publish_active_process_group(&active, process_group);
-        let retained_identity = process_identity(process_group);
+        let Some(token) = publish_blocked_fixture(&child, process_group, &active) else {
+            let settled = settle_unpublished_fixture(&mut child, process_group, &active);
+            assert!(settled);
+            panic!("expired fixture publication failed after teardown");
+        };
+        let retained_identity = token.0;
+        let release = child
+            .stdin
+            .as_mut()
+            .is_some_and(|stdin| writeln!(stdin, "release").is_ok());
+        let readiness_timeout = (release && stdout_available)
+            .then(|| stdout_receiver.recv_timeout(Duration::from_millis(10)));
+        let control = child.stdin.take();
 
         let cleaned = stop_process_group_with_term_grace(
             &mut child,
@@ -9497,31 +9959,37 @@ exec /bin/sleep 30
         );
         let retained = active.process_group.lock().ok().and_then(|group| *group);
         let still_running = process_group_exists(process_group);
-        let recovered = stop_process_group(
+        drop(control);
+        let mut recovered = stop_process_group(
             &mut child,
             process_group,
             &active,
             Instant::now() + Duration::from_secs(1),
         );
-        let fallback_reaped = if recovered {
-            true
-        } else {
-            signal_process_group(process_group, SIGKILL);
-            child.wait().is_ok()
-        };
+        if !recovered {
+            let _ = signal_active_process_group(&active, process_group, SIGKILL);
+            recovered =
+                reconcile_retained_process_group(&active, Instant::now() + Duration::from_secs(5));
+        }
         let group_absent = !process_group_exists(process_group);
+        let direct_child_reaped = finish_owned_child(token, &mut child, process_group, &active);
+        let ownership_retired = active.process_group.lock().ok().and_then(|group| *group);
+        let owned_stopped = authenticated_owned_processes_status(&active);
 
-        assert!(published);
+        assert!(release);
+        assert!(matches!(
+            readiness_timeout,
+            Some(Err(RecvTimeoutError::Timeout))
+        ));
         assert!(!cleaned);
         assert!(!late_reconciled);
-        assert_eq!(retained, retained_identity);
+        assert_eq!(retained, Some(retained_identity));
         assert!(still_running);
-        assert!(
-            recovered,
-            "test-owned fallback must not count as product success"
-        );
-        assert!(fallback_reaped);
+        assert!(recovered, "authenticated test recovery did not complete");
         assert!(group_absent);
+        assert!(direct_child_reaped);
+        assert_eq!(ownership_retired, None);
+        assert_eq!(owned_stopped, Some(true));
     }
 
     #[test]
@@ -9529,10 +9997,13 @@ exec /bin/sleep 30
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let work_directory = fixture.work.join("readiness-cleanup-smoke");
+        fs::create_dir(&work_directory).expect("readiness cleanup work");
         let mut child = Command::new("/bin/sh")
             .arg("-c")
             .arg(
-                "trap '' TERM; /bin/sh -c \"trap '' TERM; printf 'ready\\n'; while :; do read -r line; done\" <&0 & wait; printf 'reaped\\n'",
+                "trap '' TERM; read -r release || exit 0; /bin/sh -c \"trap '' TERM; printf 'ready\\n'; while read -r line; do :; done\" <&0 & wait; printf 'reaped\\n'",
             )
             .process_group(0)
             .stdin(Stdio::piped())
@@ -9540,16 +10011,31 @@ exec /bin/sleep 30
             .spawn()
             .expect("TERM-resistant readiness process");
         let process_group = child.id() as i32;
-        let mut stdout = child.stdout.take().map(BufReader::new);
-        let mut ready = String::new();
-        let readiness = stdout
-            .as_mut()
-            .ok_or_else(|| io::Error::other("child stdout"))
-            .and_then(|stdout| stdout.read_line(&mut ready));
-
+        let (stdout_sender, stdout_receiver) = mpsc::sync_channel(2);
+        let stdout_available = child.stdout.take().is_some_and(|stdout| {
+            spawn_stdout_reader(stdout, stdout_sender, Arc::new(AtomicUsize::new(0)));
+            true
+        });
         let active = ActiveRuntime::default();
-        let published = publish_active_process_group(&active, process_group);
-        let exact_identity = process_identity(process_group);
+        let Some(token) = publish_blocked_fixture(&child, process_group, &active) else {
+            let settled = settle_unpublished_fixture(&mut child, process_group, &active);
+            assert!(settled);
+            panic!("smoke fixture publication failed after teardown");
+        };
+        let exact_identity = token.0;
+        let release = child
+            .stdin
+            .as_mut()
+            .is_some_and(|stdin| writeln!(stdin, "release").is_ok());
+        let readiness = (release && stdout_available)
+            .then(|| stdout_receiver.recv_timeout(Duration::from_secs(1)));
+        let ready = readiness.as_ref().is_some_and(
+            |event| matches!(event, Ok(FrameEvent::Frame(frame)) if frame == b"ready"),
+        );
+        if !ready {
+            drop(child.stdin.take());
+        }
+        let control = child.stdin.take();
         let outcome = cleanup_after(
             child,
             process_group,
@@ -9558,85 +10044,84 @@ exec /bin/sleep 30
             &active,
             Instant::now() + READINESS_CLEANUP_RESERVE,
         );
+        let work_cleaned = finalize_readiness_work(&active, &work_directory, &outcome);
+        let product_state = if outcome.cleaned && work_cleaned {
+            outcome.state
+        } else {
+            RuntimeReadinessState::CleanupFailed
+        };
         let original_cleaned = outcome.cleaned;
         let product_ownership = active.process_group.lock().ok().and_then(|group| *group);
         let product_group_presence = process_group_presence(process_group);
         let product_owned_stopped = authenticated_owned_processes_status(&active);
         let product_child_reaped = child_exited_without_reaping(process_group)
             .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD));
+        let product_work_exists = work_directory.exists();
+        let product_retained_work = active
+            .retained_work_directories
+            .lock()
+            .ok()
+            .is_some_and(|retained| retained.contains(&work_directory));
 
-        let mut recovered = original_cleaned;
-        if !original_cleaned {
-            recovered =
+        drop(control);
+        let mut process_recovered = original_cleaned;
+        if !process_recovered {
+            process_recovered =
                 reconcile_retained_process_group(&active, Instant::now() + Duration::from_secs(5));
-            if !recovered {
+            if !process_recovered {
                 let _ = signal_active_process_group(&active, process_group, SIGKILL);
-                recovered = reconcile_retained_process_group(
+                process_recovered = reconcile_retained_process_group(
                     &active,
                     Instant::now() + Duration::from_secs(5),
                 );
             }
         }
-        if process_group_presence(process_group) != ProcessPresenceStatus::Absent
-            && exact_identity.is_some_and(|identity| {
-                retained_process_identity_status(identity) == RetainedProcessIdentityStatus::Current
-            })
-        {
-            signal_process_group(process_group, SIGKILL);
-        }
-
-        let reap_deadline = Instant::now() + Duration::from_secs(5);
-        let mut direct_child_reaped = false;
-        while Instant::now() < reap_deadline {
-            match retained_child_reap_state(process_group) {
-                RetainedChildReapState::ExitedNeedsReap => {
-                    direct_child_reaped = reap_child(process_group);
-                    break;
-                }
-                RetainedChildReapState::AlreadyReaped => {
-                    direct_child_reaped = true;
-                    break;
-                }
-                RetainedChildReapState::Live | RetainedChildReapState::Unavailable => {
-                    thread::yield_now();
-                }
-            }
-        }
-        if active
-            .process_group
-            .lock()
-            .ok()
-            .is_some_and(|group| group.is_some())
-        {
-            recovered =
-                reconcile_retained_process_group(&active, Instant::now() + Duration::from_secs(5));
-        }
+        let eof_finalized = matches!(
+            finalize_exact_child_after_eof(token),
+            DirectChildFinalization::Settled
+        );
+        let work_recovered = reconcile_retained_work_directories(&active);
         let final_ownership = active.process_group.lock().ok().and_then(|group| *group);
         let final_group_presence = process_group_presence(process_group);
         let final_owned_stopped = authenticated_owned_processes_status(&active);
-        let teardown_proven = direct_child_reaped
+        let final_child_reaped = child_exited_without_reaping(process_group)
+            .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD));
+        let final_work_absent = !work_directory.exists()
+            && active
+                .retained_work_directories
+                .lock()
+                .ok()
+                .is_some_and(|retained| retained.is_empty());
+        let teardown_proven = process_recovered
+            && work_recovered
+            && eof_finalized
+            && final_child_reaped
             && final_ownership.is_none()
             && final_group_presence == ProcessPresenceStatus::Absent
-            && final_owned_stopped == Some(true);
+            && final_owned_stopped == Some(true)
+            && final_work_absent;
 
-        assert_eq!(outcome.state, RuntimeReadinessState::TimedOut);
-        assert!(readiness.is_ok());
-        assert_eq!(ready, "ready\n");
-        assert!(published);
-        assert!(exact_identity.is_some());
-        assert!(
-            (original_cleaned
-                && product_ownership.is_none()
-                && product_group_presence == ProcessPresenceStatus::Absent
-                && product_owned_stopped == Some(true)
-                && product_child_reaped)
-                || (!original_cleaned && product_ownership == exact_identity),
-            "300ms cleanup must report only strict success or exact retained failure"
-        );
-        assert!(
-            recovered || teardown_proven,
-            "test-owned recovery must not count as product success"
-        );
+        assert!(ready);
+        match product_state {
+            RuntimeReadinessState::TimedOut => {
+                assert!(original_cleaned);
+                assert!(work_cleaned);
+                assert_eq!(product_ownership, None);
+                assert_eq!(product_group_presence, ProcessPresenceStatus::Absent);
+                assert_eq!(product_owned_stopped, Some(true));
+                assert!(product_child_reaped);
+                assert!(!product_work_exists);
+                assert!(!product_retained_work);
+            }
+            RuntimeReadinessState::CleanupFailed => {
+                assert!(!original_cleaned);
+                assert!(!work_cleaned);
+                assert_eq!(product_ownership, Some(exact_identity));
+                assert!(product_work_exists);
+                assert!(product_retained_work);
+            }
+            state => panic!("unexpected 300ms cleanup result: {state:?}"),
+        }
         assert!(teardown_proven);
     }
 
@@ -9648,7 +10133,7 @@ exec /bin/sleep 30
         let mut child = Command::new("/bin/sh")
             .arg("-c")
             .arg(
-                "trap '' TERM; /bin/sh -c \"trap '' TERM; printf 'ready\\n'; while :; do read -r line; done\" <&0 & wait; printf 'reaped\\n'",
+                "trap '' TERM; read -r release || exit 0; /bin/sh -c \"trap '' TERM; printf 'ready\\n'; while read -r line; do :; done\" <&0 & wait; printf 'reaped\\n'",
             )
             .process_group(0)
             .stdin(Stdio::piped())
@@ -9656,16 +10141,29 @@ exec /bin/sleep 30
             .spawn()
             .expect("TERM-resistant parent and descendant");
         let process_group = child.id() as i32;
-        let mut stdout = child.stdout.take().map(BufReader::new);
-        let mut ready = String::new();
-        let readiness = stdout
-            .as_mut()
-            .ok_or_else(|| io::Error::other("child stdout"))
-            .and_then(|stdout| stdout.read_line(&mut ready));
-
+        let (stdout_sender, stdout_receiver) = mpsc::sync_channel(2);
+        let stdout_available = child.stdout.take().is_some_and(|stdout| {
+            spawn_stdout_reader(stdout, stdout_sender, Arc::new(AtomicUsize::new(0)));
+            true
+        });
         let active = ActiveRuntime::default();
-        let exact_identity = process_identity(process_group);
-        let published = publish_active_process_group(&active, process_group);
+        let Some(token) = publish_blocked_fixture(&child, process_group, &active) else {
+            let settled = settle_unpublished_fixture(&mut child, process_group, &active);
+            assert!(settled);
+            panic!("strict fixture publication failed after teardown");
+        };
+        let release = child
+            .stdin
+            .as_mut()
+            .is_some_and(|stdin| writeln!(stdin, "release").is_ok());
+        let readiness = (release && stdout_available)
+            .then(|| stdout_receiver.recv_timeout(Duration::from_secs(1)));
+        let ready = readiness.as_ref().is_some_and(
+            |event| matches!(event, Ok(FrameEvent::Frame(frame)) if frame == b"ready"),
+        );
+        if !ready {
+            drop(child.stdin.take());
+        }
         let refreshed = refresh_owned_processes(&active);
         let term_signalled = signal_active_process_group(&active, process_group, SIGTERM);
         let group_survived_term = process_group_exists(process_group);
@@ -9681,6 +10179,7 @@ exec /bin/sleep 30
             thread::yield_now();
         }
 
+        drop(child.stdin.take());
         let recovered = product_reconciled
             || stop_process_group(
                 &mut child,
@@ -9694,45 +10193,27 @@ exec /bin/sleep 30
             teardown_reconciled =
                 reconcile_retained_process_group(&active, Instant::now() + Duration::from_secs(5));
         }
-        if process_group_presence(process_group) != ProcessPresenceStatus::Absent
-            && exact_identity.is_some_and(|identity| {
-                retained_process_identity_status(identity) == RetainedProcessIdentityStatus::Current
-            })
-        {
-            signal_process_group(process_group, SIGKILL);
-            let emergency_deadline = Instant::now() + Duration::from_secs(5);
-            while Instant::now() < emergency_deadline {
-                if child.try_wait().is_ok_and(|status| status.is_some()) {
-                    break;
-                }
-                thread::yield_now();
-            }
-            teardown_reconciled =
-                reconcile_retained_process_group(&active, Instant::now() + Duration::from_secs(5));
-        }
 
         let retained = active.process_group.lock().ok().and_then(|group| *group);
         let owned_stopped = authenticated_owned_processes_status(&active);
         let group_presence = process_group_presence(process_group);
-        let direct_child_reaped = child_exited_without_reaping(process_group)
-            .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD));
-        let mut reaped = String::new();
+        let direct_child_reaped = finish_owned_child(token, &mut child, process_group, &active);
+        let no_retained_work = active
+            .retained_work_directories
+            .lock()
+            .ok()
+            .is_some_and(|retained| retained.is_empty());
         let reap_marker = if group_presence == ProcessPresenceStatus::Absent
             && direct_child_reaped
             && owned_stopped == Some(true)
         {
-            stdout
-                .as_mut()
-                .ok_or_else(|| io::Error::other("child stdout"))
-                .and_then(|stdout| stdout.read_line(&mut reaped))
+            stdout_receiver.recv_timeout(Duration::from_secs(1))
         } else {
-            Err(io::Error::other("fixture teardown was not proven"))
+            Err(RecvTimeoutError::Disconnected)
         };
 
-        assert!(readiness.is_ok());
-        assert_eq!(ready, "ready\n");
-        assert!(exact_identity.is_some());
-        assert!(published);
+        assert!(release);
+        assert!(ready);
         assert!(refreshed);
         assert!(term_signalled);
         assert!(group_survived_term);
@@ -9748,8 +10229,11 @@ exec /bin/sleep 30
         assert_eq!(owned_stopped, Some(true));
         assert_eq!(group_presence, ProcessPresenceStatus::Absent);
         assert!(direct_child_reaped);
-        assert!(reap_marker.is_ok());
-        assert_eq!(reaped, "reaped\n");
+        assert!(no_retained_work);
+        assert!(matches!(
+            reap_marker,
+            Ok(FrameEvent::Frame(frame)) if frame == b"reaped"
+        ));
     }
 
     #[test]
@@ -10060,6 +10544,499 @@ exec /bin/sleep 30
             &active,
             std::process::id() as i32,
         ));
+    }
+
+    #[test]
+    fn unavailable_readiness_publication_reaps_the_blocked_leader_without_release() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        struct ClearProcessGroupPoison<'a>(&'a Mutex<Option<ProcessIdentity>>);
+        impl Drop for ClearProcessGroupPoison<'_> {
+            fn drop(&mut self) {
+                self.0.clear_poison();
+            }
+        }
+        let fixture = Fixture::new();
+        let descendant_marker = fixture.work.join("descendant-released");
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("read -r release || exit 0; printf released > \"$DESCENDANT_MARKER\"")
+            .env("DESCENDANT_MARKER", &descendant_marker)
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("blocked publication fixture");
+        let process_group = child.id() as i32;
+        let active = ActiveRuntime::default();
+        let clear_poison = ClearProcessGroupPoison(&active.process_group);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = active
+                .process_group
+                .lock()
+                .expect("publication ownership before poisoning");
+            panic!("make readiness publication unavailable");
+        }));
+        let published = publish_blocked_fixture(&child, process_group, &active);
+        drop(clear_poison);
+        let settled = settle_unpublished_fixture(&mut child, process_group, &active);
+        let group_absent = !process_group_exists(process_group);
+        let ownership_absent = active
+            .process_group
+            .lock()
+            .is_ok_and(|group| group.is_none());
+        let owned_absent = active
+            .owned_processes
+            .lock()
+            .is_ok_and(|owned| owned.is_empty());
+        let work_absent = !descendant_marker.exists()
+            && active
+                .retained_work_directories
+                .lock()
+                .is_ok_and(|retained| retained.is_empty());
+
+        assert!(published.is_none() && settled && group_absent);
+        assert!(ownership_absent && owned_absent);
+        assert!(work_absent, "publication failure released descendant work");
+
+        let mut eof_child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("read -r release || exit 0; read -r control || exit 0")
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("EOF finalizer fixture");
+        let process_group = eof_child.id() as i32;
+        let eof_active = ActiveRuntime::default();
+        let Some(token) = publish_blocked_fixture(&eof_child, process_group, &eof_active) else {
+            let settled = settle_unpublished_fixture(&mut eof_child, process_group, &eof_active);
+            assert!(settled, "EOF publication teardown was not proven");
+            panic!("EOF fixture publication failed after teardown");
+        };
+        let identity = token.0;
+        let released = eof_child
+            .stdin
+            .as_mut()
+            .is_some_and(|stdin| writeln!(stdin, "release").is_ok());
+        let retired = retire_active_process_group(&eof_active, identity);
+        drop(eof_child.stdin.take());
+        let finalized = finish_owned_child(token, &mut eof_child, process_group, &eof_active);
+        assert!(released && retired && finalized);
+    }
+
+    #[test]
+    fn eof_finalizer_refuses_reused_identity_without_reaping_direct_child() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child = OwnedFixtureChild(
+            Command::new("/bin/sh")
+                .arg("-c")
+                .arg("read -r control || exit 0")
+                .process_group(0)
+                .stdin(Stdio::piped())
+                .spawn()
+                .expect("reused identity fixture"),
+        );
+        let process_group = child.0.id() as i32;
+        let exact_identity = process_identity(process_group).expect("exact child identity");
+        let reused_identity = ProcessIdentity {
+            started_microseconds: exact_identity.started_microseconds.wrapping_add(1),
+            ..exact_identity
+        };
+        let refused =
+            authenticated_direct_child(&child.0, process_group, reused_identity).is_none();
+        let unavailable_identity = unavailable_process_identity(i32::MAX);
+        let unavailable_refused =
+            authenticated_direct_child(&child.0, process_group, unavailable_identity).is_none();
+        let active = ActiveRuntime::default();
+        let mismatch_refused =
+            authenticated_direct_child(&child.0, process_group + 1, exact_identity).is_none()
+                && !settle_unpublished_fixture(&mut child.0, process_group + 1, &active);
+        let remained_live = child.0.try_wait().is_ok_and(|status| status.is_none());
+        drop(child.0.stdin.take());
+        let _ = child.0.kill();
+        let reaped = bounded_owned_child_exit(&mut child.0);
+        let group_absent = !process_group_exists(process_group);
+        assert!(
+            refused
+                && unavailable_refused
+                && mismatch_refused
+                && remained_live
+                && reaped
+                && group_absent
+        );
+    }
+
+    #[test]
+    fn direct_child_finalization_reducer_fails_closed() {
+        use DirectChildState as State;
+        let error = |code| Err(io::Error::from_raw_os_error(code));
+        for (state, result, group, expected) in [
+            (
+                State::Waiting(false),
+                error(1),
+                ProcessPresenceStatus::Absent,
+                State::Lost,
+            ),
+            (
+                State::Waiting(false),
+                error(MACOS_ECHILD),
+                ProcessPresenceStatus::Present,
+                State::Lost,
+            ),
+            (
+                State::Waiting(false),
+                error(MACOS_ECHILD),
+                ProcessPresenceStatus::Unavailable,
+                State::Lost,
+            ),
+            (
+                State::Waiting(false),
+                Ok(false),
+                ProcessPresenceStatus::Unavailable,
+                State::Waiting(true),
+            ),
+            (
+                State::Verifying,
+                Ok(false),
+                ProcessPresenceStatus::Unavailable,
+                State::Lost,
+            ),
+        ] {
+            assert_eq!(reduce_direct_child(state, result, group), expected);
+        }
+    }
+
+    #[test]
+    fn cleanup_reconciliation_poll_failure_preserves_policy_and_cutoff() {
+        let started_at = Instant::now();
+        let phase_deadline = started_at + Duration::from_millis(10);
+        let deadline = started_at + Duration::from_secs(1);
+        let continuation = CleanupContinuation::Poll {
+            phase_deadline,
+            after: CleanupAfterPoll::SignalTerm,
+        };
+        let controller = |policy| CleanupController {
+            policy,
+            process_group: 41,
+            deadline,
+            cleanup_started: started_at,
+            eof_grace: Duration::ZERO,
+            term_grace: Duration::ZERO,
+        };
+        let (_, before) = expect_cleanup_command(cleanup_reconciliation_failed(
+            controller(CleanupPhasePolicy::PreserveFinalReconciliation),
+            continuation,
+            started_at,
+        ));
+        assert_eq!(
+            before,
+            CleanupCommand::Sleep {
+                guard: Some(phase_deadline),
+                duration: Duration::from_millis(10),
+            }
+        );
+        let (_, parent_reap) = expect_cleanup_command(cleanup_reconciliation_failed(
+            controller(CleanupPhasePolicy::AllowParentReap),
+            continuation,
+            phase_deadline,
+        ));
+        assert_eq!(
+            parent_reap,
+            CleanupCommand::Sleep {
+                guard: None,
+                duration: Duration::from_millis(10),
+            }
+        );
+    }
+
+    #[test]
+    fn cleanup_reconciliation_poll_failure_advances_at_preserved_phase_cutoff() {
+        let started_at = Instant::now();
+        let phase_deadline = started_at + Duration::from_millis(10);
+        let deadline = started_at + Duration::from_secs(1);
+        let controller = CleanupController {
+            policy: CleanupPhasePolicy::PreserveFinalReconciliation,
+            process_group: 41,
+            deadline,
+            cleanup_started: started_at,
+            eof_grace: Duration::ZERO,
+            term_grace: Duration::ZERO,
+        };
+        let (_, command) = expect_cleanup_command(cleanup_reconciliation_failed(
+            controller,
+            CleanupContinuation::Poll {
+                phase_deadline,
+                after: CleanupAfterPoll::SignalTerm,
+            },
+            phase_deadline,
+        ));
+        assert_eq!(
+            command,
+            CleanupCommand::SignalProcessGroup {
+                guard: Some(deadline),
+                signal: SIGTERM,
+            }
+        );
+    }
+
+    #[test]
+    fn direct_child_helpers_reject_nonchild_and_foreign_authority() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child = OwnedFixtureChild(
+            Command::new("/bin/cat")
+                .process_group(0)
+                .stdin(Stdio::piped())
+                .spawn()
+                .expect("foreign direct-child fixture"),
+        );
+        let process_group = child.0.id() as i32;
+        let (waiting, group) =
+            observe_direct_child(DirectChildState::Waiting(false), process_group);
+        let waiting = waiting.ok();
+        let nonchild_error = reap_exact_child(i32::MAX)
+            .err()
+            .and_then(|error| error.raw_os_error());
+        let foreign = AuthenticatedDirectChild(unavailable_process_identity(i32::MAX));
+        let refused = finish_owned_child_outcome(
+            DirectChildFinalization::StillDirectlyOwned(foreign),
+            &mut child.0,
+            process_group,
+            &ActiveRuntime::default(),
+        );
+        let remained_live = child.0.try_wait().ok().flatten().is_none();
+        let settled =
+            settle_unpublished_fixture(&mut child.0, process_group, &ActiveRuntime::default());
+        assert_eq!(waiting, Some(false));
+        assert_eq!(group, ProcessPresenceStatus::Unavailable);
+        assert_eq!(nonchild_error, Some(MACOS_ECHILD));
+        assert!(!refused);
+        assert!(remained_live);
+        assert!(settled);
+        assert_eq!(
+            process_group_presence(process_group),
+            ProcessPresenceStatus::Absent
+        );
+    }
+
+    #[test]
+    fn published_fixture_stop_requires_current_exact_identity() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child = OwnedFixtureChild(
+            Command::new("/bin/cat")
+                .process_group(0)
+                .stdin(Stdio::piped())
+                .spawn()
+                .expect("published stop fixture"),
+        );
+        let process_group = child.0.id() as i32;
+        let active = ActiveRuntime::default();
+        let identity = process_identity(process_group).expect("published stop identity");
+        let missing = stop_published_fixture_group(&mut child.0, process_group, &active);
+        let live_after_missing = child.0.try_wait().ok().flatten().is_none();
+        *active.process_group.lock().expect("wrong ownership state") =
+            Some(unavailable_process_identity(process_group + 1));
+        let wrong = stop_published_fixture_group(&mut child.0, process_group, &active);
+        let live_after_wrong = child.0.try_wait().ok().flatten().is_none();
+        *active.process_group.lock().expect("reused ownership state") = Some(ProcessIdentity {
+            started_microseconds: identity.started_microseconds.wrapping_add(1),
+            ..identity
+        });
+        let reused = stop_published_fixture_group(&mut child.0, process_group, &active);
+        let live_after_reused = child.0.try_wait().ok().flatten().is_none();
+        *active
+            .process_group
+            .lock()
+            .expect("current ownership state") = Some(identity);
+        let current = stop_published_fixture_group(&mut child.0, process_group, &active);
+        let settled = settle_unpublished_fixture(&mut child.0, process_group, &active);
+        assert_eq!((missing, live_after_missing), (false, true));
+        assert_eq!((wrong, live_after_wrong), (false, true));
+        assert_eq!((reused, live_after_reused), (false, true));
+        assert_eq!((current, settled), (true, true));
+        assert_eq!(
+            process_group_presence(process_group),
+            ProcessPresenceStatus::Absent
+        );
+    }
+
+    #[test]
+    fn owned_settlement_refuses_a_live_group_member_then_cleans_both_children() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut leader = OwnedFixtureChild(
+            Command::new("/bin/cat")
+                .process_group(0)
+                .stdin(Stdio::piped())
+                .spawn()
+                .expect("settlement leader"),
+        );
+        let process_group = leader.0.id() as i32;
+        let mut member = OwnedFixtureChild(
+            Command::new("/bin/cat")
+                .process_group(process_group)
+                .stdin(Stdio::piped())
+                .spawn()
+                .expect("settlement member"),
+        );
+        let active = ActiveRuntime::default();
+        let refused = settle_unpublished_fixture(&mut leader.0, process_group, &active);
+        let leader_error = child_exited_without_reaping(process_group)
+            .err()
+            .and_then(|error| error.raw_os_error());
+        let group_present = process_group_presence(process_group);
+        let member_live = member.0.try_wait().ok().flatten().is_none();
+        let _ = leader.0.kill();
+        let leader_reaped = bounded_owned_child_exit(&mut leader.0);
+        drop(member.0.stdin.take());
+        let _ = member.0.kill();
+        let member_reaped = bounded_owned_child_exit(&mut member.0);
+        assert!(!refused);
+        assert_eq!(leader_error, Some(MACOS_ECHILD));
+        assert_eq!(group_present, ProcessPresenceStatus::Present);
+        assert!(member_live);
+        assert!(leader_reaped);
+        assert!(member_reaped);
+        assert_eq!(
+            process_group_presence(process_group),
+            ProcessPresenceStatus::Absent
+        );
+    }
+
+    #[test]
+    fn settled_fixture_retirement_fails_closed_on_poisoned_ownership() {
+        struct ClearProcessGroupPoison<'a>(&'a Mutex<Option<ProcessIdentity>>);
+        impl Drop for ClearProcessGroupPoison<'_> {
+            fn drop(&mut self) {
+                self.0.clear_poison();
+            }
+        }
+        struct ClearOwnedProcessesPoison<'a>(&'a Mutex<HashSet<ProcessIdentity>>);
+        impl Drop for ClearOwnedProcessesPoison<'_> {
+            fn drop(&mut self) {
+                self.0.clear_poison();
+            }
+        }
+        let group_poisoned = ActiveRuntime::default();
+        let group_clear = ClearProcessGroupPoison(&group_poisoned.process_group);
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = group_poisoned
+                .process_group
+                .lock()
+                .expect("group poison lock");
+            panic!("poison group ownership");
+        });
+        assert!(!retire_settled_fixture(&group_poisoned));
+        drop(group_clear);
+
+        let owned_poisoned = ActiveRuntime::default();
+        *owned_poisoned
+            .process_group
+            .lock()
+            .expect("stored ownership") = Some(unavailable_process_identity(i32::MAX));
+        let owned_clear = ClearOwnedProcessesPoison(&owned_poisoned.owned_processes);
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = owned_poisoned
+                .owned_processes
+                .lock()
+                .expect("owned poison lock");
+            panic!("poison owned processes");
+        });
+        assert!(!retire_settled_fixture(&owned_poisoned));
+        drop(owned_clear);
+        assert!(retire_settled_fixture(&owned_poisoned));
+        assert_eq!(
+            *owned_poisoned
+                .process_group
+                .lock()
+                .expect("retired poison ownership"),
+            None
+        );
+    }
+
+    #[test]
+    fn direct_child_terminal_drain_is_independent_of_wait_deadline() {
+        use DirectChildState as State;
+        let interrupted = || Err(io::Error::from_raw_os_error(TEST_MACOS_EINTR));
+        let no_child = || Err(io::Error::from_raw_os_error(MACOS_ECHILD));
+        assert!(!continue_direct_child(State::Waiting(false), false, 0));
+        let after_cutoff = reduce_direct_child(
+            State::Waiting(false),
+            Ok(true),
+            ProcessPresenceStatus::Unavailable,
+        );
+        assert!(continue_direct_child(after_cutoff, false, 0));
+        let after_reap =
+            reduce_direct_child(after_cutoff, Ok(true), ProcessPresenceStatus::Unavailable);
+        assert!(continue_direct_child(after_reap, false, 0));
+        let after_interrupt = reduce_direct_child(
+            after_reap,
+            interrupted(),
+            ProcessPresenceStatus::Unavailable,
+        );
+        assert!(continue_direct_child(after_interrupt, false, 1));
+        let settled =
+            reduce_direct_child(after_interrupt, no_child(), ProcessPresenceStatus::Absent);
+        assert_eq!(settled, State::Settled);
+        let exhausted = (0..DIRECT_CHILD_TERMINAL_INTERRUPTS).fold(after_cutoff, |state, _| {
+            reduce_direct_child(state, interrupted(), ProcessPresenceStatus::Unavailable)
+        });
+        assert_eq!(exhausted, State::Reaping);
+        assert!(!continue_direct_child(
+            exhausted,
+            false,
+            DIRECT_CHILD_TERMINAL_INTERRUPTS,
+        ));
+    }
+
+    #[test]
+    fn direct_child_outcome_allows_only_exact_owned_settlement() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child = OwnedFixtureChild(
+            Command::new("/bin/sh")
+                .arg("-c")
+                .arg("read -r control || exit 0")
+                .process_group(0)
+                .stdin(Stdio::piped())
+                .spawn()
+                .expect("owned outcome fixture"),
+        );
+        let process_group = child.0.id() as i32;
+        let identity = process_identity(process_group).expect("owned outcome identity");
+        let active = ActiveRuntime::default();
+        let lost_refused = !finish_owned_child_outcome(
+            DirectChildFinalization::OwnershipLostOrUnavailable,
+            &mut child.0,
+            process_group,
+            &active,
+        );
+        let mismatch = authenticated_direct_child(&child.0, process_group, identity)
+            .expect("mismatch outcome token");
+        let mismatch_refused = !finish_owned_child_outcome(
+            DirectChildFinalization::StillDirectlyOwned(mismatch),
+            &mut child.0,
+            process_group + 1,
+            &active,
+        );
+        let remained_live = child.0.try_wait().is_ok_and(|status| status.is_none());
+        let exact = authenticated_direct_child(&child.0, process_group, identity)
+            .expect("exact outcome token");
+        let settled = finish_owned_child_outcome(
+            DirectChildFinalization::StillDirectlyOwned(exact),
+            &mut child.0,
+            process_group,
+            &active,
+        );
+        assert!(lost_refused && mismatch_refused && remained_live && settled);
+        assert!(!process_group_exists(process_group));
     }
 
     #[test]
@@ -10401,29 +11378,61 @@ exec /bin/sleep 30
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut escaped = Command::new("/bin/sleep")
-            .arg("30")
-            .process_group(0)
-            .spawn()
-            .expect("independent descendant fixture");
+        let mut escaped = OwnedFixtureChild(
+            Command::new("/bin/sleep")
+                .arg("30")
+                .process_group(0)
+                .spawn()
+                .expect("independent descendant fixture"),
+        );
         let active = ActiveRuntime::default();
         let leader = std::process::id() as i32;
-        assert!(publish_active_process_group(&active, leader));
-        assert_eq!(owned_descendants_alive(&active, leader), Some(true));
-        let escaped_identity = process_identity(escaped.id() as i32).expect("escaped identity");
+        let escaped_process = escaped.0.id() as i32;
+        let escaped_information =
+            process_information(escaped_process).expect("escaped process information");
+        let published = publish_active_process_group(&active, leader);
+        let leader_identity = active
+            .process_group
+            .lock()
+            .expect("published test-process leader")
+            .expect("test-process identity");
+        let alive_before_stop = owned_descendants_alive(&active, leader);
+        let escaped_identity = process_identity(escaped_process).expect("escaped process identity");
         let reused = ProcessIdentity {
             started_microseconds: escaped_identity.started_microseconds.wrapping_add(1),
             ..escaped_identity
         };
-        active
+        let reused_status = known_owned_process_status(reused);
+        let _ = escaped.0.kill();
+        let escaped_reaped = bounded_owned_child_exit(&mut escaped.0);
+        let escaped_echild = child_exited_without_reaping(escaped_process)
+            .is_err_and(|error| error.raw_os_error() == Some(MACOS_ECHILD));
+        let escaped_group = process_group_presence(escaped_process);
+        let alive_after_stop = owned_descendants_alive(&active, leader);
+        let owned_before_retire = authenticated_owned_processes_status(&active);
+        let retired = retire_active_process_group(&active, leader_identity);
+        let ownership_absent = active
+            .process_group
+            .lock()
+            .is_ok_and(|group| group.is_none());
+        let owned_absent = active
             .owned_processes
             .lock()
-            .expect("owned process state")
-            .insert(reused);
-        assert_ne!(process_identity(reused.process_id), Some(reused));
-        signal_process(escaped.id() as i32, SIGKILL);
-        let _ = escaped.wait();
-        assert_eq!(owned_descendants_alive(&active, leader), Some(false));
+            .is_ok_and(|owned| owned.is_empty());
+
+        assert!(published);
+        assert_eq!(escaped_information.parent_process_id, leader as u32);
+        assert_ne!(escaped_information.process_group, leader as u32);
+        assert_eq!(alive_before_stop, Some(true));
+        assert_eq!(reused_status, KnownOwnedProcessStatus::Stopped);
+        assert!(escaped_reaped);
+        assert!(escaped_echild);
+        assert_eq!(escaped_group, ProcessPresenceStatus::Absent);
+        assert_eq!(alive_after_stop, Some(false));
+        assert_eq!(owned_before_retire, Some(true));
+        assert!(retired);
+        assert!(ownership_absent);
+        assert!(owned_absent);
     }
 
     struct Fixture {

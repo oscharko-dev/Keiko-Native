@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -117,7 +117,7 @@ test("emits only the selected same-generation producer result", () => {
   assert.equal(parsed.fields.workflow_job_id, 903);
 });
 
-test("the producer action reconstructs, evaluates, and writes the record plan", async () => {
+test("the producer action reconstructs, evaluates, and writes the record plan", async (t) => {
   const fingerprint = semanticIssueFingerprint(issue.body, issue.title);
   const readiness = {
     body: readinessComment({
@@ -147,6 +147,7 @@ test("the producer action reconstructs, evaluates, and writes the record plan", 
     KEIKO_PRODUCER_CONTRACT_VERSION: producer.wire.producer_contract_version,
   };
   const root = await mkdtemp(join(tmpdir(), "keiko-producer-"));
+  t.after(() => rm(root, { force: true, recursive: true }));
   const githubOutput = join(root, "output");
   await writeFile(githubOutput, "");
   const provider = {

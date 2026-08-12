@@ -681,6 +681,38 @@ mod tests {
         ))
     }
 
+    struct FoundationStateFixture {
+        root: PathBuf,
+        state_path: PathBuf,
+        ime_state_path: PathBuf,
+    }
+
+    impl FoundationStateFixture {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "keiko-native-foundation-{}-{}-state-fixture",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&root).expect("create foundation state fixture");
+            Self {
+                state_path: root.join("state.json"),
+                ime_state_path: root.join("state.ime.json"),
+                root,
+            }
+        }
+
+        fn finish(self) {
+            fs::remove_dir_all(&self.root).expect("remove foundation state fixture");
+        }
+    }
+
+    impl Drop for FoundationStateFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
     fn request(generation: u64, sequence: u64, operation: &str) -> String {
         format!(
             r#"{{"schemaVersion":1,"requestId":"{}","sequence":{sequence},"timeoutMs":1000,"operation":{operation}}}"#,
@@ -728,45 +760,69 @@ mod tests {
 
     #[test]
     fn ime_state_relaunches_committed_unicode_and_rejects_corruption() {
-        let path = temporary_state().with_file_name(format!(
-            "keiko-native-foundation-{}-{}-ime.json",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        write_ime_state(&path, "Grüße かな 😀").expect("IME state");
-        assert_eq!(read_ime_state(&path).as_deref(), Some("Grüße かな 😀"));
+        let fixture = FoundationStateFixture::new();
+        let state_path = fixture.state_path.clone();
+        let ime_state_path = fixture.ime_state_path.clone();
+        write_ime_state(&ime_state_path, "Grüße かな 😀").expect("IME state");
+        let committed = read_ime_state(&ime_state_path);
+        let mut malformed_reads = Vec::new();
         for malformed in [
             "",
             "{",
             r#"{"schemaVersion":2,"committedText":"x"}"#,
             r#"{"schemaVersion":1,"committedText":"x","extra":true}"#,
         ] {
-            fs::write(&path, malformed).expect("fixture");
-            assert_eq!(read_ime_state(&path), None);
+            fs::write(&ime_state_path, malformed).expect("fixture");
+            malformed_reads.push(read_ime_state(&ime_state_path));
         }
-        fs::write(&path, "x".repeat(MAX_IME_STATE_BYTES as usize + 1)).expect("fixture");
-        assert_eq!(read_ime_state(&path), None);
-        let _ = fs::remove_file(path);
+        fs::write(
+            &ime_state_path,
+            "x".repeat(MAX_IME_STATE_BYTES as usize + 1),
+        )
+        .expect("fixture");
+        let oversized = read_ime_state(&ime_state_path);
+        fs::remove_file(&ime_state_path).expect("remove malformed fixture");
 
-        let directory = temporary_state();
+        let directory = fixture.root.join("directory");
         fs::create_dir(&directory).expect("directory fixture");
-        assert_eq!(read_ime_state(&directory), None);
-        fs::remove_dir(directory).expect("remove fixture");
+        let directory_read = read_ime_state(&directory);
 
-        let state_path = temporary_state();
         let mut host = FoundationHost::new(state_path.clone());
         write_ime_state(&host.ime_state_path, "wiederhergestellt").expect("IME state");
+        let welcome = host.application().view(&current_build_identity());
+        let canvas = host
+            .application()
+            .apply(FoundationIntent::ShowCanvas, &current_build_identity());
+        drop(host);
+        fixture.finish();
+
+        assert!(!state_path.exists());
+        assert!(!ime_state_path.exists());
+        assert_eq!(committed.as_deref(), Some("Grüße かな 😀"));
+        assert_eq!(malformed_reads, vec![None, None, None, None]);
+        assert_eq!(oversized, None);
+        assert_eq!(directory_read, None);
         assert!(matches!(
-            host.application().view(&current_build_identity()),
+            welcome,
             Ok(keiko_application::ApplicationResult::Welcome { .. })
         ));
         assert!(matches!(
-            host.application()
-                .apply(FoundationIntent::ShowCanvas, &current_build_identity()),
+            canvas,
             Ok(keiko_application::ApplicationResult::Canvas { committed_text })
                 if committed_text == "wiederhergestellt"
         ));
-        let _ = fs::remove_file(host.ime_state_path);
+    }
+
+    #[test]
+    fn foundation_state_fixture_removes_base_and_ime_paths() {
+        let fixture = FoundationStateFixture::new();
+        let state_path = fixture.state_path.clone();
+        let ime_state_path = fixture.ime_state_path.clone();
+        fs::write(&state_path, "state").expect("state fixture");
+        fs::write(&ime_state_path, "IME state").expect("IME fixture");
+        fixture.finish();
+        assert!(!state_path.exists());
+        assert!(!ime_state_path.exists());
     }
 
     #[test]
@@ -796,101 +852,91 @@ mod tests {
 
     #[test]
     fn authenticated_foundation_requests_keep_four_state_policy_and_link_authority() {
-        let path = temporary_state();
-        let foundation = Mutex::new(FoundationHost::new(path.clone()));
+        let fixture = FoundationStateFixture::new();
+        let state_path = fixture.state_path.clone();
+        let ime_state_path = fixture.ime_state_path.clone();
+        let foundation = Mutex::new(FoundationHost::new(state_path.clone()));
         let (lifecycle, generation, nonce) = session();
-        let call = |sequence, operation: &str, opened: bool| {
-            let sender = SenderContext {
-                window_label: "main".to_owned(),
-                origin: "tauri://localhost".to_owned(),
-                generation,
-                document_nonce: nonce.clone(),
+        let facts = {
+            let call = |sequence, operation: &str, opened: bool| {
+                let sender = SenderContext {
+                    window_label: "main".to_owned(),
+                    origin: "tauri://localhost".to_owned(),
+                    generation,
+                    document_nonce: nonce.clone(),
+                };
+                foundation_request(
+                    &lifecycle,
+                    &foundation,
+                    &sender,
+                    &request(generation, sequence, operation),
+                    |_| opened,
+                )
             };
-            foundation_request(
-                &lifecycle,
-                &foundation,
-                &sender,
-                &request(generation, sequence, operation),
-                |_| opened,
-            )
+            let oversized = format!(
+                r#"{{"kind":"commit-canvas-text","committedText":"{}"}}"#,
+                "x".repeat(keiko_application::MAX_COMMITTED_TEXT_BYTES + 1)
+            );
+            [
+                call(1, r#"{"kind":"foundation-load"}"#, true)
+                    .encoded
+                    .contains("welcome"),
+                call(
+                    2,
+                    r#"{"kind":"open-foundation-link","destination":"repository"}"#,
+                    true,
+                )
+                .encoded
+                .contains("unauthorized"),
+                call(3, r#"{"kind":"dismiss-welcome"}"#, true)
+                    .encoded
+                    .contains("canvas"),
+                call(4, r#"{"kind":"show-about"}"#, true)
+                    .encoded
+                    .contains("about"),
+                call(
+                    5,
+                    r#"{"kind":"open-foundation-link","destination":"repository"}"#,
+                    true,
+                )
+                .encoded
+                .contains("about"),
+                call(
+                    6,
+                    r#"{"kind":"open-foundation-link","destination":"license"}"#,
+                    false,
+                )
+                .encoded
+                .contains("host-unavailable"),
+                call(7, r#"{"kind":"show-internal-update"}"#, true)
+                    .encoded
+                    .contains("internal-update"),
+                call(8, r#"{"kind":"show-canvas"}"#, true)
+                    .encoded
+                    .contains("canvas"),
+                call(
+                    9,
+                    r#"{"kind":"commit-canvas-text","committedText":"Grüße かな 😀"}"#,
+                    true,
+                )
+                .encoded
+                .contains("Grüße かな 😀"),
+                call(10, &oversized, true)
+                    .encoded
+                    .contains("payload-too-large"),
+                call(11, r#"{"kind":"application-health"}"#, true)
+                    .encoded
+                    .contains("unknown-operation"),
+                call(12, r#"{"kind":"quit-application"}"#, true).quit,
+            ]
         };
-        assert!(
-            call(1, r#"{"kind":"foundation-load"}"#, true)
-                .encoded
-                .contains("welcome")
-        );
-        assert!(
-            call(
-                2,
-                r#"{"kind":"open-foundation-link","destination":"repository"}"#,
-                true
-            )
-            .encoded
-            .contains("unauthorized")
-        );
-        assert!(
-            call(3, r#"{"kind":"dismiss-welcome"}"#, true)
-                .encoded
-                .contains("canvas")
-        );
-        assert!(
-            call(4, r#"{"kind":"show-about"}"#, true)
-                .encoded
-                .contains("about")
-        );
-        assert!(
-            call(
-                5,
-                r#"{"kind":"open-foundation-link","destination":"repository"}"#,
-                true
-            )
-            .encoded
-            .contains("about")
-        );
-        assert!(
-            call(
-                6,
-                r#"{"kind":"open-foundation-link","destination":"license"}"#,
-                false
-            )
-            .encoded
-            .contains("host-unavailable")
-        );
-        assert!(
-            call(7, r#"{"kind":"show-internal-update"}"#, true)
-                .encoded
-                .contains("internal-update")
-        );
-        assert!(
-            call(8, r#"{"kind":"show-canvas"}"#, true)
-                .encoded
-                .contains("canvas")
-        );
-        assert!(
-            call(
-                9,
-                r#"{"kind":"commit-canvas-text","committedText":"Grüße かな 😀"}"#,
-                true
-            )
-            .encoded
-            .contains("Grüße かな 😀")
-        );
-        let oversized = format!(
-            r#"{{"kind":"commit-canvas-text","committedText":"{}"}}"#,
-            "x".repeat(keiko_application::MAX_COMMITTED_TEXT_BYTES + 1)
-        );
-        assert!(
-            call(10, &oversized, true)
-                .encoded
-                .contains("payload-too-large")
-        );
-        assert!(
-            call(11, r#"{"kind":"application-health"}"#, true)
-                .encoded
-                .contains("unknown-operation")
-        );
-        assert!(call(12, r#"{"kind":"quit-application"}"#, true).quit);
-        let _ = fs::remove_file(path);
+        drop(foundation);
+        drop(lifecycle);
+        fixture.finish();
+
+        assert!(!state_path.exists());
+        assert!(!ime_state_path.exists());
+        assert_eq!(facts, [true; 12]);
     }
 
     #[test]
