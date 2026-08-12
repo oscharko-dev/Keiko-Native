@@ -8336,7 +8336,9 @@ exit 9
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let fixture = Fixture::new();
-        let host = fixture.scripted_host("#!/bin/sh\nIFS= read -r initialize || exit 0\nexit 9\n");
+        let host = fixture.scripted_host(
+            "#!/bin/sh\nIFS= read -r initialize || exit 0\nexec 1>&-\nIFS= read -r cleanup || exit 0\n",
+        );
         let timeout = Duration::from_secs(2);
         let result = host.check_with_timeout("deadline-composition", None, timeout);
         let trace = host.active.take_readiness_deadline_trace();
