@@ -37,6 +37,7 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
     "quit",
   ]);
   assert.deepEqual(tracerAccessibilityActivatingActions, [
+    "probe-start",
     "open-canvas",
     "open-workspace-picker",
     "select-workspace",
@@ -54,7 +55,6 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
       (action) => !tracerAccessibilityActivatingActions.includes(action),
     ),
     [
-      "probe-start",
       "probe-canvas",
       "observe-workspace-cancelled",
       "observe-workspace-permission-denied",

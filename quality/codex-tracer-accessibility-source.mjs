@@ -24,6 +24,7 @@ export const tracerAccessibilityActions = Object.freeze([
 ]);
 
 export const tracerAccessibilityActivatingActions = Object.freeze([
+  "probe-start",
   "open-canvas",
   "open-workspace-picker",
   "select-workspace",
