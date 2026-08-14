@@ -53,6 +53,22 @@ test("adapter results accept only one closed semantic outcome", () => {
   );
   assert.deepEqual(
     classifyTracerAccessibilityResult({
+      exitCode: 0,
+      projected: true,
+      stdout:
+        '{"status":"passed","reasonCode":null,"prompted":false,"projectedMs":42}\n',
+      stderr: "",
+      timedOut: false,
+    }),
+    {
+      projectedMs: 42,
+      prompted: false,
+      reasonCode: null,
+      status: "passed",
+    },
+  );
+  assert.deepEqual(
+    classifyTracerAccessibilityResult({
       exitCode: 1,
       stdout:
         '{"status":"failed","reasonCode":"missing-or-ambiguous-semantic-target","prompted":false}\n',
@@ -71,6 +87,13 @@ test("adapter results accept only one closed semantic outcome", () => {
       exitCode: 0,
       stdout:
         '{"status":"passed","reasonCode":null,"prompted":false,"extra":true}',
+      stderr: "",
+      timedOut: false,
+    },
+    {
+      exitCode: 0,
+      projected: true,
+      stdout: '{"status":"passed","reasonCode":null,"prompted":false}',
       stderr: "",
       timedOut: false,
     },
@@ -103,6 +126,18 @@ test("the action boundary accepts only the frozen task and bounded workspace ide
   for (const request of [
     { action: "unknown", input: undefined, pid: 1 },
     { action: "probe-start", input: "unexpected", pid: 1 },
+    {
+      action: "probe-start",
+      input: undefined,
+      observation: "probe-canvas",
+      pid: 1,
+    },
+    {
+      action: "cancel-turn",
+      input: undefined,
+      observation: "observe-workspace-selected",
+      pid: 1,
+    },
     { action: "set-task", input: "", pid: 1 },
     { action: "set-task", input: "x".repeat(4_097), pid: 1 },
     { action: "set-task", input: "bounded", pid: 1 },
@@ -140,6 +175,31 @@ test("the action boundary accepts only the frozen task and bounded workspace ide
   );
   assert.equal(invocation[2].input, acceptedPrompt);
   assert.equal(invocation[2].timeout, 5_000);
+
+  assert.deepEqual(
+    executeTracerAccessibilityAction({
+      action: "cancel-turn",
+      binary: "/bounded/adapter",
+      observation: "observe-stopping",
+      pid: 1,
+      run: (...args) => {
+        invocation = args;
+        return {
+          status: 0,
+          stderr: "",
+          stdout:
+            '{"status":"passed","reasonCode":null,"prompted":false,"projectedMs":31}\n',
+        };
+      },
+    }),
+    {
+      projectedMs: 31,
+      prompted: false,
+      reasonCode: null,
+      status: "passed",
+    },
+  );
+  assert.deepEqual(invocation[1], ["1", "cancel-turn", "observe-stopping"]);
 });
 
 test("bounded semantic waits retry only missing targets and stop on permission denial", async () => {
@@ -200,7 +260,11 @@ test("the packaged journey drives the fixed sequence and excludes observer start
   const result = await runPackagedTracerJourney({
     deniedWorkspaceLabel: "KeikoAcceptanceIdentity104DeniedABC123",
     execute: async (request) => {
-      calls.push({ action: request.action, input: request.input });
+      calls.push({
+        action: request.action,
+        input: request.input,
+        observation: request.observation,
+      });
       const elapsedMs =
         request.action === "probe-start"
           ? 1_000
@@ -210,6 +274,16 @@ test("the packaged journey drives the fixed sequence and excludes observer start
       now += elapsedMs;
       return {
         elapsedMs,
+        ...(request.observation === undefined
+          ? {}
+          : {
+              projectedMs:
+                request.observation === "observe-workspace-cancelled"
+                  ? 500
+                  : request.observation === "observe-stopping"
+                    ? 80
+                    : 10,
+            }),
         prompted: false,
         reasonCode: null,
         status: "passed",
@@ -227,16 +301,12 @@ test("the packaged journey drives the fixed sequence and excludes observer start
     [
       "probe-start",
       "open-canvas",
-      "probe-canvas",
       "open-workspace-picker",
       "cancel-workspace-picker",
-      "observe-workspace-cancelled",
       "open-workspace-picker",
       "select-workspace",
-      "observe-workspace-permission-denied",
       "open-workspace-picker",
       "select-workspace",
-      "observe-workspace-selected",
       "check-runtime",
       "observe-runtime-ready",
       "focus-task",
@@ -253,7 +323,6 @@ test("the packaged journey drives the fixed sequence and excludes observer start
       "observe-streaming",
       "observe-runtime",
       "cancel-turn",
-      "observe-stopping",
       "observe-cancelled",
       "focus-task",
       "set-task",
@@ -271,10 +340,23 @@ test("the packaged journey drives the fixed sequence and excludes observer start
     calls.find(({ action }) => action === "set-task").input,
     acceptedPrompt,
   );
-  assert.equal(result.cancellationProjectionMs, 90);
-  assert.equal(result.localProjectionP95Ms, 90);
-  assert.equal(result.localProjectionSamples, 5);
+  assert.deepEqual(
+    calls
+      .filter(({ observation }) => observation !== undefined)
+      .map(({ action, observation }) => `${action}->${observation}`),
+    [
+      "open-canvas->probe-canvas",
+      "cancel-workspace-picker->observe-workspace-cancelled",
+      "select-workspace->observe-workspace-permission-denied",
+      "select-workspace->observe-workspace-selected",
+      "cancel-turn->observe-stopping",
+    ],
+  );
+  assert.equal(result.nativePickerCancellationProjectionMs, 500);
+  assert.equal(result.localProjectionP95Ms, 80);
+  assert.equal(result.localProjectionSamples, 4);
   assert.equal(result.status, "passed");
+  assert.equal(result.turnCancellationProjectionMs, 80);
   assert.equal(result.turnDurationMs, 30);
 });
 

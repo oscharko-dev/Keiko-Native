@@ -18,6 +18,13 @@ const reasonCodes = new Set([
 ]);
 const acceptedPromptSha256 =
   "e1a92579b1ca673135331829beb97792c1289a6bccdfe0303302256c546960f6";
+const projectionPairs = new Set([
+  "cancel-turn\0observe-stopping",
+  "cancel-workspace-picker\0observe-workspace-cancelled",
+  "open-canvas\0probe-canvas",
+  "select-workspace\0observe-workspace-permission-denied",
+  "select-workspace\0observe-workspace-selected",
+]);
 
 function sha256(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
@@ -25,6 +32,7 @@ function sha256(value) {
 
 export function classifyTracerAccessibilityResult({
   exitCode,
+  projected = false,
   stderr,
   stdout,
   timedOut,
@@ -45,16 +53,28 @@ export function classifyTracerAccessibilityResult({
       typeof parsed !== "object" ||
       parsed === null ||
       Array.isArray(parsed) ||
-      JSON.stringify(Object.keys(parsed).toSorted(compareCodeUnits)) !==
-        JSON.stringify(["prompted", "reasonCode", "status"]) ||
       parsed.prompted !== false
+    ) {
+      return failed("adapter-output-invalid");
+    }
+    const expectedKeys =
+      projected && exitCode === 0
+        ? ["projectedMs", "prompted", "reasonCode", "status"]
+        : ["prompted", "reasonCode", "status"];
+    if (
+      JSON.stringify(Object.keys(parsed).toSorted(compareCodeUnits)) !==
+      JSON.stringify(expectedKeys)
     ) {
       return failed("adapter-output-invalid");
     }
     if (
       exitCode === 0 &&
       parsed.status === "passed" &&
-      parsed.reasonCode === null
+      parsed.reasonCode === null &&
+      (!projected ||
+        (Number.isSafeInteger(parsed.projectedMs) &&
+          parsed.projectedMs >= 0 &&
+          parsed.projectedMs <= 5_000))
     ) {
       return parsed;
     }
@@ -75,6 +95,7 @@ export function executeTracerAccessibilityAction({
   action,
   binary,
   input,
+  observation,
   pid,
   run = spawnSync,
   timeoutMs = 5_000,
@@ -91,6 +112,9 @@ export function executeTracerAccessibilityAction({
     action === "select-workspace" &&
     typeof input === "string" &&
     /^KeikoAcceptanceIdentity104[A-Za-z0-9]+$/u.test(input);
+  const projectionValid =
+    observation === undefined ||
+    projectionPairs.has(`${action}\0${observation}`);
   if (
     typeof binary !== "string" ||
     binary.length === 0 ||
@@ -100,21 +124,27 @@ export function executeTracerAccessibilityAction({
     timeoutMs < 1 ||
     timeoutMs > 120_000 ||
     !tracerAccessibilityActions.includes(action) ||
+    !projectionValid ||
     (action === "set-task" || action === "select-workspace"
       ? !taskInputValid && !workspaceInputValid
       : input !== undefined)
   ) {
     throw new TypeError("adapter-action-invalid");
   }
-  const result = run(binary, [String(pid), action], {
-    encoding: "utf8",
-    input,
-    maxBuffer: 16 * 1024,
-    shell: false,
-    timeout: timeoutMs,
-  });
+  const result = run(
+    binary,
+    [String(pid), action, ...(observation === undefined ? [] : [observation])],
+    {
+      encoding: "utf8",
+      input,
+      maxBuffer: 16 * 1024,
+      shell: false,
+      timeout: timeoutMs,
+    },
+  );
   return classifyTracerAccessibilityResult({
     exitCode: result.status,
+    projected: observation !== undefined,
     stderr: String(result.stderr ?? ""),
     stdout: String(result.stdout ?? ""),
     timedOut: result.error?.code === "ETIMEDOUT",
@@ -144,6 +174,7 @@ export async function waitForTracerAccessibilityAction({
   input,
   monotonicNow = () => performance.now(),
   pid,
+  observation,
   timeoutMs,
   wait = waitForTurn,
 }) {
@@ -162,6 +193,7 @@ export async function waitForTracerAccessibilityAction({
       action,
       binary,
       input,
+      observation,
       pid,
       timeoutMs: remainingMs,
     });
@@ -211,8 +243,8 @@ export async function runPackagedTracerJourney({
   }
   const timings = [];
   const localProjectionMeasurements = [];
-  const step = async (action, input, timeoutMs = 5_000) => {
-    const result = await execute({ action, input, timeoutMs });
+  const step = async (action, input, timeoutMs = 5_000, observation) => {
+    const result = await execute({ action, input, observation, timeoutMs });
     if (
       result?.status !== "passed" ||
       result.reasonCode !== null ||
@@ -227,34 +259,46 @@ export async function runPackagedTracerJourney({
     return result;
   };
   const project = async (action, observation, input) => {
-    const startedAt = monotonicNow();
-    await step(action, input);
-    await step(observation);
-    const elapsedMs = Math.round(monotonicNow() - startedAt);
-    if (!Number.isSafeInteger(elapsedMs) || elapsedMs < 0)
+    const projected = await step(action, input, 5_000, observation);
+    const elapsedMs = projected.projectedMs;
+    if (
+      !Number.isSafeInteger(elapsedMs) ||
+      elapsedMs < 0 ||
+      elapsedMs > 5_000
+    ) {
       throw new Error("packaged-journey-measurement-invalid");
-    localProjectionMeasurements.push(elapsedMs);
+    }
+    timings.push({ action: observation, elapsedMs });
     return elapsedMs;
   };
 
   await step("probe-start");
-  await project("open-canvas", "probe-canvas");
-
-  await step("open-workspace-picker");
-  await project("cancel-workspace-picker", "observe-workspace-cancelled");
-
-  await step("open-workspace-picker");
-  await project(
-    "select-workspace",
-    "observe-workspace-permission-denied",
-    deniedWorkspaceLabel,
+  localProjectionMeasurements.push(
+    await project("open-canvas", "probe-canvas"),
   );
 
   await step("open-workspace-picker");
-  await project(
-    "select-workspace",
-    "observe-workspace-selected",
-    workspaceLabel,
+  const nativePickerCancellationProjectionMs = await project(
+    "cancel-workspace-picker",
+    "observe-workspace-cancelled",
+  );
+
+  await step("open-workspace-picker");
+  localProjectionMeasurements.push(
+    await project(
+      "select-workspace",
+      "observe-workspace-permission-denied",
+      deniedWorkspaceLabel,
+    ),
+  );
+
+  await step("open-workspace-picker");
+  localProjectionMeasurements.push(
+    await project(
+      "select-workspace",
+      "observe-workspace-selected",
+      workspaceLabel,
+    ),
   );
 
   await step("check-runtime");
@@ -276,10 +320,11 @@ export async function runPackagedTracerJourney({
   await step("submit-task");
   await step("observe-streaming", undefined, 120_000);
   await observeRuntime();
-  const cancellationProjectionMs = await project(
+  const turnCancellationProjectionMs = await project(
     "cancel-turn",
     "observe-stopping",
   );
+  localProjectionMeasurements.push(turnCancellationProjectionMs);
   await step("observe-cancelled");
 
   await step("focus-task");
@@ -294,12 +339,13 @@ export async function runPackagedTracerJourney({
   await step("quit");
 
   return {
-    cancellationProjectionMs,
     localProjectionP95Ms: percentile95(localProjectionMeasurements),
     localProjectionSamples: localProjectionMeasurements.length,
+    nativePickerCancellationProjectionMs,
     status: "passed",
     repositoryContextBytesToRuntime: 0,
     timings,
+    turnCancellationProjectionMs,
     turnDurationMs,
   };
 }

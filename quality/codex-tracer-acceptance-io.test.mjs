@@ -12,7 +12,9 @@ import {
   canonicalRuntimeRoot,
   canonicalRuntimeResources,
   cleanupAcceptanceFixture,
+  inspectReferenceEnvironment,
   measureFirstVisibleP95,
+  measureNativePickerCancellationDistribution,
   observedSafeguards,
   packageAcceptance,
   packageArtifactFailures,
@@ -200,6 +202,140 @@ test("first-visible p95 permits one bounded cold-launch outlier", async () => {
     observed
       .filter(({ action }) => action === "probe-start")
       .every(({ timeoutMs }) => timeoutMs === 5_000),
+  );
+});
+
+test("native picker cancellation p95 uses twenty fresh packaged-app launches", async () => {
+  let launches = 0;
+  const observations = [];
+  const distribution = await measureNativePickerCancellationDistribution(
+    {},
+    "/bounded/adapter",
+    {},
+    {
+      authenticate: async ({ pid }) => ({ pid }),
+      launch: () => ({ pid: (launches += 1) }),
+      observe: async (request) => {
+        observations.push(request);
+        return {
+          ...(request.observation === "observe-workspace-cancelled"
+            ? { projectedMs: request.pid === 1 ? 1_055 : 539 }
+            : {}),
+          prompted: false,
+          reasonCode: null,
+          status: "passed",
+        };
+      },
+      terminate: async () => undefined,
+      waitForExit: async () => true,
+    },
+  );
+
+  assert.deepEqual(distribution, {
+    measurements: Array.from({ length: 20 }, (_, index) => ({
+      launch: index + 1,
+      projectedMs: index === 0 ? 1_055 : 539,
+    })),
+    p95Ms: 539,
+  });
+  assert.equal(launches, 20);
+  assert.equal(
+    observations.filter(({ action }) => action === "probe-start").length,
+    20,
+  );
+  assert.equal(
+    observations.filter(
+      ({ action, observation }) =>
+        action === "cancel-workspace-picker" &&
+        observation === "observe-workspace-cancelled",
+    ).length,
+    20,
+  );
+});
+
+test("reference Mac inspection emits only normalized closed reproducibility metadata", async () => {
+  const calls = [];
+  const displaySerialCanary = "private-display-serial";
+  const outputs = new Map([
+    [
+      "/usr/sbin/sysctl\0-n\0machdep.cpu.brand_string\0hw.memsize\0hw.model",
+      "Apple M4\n17179869184\nMac16,1",
+    ],
+    ["/usr/bin/sw_vers\0-productVersion", "26.5.1"],
+    ["/usr/bin/sw_vers\0-buildVersion", "25F80"],
+    [
+      "/usr/sbin/system_profiler\0SPDisplaysDataType\0-json\0-detailLevel\0mini",
+      JSON.stringify({
+        SPDisplaysDataType: [
+          {
+            spdisplays_ndrvs: [
+              {
+                "_spdisplays_display-serial-number": displaySerialCanary,
+                _spdisplays_pixels: "3024 x 1964",
+                _spdisplays_resolution: "1512 x 982 @ 120.00Hz",
+                spdisplays_connection_type: "spdisplays_internal",
+                spdisplays_main: "spdisplays_yes",
+              },
+            ],
+          },
+        ],
+      }),
+    ],
+    [
+      "/usr/bin/pmset\0-g\0batt",
+      "Now drawing from 'Battery Power'\n -InternalBattery-0 85%; discharging",
+    ],
+    [
+      "/usr/bin/pmset\0-g\0custom",
+      "Battery Power:\n lowpowermode 0\nAC Power:\n lowpowermode 0",
+    ],
+    [
+      "/usr/bin/pmset\0-g\0therm",
+      "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded",
+    ],
+  ]);
+  const result = await inspectReferenceEnvironment(
+    async (command, args, options) => {
+      calls.push({ args, command, options });
+      return outputs.get([command, ...args].join("\0"));
+    },
+  );
+
+  assert.deepEqual(result, {
+    display: "built-in-main-3024x1964-120hz",
+    hardware: "apple-m4-16-gib-mac16-1",
+    operatingSystem: "macos-26.5.1-25f80",
+    power: "battery-power-standard",
+    referenceClass: "owner-m4-16gib-macos26",
+    scaling: "logical-1512x982-2x-default",
+    thermal: "nominal",
+  });
+  assert.equal(JSON.stringify(result).includes(displaySerialCanary), false);
+  assert.equal(calls.length, 7);
+  assert.ok(
+    calls.every(
+      ({ options }) =>
+        options.inheritEnvironment === false &&
+        options.maxOutputBytes === 64 * 1024 &&
+        options.timeoutMs === 10_000,
+    ),
+  );
+  outputs.set(
+    "/usr/bin/pmset\0-g\0custom",
+    "Battery Power:\n lowpowermode 1\nAC Power:\n lowpowermode 0",
+  );
+  await assert.rejects(
+    inspectReferenceEnvironment(async (command, args) =>
+      outputs.get([command, ...args].join("\0")),
+    ),
+    /acceptance-reference-environment-invalid/u,
+  );
+});
+
+test("reference Mac inspection rejects malformed or changed platform output", async () => {
+  await assert.rejects(
+    inspectReferenceEnvironment(async () => "unexpected"),
+    /acceptance-reference-environment-invalid/u,
   );
 });
 
@@ -431,6 +567,15 @@ test("acceptance subprocess deadlines retire the isolated process tree", async (
       dependencies,
     ),
     /acceptance-subprocess-timeout-invalid/u,
+  );
+  await assert.rejects(
+    runAcceptanceSubprocess(
+      "/usr/bin/true",
+      [],
+      { maxOutputBytes: 0, timeoutMs: 1 },
+      dependencies,
+    ),
+    /acceptance-subprocess-output-bound-invalid/u,
   );
 });
 

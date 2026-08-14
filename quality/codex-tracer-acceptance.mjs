@@ -1,8 +1,9 @@
 import { checkpointBehaviorContract } from "./macos-accessibility-driver-harness.mjs";
+import { percentile95 } from "./codex-tracer-accessibility.mjs";
 import { compareCodeUnits } from "./deterministic-order.mjs";
 import { redactionMatches } from "./native-contract.mjs";
 
-const SCHEMA_VERSION = "keiko-native-codex-tracer-acceptance/v1";
+const SCHEMA_VERSION = "keiko-native-codex-tracer-acceptance/v2";
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const REVISION_PATTERN = /^[0-9a-f]{40}$/u;
 
@@ -13,9 +14,9 @@ export const acceptanceIdentityContract = Object.freeze({
   experimentalSchemaSha256:
     "46c4414f08cdbb20e66ce4153ee1edcb865ed5fda67e59511a78939ddb7a82d1",
   issueReadinessFingerprint:
-    "54a50110230af03db88acc3d503f038cb2e4a9557094fcff48ab19c01ee0af24",
+    "575633addc61bf373aa1c5bd0186e311c809f47172540cd7c9c7fbffde970502",
   parentReadinessFingerprint:
-    "ff404fd8d0f7b336b997da77e55c5a5abc8c8cab1639b8e708f0b5792c283347",
+    "0cee8b235cab06bc3e47a3601ec7f996afbaa431eba9500b65c74a9845e3253f",
   promptSha256:
     "e1a92579b1ca673135331829beb97792c1289a6bccdfe0303302256c546960f6",
   runtimeArtifactSha256:
@@ -50,7 +51,8 @@ export const acceptanceJourneyContract = Object.freeze({
 export const acceptanceBudgetLimits = Object.freeze({
   firstVisibleKeikoOverheadSamples: 20,
   frameMaxBytes: 1_048_576,
-  localProjectionSamples: 5,
+  localProjectionSamples: 4,
+  nativePickerCancellationSamples: 20,
   providerLatencyExcluded: true,
   queueMaxBytes: 4_194_304,
   queueMaxFrames: 256,
@@ -115,12 +117,26 @@ export const acceptancePhysicalContract = Object.freeze({
 });
 
 const budgetMeasurementLimits = Object.freeze({
-  cancellationProjectionMs: 100,
   cleanupMs: 5_000,
   firstVisibleKeikoOverheadP95Ms: 2_000,
   localProjectionP95Ms: 100,
+  nativePickerCancellationP95Ms: 750,
+  turnCancellationProjectionMs: 100,
   turnDurationMs: 120_000,
 });
+
+const referenceEnvironmentContract = Object.freeze({
+  display: "built-in-main-3024x1964-120hz",
+  hardware: "apple-m4-16-gib-mac16-1",
+  operatingSystem: "macos-26.5.1-25f80",
+  referenceClass: "owner-m4-16gib-macos26",
+  scaling: "logical-1512x982-2x-default",
+  thermal: "nominal",
+});
+const acceptedPowerConditions = new Set([
+  "ac-power-standard",
+  "battery-power-standard",
+]);
 
 const identityBindingKeys = Object.freeze(
   [
@@ -187,6 +203,7 @@ export function budgetEvidenceFailures(budgets) {
   const expectedKeys = [
     ...Object.keys(acceptanceBudgetLimits),
     ...Object.keys(budgetMeasurementLimits),
+    "nativePickerCancellationMeasurements",
   ].toSorted(compareCodeUnits);
   if (
     typeof budgets !== "object" ||
@@ -206,6 +223,72 @@ export function budgetEvidenceFailures(budgets) {
       failures.push(`budget-${key}`);
     }
   }
+  failures.push(
+    ...nativePickerMeasurementFailures(
+      budgets?.nativePickerCancellationMeasurements,
+      budgets?.nativePickerCancellationP95Ms,
+    ),
+  );
+  return failures;
+}
+
+function nativePickerMeasurementFailures(measurements, reportedP95Ms) {
+  const failures = [];
+  if (
+    !Array.isArray(measurements) ||
+    measurements.length !==
+      acceptanceBudgetLimits.nativePickerCancellationSamples
+  ) {
+    failures.push("budget-native-picker-measurements");
+  } else {
+    for (const [index, measurement] of measurements.entries()) {
+      if (
+        typeof measurement !== "object" ||
+        measurement === null ||
+        Array.isArray(measurement) ||
+        JSON.stringify(Object.keys(measurement).toSorted(compareCodeUnits)) !==
+          JSON.stringify(["launch", "projectedMs"]) ||
+        measurement.launch !== index + 1 ||
+        !Number.isSafeInteger(measurement.projectedMs) ||
+        measurement.projectedMs < 0 ||
+        measurement.projectedMs > 5_000
+      ) {
+        failures.push("budget-native-picker-measurements");
+        break;
+      }
+    }
+    if (
+      failures.length === 0 &&
+      percentile95(measurements.map(({ projectedMs }) => projectedMs)) !==
+        reportedP95Ms
+    ) {
+      failures.push("budget-native-picker-p95-consistency");
+    }
+  }
+  return failures;
+}
+
+export function referenceEnvironmentFailures(environment) {
+  const failures = [];
+  const expectedKeys = [
+    ...Object.keys(referenceEnvironmentContract),
+    "power",
+  ].toSorted(compareCodeUnits);
+  if (
+    typeof environment !== "object" ||
+    environment === null ||
+    Array.isArray(environment) ||
+    JSON.stringify(Object.keys(environment).toSorted(compareCodeUnits)) !==
+      JSON.stringify(expectedKeys)
+  ) {
+    failures.push("reference-environment-fields");
+  }
+  for (const [key, value] of Object.entries(referenceEnvironmentContract)) {
+    if (environment?.[key] !== value)
+      failures.push(`reference-environment-${key}`);
+  }
+  if (!acceptedPowerConditions.has(environment?.power))
+    failures.push("reference-environment-power");
   return failures;
 }
 
@@ -294,6 +377,7 @@ export function acceptanceEvidenceFailures(evidence, expected) {
     "packageInspection",
     "physical",
     "redaction",
+    "referenceEnvironment",
     "safeguards",
     "schemaVersion",
     "status",
@@ -317,6 +401,7 @@ export function acceptanceEvidenceFailures(evidence, expected) {
     ...journeyEvidenceFailures(evidence?.journey),
     ...packageInspectionFailures(evidence?.packageInspection),
     ...physicalEvidenceFailures(evidence?.physical, expected),
+    ...referenceEnvironmentFailures(evidence?.referenceEnvironment),
     ...safeguardEvidenceFailures(evidence?.safeguards),
   );
   if (redactionMatches(JSON.stringify(evidence)).length > 0)
@@ -351,6 +436,7 @@ export async function runCodexTracerAcceptance({ args, io }) {
       packageInspection: prepared.packageInspection,
       physical: physical.physical,
       redaction: "closed",
+      referenceEnvironment: physical.referenceEnvironment,
       safeguards: { ...production.safeguards, ...physical.safeguards },
       schemaVersion: SCHEMA_VERSION,
       status: "complete",

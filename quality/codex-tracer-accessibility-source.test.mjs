@@ -91,6 +91,15 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
     assert.match(tracerAccessibilitySource, new RegExp(attribute, "u"));
   }
   assert.match(tracerAccessibilitySource, /CFArrayContainsValue/u);
+  assert.match(tracerAccessibilitySource, /ProjectionPairIsAllowed/u);
+  assert.match(tracerAccessibilitySource, /WaitForProjection/u);
+  assert.match(tracerAccessibilitySource, /clock_gettime\(CLOCK_MONOTONIC/u);
+  assert.doesNotMatch(tracerAccessibilitySource, /CFAbsoluteTimeGetCurrent/u);
+  assert.match(
+    tracerAccessibilitySource,
+    /projectionStartedAt = MonotonicSeconds\(\);[\s\S]*?PressPickerControl\(application, CFSTR\("OKButton"\)\)/u,
+  );
+  assert.match(tracerAccessibilitySource, /\\"projectedMs\\":%lu/u);
   assert.match(tracerAccessibilitySource, /kAXTextFieldRole/u);
   assert.match(tracerAccessibilitySource, /kAXMenuItemRole/u);
   assert.match(tracerAccessibilitySource, /CFSTR\("ListView"\)/u);
@@ -171,6 +180,42 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
   assert.doesNotMatch(
     tracerAccessibilitySource,
     /no-effect prompt|Users\/|repository content|credential|authorization|picker-stage/iu,
+  );
+});
+
+test("canvas projection starts with a real timed welcome action", () => {
+  assert.match(
+    tracerAccessibilitySource,
+    /BOOL welcome = HasUnique\(application, CFSTR\("Foundation öffnen"\)\)[\s\S]{0,1000}projectionStartedAt = MonotonicSeconds\(\);[\s\S]{0,300}welcome[\s\S]{0,120}Press\(application, CFSTR\("Foundation öffnen"\)\)/u,
+  );
+});
+
+test("persisted canvas is preconditioned through About before a timed canvas action", () => {
+  assert.match(
+    tracerAccessibilitySource,
+    /HasUnique\(application, CFSTR\("codex-task"\)\)[\s\S]{0,250}Press\(application, CFSTR\("Über Keiko Native"\)\)[\s\S]{0,250}WaitForUnique\(application, CFSTR\("ÜBER DIESE VERSION"\)\)[\s\S]{0,500}projectionStartedAt = MonotonicSeconds\(\);[\s\S]{0,300}Press\(application, CFSTR\("Leere Fläche"\)\)/u,
+  );
+  assert.doesNotMatch(
+    tracerAccessibilitySource,
+    /passed = HasUnique\(application, CFSTR\("codex-task"\)\);[\s\S]{0,120}EmitProjection/u,
+  );
+});
+
+test("persisted About and Update starts remain driveable through a timed canvas action", () => {
+  const probeStart = tracerAccessibilitySource.match(
+    /if \(\[action isEqualToString:@"probe-start"\]\) \{[\s\S]*?\n    \} else if/u,
+  )?.[0];
+  const openCanvas = tracerAccessibilitySource.match(
+    /else if \(\[action isEqualToString:@"open-canvas"\]\) \{[\s\S]*?\n    \} else if/u,
+  )?.[0];
+
+  for (const checkpoint of ["ÜBER DIESE VERSION", "UPDATE-STATUS"]) {
+    assert.match(probeStart ?? "", new RegExp(checkpoint, "u"));
+    assert.match(openCanvas ?? "", new RegExp(checkpoint, "u"));
+  }
+  assert.match(
+    openCanvas ?? "",
+    /Press\(application, CFSTR\("Leere Fläche"\)\)/u,
   );
 });
 

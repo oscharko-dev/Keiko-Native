@@ -14,6 +14,7 @@ import {
   budgetEvidenceFailures,
   identityBindingFailures,
   journeyEvidenceFailures,
+  referenceEnvironmentFailures,
   runCodexTracerAcceptance,
   safeguardEvidenceFailures,
   validateAcceptanceInvocation,
@@ -30,10 +31,18 @@ function validEvidence() {
       bindings: { ...acceptanceIdentityContract, ...expected },
       budgets: {
         ...acceptanceBudgetLimits,
-        cancellationProjectionMs: 80,
         cleanupMs: 4_000,
         firstVisibleKeikoOverheadP95Ms: 1_500,
         localProjectionP95Ms: 90,
+        nativePickerCancellationMeasurements: Array.from(
+          { length: 20 },
+          (_, index) => ({
+            launch: index + 1,
+            projectedMs: index === 0 ? 1_055 : 539,
+          }),
+        ),
+        nativePickerCancellationP95Ms: 539,
+        turnCancellationProjectionMs: 80,
         turnDurationMs: 110_000,
       },
       journey: structuredClone(acceptanceJourneyContract),
@@ -44,8 +53,17 @@ function validEvidence() {
         runner: "local-macos",
       },
       redaction: "closed",
+      referenceEnvironment: {
+        display: "built-in-main-3024x1964-120hz",
+        hardware: "apple-m4-16-gib-mac16-1",
+        operatingSystem: "macos-26.5.1-25f80",
+        power: "battery-power-standard",
+        referenceClass: "owner-m4-16gib-macos26",
+        scaling: "logical-1512x982-2x-default",
+        thermal: "nominal",
+      },
       safeguards: structuredClone(acceptanceSafeguardContract),
-      schemaVersion: "keiko-native-codex-tracer-acceptance/v1",
+      schemaVersion: "keiko-native-codex-tracer-acceptance/v2",
       status: "complete",
     },
     expected,
@@ -68,7 +86,7 @@ test("the tracer acceptance boundary accepts only the canonical no-argument invo
     assert.deepEqual(result, {
       exitCode: 2,
       output: {
-        schemaVersion: "keiko-native-codex-tracer-acceptance/v1",
+        schemaVersion: "keiko-native-codex-tracer-acceptance/v2",
         reasonCode: "invalid-command",
         status: "rejected",
       },
@@ -96,7 +114,7 @@ test("the command rejects hostile extras as one closed metadata line", () => {
   assert.equal(result.status, 2);
   assert.equal(result.stderr, "");
   assert.deepEqual(JSON.parse(result.stdout), {
-    schemaVersion: "keiko-native-codex-tracer-acceptance/v1",
+    schemaVersion: "keiko-native-codex-tracer-acceptance/v2",
     reasonCode: "invalid-command",
     status: "rejected",
   });
@@ -116,6 +134,14 @@ test("identity evidence is closed and binds the exact accepted composition", () 
   };
 
   assert.deepEqual(identityBindingFailures(bindings, expected), []);
+  assert.equal(
+    acceptanceIdentityContract.issueReadinessFingerprint,
+    "575633addc61bf373aa1c5bd0186e311c809f47172540cd7c9c7fbffde970502",
+  );
+  assert.equal(
+    acceptanceIdentityContract.parentReadinessFingerprint,
+    "0cee8b235cab06bc3e47a3601ec7f996afbaa431eba9500b65c74a9845e3253f",
+  );
 
   for (const key of Object.keys(bindings)) {
     const missing = structuredClone(bindings);
@@ -173,16 +199,31 @@ test("journey evidence requires every accepted scenario and AXUIElement checkpoi
 });
 
 test("numeric evidence enforces every accepted performance and resource budget", () => {
+  const nativePickerCancellationMeasurements = Array.from(
+    { length: 20 },
+    (_, index) => ({
+      launch: index + 1,
+      projectedMs: index === 0 ? 1_055 : 539,
+    }),
+  );
   const budgets = {
     ...acceptanceBudgetLimits,
-    cancellationProjectionMs: 80,
     cleanupMs: 4_000,
     firstVisibleKeikoOverheadP95Ms: 1_500,
     localProjectionP95Ms: 90,
+    nativePickerCancellationMeasurements,
+    nativePickerCancellationP95Ms: 539,
+    turnCancellationProjectionMs: 80,
     turnDurationMs: 110_000,
   };
 
   assert.deepEqual(budgetEvidenceFailures(budgets), []);
+
+  for (const key of Object.keys(budgets)) {
+    const partial = structuredClone(budgets);
+    delete partial[key];
+    assert.ok(budgetEvidenceFailures(partial).length > 0, `missing ${key}`);
+  }
 
   for (const changed of [
     { ...budgets, extra: 0 },
@@ -194,12 +235,75 @@ test("numeric evidence enforces every accepted performance and resource budget",
     { ...budgets, turnDeadlineMs: 120_001 },
     { ...budgets, turnDurationMs: 120_001 },
     { ...budgets, localProjectionP95Ms: 101 },
+    { ...budgets, nativePickerCancellationP95Ms: 751 },
+    { ...budgets, nativePickerCancellationSamples: 19 },
+    {
+      ...budgets,
+      nativePickerCancellationMeasurements:
+        nativePickerCancellationMeasurements.slice(1),
+    },
+    {
+      ...budgets,
+      nativePickerCancellationMeasurements:
+        nativePickerCancellationMeasurements.map((sample, index) =>
+          index === 1 ? { ...sample, launch: 1 } : sample,
+        ),
+    },
+    {
+      ...budgets,
+      nativePickerCancellationMeasurements:
+        nativePickerCancellationMeasurements.map((sample, index) =>
+          index === 0 ? { ...sample, projectedMs: 5_001 } : sample,
+        ),
+    },
+    {
+      ...budgets,
+      nativePickerCancellationMeasurements:
+        nativePickerCancellationMeasurements.map((sample, index) =>
+          index === 0 ? { ...sample, projectedMs: 1.5 } : sample,
+        ),
+    },
+    {
+      ...budgets,
+      nativePickerCancellationMeasurements:
+        nativePickerCancellationMeasurements.map((sample, index) =>
+          index === 0 ? { ...sample, extra: 0 } : sample,
+        ),
+    },
+    { ...budgets, nativePickerCancellationP95Ms: 538 },
     { ...budgets, firstVisibleKeikoOverheadP95Ms: 2_001 },
-    { ...budgets, cancellationProjectionMs: 101 },
+    { ...budgets, turnCancellationProjectionMs: 101 },
     { ...budgets, cleanupMs: 5_001 },
     { ...budgets, providerLatencyExcluded: false },
   ]) {
     assert.ok(budgetEvidenceFailures(changed).length > 0);
+  }
+});
+
+test("reference environment evidence is closed, normalized, and bound to the declared Mac", () => {
+  const referenceEnvironment = validEvidence().evidence.referenceEnvironment;
+
+  assert.deepEqual(referenceEnvironmentFailures(referenceEnvironment), []);
+  for (const key of Object.keys(referenceEnvironment)) {
+    const partial = structuredClone(referenceEnvironment);
+    delete partial[key];
+    assert.ok(
+      referenceEnvironmentFailures(partial).length > 0,
+      `missing ${key}`,
+    );
+  }
+  for (const changed of [
+    null,
+    [],
+    { ...referenceEnvironment, extra: "private" },
+    { ...referenceEnvironment, hardware: "unknown" },
+    { ...referenceEnvironment, operatingSystem: "macos-current" },
+    { ...referenceEnvironment, display: "external" },
+    { ...referenceEnvironment, scaling: "unknown" },
+    { ...referenceEnvironment, power: "unknown" },
+    { ...referenceEnvironment, thermal: "warning" },
+  ]) {
+    assert.ok(referenceEnvironmentFailures(changed).length > 0);
   }
 });
 
@@ -293,6 +397,7 @@ test("the orchestrator runs package, production, physical, validation, and persi
           budgets: evidence.budgets,
           journey: evidence.journey,
           physical: evidence.physical,
+          referenceEnvironment: evidence.referenceEnvironment,
           safeguards: acceptanceSafeguardContract,
         };
       },
@@ -338,7 +443,7 @@ test("the orchestrator fails closed without leaking thrown values or writing par
   assert.deepEqual(result, {
     exitCode: 2,
     output: {
-      schemaVersion: "keiko-native-codex-tracer-acceptance/v1",
+      schemaVersion: "keiko-native-codex-tracer-acceptance/v2",
       reasonCode: "acceptance-check-failed",
       status: "rejected",
     },
