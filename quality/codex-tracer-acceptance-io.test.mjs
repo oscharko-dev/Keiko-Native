@@ -631,8 +631,8 @@ test("reference Mac inspection emits only normalized closed reproducibility meta
       "/usr/sbin/sysctl\0-n\0machdep.cpu.brand_string\0hw.memsize\0hw.model",
       "Apple M4\n17179869184\nMac16,1",
     ],
-    ["/usr/bin/sw_vers\0-productVersion", "26.5.1"],
-    ["/usr/bin/sw_vers\0-buildVersion", "25F80"],
+    ["/usr/bin/sw_vers\0-productVersion", "26.5.2"],
+    ["/usr/bin/sw_vers\0-buildVersion", "25F84"],
     [
       "/usr/sbin/system_profiler\0SPDisplaysDataType\0-json\0-detailLevel\0mini",
       JSON.stringify({
@@ -674,7 +674,7 @@ test("reference Mac inspection emits only normalized closed reproducibility meta
   assert.deepEqual(result, {
     display: "built-in-main-3024x1964-120hz",
     hardware: "apple-m4-16-gib-mac16-1",
-    operatingSystem: "macos-26.5.1-25f80",
+    operatingSystem: "macos-26.5.2-25f84",
     power: "ac-power-standard",
     referenceClass: "owner-m4-16gib-macos26",
     scaling: "logical-1512x982-2x-default",
@@ -690,6 +690,16 @@ test("reference Mac inspection emits only normalized closed reproducibility meta
         options.timeoutMs === 10_000,
     ),
   );
+  outputs.set("/usr/bin/sw_vers\0-productVersion", "26.5.1");
+  outputs.set("/usr/bin/sw_vers\0-buildVersion", "25F80");
+  await assert.rejects(
+    inspectReferenceEnvironment(async (command, args) =>
+      outputs.get([command, ...args].join("\0")),
+    ),
+    /acceptance-reference-environment-invalid/u,
+  );
+  outputs.set("/usr/bin/sw_vers\0-productVersion", "26.5.2");
+  outputs.set("/usr/bin/sw_vers\0-buildVersion", "25F84");
   outputs.set(
     "/usr/bin/pmset\0-g\0batt",
     "Now drawing from 'Battery Power'\n -InternalBattery-0 85%; discharging",
@@ -727,7 +737,7 @@ test("reference Mac evidence fails closed when conditions change during measurem
   const reference = {
     display: "built-in-main-3024x1964-120hz",
     hardware: "apple-m4-16-gib-mac16-1",
-    operatingSystem: "macos-26.5.1-25f80",
+    operatingSystem: "macos-26.5.2-25f84",
     power: "ac-power-standard",
     referenceClass: "owner-m4-16gib-macos26",
     scaling: "logical-1512x982-2x-default",

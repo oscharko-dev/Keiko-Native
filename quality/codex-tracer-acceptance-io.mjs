@@ -1879,7 +1879,7 @@ function normalizedReferenceEnvironment([
         ? "apple-m4-16-gib-mac16-1"
         : null,
     operatingSystem:
-      version === "26.5.1" && build === "25F80" ? "macos-26.5.1-25f80" : null,
+      version === "26.5.2" && build === "25F84" ? "macos-26.5.2-25f84" : null,
     power:
       lowPowerMode === "0" && activePower === "AC"
         ? "ac-power-standard"

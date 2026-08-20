@@ -83,7 +83,7 @@ function validEvidence() {
       referenceEnvironment: {
         display: "built-in-main-3024x1964-120hz",
         hardware: "apple-m4-16-gib-mac16-1",
-        operatingSystem: "macos-26.5.1-25f80",
+        operatingSystem: "macos-26.5.2-25f84",
         power: "ac-power-standard",
         referenceClass: "owner-m4-16gib-macos26",
         scaling: "logical-1512x982-2x-default",
