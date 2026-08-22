@@ -101,7 +101,6 @@ test("settled workspace publication is not reversed by post-effect cleanup failu
   t.after(() => rm(root, { force: true, recursive: true }));
   const finalPath = join(root, "evidence.json");
   const next = '{"status":"complete"}\n';
-  await writeFile(finalPath, '{"status":"prior"}\n', { mode: 0o600 });
 
   await assert.doesNotReject(
     ioModule.publishWorkspaceEvidenceAtomically(next, finalPath, {
@@ -187,12 +186,6 @@ test("workspace evidence publication is atomic and failure preserving", async (t
     );
   }
 
-  await ioModule.publishWorkspaceEvidenceAtomically(next, finalPath, {
-    publish: rename,
-    stageName: ".evidence-success.tmp",
-  });
-  assert.equal(await readFile(finalPath, "utf8"), next);
-
   const collision = join(root, ".evidence-collision.tmp");
   await writeFile(collision, "unowned", { mode: 0o600 });
   await assert.rejects(
@@ -202,6 +195,7 @@ test("workspace evidence publication is atomic and failure preserving", async (t
     /workspace-evidence-publication-failed/u,
   );
   assert.equal(await readFile(collision, "utf8"), "unowned");
+  assert.equal(await readFile(finalPath, "utf8"), prior);
 
   const linkedFinal = join(root, "linked.json");
   await symlink(finalPath, linkedFinal);
@@ -209,7 +203,7 @@ test("workspace evidence publication is atomic and failure preserving", async (t
     ioModule.publishWorkspaceEvidenceAtomically(next, linkedFinal),
     /workspace-evidence-publication-failed/u,
   );
-  assert.equal(await readFile(finalPath, "utf8"), next);
+  assert.equal(await readFile(finalPath, "utf8"), prior);
 
   const directoryFinal = join(root, "directory.json");
   await mkdir(directoryFinal);
@@ -218,6 +212,7 @@ test("workspace evidence publication is atomic and failure preserving", async (t
     /workspace-evidence-publication-failed/u,
   );
   assert.equal((await lstat(directoryFinal)).isDirectory(), true);
+  assert.equal(await readFile(finalPath, "utf8"), prior);
 
   const substitutedStage = ".evidence-substituted.tmp";
   const substitutedPath = join(root, substitutedStage);
@@ -235,6 +230,7 @@ test("workspace evidence publication is atomic and failure preserving", async (t
   );
   assert.equal(await readFile(substitutedPath, "utf8"), "unowned");
   assert.equal(await readFile(retainedStage, "utf8"), next);
+  assert.equal(await readFile(finalPath, "utf8"), prior);
 
   const cleanupFailureStage = ".evidence-cleanup-failure.tmp";
   await assert.rejects(
@@ -256,6 +252,14 @@ test("workspace evidence publication is atomic and failure preserving", async (t
     ),
     true,
   );
+  assert.equal(await readFile(finalPath, "utf8"), prior);
+
+  await rm(finalPath);
+  await ioModule.publishWorkspaceEvidenceAtomically(next, finalPath, {
+    publish: rename,
+    stageName: ".evidence-success.tmp",
+  });
+  assert.equal(await readFile(finalPath, "utf8"), next);
 });
 
 test("workspace preparation cleanup attempts every owned resource and fails visibly", async () => {
@@ -321,10 +325,13 @@ test(
 );
 
 test("workspace evidence native publication has one total commit point", async () => {
-  const source = await readFile(
-    new URL("./codex-tracer-acceptance-io.mjs", import.meta.url),
-    "utf8",
-  );
+  const source = (
+    await readFile(
+      new URL("./codex-tracer-acceptance-io.mjs", import.meta.url),
+      "utf8",
+    )
+  ).replaceAll("\r\n", "\n");
+  assert.doesNotMatch(source, /\r/u, "native publisher bare CR");
   const mainStart = source.indexOf("int main(int argc, char **argv) {");
   const mainEnd = source.indexOf("\n}\n`;", mainStart);
   assert.ok(mainStart >= 0 && mainEnd > mainStart, "native publisher main");
