@@ -100,17 +100,46 @@ test("settled workspace publication is not reversed by post-effect cleanup failu
   const root = await mkdtemp(join(tmpdir(), "keiko-workspace-settled-"));
   t.after(() => rm(root, { force: true, recursive: true }));
   const finalPath = join(root, "evidence.json");
+  const stagePath = join(root, ".evidence-settled.tmp");
   const next = '{"status":"complete"}\n';
+  let publishedStageIdentity;
+  let publishedStageEntry;
+  let publishCalls = 0;
 
   await assert.doesNotReject(
     ioModule.publishWorkspaceEvidenceAtomically(next, finalPath, {
-      publish: async (stagePath, targetPath) => {
-        await rename(stagePath, targetPath);
+      lstat: async (path) => {
+        const entry = await lstat(path);
+        if (path !== finalPath || publishedStageIdentity === undefined)
+          return entry;
+        return {
+          ...entry,
+          dev: publishedStageIdentity.dev,
+          ino: publishedStageIdentity.ino,
+          isFile: () => entry.isFile(),
+          isSymbolicLink: () => entry.isSymbolicLink(),
+        };
+      },
+      publish: async (publishedStagePath, targetPath, stageIdentity) => {
+        publishCalls += 1;
+        publishedStageIdentity = stageIdentity;
+        publishedStageEntry = await lstat(publishedStagePath);
+        await rename(publishedStagePath, targetPath);
         throw new Error("post-effect-cleanup-failed");
       },
       stageName: ".evidence-settled.tmp",
     }),
   );
+  assert.equal(publishCalls, 1);
+  await assert.rejects(lstat(stagePath), { code: "ENOENT" });
+  const finalEntry = await lstat(finalPath);
+  assert.equal(finalEntry.isFile(), publishedStageEntry.isFile());
+  assert.equal(
+    finalEntry.isSymbolicLink(),
+    publishedStageEntry.isSymbolicLink(),
+  );
+  assert.equal(finalEntry.mode, publishedStageEntry.mode);
+  assert.equal(finalEntry.size, publishedStageEntry.size);
   assert.equal(await readFile(finalPath, "utf8"), next);
 });
 
@@ -217,17 +246,44 @@ test("workspace evidence publication is atomic and failure preserving", async (t
   const substitutedStage = ".evidence-substituted.tmp";
   const substitutedPath = join(root, substitutedStage);
   const retainedStage = join(root, ".evidence-owned-retained.tmp");
+  const substitutedRmCalls = [];
+  let originalStageIdentity;
+  let replacementObserved = false;
   await assert.rejects(
     ioModule.publishWorkspaceEvidenceAtomically(next, finalPath, {
-      publish: async (stagePath) => {
+      lstat: async (path) => {
+        const entry = await lstat(path);
+        if (path !== substitutedPath || originalStageIdentity === undefined)
+          return entry;
+        replacementObserved = true;
+        return {
+          ...entry,
+          ino: originalStageIdentity.ino === 0 ? 1 : 0,
+          isFile: () => entry.isFile(),
+          isSymbolicLink: () => entry.isSymbolicLink(),
+        };
+      },
+      publish: async (stagePath, _targetPath, stageIdentity) => {
+        originalStageIdentity = stageIdentity;
         await rename(stagePath, retainedStage);
         await writeFile(stagePath, "unowned", { mode: 0o600 });
         throw new Error("stage-substituted");
+      },
+      rm: async (...args) => {
+        substitutedRmCalls.push(args[0]);
+        await rm(...args);
       },
       stageName: substitutedStage,
     }),
     /workspace-evidence-publication-failed/u,
   );
+  assert.equal(replacementObserved, true);
+  assert.deepEqual(substitutedRmCalls, []);
+  const replacementEntry = await lstat(substitutedPath);
+  assert.equal(replacementEntry.isFile(), true);
+  assert.equal(replacementEntry.isSymbolicLink(), false);
+  assert.equal(replacementEntry.mode & 0o777, 0o600);
+  assert.equal(replacementEntry.size, Buffer.byteLength("unowned"));
   assert.equal(await readFile(substitutedPath, "utf8"), "unowned");
   assert.equal(await readFile(retainedStage, "utf8"), next);
   assert.equal(await readFile(finalPath, "utf8"), prior);
