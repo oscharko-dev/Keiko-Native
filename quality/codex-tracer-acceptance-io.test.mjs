@@ -144,6 +144,7 @@ test("settled workspace publication is not reversed by post-effect cleanup failu
   let currentStageObservedIdentity;
   let publishedStageIdentity;
   let publishedStageEntry;
+  const identityEvents = [];
   let finalIdentityObservations = 0;
   let handleIdentityCaptures = 0;
   let publishCalls = 0;
@@ -158,12 +159,14 @@ test("settled workspace publication is not reversed by post-effect cleanup failu
             currentStageIdentity = projectedIdentity;
             currentStageObservedIdentity = observedIdentity;
             handleIdentityCaptures += 1;
+            identityEvents.push("capture");
           },
         ),
       lstat: async (path) => {
         const entry = await lstat(path);
         if (path === stagePath && currentStageIdentity !== undefined) {
           stageIdentityObservations += 1;
+          identityEvents.push("stage-observation");
           return projectWorkspaceEntry(
             entry,
             currentStageIdentity,
@@ -172,6 +175,7 @@ test("settled workspace publication is not reversed by post-effect cleanup failu
         }
         if (path === finalPath && publishedStageIdentity !== undefined) {
           finalIdentityObservations += 1;
+          identityEvents.push("final-observation");
           return projectWorkspaceEntry(
             entry,
             publishedStageIdentity,
@@ -182,6 +186,7 @@ test("settled workspace publication is not reversed by post-effect cleanup failu
       },
       publish: async (publishedStagePath, targetPath, stageIdentity) => {
         publishCalls += 1;
+        identityEvents.push("publish");
         publishedStageIdentity = stageIdentity;
         publishedStageEntry = await lstat(publishedStagePath);
         await rename(publishedStagePath, targetPath);
@@ -195,6 +200,14 @@ test("settled workspace publication is not reversed by post-effect cleanup failu
   assert.equal(publishCalls, 1);
   assert.equal(stageIdentityObservations, 2);
   assert.equal(finalIdentityObservations, 1);
+  assert.deepEqual(identityEvents, [
+    "capture",
+    "stage-observation",
+    "capture",
+    "stage-observation",
+    "publish",
+    "final-observation",
+  ]);
   await assert.rejects(lstat(stagePath), { code: "ENOENT" });
   const finalEntry = await lstat(finalPath);
   assert.equal(finalEntry.isFile(), publishedStageEntry.isFile());
@@ -314,6 +327,7 @@ test("workspace evidence publication is atomic and failure preserving", async (t
   let currentStageIdentity;
   let currentStageObservedIdentity;
   let handleIdentityCaptures = 0;
+  const identityEvents = [];
   let originalStageIdentity;
   let replacementReady = false;
   let replacementObservedIdentity;
@@ -328,6 +342,7 @@ test("workspace evidence publication is atomic and failure preserving", async (t
             currentStageIdentity = projectedIdentity;
             currentStageObservedIdentity = observedIdentity;
             handleIdentityCaptures += 1;
+            identityEvents.push("capture");
           },
         ),
       lstat: async (path) => {
@@ -336,6 +351,7 @@ test("workspace evidence publication is atomic and failure preserving", async (t
           return entry;
         if (!replacementReady) {
           stageIdentityObservations += 1;
+          identityEvents.push("stage-observation");
           return projectWorkspaceEntry(
             entry,
             currentStageIdentity,
@@ -343,6 +359,7 @@ test("workspace evidence publication is atomic and failure preserving", async (t
           );
         }
         replacementObservations += 1;
+        identityEvents.push("replacement-observation");
         if (replacementObservedIdentity === undefined) {
           replacementObservedIdentity = entry;
         } else {
@@ -363,6 +380,7 @@ test("workspace evidence publication is atomic and failure preserving", async (t
         );
       },
       publish: async (stagePath, _targetPath, stageIdentity) => {
+        identityEvents.push("publish");
         originalStageIdentity = stageIdentity;
         await rename(stagePath, retainedStage);
         await writeFile(stagePath, "unowned", { mode: 0o600 });
@@ -381,6 +399,15 @@ test("workspace evidence publication is atomic and failure preserving", async (t
   assert.equal(currentStageIdentity.mode & 0o777, 0o600);
   assert.equal(stageIdentityObservations, 2);
   assert.equal(replacementObservations, 2);
+  assert.deepEqual(identityEvents, [
+    "capture",
+    "stage-observation",
+    "capture",
+    "stage-observation",
+    "publish",
+    "replacement-observation",
+    "replacement-observation",
+  ]);
   assert.deepEqual(substitutedRmCalls, []);
   const replacementEntry = await lstat(substitutedPath);
   assert.equal(replacementEntry.isFile(), true);
