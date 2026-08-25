@@ -54,20 +54,30 @@ function captureWorkspaceHandleIdentity(handle, capture) {
   return {
     close: (...arguments_) => handle.close(...arguments_),
     stat: async (...arguments_) => {
-      const identity = await handle.stat(...arguments_);
-      capture(identity);
-      return identity;
+      const observedIdentity = await handle.stat(...arguments_);
+      const projectedIdentity = projectWorkspaceIdentity(observedIdentity);
+      capture(observedIdentity, projectedIdentity);
+      return projectedIdentity;
     },
     sync: (...arguments_) => handle.sync(...arguments_),
     writeFile: (...arguments_) => handle.writeFile(...arguments_),
   };
 }
 
-function projectWorkspaceEntry(entry, identity) {
+function projectWorkspaceIdentity(identity) {
+  return {
+    dev: identity.dev,
+    ino: identity.ino,
+    mode: (identity.mode & ~0o777) | 0o600,
+    size: identity.size,
+  };
+}
+
+function projectWorkspaceEntry(entry, identity, observedIdentity) {
   assert.equal(entry.isFile(), true);
   assert.equal(entry.isSymbolicLink(), false);
-  assert.equal(entry.mode & 0o777, identity.mode & 0o777);
-  assert.equal(entry.size, identity.size);
+  assert.equal(entry.mode, observedIdentity.mode);
+  assert.equal(entry.size, observedIdentity.size);
   return {
     dev: identity.dev,
     ino: identity.ino,
@@ -131,6 +141,7 @@ test("settled workspace publication is not reversed by post-effect cleanup failu
   const stagePath = join(root, ".evidence-settled.tmp");
   const next = '{"status":"complete"}\n';
   let currentStageIdentity;
+  let currentStageObservedIdentity;
   let publishedStageIdentity;
   let publishedStageEntry;
   let finalIdentityObservations = 0;
@@ -143,8 +154,9 @@ test("settled workspace publication is not reversed by post-effect cleanup failu
       open: async (...arguments_) =>
         captureWorkspaceHandleIdentity(
           await open(...arguments_),
-          (identity) => {
-            currentStageIdentity = identity;
+          (observedIdentity, projectedIdentity) => {
+            currentStageIdentity = projectedIdentity;
+            currentStageObservedIdentity = observedIdentity;
             handleIdentityCaptures += 1;
           },
         ),
@@ -152,11 +164,19 @@ test("settled workspace publication is not reversed by post-effect cleanup failu
         const entry = await lstat(path);
         if (path === stagePath && currentStageIdentity !== undefined) {
           stageIdentityObservations += 1;
-          return projectWorkspaceEntry(entry, currentStageIdentity);
+          return projectWorkspaceEntry(
+            entry,
+            currentStageIdentity,
+            currentStageObservedIdentity,
+          );
         }
         if (path === finalPath && publishedStageIdentity !== undefined) {
           finalIdentityObservations += 1;
-          return projectWorkspaceEntry(entry, publishedStageIdentity);
+          return projectWorkspaceEntry(
+            entry,
+            publishedStageIdentity,
+            currentStageObservedIdentity,
+          );
         }
         return entry;
       },
@@ -171,6 +191,7 @@ test("settled workspace publication is not reversed by post-effect cleanup failu
     }),
   );
   assert.equal(handleIdentityCaptures, 2);
+  assert.equal(currentStageIdentity.mode & 0o777, 0o600);
   assert.equal(publishCalls, 1);
   assert.equal(stageIdentityObservations, 2);
   assert.equal(finalIdentityObservations, 1);
@@ -291,9 +312,11 @@ test("workspace evidence publication is atomic and failure preserving", async (t
   const retainedStage = join(root, ".evidence-owned-retained.tmp");
   const substitutedRmCalls = [];
   let currentStageIdentity;
+  let currentStageObservedIdentity;
   let handleIdentityCaptures = 0;
   let originalStageIdentity;
   let replacementReady = false;
+  let replacementObservedIdentity;
   let replacementObservations = 0;
   let stageIdentityObservations = 0;
   await assert.rejects(
@@ -301,8 +324,9 @@ test("workspace evidence publication is atomic and failure preserving", async (t
       open: async (...arguments_) =>
         captureWorkspaceHandleIdentity(
           await open(...arguments_),
-          (identity) => {
-            currentStageIdentity = identity;
+          (observedIdentity, projectedIdentity) => {
+            currentStageIdentity = projectedIdentity;
+            currentStageObservedIdentity = observedIdentity;
             handleIdentityCaptures += 1;
           },
         ),
@@ -312,19 +336,31 @@ test("workspace evidence publication is atomic and failure preserving", async (t
           return entry;
         if (!replacementReady) {
           stageIdentityObservations += 1;
-          return projectWorkspaceEntry(entry, currentStageIdentity);
+          return projectWorkspaceEntry(
+            entry,
+            currentStageIdentity,
+            currentStageObservedIdentity,
+          );
         }
         replacementObservations += 1;
-        assert.equal(entry.isFile(), true);
-        assert.equal(entry.isSymbolicLink(), false);
-        assert.equal(entry.mode & 0o777, 0o600);
-        assert.equal(entry.size, Buffer.byteLength("unowned"));
-        return projectWorkspaceEntry(entry, {
-          dev: originalStageIdentity.dev,
-          ino: originalStageIdentity.ino === 0 ? 1 : 0,
-          mode: originalStageIdentity.mode,
-          size: entry.size,
-        });
+        if (replacementObservedIdentity === undefined) {
+          replacementObservedIdentity = entry;
+        } else {
+          assert.equal(entry.dev, replacementObservedIdentity.dev);
+          assert.equal(entry.ino, replacementObservedIdentity.ino);
+          assert.equal(entry.mode, replacementObservedIdentity.mode);
+          assert.equal(entry.size, replacementObservedIdentity.size);
+        }
+        return projectWorkspaceEntry(
+          entry,
+          {
+            dev: originalStageIdentity.dev,
+            ino: originalStageIdentity.ino === 0 ? 1 : 0,
+            mode: originalStageIdentity.mode,
+            size: entry.size,
+          },
+          replacementObservedIdentity,
+        );
       },
       publish: async (stagePath, _targetPath, stageIdentity) => {
         originalStageIdentity = stageIdentity;
@@ -342,13 +378,17 @@ test("workspace evidence publication is atomic and failure preserving", async (t
     /workspace-evidence-publication-failed/u,
   );
   assert.equal(handleIdentityCaptures, 2);
+  assert.equal(currentStageIdentity.mode & 0o777, 0o600);
   assert.equal(stageIdentityObservations, 2);
   assert.equal(replacementObservations, 2);
   assert.deepEqual(substitutedRmCalls, []);
   const replacementEntry = await lstat(substitutedPath);
   assert.equal(replacementEntry.isFile(), true);
   assert.equal(replacementEntry.isSymbolicLink(), false);
-  assert.equal(replacementEntry.mode & 0o777, 0o600);
+  assert.equal(replacementEntry.dev, replacementObservedIdentity.dev);
+  assert.equal(replacementEntry.ino, replacementObservedIdentity.ino);
+  assert.equal(replacementEntry.mode, replacementObservedIdentity.mode);
+  assert.equal(replacementEntry.size, replacementObservedIdentity.size);
   assert.equal(replacementEntry.size, Buffer.byteLength("unowned"));
   assert.equal(await readFile(substitutedPath, "utf8"), "unowned");
   assert.equal(await readFile(retainedStage, "utf8"), next);
