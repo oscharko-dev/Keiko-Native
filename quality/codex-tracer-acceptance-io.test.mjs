@@ -123,14 +123,16 @@ test("platform-neutral workspace publication injects its publisher", async () =>
       /^  await ioModule\.publishWorkspaceEvidenceAtomically\([\s\S]*?^  \}\);/gmu,
     );
   assert.equal(successCalls?.length, 1, "platform-neutral publication success");
-  const injectedPublishers = successCalls.filter((call) =>
-    /\bpublish:\s*/u.test(call),
-  );
-  assert.equal(
-    injectedPublishers.length,
-    successCalls.length,
-    "platform-neutral success requires an injected publisher",
-  );
+  for (const seam of ["open", "lstat", "publish"]) {
+    const injectedCalls = successCalls.filter((call) =>
+      call.includes(`${seam}:`),
+    );
+    assert.equal(
+      injectedCalls.length,
+      successCalls.length,
+      `platform-neutral success requires an injected ${seam}`,
+    );
+  }
 });
 
 test("settled workspace publication is not reversed by post-effect cleanup failure", async (t) => {
@@ -444,10 +446,61 @@ test("workspace evidence publication is atomic and failure preserving", async (t
   assert.equal(await readFile(finalPath, "utf8"), prior);
 
   await rm(finalPath);
+  const successStage = ".evidence-success.tmp";
+  const successStagePath = join(root, successStage);
+  let currentSuccessIdentity;
+  let currentSuccessObservedIdentity;
+  let successHandleIdentityCaptures = 0;
+  const successIdentityEvents = [];
+  let successPublishCalls = 0;
+  let successStageIdentityObservations = 0;
   await ioModule.publishWorkspaceEvidenceAtomically(next, finalPath, {
-    publish: rename,
-    stageName: ".evidence-success.tmp",
+    open: async (...arguments_) =>
+      captureWorkspaceHandleIdentity(
+        await open(...arguments_),
+        (observedIdentity, projectedIdentity) => {
+          currentSuccessIdentity = projectedIdentity;
+          currentSuccessObservedIdentity = observedIdentity;
+          successHandleIdentityCaptures += 1;
+          successIdentityEvents.push("capture");
+        },
+      ),
+    lstat: async (path) => {
+      const entry = await lstat(path);
+      if (path !== successStagePath || currentSuccessIdentity === undefined) {
+        return entry;
+      }
+      successStageIdentityObservations += 1;
+      successIdentityEvents.push("stage-observation");
+      return projectWorkspaceEntry(
+        entry,
+        currentSuccessIdentity,
+        currentSuccessObservedIdentity,
+      );
+    },
+    publish: async (...arguments_) => {
+      successPublishCalls += 1;
+      successIdentityEvents.push("publish");
+      await rename(...arguments_);
+    },
+    stageName: successStage,
   });
+  assert.equal(successHandleIdentityCaptures, 2);
+  assert.equal(currentSuccessIdentity.mode & 0o777, 0o600);
+  assert.equal(successStageIdentityObservations, 2);
+  assert.equal(successPublishCalls, 1);
+  assert.deepEqual(successIdentityEvents, [
+    "capture",
+    "stage-observation",
+    "capture",
+    "stage-observation",
+    "publish",
+  ]);
+  const successfulFinalEntry = await lstat(finalPath);
+  assert.equal(successfulFinalEntry.isFile(), true);
+  assert.equal(successfulFinalEntry.isSymbolicLink(), false);
+  assert.equal(successfulFinalEntry.mode, currentSuccessObservedIdentity.mode);
+  assert.equal(successfulFinalEntry.size, currentSuccessObservedIdentity.size);
   assert.equal(await readFile(finalPath, "utf8"), next);
 });
 
