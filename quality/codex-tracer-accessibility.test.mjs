@@ -10,6 +10,7 @@ import {
   executeTracerAccessibilityAction,
   percentile95,
   runPackagedTracerJourney,
+  runPackagedWorkspaceJourney,
   waitForTracerAccessibilityAction,
 } from "./codex-tracer-accessibility.mjs";
 
@@ -53,6 +54,22 @@ test("adapter results accept only one closed semantic outcome", () => {
   );
   assert.deepEqual(
     classifyTracerAccessibilityResult({
+      exitCode: 0,
+      projected: true,
+      stdout:
+        '{"status":"passed","reasonCode":null,"prompted":false,"projectedMs":42}\n',
+      stderr: "",
+      timedOut: false,
+    }),
+    {
+      projectedMs: 42,
+      prompted: false,
+      reasonCode: null,
+      status: "passed",
+    },
+  );
+  assert.deepEqual(
+    classifyTracerAccessibilityResult({
       exitCode: 1,
       stdout:
         '{"status":"failed","reasonCode":"missing-or-ambiguous-semantic-target","prompted":false}\n',
@@ -71,6 +88,13 @@ test("adapter results accept only one closed semantic outcome", () => {
       exitCode: 0,
       stdout:
         '{"status":"passed","reasonCode":null,"prompted":false,"extra":true}',
+      stderr: "",
+      timedOut: false,
+    },
+    {
+      exitCode: 0,
+      projected: true,
+      stdout: '{"status":"passed","reasonCode":null,"prompted":false}',
       stderr: "",
       timedOut: false,
     },
@@ -98,11 +122,76 @@ test("adapter results accept only one closed semantic outcome", () => {
   }
 });
 
+test("workspace projection keeps native action duration separate", () => {
+  assert.deepEqual(
+    classifyTracerAccessibilityResult({
+      exitCode: 0,
+      nativeAction: true,
+      projected: true,
+      stderr: "",
+      stdout:
+        '{"status":"passed","reasonCode":null,"prompted":false,"projectedMs":28,"nativeActionMs":102}\n',
+      timedOut: false,
+    }),
+    {
+      nativeActionMs: 102,
+      projectedMs: 28,
+      prompted: false,
+      reasonCode: null,
+      status: "passed",
+    },
+  );
+  assert.equal(
+    classifyTracerAccessibilityResult({
+      exitCode: 0,
+      nativeAction: true,
+      projected: true,
+      stderr: "",
+      stdout:
+        '{"status":"passed","reasonCode":null,"prompted":false,"projectedMs":28}\n',
+      timedOut: false,
+    }).reasonCode,
+    "adapter-output-invalid",
+  );
+  for (const nativeActionMs of [-1, 1.5, 5_001]) {
+    assert.equal(
+      classifyTracerAccessibilityResult({
+        exitCode: 0,
+        nativeAction: true,
+        projected: true,
+        stderr: "",
+        stdout: `${JSON.stringify({
+          nativeActionMs,
+          projectedMs: 28,
+          prompted: false,
+          reasonCode: null,
+          status: "passed",
+        })}\n`,
+        timedOut: false,
+      }).reasonCode,
+      "adapter-output-invalid",
+    );
+  }
+});
+
 test("the action boundary accepts only the frozen task and bounded workspace identities", () => {
   const run = () => assert.fail("must not start a subprocess");
   for (const request of [
     { action: "unknown", input: undefined, pid: 1 },
     { action: "probe-start", input: "unexpected", pid: 1 },
+    {
+      action: "probe-start",
+      input: undefined,
+      observation: "probe-canvas",
+      pid: 1,
+    },
+    {
+      action: "cancel-turn",
+      input: undefined,
+      observation: "observe-workspace-selected",
+      pid: 1,
+    },
+    { action: "observe-workspace-selected", input: undefined, pid: 1 },
     { action: "set-task", input: "", pid: 1 },
     { action: "set-task", input: "x".repeat(4_097), pid: 1 },
     { action: "set-task", input: "bounded", pid: 1 },
@@ -140,6 +229,84 @@ test("the action boundary accepts only the frozen task and bounded workspace ide
   );
   assert.equal(invocation[2].input, acceptedPrompt);
   assert.equal(invocation[2].timeout, 5_000);
+
+  assert.deepEqual(
+    executeTracerAccessibilityAction({
+      action: "cancel-turn",
+      binary: "/bounded/adapter",
+      observation: "observe-stopping",
+      pid: 1,
+      run: (...args) => {
+        invocation = args;
+        return {
+          status: 0,
+          stderr: "",
+          stdout:
+            '{"status":"passed","reasonCode":null,"prompted":false,"projectedMs":31}\n',
+        };
+      },
+    }),
+    {
+      projectedMs: 31,
+      prompted: false,
+      reasonCode: null,
+      status: "passed",
+    },
+  );
+  assert.deepEqual(invocation[1], ["1", "cancel-turn", "observe-stopping"]);
+
+  assert.deepEqual(
+    executeTracerAccessibilityAction({
+      action: "select-workspace",
+      binary: "/bounded/adapter",
+      input: "KeikoAcceptanceIdentity104ABC123",
+      observation: "observe-workspace-selected",
+      pid: 1,
+      run: (...args) => {
+        invocation = args;
+        return {
+          status: 0,
+          stderr: "",
+          stdout:
+            '{"status":"passed","reasonCode":null,"prompted":false,"projectedMs":28,"nativeActionMs":102}\n',
+        };
+      },
+    }),
+    {
+      nativeActionMs: 102,
+      projectedMs: 28,
+      prompted: false,
+      reasonCode: null,
+      status: "passed",
+    },
+  );
+  assert.deepEqual(invocation[1], [
+    "1",
+    "select-workspace",
+    "observe-workspace-selected",
+  ]);
+
+  assert.deepEqual(
+    executeTracerAccessibilityAction({
+      action: "select-workspace",
+      binary: "/bounded/adapter",
+      input: "KeikoAcceptanceIdentity104DeniedABC123",
+      observation: "observe-workspace-permission-denied",
+      pid: 1,
+      run: () => ({
+        status: 0,
+        stderr: "",
+        stdout:
+          '{"status":"passed","reasonCode":null,"prompted":false,"projectedMs":90}\n',
+      }),
+    }),
+    {
+      projectedMs: 90,
+      prompted: false,
+      reasonCode: null,
+      status: "passed",
+    },
+  );
 });
 
 test("bounded semantic waits retry only missing targets and stop on permission denial", async () => {
@@ -200,7 +367,12 @@ test("the packaged journey drives the fixed sequence and excludes observer start
   const result = await runPackagedTracerJourney({
     deniedWorkspaceLabel: "KeikoAcceptanceIdentity104DeniedABC123",
     execute: async (request) => {
-      calls.push({ action: request.action, input: request.input });
+      calls.push({
+        action: request.action,
+        input: request.input,
+        observation: request.observation,
+        timeoutMs: request.timeoutMs,
+      });
       const elapsedMs =
         request.action === "probe-start"
           ? 1_000
@@ -210,6 +382,19 @@ test("the packaged journey drives the fixed sequence and excludes observer start
       now += elapsedMs;
       return {
         elapsedMs,
+        ...(request.observation === undefined
+          ? {}
+          : {
+              ...(request.observation === "observe-workspace-selected"
+                ? { nativeActionMs: 102 }
+                : {}),
+              projectedMs:
+                request.observation === "observe-workspace-cancelled"
+                  ? 500
+                  : request.observation === "observe-stopping"
+                    ? 80
+                    : 10,
+            }),
         prompted: false,
         reasonCode: null,
         status: "passed",
@@ -227,16 +412,12 @@ test("the packaged journey drives the fixed sequence and excludes observer start
     [
       "probe-start",
       "open-canvas",
-      "probe-canvas",
       "open-workspace-picker",
       "cancel-workspace-picker",
-      "observe-workspace-cancelled",
       "open-workspace-picker",
       "select-workspace",
-      "observe-workspace-permission-denied",
       "open-workspace-picker",
       "select-workspace",
-      "observe-workspace-selected",
       "check-runtime",
       "observe-runtime-ready",
       "focus-task",
@@ -253,7 +434,6 @@ test("the packaged journey drives the fixed sequence and excludes observer start
       "observe-streaming",
       "observe-runtime",
       "cancel-turn",
-      "observe-stopping",
       "observe-cancelled",
       "focus-task",
       "set-task",
@@ -271,11 +451,162 @@ test("the packaged journey drives the fixed sequence and excludes observer start
     calls.find(({ action }) => action === "set-task").input,
     acceptedPrompt,
   );
-  assert.equal(result.cancellationProjectionMs, 90);
-  assert.equal(result.localProjectionP95Ms, 90);
-  assert.equal(result.localProjectionSamples, 5);
+  assert.deepEqual(
+    calls
+      .filter(({ observation }) => observation !== undefined)
+      .map(({ action, observation }) => `${action}->${observation}`),
+    [
+      "open-canvas->probe-canvas",
+      "cancel-workspace-picker->observe-workspace-cancelled",
+      "select-workspace->observe-workspace-permission-denied",
+      "select-workspace->observe-workspace-selected",
+      "cancel-turn->observe-stopping",
+    ],
+  );
+  assert.equal(
+    calls.find(
+      ({ action, observation }) =>
+        action === "select-workspace" &&
+        observation === "observe-workspace-selected",
+    ).timeoutMs,
+    15_000,
+  );
+  assert.ok(
+    calls
+      .filter(
+        ({ action, observation }) =>
+          observation !== undefined &&
+          (action !== "select-workspace" ||
+            observation !== "observe-workspace-selected"),
+      )
+      .every(({ timeoutMs }) => timeoutMs === 5_000),
+  );
+  assert.equal(result.nativePickerCancellationProjectionMs, 500);
+  assert.deepEqual(result.localProjectionMeasurements, [
+    {
+      action: "open-canvas",
+      observation: "probe-canvas",
+      projectedMs: 10,
+    },
+    {
+      action: "select-workspace",
+      observation: "observe-workspace-permission-denied",
+      projectedMs: 10,
+    },
+    {
+      action: "select-workspace",
+      observation: "observe-workspace-selected",
+      projectedMs: 10,
+    },
+    {
+      action: "cancel-turn",
+      observation: "observe-stopping",
+      projectedMs: 80,
+    },
+  ]);
+  assert.equal(result.localProjectionP95Ms, 80);
+  assert.equal(result.localProjectionSamples, 4);
   assert.equal(result.status, "passed");
+  assert.equal(result.turnCancellationProjectionMs, 80);
   assert.equal(result.turnDurationMs, 30);
+  assert.equal(result.workspaceSelectionNativeActionMs, 102);
+});
+
+test("the workspace tranche stops after four exact successful projections", async () => {
+  const calls = [];
+  const result = await runPackagedWorkspaceJourney({
+    deniedWorkspaceLabel: "KeikoAcceptanceIdentity104DeniedABC123",
+    execute: async (request) => {
+      calls.push(request);
+      const successfulSelection =
+        request.action === "select-workspace" &&
+        request.observation === "observe-workspace-selected";
+      return {
+        elapsedMs: 10,
+        ...(request.observation === undefined
+          ? {}
+          : {
+              ...(successfulSelection ? { nativeActionMs: 120 } : {}),
+              projectedMs: successfulSelection ? 40 : 20,
+            }),
+        prompted: false,
+        reasonCode: null,
+        status: "passed",
+      };
+    },
+    workspaceLabels: Array.from(
+      { length: 4 },
+      (_, index) => `KeikoAcceptanceIdentity104Sample${index + 1}ABC123`,
+    ),
+  });
+
+  assert.deepEqual(
+    {
+      actions: calls.map(
+        ({ action, observation }) =>
+          `${action}${observation === undefined ? "" : `->${observation}`}`,
+      ),
+      nativeActions: result.workspaceSelectionNativeActionMeasurements,
+      p95: result.workspaceProjectionP95Ms,
+      projections: result.workspaceProjectionMeasurements,
+    },
+    {
+      actions: [
+        "probe-start",
+        "open-canvas->probe-canvas",
+        "open-workspace-picker",
+        "cancel-workspace-picker->observe-workspace-cancelled",
+        "open-workspace-picker",
+        "select-workspace->observe-workspace-permission-denied",
+        "open-workspace-picker",
+        "select-workspace->observe-workspace-selected",
+        "open-workspace-picker",
+        "select-workspace->observe-workspace-selected",
+        "open-workspace-picker",
+        "select-workspace->observe-workspace-selected",
+        "open-workspace-picker",
+        "select-workspace->observe-workspace-selected",
+        "quit",
+      ],
+      nativeActions: Array.from({ length: 4 }, (_, index) => ({
+        nativeActionMs: 120,
+        sample: index + 1,
+      })),
+      p95: 40,
+      projections: Array.from({ length: 4 }, (_, index) => ({
+        projectedMs: 40,
+        sample: index + 1,
+      })),
+    },
+  );
+  assert.equal(
+    calls.some(({ action }) =>
+      ["check-runtime", "submit-task", "cancel-turn"].includes(action),
+    ),
+    false,
+  );
+  assert.ok(
+    calls
+      .filter(
+        ({ action, observation }) =>
+          action === "select-workspace" &&
+          observation === "observe-workspace-selected",
+      )
+      .every(({ timeoutMs }) => timeoutMs === 15_000),
+  );
+  assert.deepEqual(
+    calls
+      .filter(
+        ({ action, observation }) =>
+          action === "select-workspace" &&
+          observation === "observe-workspace-selected",
+      )
+      .map(({ input }) => input),
+    Array.from(
+      { length: 4 },
+      (_, index) => `KeikoAcceptanceIdentity104Sample${index + 1}ABC123`,
+    ),
+  );
 });
 
 const macArm64Test =

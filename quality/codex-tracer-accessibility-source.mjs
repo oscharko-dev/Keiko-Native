@@ -5,7 +5,6 @@ export const tracerAccessibilityActions = Object.freeze([
   "open-workspace-picker",
   "select-workspace",
   "cancel-workspace-picker",
-  "observe-workspace-selected",
   "observe-workspace-cancelled",
   "observe-workspace-permission-denied",
   "check-runtime",
@@ -25,6 +24,7 @@ export const tracerAccessibilityActions = Object.freeze([
 ]);
 
 export const tracerAccessibilityActivatingActions = Object.freeze([
+  "probe-start",
   "open-canvas",
   "open-workspace-picker",
   "select-workspace",
@@ -41,6 +41,7 @@ export const tracerAccessibilityActivatingActions = Object.freeze([
 export const tracerAccessibilitySource = String.raw`#import <ApplicationServices/ApplicationServices.h>
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
+#import <time.h>
 #import <unistd.h>
 
 static const NSUInteger kMaximumElements = 2048;
@@ -620,6 +621,29 @@ static BOOL PressPickerControl(
   return error == kAXErrorSuccess;
 }
 
+static double MonotonicSeconds(void);
+
+static BOOL PressPickerControlWithProjectionTiming(
+    AXUIElementRef application,
+    CFStringRef identifier,
+    NSUInteger *nativeActionMs,
+    double *projectionStartedAt) {
+  AXUIElementRef panel = FindPickerPanel(application);
+  if (panel == NULL) return NO;
+  AXUIElementRef control = FindDescendantByIdentifier(panel, identifier);
+  CFRelease(panel);
+  if (control == NULL) return NO;
+  double actionStartedAt = MonotonicSeconds();
+  AXError error = AXUIElementPerformAction(control, kAXPressAction);
+  double actionReturnedAt = MonotonicSeconds();
+  CFRelease(control);
+  if (error != kAXErrorSuccess) return NO;
+  *nativeActionMs = (NSUInteger)(
+      MAX(0.0, actionReturnedAt - actionStartedAt) * 1000.0 + 0.5);
+  *projectionStartedAt = actionReturnedAt;
+  return YES;
+}
+
 static AXUIElementRef FindMenuItem(
     AXUIElementRef application, CFStringRef expected) {
   CFMutableArrayRef queue =
@@ -761,101 +785,6 @@ static BOOL PressEither(
   return Press(application, first) || Press(application, second);
 }
 
-static BOOL StringAttributeHasPrefix(
-    AXUIElementRef element, CFStringRef attribute, CFStringRef prefix) {
-  CFTypeRef value = NULL;
-  AXError error = AXUIElementCopyAttributeValue(element, attribute, &value);
-  BOOL matches = NO;
-  if (error == kAXErrorSuccess && value != NULL &&
-      CFGetTypeID(value) == CFStringGetTypeID()) {
-    CFStringRef string = (CFStringRef)value;
-    CFRange range = CFRangeMake(0, CFStringGetLength(prefix));
-    matches = CFStringGetLength(string) >= CFStringGetLength(prefix) &&
-        CFStringCompareWithOptions(string, prefix, range, 0) ==
-            kCFCompareEqualTo;
-  }
-  if (value != NULL) CFRelease(value);
-  return matches;
-}
-
-static BOOL ElementHasPrefix(AXUIElementRef element, CFStringRef prefix) {
-  const CFStringRef attributes[] = {
-    kAXTitleAttribute,
-    kAXDescriptionAttribute,
-    kAXValueAttribute,
-  };
-  for (NSUInteger index = 0;
-       index < sizeof(attributes) / sizeof(attributes[0]);
-       index += 1) {
-    if (StringAttributeHasPrefix(element, attributes[index], prefix)) return YES;
-  }
-  return NO;
-}
-
-static void CollectPrefixMatches(
-    AXUIElementRef root,
-    CFStringRef prefix,
-    NSUInteger depth,
-    CFMutableArrayRef matches,
-    NSUInteger *visited) {
-  if (depth > kMaximumDepth || *visited >= kMaximumElements ||
-      CFArrayGetCount(matches) > 1)
-    return;
-  *visited += 1;
-  if (ElementHasPrefix(root, prefix) &&
-      !CFArrayContainsValue(
-          matches, CFRangeMake(0, CFArrayGetCount(matches)), root))
-    CFArrayAppendValue(matches, root);
-  const CFStringRef rootContainers[] = {kAXWindowsAttribute};
-  const CFStringRef childContainers[] = {
-    kAXChildrenAttribute,
-    kAXRowsAttribute,
-    kAXColumnsAttribute,
-    kAXVisibleChildrenAttribute,
-    kAXContentsAttribute,
-  };
-  const CFStringRef *containers =
-      depth == 0 ? rootContainers : childContainers;
-  NSUInteger containerCount = depth == 0 ? 1 : 5;
-  for (NSUInteger containerIndex = 0;
-       containerIndex < containerCount;
-       containerIndex += 1) {
-    BOOL traversedChildren = NO;
-    CFTypeRef value = NULL;
-    if (AXUIElementCopyAttributeValue(
-            root, containers[containerIndex], &value) != kAXErrorSuccess ||
-        value == NULL)
-      continue;
-    if (CFGetTypeID(value) == CFArrayGetTypeID()) {
-      CFArrayRef children = (CFArrayRef)value;
-      CFIndex count = MIN(CFArrayGetCount(children), 512);
-      traversedChildren = count > 0;
-      for (CFIndex index = 0; index < count; index += 1) {
-        CollectPrefixMatches(
-            (AXUIElementRef)CFArrayGetValueAtIndex(children, index),
-            prefix,
-            depth + 1,
-            matches,
-            visited);
-        if (CFArrayGetCount(matches) > 1) break;
-      }
-    }
-    CFRelease(value);
-    if (traversedChildren || CFArrayGetCount(matches) > 1) break;
-  }
-}
-
-static BOOL HasUniquePrefix(
-    AXUIElementRef application, CFStringRef prefix) {
-  CFMutableArrayRef matches =
-      CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
-  NSUInteger visited = 0;
-  CollectPrefixMatches(application, prefix, 0, matches, &visited);
-  BOOL result = CFArrayGetCount(matches) == 1;
-  CFRelease(matches);
-  return result;
-}
-
 static BOOL SetValue(
     AXUIElementRef application, CFStringRef expected, CFStringRef value) {
   AXUIElementRef element = FindUnique(application, expected);
@@ -893,6 +822,97 @@ static NSString *ReadBoundedInput(void) {
   return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
 }
 
+static BOOL ProjectionPairIsAllowed(NSString *action, NSString *observation) {
+  if (observation == nil) return YES;
+  return
+      ([action isEqualToString:@"open-canvas"] &&
+       [observation isEqualToString:@"probe-canvas"]) ||
+      ([action isEqualToString:@"cancel-workspace-picker"] &&
+       [observation isEqualToString:@"observe-workspace-cancelled"]) ||
+      ([action isEqualToString:@"select-workspace"] &&
+       ([observation isEqualToString:@"observe-workspace-selected"] ||
+        [observation isEqualToString:@"observe-workspace-permission-denied"])) ||
+      ([action isEqualToString:@"cancel-turn"] &&
+       [observation isEqualToString:@"observe-stopping"]);
+}
+
+static BOOL ProjectionIsVisible(
+    AXUIElementRef application,
+    NSString *observation,
+    NSString *exactWorkspaceProjection) {
+  if ([observation isEqualToString:@"probe-canvas"]) {
+    const CFStringRef expected[] = {
+      CFSTR("ime-harness"),
+      CFSTR("codex-task"),
+      CFSTR("Repository auswählen"),
+      CFSTR("Codex-Bereitschaft prüfen"),
+    };
+    return HasUniqueSet(
+        application, expected, sizeof(expected) / sizeof(expected[0]));
+  }
+  if ([observation isEqualToString:@"observe-workspace-selected"]) {
+    return exactWorkspaceProjection != nil &&
+        HasUnique(
+            application,
+            (__bridge CFStringRef)exactWorkspaceProjection);
+  }
+  if ([observation isEqualToString:@"observe-workspace-cancelled"]) {
+    return HasUnique(
+        application,
+        CFSTR("Auswahl abgebrochen. Es wurde kein Repository gebunden."));
+  }
+  if ([observation isEqualToString:@"observe-workspace-permission-denied"]) {
+    return HasUnique(
+        application,
+        CFSTR("Zugriff verweigert. Wählen Sie das Repository erneut und erlauben Sie den Zugriff."));
+  }
+  if ([observation isEqualToString:@"observe-stopping"]) {
+    return HasCancellationProjection(application);
+  }
+  return NO;
+}
+
+static double MonotonicSeconds(void) {
+  struct timespec value;
+  if (clock_gettime(CLOCK_MONOTONIC, &value) != 0) return -1.0;
+  return (double)value.tv_sec + (double)value.tv_nsec / 1000000000.0;
+}
+
+static BOOL WaitForUnique(
+    AXUIElementRef application, CFStringRef expected) {
+  const double startedAt = MonotonicSeconds();
+  if (startedAt < 0.0) return NO;
+  const double deadline = startedAt + 5.0;
+  while (YES) {
+    if (HasUnique(application, expected)) return YES;
+    usleep(5 * 1000);
+    double now = MonotonicSeconds();
+    if (now < 0.0 || now >= deadline) return NO;
+  }
+}
+
+static BOOL WaitForProjection(
+    AXUIElementRef application,
+    NSString *observation,
+    NSString *exactWorkspaceProjection,
+    double startedAt,
+    NSUInteger *projectedMs) {
+  const double deadline = startedAt + 5.0;
+  while (YES) {
+    if (ProjectionIsVisible(
+            application, observation, exactWorkspaceProjection)) {
+      double elapsed = MonotonicSeconds() - startedAt;
+      if (elapsed < 0.0) return NO;
+      *projectedMs = (NSUInteger)(MAX(0.0, elapsed) * 1000.0 + 0.5);
+      return YES;
+    }
+    usleep(5 * 1000);
+    double now = MonotonicSeconds();
+    if (now < 0.0 || now >= deadline) break;
+  }
+  return NO;
+}
+
 static void Emit(BOOL passed, const char *reasonCode) {
   if (passed) {
     puts("{\"status\":\"passed\",\"reasonCode\":null,\"prompted\":false}");
@@ -900,6 +920,32 @@ static void Emit(BOOL passed, const char *reasonCode) {
     printf(
         "{\"status\":\"failed\",\"reasonCode\":\"%s\",\"prompted\":false}\n",
         reasonCode);
+  }
+}
+
+static void EmitProjection(
+    BOOL passed, const char *reasonCode, NSUInteger projectedMs) {
+  if (passed) {
+    printf(
+        "{\"status\":\"passed\",\"reasonCode\":null,\"prompted\":false,\"projectedMs\":%lu}\n",
+        (unsigned long)projectedMs);
+  } else {
+    Emit(NO, reasonCode);
+  }
+}
+
+static void EmitWorkspaceProjection(
+    BOOL passed,
+    const char *reasonCode,
+    NSUInteger projectedMs,
+    NSUInteger nativeActionMs) {
+  if (passed) {
+    printf(
+        "{\"status\":\"passed\",\"reasonCode\":null,\"prompted\":false,\"projectedMs\":%lu,\"nativeActionMs\":%lu}\n",
+        (unsigned long)projectedMs,
+        (unsigned long)nativeActionMs);
+  } else {
+    Emit(NO, reasonCode);
   }
 }
 
@@ -912,19 +958,23 @@ int main(int argc, const char *argv[]) {
       Emit(NO, "accessibility-permission-denied");
       return 1;
     }
-    if (argc != 3) {
+    if (argc != 3 && argc != 4) {
       Emit(NO, "invalid-invocation");
       return 2;
     }
     pid_t pid = (pid_t)strtol(argv[1], NULL, 10);
     NSString *action = [NSString stringWithUTF8String:argv[2]];
+    NSString *observation =
+        argc == 4 ? [NSString stringWithUTF8String:argv[3]] : nil;
     NSSet<NSString *> *allowed = [NSSet setWithArray:@[
 ${tracerAccessibilityActions.map((action) => `      @"${action}",`).join("\n")}
     ]];
     NSSet<NSString *> *activatingActions = [NSSet setWithArray:@[
 ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).join("\n")}
     ]];
-    if (pid < 1 || action == nil || ![allowed containsObject:action]) {
+    if (pid < 1 || action == nil || (argc == 4 && observation == nil) ||
+        ![allowed containsObject:action] ||
+        !ProjectionPairIsAllowed(action, observation)) {
       Emit(NO, "invalid-invocation");
       return 2;
     }
@@ -943,14 +993,34 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
     }
     AXUIElementRef application = AXUIElementCreateApplication(pid);
     BOOL passed = NO;
+    double projectionStartedAt = 0.0;
+    NSUInteger nativeActionMs = 0;
+    NSString *selectedWorkspaceProjection = nil;
     if ([action isEqualToString:@"probe-start"]) {
       BOOL welcome = HasUnique(application, CFSTR("Foundation öffnen"));
       BOOL canvas = HasUnique(application, CFSTR("codex-task"));
-      passed = (welcome || canvas) &&
+      BOOL navigation =
+          HasUnique(application, CFSTR("ÜBER DIESE VERSION")) ||
+          HasUnique(application, CFSTR("UPDATE-STATUS"));
+      passed = (welcome || canvas || navigation) &&
           HasUnique(application, CFSTR("Keiko Native beenden"));
     } else if ([action isEqualToString:@"open-canvas"]) {
-      passed = HasUnique(application, CFSTR("codex-task")) ||
-          Press(application, CFSTR("Foundation öffnen"));
+      BOOL welcome = HasUnique(application, CFSTR("Foundation öffnen"));
+      BOOL navigation =
+          HasUnique(application, CFSTR("ÜBER DIESE VERSION")) ||
+          HasUnique(application, CFSTR("UPDATE-STATUS"));
+      if (!welcome && !navigation &&
+          HasUnique(application, CFSTR("codex-task"))) {
+        navigation =
+            Press(application, CFSTR("Über Keiko Native")) &&
+            WaitForUnique(application, CFSTR("ÜBER DIESE VERSION"));
+      }
+      if (welcome || navigation) {
+        projectionStartedAt = MonotonicSeconds();
+        passed = welcome
+            ? Press(application, CFSTR("Foundation öffnen"))
+            : Press(application, CFSTR("Leere Fläche"));
+      }
     } else if ([action isEqualToString:@"probe-canvas"]) {
       const CFStringRef expected[] = {
         CFSTR("ime-harness"),
@@ -972,6 +1042,10 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
           label != nil &&
           [label hasPrefix:@"KeikoAcceptanceIdentity104"] &&
           [label rangeOfCharacterFromSet:invalid].location == NSNotFound;
+      if (labelValid) {
+        selectedWorkspaceProjection =
+            [NSString stringWithFormat:@"Ausgewählt: %@", label];
+      }
       passed = labelValid &&
           (PickerIsAt(application, (__bridge CFStringRef)label) ||
            (EnsurePickerListView(application) &&
@@ -981,16 +1055,25 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
         passed = NO;
         for (NSUInteger attempt = 0; attempt < 20 && !passed; attempt += 1) {
           usleep(50 * 1000);
-          passed = PressPickerControl(application, CFSTR("OKButton"));
+          if ([observation isEqualToString:@"observe-workspace-selected"]) {
+            passed = PressPickerControlWithProjectionTiming(
+                application,
+                CFSTR("OKButton"),
+                &nativeActionMs,
+                &projectionStartedAt);
+          } else {
+            projectionStartedAt = MonotonicSeconds();
+            passed = PressPickerControl(application, CFSTR("OKButton"));
+          }
         }
       }
     } else if ([action isEqualToString:@"cancel-workspace-picker"]) {
-      passed =
-          PressPickerControl(application, CFSTR("CancelButton")) ||
-          PressEither(application, CFSTR("Cancel"), CFSTR("Abbrechen"));
-    } else if ([action isEqualToString:@"observe-workspace-selected"]) {
-      passed = HasUniquePrefix(
-          application, CFSTR("Ausgewählt: KeikoAcceptanceIdentity104"));
+      projectionStartedAt = MonotonicSeconds();
+      passed = PressPickerControl(application, CFSTR("CancelButton"));
+      if (!passed) {
+        projectionStartedAt = MonotonicSeconds();
+        passed = PressEither(application, CFSTR("Cancel"), CFSTR("Abbrechen"));
+      }
     } else if ([action isEqualToString:@"observe-workspace-cancelled"]) {
       passed = HasUnique(
           application,
@@ -1015,6 +1098,7 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
     } else if ([action isEqualToString:@"submit-task"]) {
       passed = Press(application, CFSTR("Begrenzten Auftrag starten"));
     } else if ([action isEqualToString:@"cancel-turn"]) {
+      projectionStartedAt = MonotonicSeconds();
       passed = Press(application, CFSTR("Codex-Lauf abbrechen"));
     } else if ([action isEqualToString:@"set-unicode"]) {
       passed = SetValue(
@@ -1046,6 +1130,28 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
       passed = HasUnique(application, CFSTR("Codex-Antwort"));
     } else if ([action isEqualToString:@"quit"]) {
       passed = Press(application, CFSTR("Keiko Native beenden"));
+    }
+    if (passed && observation != nil) {
+      NSUInteger projectedMs = 0;
+      passed = projectionStartedAt > 0.0 &&
+          WaitForProjection(
+              application,
+              observation,
+              selectedWorkspaceProjection,
+              projectionStartedAt,
+              &projectedMs);
+      CFRelease(application);
+      if ([observation isEqualToString:@"observe-workspace-selected"]) {
+        EmitWorkspaceProjection(
+            passed,
+            "missing-or-ambiguous-semantic-target",
+            projectedMs,
+            nativeActionMs);
+      } else {
+        EmitProjection(
+            passed, "missing-or-ambiguous-semantic-target", projectedMs);
+      }
+      return passed ? 0 : 1;
     }
     CFRelease(application);
     Emit(passed, "missing-or-ambiguous-semantic-target");

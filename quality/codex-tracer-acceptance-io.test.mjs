@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -9,10 +19,17 @@ import test from "node:test";
 import {
   acceptanceProcessEnvironment,
   acceptanceEnvironmentFailures,
+  assertStableReferenceEnvironment,
   canonicalRuntimeRoot,
   canonicalRuntimeResources,
   cleanupAcceptanceFixture,
+  cleanupWorkspacePreparation,
+  createAcceptanceRunRoot,
+  createCodexTracerAcceptanceIo,
+  createIdentityWorkspace,
+  inspectReferenceEnvironment,
   measureFirstVisibleP95,
+  measureNativePickerCancellationDistribution,
   observedSafeguards,
   packageAcceptance,
   packageArtifactFailures,
@@ -32,6 +49,610 @@ const runtimeSha256 =
   "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590";
 const promptSha256 =
   "e1a92579b1ca673135331829beb97792c1289a6bccdfe0303302256c546960f6";
+
+function captureWorkspaceHandleIdentity(handle, capture) {
+  return {
+    close: (...arguments_) => handle.close(...arguments_),
+    stat: async (...arguments_) => {
+      const observedIdentity = await handle.stat(...arguments_);
+      const projectedIdentity = projectWorkspaceIdentity(observedIdentity);
+      capture(observedIdentity, projectedIdentity);
+      return projectedIdentity;
+    },
+    sync: (...arguments_) => handle.sync(...arguments_),
+    writeFile: (...arguments_) => handle.writeFile(...arguments_),
+  };
+}
+
+function projectWorkspaceIdentity(identity) {
+  return {
+    dev: identity.dev,
+    ino: identity.ino,
+    mode: (identity.mode & ~0o777) | 0o600,
+    size: identity.size,
+  };
+}
+
+function projectWorkspaceEntry(entry, identity, observedIdentity) {
+  assert.equal(entry.isFile(), true);
+  assert.equal(entry.isSymbolicLink(), false);
+  assert.equal(entry.mode, observedIdentity.mode);
+  assert.equal(entry.size, observedIdentity.size);
+  return {
+    dev: identity.dev,
+    ino: identity.ino,
+    isFile: () => entry.isFile(),
+    isSymbolicLink: () => entry.isSymbolicLink(),
+    mode: identity.mode,
+    size: identity.size,
+  };
+}
+
+test("the acceptance IO exposes a bounded workspace tranche without a runtime journey", () => {
+  const io = createCodexTracerAcceptanceIo();
+
+  assert.deepEqual(
+    {
+      cleanupWorkspacePackage: typeof io.cleanupWorkspacePackage,
+      prepareWorkspacePackage: typeof io.prepareWorkspacePackage,
+      runWorkspaceJourney: typeof io.runWorkspaceJourney,
+      writeWorkspaceEvidence: typeof io.writeWorkspaceEvidence,
+    },
+    {
+      cleanupWorkspacePackage: "function",
+      prepareWorkspacePackage: "function",
+      runWorkspaceJourney: "function",
+      writeWorkspaceEvidence: "function",
+    },
+  );
+});
+
+test("platform-neutral workspace publication injects its publisher", async () => {
+  const source = await readFile(new URL(import.meta.url), "utf8");
+  const targetMarker =
+    '\ntest("workspace evidence publication is atomic and failure preserving"';
+  const endMarker =
+    '\ntest("workspace preparation cleanup attempts every owned resource and fails visibly"';
+  const start = source.lastIndexOf(targetMarker);
+  assert.ok(start >= 0, "workspace publication test start");
+  const end = source.indexOf(endMarker, start + targetMarker.length);
+  assert.ok(end > start, "workspace publication test end");
+  const successCalls = source
+    .slice(start, end)
+    .match(
+      /^  await ioModule\.publishWorkspaceEvidenceAtomically\([\s\S]*?^  \}\);/gmu,
+    );
+  assert.equal(successCalls?.length, 1, "platform-neutral publication success");
+  for (const seam of ["open", "lstat", "publish"]) {
+    const injectedCalls = successCalls.filter((call) =>
+      call.includes(`${seam}:`),
+    );
+    assert.equal(
+      injectedCalls.length,
+      successCalls.length,
+      `platform-neutral success requires an injected ${seam}`,
+    );
+  }
+});
+
+test("settled workspace publication is not reversed by post-effect cleanup failure", async (t) => {
+  const ioModule = await import("./codex-tracer-acceptance-io.mjs");
+  const root = await mkdtemp(join(tmpdir(), "keiko-workspace-settled-"));
+  t.after(() => rm(root, { force: true, recursive: true }));
+  const finalPath = join(root, "evidence.json");
+  const stagePath = join(root, ".evidence-settled.tmp");
+  const next = '{"status":"complete"}\n';
+  let currentStageIdentity;
+  let currentStageObservedIdentity;
+  let publishedStageIdentity;
+  let publishedStageEntry;
+  const identityEvents = [];
+  let finalIdentityObservations = 0;
+  let handleIdentityCaptures = 0;
+  let publishCalls = 0;
+  let stageIdentityObservations = 0;
+
+  await assert.doesNotReject(
+    ioModule.publishWorkspaceEvidenceAtomically(next, finalPath, {
+      open: async (...arguments_) =>
+        captureWorkspaceHandleIdentity(
+          await open(...arguments_),
+          (observedIdentity, projectedIdentity) => {
+            currentStageIdentity = projectedIdentity;
+            currentStageObservedIdentity = observedIdentity;
+            handleIdentityCaptures += 1;
+            identityEvents.push("capture");
+          },
+        ),
+      lstat: async (path) => {
+        const entry = await lstat(path);
+        if (path === stagePath && currentStageIdentity !== undefined) {
+          stageIdentityObservations += 1;
+          identityEvents.push("stage-observation");
+          return projectWorkspaceEntry(
+            entry,
+            currentStageIdentity,
+            currentStageObservedIdentity,
+          );
+        }
+        if (path === finalPath && publishedStageIdentity !== undefined) {
+          finalIdentityObservations += 1;
+          identityEvents.push("final-observation");
+          return projectWorkspaceEntry(
+            entry,
+            publishedStageIdentity,
+            currentStageObservedIdentity,
+          );
+        }
+        return entry;
+      },
+      publish: async (publishedStagePath, targetPath, stageIdentity) => {
+        publishCalls += 1;
+        identityEvents.push("publish");
+        publishedStageIdentity = stageIdentity;
+        publishedStageEntry = await lstat(publishedStagePath);
+        await rename(publishedStagePath, targetPath);
+        throw new Error("post-effect-cleanup-failed");
+      },
+      stageName: ".evidence-settled.tmp",
+    }),
+  );
+  assert.equal(handleIdentityCaptures, 2);
+  assert.equal(currentStageIdentity.mode & 0o777, 0o600);
+  assert.equal(publishCalls, 1);
+  assert.equal(stageIdentityObservations, 2);
+  assert.equal(finalIdentityObservations, 1);
+  assert.deepEqual(identityEvents, [
+    "capture",
+    "stage-observation",
+    "capture",
+    "stage-observation",
+    "publish",
+    "final-observation",
+  ]);
+  await assert.rejects(lstat(stagePath), { code: "ENOENT" });
+  const finalEntry = await lstat(finalPath);
+  assert.equal(finalEntry.isFile(), publishedStageEntry.isFile());
+  assert.equal(
+    finalEntry.isSymbolicLink(),
+    publishedStageEntry.isSymbolicLink(),
+  );
+  assert.equal(finalEntry.mode, publishedStageEntry.mode);
+  assert.equal(finalEntry.size, publishedStageEntry.size);
+  assert.equal(await readFile(finalPath, "utf8"), next);
+});
+
+test("workspace evidence publication is atomic and failure preserving", async (t) => {
+  const ioModule = await import("./codex-tracer-acceptance-io.mjs");
+  assert.equal(
+    typeof ioModule.publishWorkspaceEvidenceAtomically,
+    "function",
+    "missing atomic workspace-evidence publisher",
+  );
+
+  const root = await mkdtemp(join(tmpdir(), "keiko-workspace-evidence-"));
+  t.after(() => rm(root, { force: true, recursive: true }));
+  const finalPath = join(root, "evidence.json");
+  const prior = '{"status":"prior"}\n';
+  const next = '{"status":"complete"}\n';
+  await writeFile(finalPath, prior, { mode: 0o600 });
+
+  for (const failure of ["write", "sync", "close", "read", "rename"]) {
+    const dependencies = {
+      stageName: `.evidence-${failure}.tmp`,
+    };
+    if (["write", "sync", "close"].includes(failure)) {
+      dependencies.open = async (...args) => {
+        const handle = await open(...args);
+        return {
+          async close() {
+            await handle.close();
+            if (failure === "close") throw new Error("close-failed");
+          },
+          async sync() {
+            if (failure === "sync") throw new Error("sync-failed");
+            await handle.sync();
+          },
+          async writeFile(value) {
+            if (failure === "write") {
+              await handle.writeFile(value.subarray(0, 4));
+              throw new Error("partial-write");
+            }
+            await handle.writeFile(value);
+          },
+          stat: () => handle.stat(),
+        };
+      };
+    }
+    if (failure === "read") {
+      dependencies.readFile = async () => {
+        throw new Error("read-failed");
+      };
+    }
+    if (failure === "rename") {
+      dependencies.publish = async () => {
+        throw new Error("rename-failed");
+      };
+    }
+    await assert.rejects(
+      ioModule.publishWorkspaceEvidenceAtomically(
+        next,
+        finalPath,
+        dependencies,
+      ),
+      /workspace-evidence-publication-failed/u,
+      failure,
+    );
+    assert.equal(await readFile(finalPath, "utf8"), prior);
+    assert.equal(
+      await lstat(join(root, `.evidence-${failure}.tmp`)).then(
+        () => true,
+        () => false,
+      ),
+      false,
+      failure,
+    );
+  }
+
+  const collision = join(root, ".evidence-collision.tmp");
+  await writeFile(collision, "unowned", { mode: 0o600 });
+  await assert.rejects(
+    ioModule.publishWorkspaceEvidenceAtomically(next, finalPath, {
+      stageName: ".evidence-collision.tmp",
+    }),
+    /workspace-evidence-publication-failed/u,
+  );
+  assert.equal(await readFile(collision, "utf8"), "unowned");
+  assert.equal(await readFile(finalPath, "utf8"), prior);
+
+  const linkedFinal = join(root, "linked.json");
+  await symlink(finalPath, linkedFinal);
+  await assert.rejects(
+    ioModule.publishWorkspaceEvidenceAtomically(next, linkedFinal),
+    /workspace-evidence-publication-failed/u,
+  );
+  assert.equal(await readFile(finalPath, "utf8"), prior);
+
+  const directoryFinal = join(root, "directory.json");
+  await mkdir(directoryFinal);
+  await assert.rejects(
+    ioModule.publishWorkspaceEvidenceAtomically(next, directoryFinal),
+    /workspace-evidence-publication-failed/u,
+  );
+  assert.equal((await lstat(directoryFinal)).isDirectory(), true);
+  assert.equal(await readFile(finalPath, "utf8"), prior);
+
+  const substitutedStage = ".evidence-substituted.tmp";
+  const substitutedPath = join(root, substitutedStage);
+  const retainedStage = join(root, ".evidence-owned-retained.tmp");
+  const substitutedRmCalls = [];
+  let currentStageIdentity;
+  let currentStageObservedIdentity;
+  let handleIdentityCaptures = 0;
+  const identityEvents = [];
+  let originalStageIdentity;
+  let replacementReady = false;
+  let replacementObservedIdentity;
+  let replacementObservations = 0;
+  let stageIdentityObservations = 0;
+  await assert.rejects(
+    ioModule.publishWorkspaceEvidenceAtomically(next, finalPath, {
+      open: async (...arguments_) =>
+        captureWorkspaceHandleIdentity(
+          await open(...arguments_),
+          (observedIdentity, projectedIdentity) => {
+            currentStageIdentity = projectedIdentity;
+            currentStageObservedIdentity = observedIdentity;
+            handleIdentityCaptures += 1;
+            identityEvents.push("capture");
+          },
+        ),
+      lstat: async (path) => {
+        const entry = await lstat(path);
+        if (path !== substitutedPath || currentStageIdentity === undefined)
+          return entry;
+        if (!replacementReady) {
+          stageIdentityObservations += 1;
+          identityEvents.push("stage-observation");
+          return projectWorkspaceEntry(
+            entry,
+            currentStageIdentity,
+            currentStageObservedIdentity,
+          );
+        }
+        replacementObservations += 1;
+        identityEvents.push("replacement-observation");
+        if (replacementObservedIdentity === undefined) {
+          replacementObservedIdentity = entry;
+        } else {
+          assert.equal(entry.dev, replacementObservedIdentity.dev);
+          assert.equal(entry.ino, replacementObservedIdentity.ino);
+          assert.equal(entry.mode, replacementObservedIdentity.mode);
+          assert.equal(entry.size, replacementObservedIdentity.size);
+        }
+        return projectWorkspaceEntry(
+          entry,
+          {
+            dev: originalStageIdentity.dev,
+            ino: originalStageIdentity.ino === 0 ? 1 : 0,
+            mode: originalStageIdentity.mode,
+            size: entry.size,
+          },
+          replacementObservedIdentity,
+        );
+      },
+      publish: async (stagePath, _targetPath, stageIdentity) => {
+        identityEvents.push("publish");
+        originalStageIdentity = stageIdentity;
+        await rename(stagePath, retainedStage);
+        await writeFile(stagePath, "unowned", { mode: 0o600 });
+        replacementReady = true;
+        throw new Error("stage-substituted");
+      },
+      rm: async (...args) => {
+        substitutedRmCalls.push(args[0]);
+        await rm(...args);
+      },
+      stageName: substitutedStage,
+    }),
+    /workspace-evidence-publication-failed/u,
+  );
+  assert.equal(handleIdentityCaptures, 2);
+  assert.equal(currentStageIdentity.mode & 0o777, 0o600);
+  assert.equal(stageIdentityObservations, 2);
+  assert.equal(replacementObservations, 2);
+  assert.deepEqual(identityEvents, [
+    "capture",
+    "stage-observation",
+    "capture",
+    "stage-observation",
+    "publish",
+    "replacement-observation",
+    "replacement-observation",
+  ]);
+  assert.deepEqual(substitutedRmCalls, []);
+  const replacementEntry = await lstat(substitutedPath);
+  assert.equal(replacementEntry.isFile(), true);
+  assert.equal(replacementEntry.isSymbolicLink(), false);
+  assert.equal(replacementEntry.dev, replacementObservedIdentity.dev);
+  assert.equal(replacementEntry.ino, replacementObservedIdentity.ino);
+  assert.equal(replacementEntry.mode, replacementObservedIdentity.mode);
+  assert.equal(replacementEntry.size, replacementObservedIdentity.size);
+  assert.equal(replacementEntry.size, Buffer.byteLength("unowned"));
+  assert.equal(await readFile(substitutedPath, "utf8"), "unowned");
+  assert.equal(await readFile(retainedStage, "utf8"), next);
+  assert.equal(await readFile(finalPath, "utf8"), prior);
+
+  const cleanupFailureStage = ".evidence-cleanup-failure.tmp";
+  await assert.rejects(
+    ioModule.publishWorkspaceEvidenceAtomically(next, finalPath, {
+      publish: async () => {
+        throw new Error("publish-failed");
+      },
+      rm: async () => {
+        throw new Error("cleanup-failed");
+      },
+      stageName: cleanupFailureStage,
+    }),
+    /workspace-evidence-publication-failed/u,
+  );
+  assert.equal(
+    await lstat(join(root, cleanupFailureStage)).then(
+      () => true,
+      () => false,
+    ),
+    true,
+  );
+  assert.equal(await readFile(finalPath, "utf8"), prior);
+
+  await rm(finalPath);
+  const successStage = ".evidence-success.tmp";
+  const successStagePath = join(root, successStage);
+  let currentSuccessIdentity;
+  let currentSuccessObservedIdentity;
+  let successHandleIdentityCaptures = 0;
+  const successIdentityEvents = [];
+  let successPublishCalls = 0;
+  let successStageIdentityObservations = 0;
+  await ioModule.publishWorkspaceEvidenceAtomically(next, finalPath, {
+    open: async (...arguments_) =>
+      captureWorkspaceHandleIdentity(
+        await open(...arguments_),
+        (observedIdentity, projectedIdentity) => {
+          currentSuccessIdentity = projectedIdentity;
+          currentSuccessObservedIdentity = observedIdentity;
+          successHandleIdentityCaptures += 1;
+          successIdentityEvents.push("capture");
+        },
+      ),
+    lstat: async (path) => {
+      const entry = await lstat(path);
+      if (path !== successStagePath || currentSuccessIdentity === undefined) {
+        return entry;
+      }
+      successStageIdentityObservations += 1;
+      successIdentityEvents.push("stage-observation");
+      return projectWorkspaceEntry(
+        entry,
+        currentSuccessIdentity,
+        currentSuccessObservedIdentity,
+      );
+    },
+    publish: async (...arguments_) => {
+      successPublishCalls += 1;
+      successIdentityEvents.push("publish");
+      await rename(...arguments_);
+    },
+    stageName: successStage,
+  });
+  assert.equal(successHandleIdentityCaptures, 2);
+  assert.equal(currentSuccessIdentity.mode & 0o777, 0o600);
+  assert.equal(successStageIdentityObservations, 2);
+  assert.equal(successPublishCalls, 1);
+  assert.deepEqual(successIdentityEvents, [
+    "capture",
+    "stage-observation",
+    "capture",
+    "stage-observation",
+    "publish",
+  ]);
+  const successfulFinalEntry = await lstat(finalPath);
+  assert.equal(successfulFinalEntry.isFile(), true);
+  assert.equal(successfulFinalEntry.isSymbolicLink(), false);
+  assert.equal(successfulFinalEntry.mode, currentSuccessObservedIdentity.mode);
+  assert.equal(successfulFinalEntry.size, currentSuccessObservedIdentity.size);
+  assert.equal(await readFile(finalPath, "utf8"), next);
+});
+
+test("workspace preparation cleanup attempts every owned resource and fails visibly", async () => {
+  const calls = [];
+  await assert.rejects(
+    cleanupWorkspacePreparation(
+      {
+        deniedWorkspaceRoot: "/owned/denied",
+        runRoot: "/owned/run",
+        workspaceRoots: ["/owned/one", "/owned/two"],
+      },
+      {
+        chmod: async (path) => calls.push(`chmod:${path}`),
+        removeWorkspaceRoots: async (paths) => {
+          calls.push(`workspaces:${paths.join(",")}`);
+          throw new Error("workspace-cleanup-failed");
+        },
+        rm: async (path) => calls.push(`remove:${path}`),
+      },
+    ),
+    /acceptance-workspace-fixture-cleanup-failed/u,
+  );
+  assert.deepEqual(calls, [
+    "workspaces:/owned/one,/owned/two",
+    "chmod:/owned/denied",
+    "remove:/owned/denied",
+    "remove:/owned/run",
+  ]);
+});
+
+test(
+  "workspace evidence native publication removes retained state",
+  { skip: process.platform !== "darwin" },
+  async (t) => {
+    const ioModule = await import("./codex-tracer-acceptance-io.mjs");
+    const root = await mkdtemp(join(tmpdir(), "keiko-workspace-native-"));
+    t.after(() => rm(root, { force: true, recursive: true }));
+    const finalPath = join(root, "evidence.json");
+    const buildRoot = join(root, "native-helper");
+    const stageName = ".evidence-native.tmp";
+    const next = '{"status":"complete"}\n';
+    await writeFile(finalPath, '{"status":"prior"}\n', { mode: 0o600 });
+
+    await ioModule.publishWorkspaceEvidenceAtomically(next, finalPath, {
+      mkdtemp: async () => {
+        await mkdir(buildRoot, { mode: 0o700 });
+        return buildRoot;
+      },
+      stageName,
+    });
+
+    assert.equal(await readFile(finalPath, "utf8"), next);
+    for (const path of [join(root, stageName), buildRoot]) {
+      assert.equal(
+        await lstat(path).then(
+          () => true,
+          () => false,
+        ),
+        false,
+      );
+    }
+  },
+);
+
+test("workspace evidence native publication has one total commit point", async () => {
+  const source = (
+    await readFile(
+      new URL("./codex-tracer-acceptance-io.mjs", import.meta.url),
+      "utf8",
+    )
+  ).replaceAll("\r\n", "\n");
+  assert.doesNotMatch(source, /\r/u, "native publisher bare CR");
+  const mainStart = source.indexOf("int main(int argc, char **argv) {");
+  const mainEnd = source.indexOf("\n}\n`;", mainStart);
+  assert.ok(mainStart >= 0 && mainEnd > mainStart, "native publisher main");
+  const main = source.slice(mainStart, mainEnd);
+  const buildCleanup = main.indexOf('unlinkat(build, "publisher", 0)');
+  const namespaceEffect = main.indexOf(
+    "renameatx_np(parent, argv[2], parent, argv[3], RENAME_SWAP)",
+  );
+  assert.ok(
+    buildCleanup >= 0 && namespaceEffect > buildCleanup,
+    "build cleanup precedes publication",
+  );
+  assert.match(
+    main,
+    /if \(replaced && unlinkat\(parent, argv\[2\], 0\)\) \{\s+restore_replaced/u,
+  );
+  const afterRetainedRemoval = main.slice(
+    main.indexOf("if (replaced && unlinkat(parent, argv[2], 0))"),
+  );
+  assert.doesNotMatch(afterRetainedRemoval, /fsync\(parent\)/u);
+  assert.doesNotMatch(main, /\(void\)rename/u);
+});
+
+test("partial fixture creation and canonicalization remove their owned roots", async () => {
+  const calls = [];
+  await assert.rejects(
+    createIdentityWorkspace("KeikoAcceptanceIdentity104", {
+      chmod: async () => calls.push("chmod-workspace"),
+      mkdir: async () => {
+        throw new Error("git-fixture-failed");
+      },
+      mkdtemp: async () => "/safe/workspace-root",
+      rm: async (root) => calls.push(`remove:${root}`),
+      writeFile: async () => calls.push("write-workspace"),
+    }),
+    /acceptance-workspace-fixture-unavailable/u,
+  );
+  await assert.rejects(
+    createAcceptanceRunRoot("keiko-native-workspace-187-", {
+      canonicalize: async () => {
+        throw new Error("canonicalization-failed");
+      },
+      chmod: async () => calls.push("chmod-run-root"),
+      mkdtemp: async () => "/safe/run-root",
+      rm: async (root) => calls.push(`remove:${root}`),
+    }),
+    /acceptance-run-root-unavailable/u,
+  );
+  assert.deepEqual(calls, [
+    "chmod-workspace",
+    "remove:/safe/workspace-root",
+    "remove:/safe/run-root",
+  ]);
+
+  await assert.rejects(
+    createIdentityWorkspace("KeikoAcceptanceIdentity104", {
+      mkdir: async () => {
+        throw new Error("git-fixture-failed");
+      },
+      mkdtemp: async () => "/safe/workspace-cleanup-failure",
+      rm: async () => {
+        throw new Error("cleanup-failed");
+      },
+    }),
+    /acceptance-workspace-fixture-cleanup-failed/u,
+  );
+  await assert.rejects(
+    createAcceptanceRunRoot("keiko-native-workspace-187-", {
+      canonicalize: async () => {
+        throw new Error("canonicalization-failed");
+      },
+      mkdtemp: async () => "/safe/run-cleanup-failure",
+      rm: async () => {
+        throw new Error("cleanup-failed");
+      },
+    }),
+    /acceptance-run-root-cleanup-failed/u,
+  );
+});
 
 test("directory snapshots bind symlink targets without following them", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "keiko-home-snapshot-"));
@@ -201,6 +822,191 @@ test("first-visible p95 permits one bounded cold-launch outlier", async () => {
       .filter(({ action }) => action === "probe-start")
       .every(({ timeoutMs }) => timeoutMs === 5_000),
   );
+});
+
+test("native picker cancellation p95 uses twenty fresh packaged-app launches", async () => {
+  let launches = 0;
+  const observations = [];
+  const distribution = await measureNativePickerCancellationDistribution(
+    {},
+    "/bounded/adapter",
+    {},
+    {
+      authenticate: async ({ pid }) => ({ pid }),
+      launch: () => ({ pid: (launches += 1) }),
+      observe: async (request) => {
+        observations.push(request);
+        return {
+          ...(request.observation === "observe-workspace-cancelled"
+            ? { projectedMs: request.pid === 1 ? 1_055 : 539 }
+            : {}),
+          prompted: false,
+          reasonCode: null,
+          status: "passed",
+        };
+      },
+      terminate: async () => undefined,
+      waitForExit: async () => true,
+    },
+  );
+
+  assert.deepEqual(distribution, {
+    measurements: Array.from({ length: 20 }, (_, index) => ({
+      launch: index + 1,
+      projectedMs: index === 0 ? 1_055 : 539,
+    })),
+    p95Ms: 539,
+  });
+  assert.equal(launches, 20);
+  assert.equal(
+    observations.filter(({ action }) => action === "probe-start").length,
+    20,
+  );
+  assert.equal(
+    observations.filter(
+      ({ action, observation }) =>
+        action === "cancel-workspace-picker" &&
+        observation === "observe-workspace-cancelled",
+    ).length,
+    20,
+  );
+});
+
+test("reference Mac inspection emits only normalized closed reproducibility metadata", async () => {
+  const calls = [];
+  const displaySerialCanary = "private-display-serial";
+  const outputs = new Map([
+    [
+      "/usr/sbin/sysctl\0-n\0machdep.cpu.brand_string\0hw.memsize\0hw.model",
+      "Apple M4\n17179869184\nMac16,1",
+    ],
+    ["/usr/bin/sw_vers\0-productVersion", "26.5.2"],
+    ["/usr/bin/sw_vers\0-buildVersion", "25F84"],
+    [
+      "/usr/sbin/system_profiler\0SPDisplaysDataType\0-json\0-detailLevel\0mini",
+      JSON.stringify({
+        SPDisplaysDataType: [
+          {
+            spdisplays_ndrvs: [
+              {
+                "_spdisplays_display-serial-number": displaySerialCanary,
+                _spdisplays_pixels: "3024 x 1964",
+                _spdisplays_resolution: "1512 x 982 @ 120.00Hz",
+                spdisplays_connection_type: "spdisplays_internal",
+                spdisplays_main: "spdisplays_yes",
+              },
+            ],
+          },
+        ],
+      }),
+    ],
+    [
+      "/usr/bin/pmset\0-g\0batt",
+      "Now drawing from 'AC Power'\n -InternalBattery-0 85%; charging",
+    ],
+    [
+      "/usr/bin/pmset\0-g\0custom",
+      "Battery Power:\n lowpowermode 0\nAC Power:\n lowpowermode 0",
+    ],
+    [
+      "/usr/bin/pmset\0-g\0therm",
+      "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded",
+    ],
+  ]);
+  const result = await inspectReferenceEnvironment(
+    async (command, args, options) => {
+      calls.push({ args, command, options });
+      return outputs.get([command, ...args].join("\0"));
+    },
+  );
+
+  assert.deepEqual(result, {
+    display: "built-in-main-3024x1964-120hz",
+    hardware: "apple-m4-16-gib-mac16-1",
+    operatingSystem: "macos-26.5.2-25f84",
+    power: "ac-power-standard",
+    referenceClass: "owner-m4-16gib-macos26",
+    scaling: "logical-1512x982-2x-default",
+    thermal: "nominal",
+  });
+  assert.equal(JSON.stringify(result).includes(displaySerialCanary), false);
+  assert.equal(calls.length, 7);
+  assert.ok(
+    calls.every(
+      ({ options }) =>
+        options.inheritEnvironment === false &&
+        options.maxOutputBytes === 64 * 1024 &&
+        options.timeoutMs === 10_000,
+    ),
+  );
+  outputs.set("/usr/bin/sw_vers\0-productVersion", "26.5.1");
+  outputs.set("/usr/bin/sw_vers\0-buildVersion", "25F80");
+  await assert.rejects(
+    inspectReferenceEnvironment(async (command, args) =>
+      outputs.get([command, ...args].join("\0")),
+    ),
+    /acceptance-reference-environment-invalid/u,
+  );
+  outputs.set("/usr/bin/sw_vers\0-productVersion", "26.5.2");
+  outputs.set("/usr/bin/sw_vers\0-buildVersion", "25F84");
+  outputs.set(
+    "/usr/bin/pmset\0-g\0batt",
+    "Now drawing from 'Battery Power'\n -InternalBattery-0 85%; discharging",
+  );
+  await assert.rejects(
+    inspectReferenceEnvironment(async (command, args) =>
+      outputs.get([command, ...args].join("\0")),
+    ),
+    /acceptance-reference-environment-invalid/u,
+  );
+  outputs.set(
+    "/usr/bin/pmset\0-g\0batt",
+    "Now drawing from 'AC Power'\n -InternalBattery-0 85%; charging",
+  );
+  outputs.set(
+    "/usr/bin/pmset\0-g\0custom",
+    "Battery Power:\n lowpowermode 0\nAC Power:\n lowpowermode 1",
+  );
+  await assert.rejects(
+    inspectReferenceEnvironment(async (command, args) =>
+      outputs.get([command, ...args].join("\0")),
+    ),
+    /acceptance-reference-environment-invalid/u,
+  );
+});
+
+test("reference Mac inspection rejects malformed or changed platform output", async () => {
+  await assert.rejects(
+    inspectReferenceEnvironment(async () => "unexpected"),
+    /acceptance-reference-environment-invalid/u,
+  );
+});
+
+test("reference Mac evidence fails closed when conditions change during measurement", () => {
+  const reference = {
+    display: "built-in-main-3024x1964-120hz",
+    hardware: "apple-m4-16-gib-mac16-1",
+    operatingSystem: "macos-26.5.2-25f84",
+    power: "ac-power-standard",
+    referenceClass: "owner-m4-16gib-macos26",
+    scaling: "logical-1512x982-2x-default",
+    thermal: "nominal",
+  };
+
+  assert.deepEqual(
+    assertStableReferenceEnvironment(reference, structuredClone(reference)),
+    reference,
+  );
+  for (const changed of [
+    { ...reference, power: null },
+    { ...reference, thermal: null },
+    { ...reference, scaling: null },
+  ]) {
+    assert.throws(
+      () => assertStableReferenceEnvironment(reference, changed),
+      /acceptance-reference-environment-changed/u,
+    );
+  }
 });
 
 test("a launched app is rejected when ownership authentication fails", async () => {
@@ -431,6 +1237,15 @@ test("acceptance subprocess deadlines retire the isolated process tree", async (
       dependencies,
     ),
     /acceptance-subprocess-timeout-invalid/u,
+  );
+  await assert.rejects(
+    runAcceptanceSubprocess(
+      "/usr/bin/true",
+      [],
+      { maxOutputBytes: 0, timeoutMs: 1 },
+      dependencies,
+    ),
+    /acceptance-subprocess-output-bound-invalid/u,
   );
 });
 
