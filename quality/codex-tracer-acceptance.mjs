@@ -733,8 +733,10 @@ function workspaceProgressTracker() {
     ) {
       return true;
     }
-    const [stage, action, sample, extra] = String(checkpoint).split(":");
-    if (extra !== undefined || !/^\d+$/u.test(sample ?? "")) return false;
+    const parts = String(checkpoint).split(":");
+    if (parts.length !== 3) return false;
+    const [stage, action, sample] = parts;
+    if (!/^\d+$/u.test(sample ?? "")) return false;
     const sampleNumber = Number.parseInt(sample, 10);
     return stage === "picker-cancellation"
       ? pickerActions.has(action) && sampleNumber >= 1 && sampleNumber <= 20

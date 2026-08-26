@@ -436,9 +436,37 @@ test("workspace acceptance cleans up and never persists partial evidence", async
   });
 });
 
+test("workspace diagnostics accept an exact three-segment checkpoint", async () => {
+  const { prepared } = validWorkspaceFixture();
+  const result = await runCodexTracerWorkspaceAcceptance({
+    args: [],
+    io: {
+      cleanupWorkspacePackage() {},
+      prepareWorkspacePackage() {
+        return prepared;
+      },
+      runWorkspaceJourney(_value, reportProgress) {
+        reportProgress("started", "workspace:probe-start:1");
+        throw new Error("stop-after-characterization");
+      },
+      writeWorkspaceEvidence() {},
+    },
+  });
+
+  assert.deepEqual(result.diagnostic, {
+    lastCompleted: "prepare",
+    lastStarted: "workspace:probe-start:1",
+    status: "rejected",
+  });
+});
+
 test("workspace diagnostics reject hostile checkpoints without reflecting them", async () => {
   const { prepared } = validWorkspaceFixture();
-  for (const checkpoint of ["workspace:/Users/private/repository:1", null]) {
+  for (const checkpoint of [
+    "workspace:probe-start:1:/Users/private/repository",
+    "workspace:probe-start:1:/Users/private:repository",
+    null,
+  ]) {
     const result = await runCodexTracerWorkspaceAcceptance({
       args: [],
       io: {
