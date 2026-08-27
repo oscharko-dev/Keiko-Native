@@ -201,19 +201,19 @@ test("identity evidence is closed and binds the exact accepted composition", () 
   assert.deepEqual(identityBindingFailures(bindings, expected), []);
   assert.equal(
     acceptanceIdentityContract.issueReadinessFingerprint,
-    "4c39a4d7e6f23c132acedea534c9c81fb9d638755628cf7cec7731fa8c5e5dd4",
+    "977ff81bf299dc901baf0391965cdadd831b904646aa35eb621f5e3a76e68776",
   );
-  assert.equal(acceptanceIdentityContract.issueReadinessVersion, 56);
+  assert.equal(acceptanceIdentityContract.issueReadinessVersion, 57);
   assert.equal(
     acceptanceIdentityContract.parentReadinessFingerprint,
-    "ef797a2bb66f0c3d2278a192119c241b10e123df8837424a8e0919c69cf0a9a0",
+    "334d1ea676c3e790ac61d8262b33db258e51aec289a43452c9687037e602d21e",
   );
-  assert.equal(acceptanceIdentityContract.parentReadinessVersion, 143);
+  assert.equal(acceptanceIdentityContract.parentReadinessVersion, 144);
   assert.equal(
     acceptanceIdentityContract.cancellationReadinessFingerprint,
-    "a61c3f5483f4d83db570ad7b694422505548898044bc7d35e5f500a0a7af7515",
+    "2df11ce4ae25fc4b7c450cd695af9be2a527c13e852e998b397409957f6a11da",
   );
-  assert.equal(acceptanceIdentityContract.cancellationReadinessVersion, 53);
+  assert.equal(acceptanceIdentityContract.cancellationReadinessVersion, 54);
 
   for (const key of Object.keys(bindings)) {
     const missing = structuredClone(bindings);
