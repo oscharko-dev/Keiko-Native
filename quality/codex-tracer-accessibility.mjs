@@ -13,6 +13,8 @@ const reasonCodes = new Set([
   "accessibility-permission-denied",
   "adapter-output-invalid",
   "bounded-wait-expired",
+  "cleanup-failed",
+  "containment-failed",
   "invalid-invocation",
   "missing-or-ambiguous-semantic-target",
 ]);
@@ -338,6 +340,7 @@ export async function runPackagedTracerJourney({
   crashRuntime,
   deniedWorkspaceLabel,
   execute,
+  inspectWindowDisplayBinding,
   monotonicNow = () => performance.now(),
   observeRuntime,
   prompt,
@@ -349,6 +352,7 @@ export async function runPackagedTracerJourney({
   if (
     typeof crashRuntime !== "function" ||
     typeof execute !== "function" ||
+    typeof inspectWindowDisplayBinding !== "function" ||
     typeof observeRuntime !== "function" ||
     !labelPattern.test(workspaceLabel ?? "") ||
     !labelPattern.test(deniedWorkspaceLabel ?? "") ||
@@ -405,6 +409,29 @@ export async function runPackagedTracerJourney({
   };
 
   await step("probe-start");
+  const windowDisplayBinding = await inspectWindowDisplayBinding();
+  if (
+    !["internal", "external"].includes(windowDisplayBinding?.displayClass) ||
+    typeof windowDisplayBinding?.displayIdentity !== "string" ||
+    windowDisplayBinding.displayIdentity.length === 0 ||
+    windowDisplayBinding?.matchedDisplayCount !== 1 ||
+    windowDisplayBinding?.semanticWindowCount !== 1 ||
+    typeof windowDisplayBinding?.windowIdentity !== "string" ||
+    windowDisplayBinding.windowIdentity.length === 0 ||
+    typeof windowDisplayBinding?.windowPosition !== "string" ||
+    windowDisplayBinding.windowPosition.length === 0 ||
+    JSON.stringify(Object.keys(windowDisplayBinding).toSorted()) !==
+      JSON.stringify([
+        "displayClass",
+        "displayIdentity",
+        "matchedDisplayCount",
+        "semanticWindowCount",
+        "windowIdentity",
+        "windowPosition",
+      ])
+  ) {
+    throw new Error("packaged-journey-window-display-binding-invalid");
+  }
   await recordLocalProjection("open-canvas", "probe-canvas");
 
   await step("open-workspace-picker");
@@ -453,10 +480,54 @@ export async function runPackagedTracerJourney({
   await step("submit-task");
   await step("observe-streaming", undefined, 120_000);
   await observeRuntime();
+  const cancellationStartedAt = monotonicNow();
   const turnCancellationProjectionMs = (
     await recordLocalProjection("cancel-turn", "observe-stopping")
   ).projectedMs;
-  await step("observe-cancelled");
+  const stoppingElapsedMs = Math.round(monotonicNow() - cancellationStartedAt);
+  const cancellationElapsedBeforeTerminalMs =
+    monotonicNow() - cancellationStartedAt;
+  if (
+    !Number.isFinite(cancellationElapsedBeforeTerminalMs) ||
+    cancellationElapsedBeforeTerminalMs < 0 ||
+    cancellationElapsedBeforeTerminalMs > 5_000
+  )
+    throw new Error("packaged-journey-measurement-invalid");
+  const cancellationRemainingMs = Math.max(
+    1,
+    Math.ceil(5_000 - cancellationElapsedBeforeTerminalMs),
+  );
+  await step("observe-cancelled", undefined, cancellationRemainingMs);
+  const cancellationTerminalElapsed = monotonicNow() - cancellationStartedAt;
+  const cancellationTerminalElapsedMs = Math.round(cancellationTerminalElapsed);
+  if (
+    !Number.isFinite(cancellationTerminalElapsed) ||
+    cancellationTerminalElapsed < 0 ||
+    cancellationTerminalElapsed > 5_000 ||
+    !Number.isSafeInteger(cancellationTerminalElapsedMs) ||
+    cancellationTerminalElapsedMs < 0
+  )
+    throw new Error("packaged-journey-measurement-invalid");
+  const cancellationWindowDisplayBinding = await inspectWindowDisplayBinding();
+  if (
+    JSON.stringify(cancellationWindowDisplayBinding) !==
+    JSON.stringify(windowDisplayBinding)
+  ) {
+    throw new Error("packaged-journey-window-display-binding-changed");
+  }
+  const turnCancellationTerminal = {
+    boundary: "cancel-action-start-to-terminal",
+    elapsedMs: cancellationTerminalElapsedMs,
+    stoppingElapsedMs,
+    terminalState: "cancelled",
+  };
+  if (
+    turnCancellationTerminal.stoppingElapsedMs > 100 ||
+    turnCancellationTerminal.stoppingElapsedMs >
+      turnCancellationTerminal.elapsedMs ||
+    turnCancellationTerminal.elapsedMs > 5_000
+  )
+    throw new Error("packaged-journey-measurement-invalid");
 
   await step("focus-task");
   await step("set-task", prompt);
@@ -480,8 +551,14 @@ export async function runPackagedTracerJourney({
     repositoryContextBytesToRuntime: 0,
     timings,
     turnCancellationProjectionMs,
+    turnCancellationTerminal,
     turnDurationMs,
     workspaceSelectionNativeActionMs: workspaceSelection.nativeActionMs,
+    windowDisplayBinding: {
+      displayClass: windowDisplayBinding.displayClass,
+      matchedDisplayCount: windowDisplayBinding.matchedDisplayCount,
+      semanticWindowCount: windowDisplayBinding.semanticWindowCount,
+    },
   };
 }
 

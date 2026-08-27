@@ -931,7 +931,7 @@ describe("closed streamed Codex turn port", () => {
       () => channel,
     ).codexTurn(3, "Explain one invariant.", (update) => updates.push(update));
     expect(response.result.state).toEqual(completed);
-    expect(updates).toEqual([preflight, streaming, completed, completed]);
+    expect(updates).toEqual([preflight, streaming, completed]);
   });
 
   it("accepts only body-bounded zero-effect terminal evidence", () => {
@@ -1068,7 +1068,7 @@ describe("closed streamed Codex turn port", () => {
     );
   });
 
-  it("requests cancellation but waits for the authoritative cleaned terminal", async () => {
+  it("publishes the authoritative cleaned cancellation terminal only once", async () => {
     const updates: TurnView[] = [];
     const preflight = turn("preflighting");
     const stopping: TurnView = {
@@ -1142,11 +1142,476 @@ describe("closed streamed Codex turn port", () => {
         result: { kind: "codex-turn", state: cancelled },
       }),
     );
-    expect(updates).toEqual([preflight, stopping, cancelled, cancelled]);
+    expect(updates).toEqual([preflight, stopping, cancelled]);
     expect(raced).toHaveBeenCalledWith(
       "application_cancel",
       expect.objectContaining({ generation: authority.generation }),
     );
+  });
+
+  it("keeps a terminal callback provisional until cancellation acknowledgement and response commit", async () => {
+    const updates: TurnView[] = [];
+    const preflight = turn("preflighting");
+    const cancelled: TurnView = {
+      ...preflight,
+      state: "cancelled",
+      reason: "user-cancelled",
+      evidence: {
+        ...preflight.evidence,
+        cleanupComplete: true,
+        terminalState: "cancelled",
+      },
+    };
+    let resolveCancellation: ((value: string) => void) | undefined;
+    let resolveTurn: ((value: string) => void) | undefined;
+    let requestId = "";
+    const channel = { onmessage: (_value: TurnView) => undefined };
+    const invoke = vi.fn(
+      (command: string, arguments_: { request: string }): Promise<string> => {
+        requestId = (JSON.parse(arguments_.request) as { requestId: string })
+          .requestId;
+        if (command === "application_cancel") {
+          return new Promise((resolve) => {
+            resolveCancellation = resolve;
+          });
+        }
+        channel.onmessage(preflight);
+        return new Promise((resolve) => {
+          resolveTurn = resolve;
+        });
+      },
+    );
+    const cancellation = new AbortController();
+    const pending = createRendererPort(
+      invoke,
+      async () => authority,
+      () => channel,
+    ).codexTurn(
+      3,
+      "Bounded.",
+      (update) => updates.push(update),
+      cancellation.signal,
+    );
+    await Promise.resolve();
+    cancellation.abort();
+    await Promise.resolve();
+    channel.onmessage(cancelled);
+    resolveTurn?.(
+      JSON.stringify({
+        schemaVersion: 1,
+        requestId,
+        result: { kind: "codex-turn", state: cancelled },
+      }),
+    );
+    await Promise.resolve();
+    expect(updates).toEqual([preflight]);
+
+    resolveCancellation?.(
+      JSON.stringify({
+        schemaVersion: 1,
+        requestId,
+        result: { kind: "application-cancel", status: "cancelled" },
+      }),
+    );
+    await expect(pending).resolves.toEqual(
+      expect.objectContaining({
+        result: { kind: "codex-turn", state: cancelled },
+      }),
+    );
+    expect(updates.map(({ state }) => state)).toEqual([
+      "preflighting",
+      "stopping",
+      "cancelled",
+    ]);
+    channel.onmessage({ ...cancelled, state: "containment-failed" });
+    expect(updates.map(({ state }) => state)).toEqual([
+      "preflighting",
+      "stopping",
+      "cancelled",
+    ]);
+  });
+
+  it("fails closed at the cancellation cleanup reserve and ignores later settlement", async () => {
+    vi.useFakeTimers();
+    try {
+      const updates: TurnView[] = [];
+      const preflight = turn("preflighting");
+      const cancelled: TurnView = {
+        ...preflight,
+        state: "cancelled",
+        reason: "user-cancelled",
+        evidence: {
+          ...preflight.evidence,
+          cleanupComplete: true,
+          terminalState: "cancelled",
+        },
+      };
+      let resolveCancellation!: (value: string) => void;
+      let resolveTurn!: (value: string) => void;
+      let requestId = "";
+      const channel = { onmessage: (_value: TurnView) => undefined };
+      const invoke = vi.fn(
+        (command: string, arguments_: { request: string }): Promise<string> => {
+          requestId = (JSON.parse(arguments_.request) as { requestId: string })
+            .requestId;
+          if (command === "application_cancel") {
+            return new Promise((resolve) => {
+              resolveCancellation = resolve;
+            });
+          }
+          channel.onmessage(preflight);
+          return new Promise((resolve) => {
+            resolveTurn = resolve;
+          });
+        },
+      );
+      const cancellation = new AbortController();
+      const pending = createRendererPort(
+        invoke,
+        async () => authority,
+        () => channel,
+      ).codexTurn(
+        3,
+        "Bounded.",
+        (update) => updates.push(update),
+        cancellation.signal,
+      );
+      await Promise.resolve();
+      cancellation.abort();
+      await vi.advanceTimersByTimeAsync(4_499);
+      expect(updates).toEqual([preflight]);
+      resolveTurn("{}");
+      await Promise.resolve();
+      expect(updates).toEqual([preflight]);
+
+      await vi.advanceTimersByTimeAsync(1);
+      const response = await pending;
+      const containment = response.result.state;
+      expect(containment).toEqual({
+        ...preflight,
+        state: "containment-failed",
+        reason: "internal-failure",
+        evidence: {
+          ...preflight.evidence,
+          cleanupComplete: false,
+          terminalState: "containment-failed",
+        },
+      });
+      expect(updates).toEqual([preflight, containment]);
+
+      channel.onmessage(cancelled);
+      resolveCancellation(
+        JSON.stringify({
+          schemaVersion: 1,
+          requestId,
+          result: { kind: "application-cancel", status: "cancelled" },
+        }),
+      );
+      await Promise.resolve();
+      expect(updates).toEqual([preflight, containment]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("renders the authoritative cleanup failure instead of a stale provisional terminal", async () => {
+    const updates: TurnView[] = [];
+    const preflight = turn("preflighting");
+    const cancelled: TurnView = {
+      ...preflight,
+      state: "cancelled",
+      reason: "user-cancelled",
+      evidence: {
+        ...preflight.evidence,
+        cleanupComplete: true,
+        terminalState: "cancelled",
+      },
+    };
+    const cleanupFailed: TurnView = {
+      ...cancelled,
+      state: "cleanup-failed",
+      reason: "cleanup-failed",
+      evidence: {
+        ...cancelled.evidence,
+        cleanupComplete: false,
+        terminalState: "cleanup-failed",
+      },
+    };
+    let requestId = "";
+    const channel = { onmessage: (_value: TurnView) => undefined };
+    const invoke = vi.fn(
+      async (command: string, arguments_: { request: string }) => {
+        const request = JSON.parse(arguments_.request) as {
+          requestId: string;
+        };
+        requestId = request.requestId;
+        if (command === "application_cancel") {
+          return JSON.stringify({
+            schemaVersion: 1,
+            requestId,
+            result: { kind: "application-cancel", status: "cancelled" },
+          });
+        }
+        channel.onmessage(preflight);
+        channel.onmessage(cancelled);
+        return JSON.stringify({
+          schemaVersion: 1,
+          requestId,
+          result: { kind: "codex-turn", state: cleanupFailed },
+        });
+      },
+    );
+
+    await expect(
+      createRendererPort(
+        invoke,
+        async () => authority,
+        () => channel,
+      ).codexTurn(3, "Bounded.", (update) => updates.push(update)),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        result: { kind: "codex-turn", state: cleanupFailed },
+      }),
+    );
+    expect(updates).toEqual([preflight, cleanupFailed]);
+  });
+
+  it.each([
+    ["cancelled", "user-cancelled", true],
+    ["cleanup-failed", "cleanup-failed", false],
+    ["containment-failed", "internal-failure", true],
+  ] as const)(
+    "publishes one response-only authoritative update for the %s cancellation terminal",
+    async (state, reason, cleanupComplete) => {
+      const updates: TurnView[] = [];
+      const preflight = turn("preflighting");
+      const stopping: TurnView = {
+        ...preflight,
+        state: "stopping",
+        reason: "user-cancelled",
+        evidence: { ...preflight.evidence, terminalState: "stopping" },
+      };
+      const terminal: TurnView = {
+        ...stopping,
+        state,
+        reason,
+        evidence: {
+          ...stopping.evidence,
+          cleanupComplete,
+          terminalState: state,
+        },
+      };
+      let resolveTurn: ((value: string) => void) | undefined;
+      let requestId = "";
+      const channel = { onmessage: (_value: TurnView) => undefined };
+      const invoke = vi.fn(
+        (command: string, arguments_: { request: string }): Promise<string> => {
+          const request = JSON.parse(arguments_.request) as {
+            requestId: string;
+          };
+          if (command === "application_cancel") {
+            return Promise.resolve(
+              JSON.stringify({
+                schemaVersion: 1,
+                requestId: request.requestId,
+                result: { kind: "application-cancel", status: "cancelled" },
+              }),
+            );
+          }
+          requestId = request.requestId;
+          channel.onmessage(preflight);
+          return new Promise((resolve) => {
+            resolveTurn = resolve;
+          });
+        },
+      );
+      const cancellation = new AbortController();
+      const pending = createRendererPort(
+        invoke,
+        async () => authority,
+        () => channel,
+      ).codexTurn(
+        3,
+        "Bounded.",
+        (update) => updates.push(update),
+        cancellation.signal,
+      );
+      await Promise.resolve();
+      cancellation.abort();
+      await drainCancellationDispatch();
+      resolveTurn?.(
+        JSON.stringify({
+          schemaVersion: 1,
+          requestId,
+          result: { kind: "codex-turn", state: terminal },
+        }),
+      );
+
+      await expect(pending).resolves.toEqual(
+        expect.objectContaining({
+          result: { kind: "codex-turn", state: terminal },
+        }),
+      );
+      expect(updates).toEqual([preflight, stopping, terminal]);
+    },
+  );
+
+  it.each([
+    ["malformed", { state: "cancelled" }],
+    ["mismatched", { ...turn("preflighting"), workspaceGeneration: 4 }],
+    ["contradictory", turn("completed", "Late completion.")],
+  ] as const)(
+    "keeps a %s channel event provisional while the cancellation watchdog is active",
+    async (_case, invalidEvent) => {
+      const updates: TurnView[] = [];
+      const preflight = turn("preflighting");
+      const cancelled: TurnView = {
+        ...preflight,
+        state: "cancelled",
+        reason: "user-cancelled",
+        evidence: {
+          ...preflight.evidence,
+          cleanupComplete: true,
+          terminalState: "cancelled",
+        },
+      };
+      const channel = { onmessage: (_value: TurnView) => undefined };
+      let resolveTurn: ((value: string) => void) | undefined;
+      let requestId = "";
+      const invoke = vi.fn(
+        (command: string, arguments_: { request: string }): Promise<string> => {
+          if (command === "application_cancel") {
+            const cancellation = JSON.parse(arguments_.request) as {
+              requestId: string;
+            };
+            return Promise.resolve(
+              JSON.stringify({
+                schemaVersion: 1,
+                requestId: cancellation.requestId,
+                result: { kind: "application-cancel", status: "cancelled" },
+              }),
+            );
+          }
+          requestId = (JSON.parse(arguments_.request) as { requestId: string })
+            .requestId;
+          channel.onmessage(preflight);
+          return new Promise((resolve) => {
+            resolveTurn = resolve;
+          });
+        },
+      );
+      const cancellation = new AbortController();
+      const pending = createRendererPort(
+        invoke,
+        async () => authority,
+        () => channel,
+      ).codexTurn(
+        3,
+        "Bounded.",
+        (update) => updates.push(update),
+        cancellation.signal,
+      );
+      await Promise.resolve();
+      cancellation.abort();
+      await drainCancellationDispatch();
+      expect(updates.map(({ state }) => state)).toEqual([
+        "preflighting",
+        "stopping",
+      ]);
+
+      channel.onmessage(invalidEvent as TurnView);
+      expect(updates.map(({ state }) => state)).toEqual([
+        "preflighting",
+        "stopping",
+      ]);
+      resolveTurn?.(
+        JSON.stringify({
+          schemaVersion: 1,
+          requestId,
+          result: { kind: "codex-turn", state: cancelled },
+        }),
+      );
+
+      await expect(pending).resolves.toEqual(
+        expect.objectContaining({
+          result: { kind: "codex-turn", state: cancelled },
+        }),
+      );
+      expect(updates.map(({ state }) => state)).toEqual([
+        "preflighting",
+        "stopping",
+        "cancelled",
+      ]);
+    },
+  );
+
+  it("projects an authoritative containment failure after accepted cancellation", async () => {
+    const updates: TurnView[] = [];
+    const preflight = turn("preflighting");
+    const containmentFailed = turn(
+      "containment-failed",
+      "",
+      "protocol-rejected",
+    );
+    const channel = { onmessage: (_value: TurnView) => undefined };
+    let resolveTurn: ((value: string) => void) | undefined;
+    let requestId = "";
+    const invoke = vi.fn(
+      (command: string, arguments_: { request: string }): Promise<string> => {
+        if (command === "application_cancel") {
+          const cancellation = JSON.parse(arguments_.request) as {
+            requestId: string;
+          };
+          return Promise.resolve(
+            JSON.stringify({
+              schemaVersion: 1,
+              requestId: cancellation.requestId,
+              result: { kind: "application-cancel", status: "cancelled" },
+            }),
+          );
+        }
+        requestId = (JSON.parse(arguments_.request) as { requestId: string })
+          .requestId;
+        channel.onmessage(preflight);
+        return new Promise((resolve) => {
+          resolveTurn = resolve;
+        });
+      },
+    );
+    const cancellation = new AbortController();
+    const pending = createRendererPort(
+      invoke,
+      async () => authority,
+      () => channel,
+    ).codexTurn(
+      3,
+      "Bounded.",
+      (update) => updates.push(update),
+      cancellation.signal,
+    );
+    await Promise.resolve();
+    cancellation.abort();
+    await drainCancellationDispatch();
+
+    channel.onmessage(containmentFailed);
+    resolveTurn?.(
+      JSON.stringify({
+        schemaVersion: 1,
+        requestId,
+        result: { kind: "codex-turn", state: containmentFailed },
+      }),
+    );
+
+    await expect(pending).resolves.toEqual(
+      expect.objectContaining({
+        result: { kind: "codex-turn", state: containmentFailed },
+      }),
+    );
+    expect(updates.map(({ state }) => state)).toEqual([
+      "preflighting",
+      "stopping",
+      "containment-failed",
+    ]);
   });
 
   it.each([

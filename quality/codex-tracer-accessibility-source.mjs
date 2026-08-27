@@ -1,4 +1,6 @@
 export const tracerAccessibilityActions = Object.freeze([
+  "inspect-display-topology",
+  "inspect-window-display-binding",
   "probe-start",
   "open-canvas",
   "probe-canvas",
@@ -282,11 +284,11 @@ static BOOL HasUniqueSet(
   return YES;
 }
 
-static BOOL HasAnyUniqueValue(
+static NSInteger UniqueValueIndex(
     AXUIElementRef application,
     const CFStringRef *expected,
     NSUInteger expectedCount) {
-  if (expectedCount < 1 || expectedCount > 8) return NO;
+  if (expectedCount < 1 || expectedCount > 8) return -1;
   const CFStringRef attributes[] = {kAXValueAttribute};
   NSUInteger counts[8] = {0};
   NSUInteger visited = 0;
@@ -300,10 +302,13 @@ static BOOL HasAnyUniqueValue(
       0,
       counts,
       &visited);
-  BOOL found = NO;
+  NSInteger found = -1;
   for (NSUInteger index = 0; index < expectedCount; index += 1) {
-    if (counts[index] > 1) return NO;
-    if (counts[index] == 1) found = YES;
+    if (counts[index] > 1) return -1;
+    if (counts[index] == 1) {
+      if (found >= 0) return -1;
+      found = (NSInteger)index;
+    }
   }
   return found;
 }
@@ -816,12 +821,28 @@ static BOOL HasUnique(AXUIElementRef application, CFStringRef expected) {
   return YES;
 }
 
-static BOOL HasCancellationProjection(AXUIElementRef application) {
+static NSInteger CancellationProjection(AXUIElementRef application) {
   const CFStringRef expected[] = {
     CFSTR("Keiko beendet den Codex-Lauf sicher."),
     CFSTR("Der Codex-Lauf wurde abgebrochen und vollständig beendet."),
+    CFSTR("Die Laufzeit konnte nicht vollständig bereinigt werden. Beenden Sie Keiko Native."),
+    CFSTR("Eine nicht erlaubte Anbieteraktivität wurde abgefangen; die Laufzeit wurde beendet."),
+    CFSTR("Keiko hat einen internen Laufzeitfehler erkannt; die Laufzeit wurde beendet."),
+    CFSTR("Keiko konnte die Beendigung des Codex-Laufs nicht bestätigen. Starten Sie keinen neuen Lauf."),
   };
-  return HasAnyUniqueValue(
+  return UniqueValueIndex(
+      application, expected, sizeof(expected) / sizeof(expected[0]));
+}
+
+static NSInteger CancellationTerminal(AXUIElementRef application) {
+  const CFStringRef expected[] = {
+    CFSTR("Der Codex-Lauf wurde abgebrochen und vollständig beendet."),
+    CFSTR("Die Laufzeit konnte nicht vollständig bereinigt werden. Beenden Sie Keiko Native."),
+    CFSTR("Eine nicht erlaubte Anbieteraktivität wurde abgefangen; die Laufzeit wurde beendet."),
+    CFSTR("Keiko hat einen internen Laufzeitfehler erkannt; die Laufzeit wurde beendet."),
+    CFSTR("Keiko konnte die Beendigung des Codex-Laufs nicht bestätigen. Starten Sie keinen neuen Lauf."),
+  };
+  return UniqueValueIndex(
       application, expected, sizeof(expected) / sizeof(expected[0]));
 }
 
@@ -894,7 +915,8 @@ static BOOL ProjectionPairIsAllowed(NSString *action, NSString *observation) {
 static BOOL ProjectionIsVisible(
     AXUIElementRef application,
     NSString *observation,
-    NSString *exactWorkspaceProjection) {
+    NSString *exactWorkspaceProjection,
+    NSInteger *cancellationProjection) {
   if ([observation isEqualToString:@"probe-canvas"]) {
     const CFStringRef expected[] = {
       CFSTR("ime-harness"),
@@ -922,7 +944,8 @@ static BOOL ProjectionIsVisible(
         CFSTR("Zugriff verweigert. Wählen Sie das Repository erneut und erlauben Sie den Zugriff."));
   }
   if ([observation isEqualToString:@"observe-stopping"]) {
-    return HasCancellationProjection(application);
+    *cancellationProjection = CancellationProjection(application);
+    return *cancellationProjection >= 0;
   }
   return NO;
 }
@@ -986,11 +1009,15 @@ static BOOL WaitForProjection(
     NSString *observation,
     NSString *exactWorkspaceProjection,
     double startedAt,
-    NSUInteger *projectedMs) {
+    NSUInteger *projectedMs,
+    NSInteger *cancellationProjection) {
   const double deadline = startedAt + 5.0;
   while (YES) {
     if (ProjectionIsVisible(
-            application, observation, exactWorkspaceProjection)) {
+            application,
+            observation,
+            exactWorkspaceProjection,
+            cancellationProjection)) {
       double elapsed = MonotonicSeconds() - startedAt;
       if (elapsed < 0.0) return NO;
       *projectedMs = (NSUInteger)(MAX(0.0, elapsed) * 1000.0 + 0.5);
@@ -1001,6 +1028,106 @@ static BOOL WaitForProjection(
     if (now < 0.0 || now >= deadline) break;
   }
   return NO;
+}
+
+static BOOL InspectWindowDisplayBinding(
+    AXUIElementRef application,
+    NSUInteger *semanticWindowCount,
+    NSUInteger *matchedDisplayCount,
+    BOOL *external,
+    uint64_t *windowIdentity,
+    CGDirectDisplayID *displayIdentity,
+    CGPoint *windowPosition) {
+  CFTypeRef windowsValue = NULL;
+  if (AXUIElementCopyAttributeValue(
+          application, kAXWindowsAttribute, &windowsValue) != kAXErrorSuccess ||
+      windowsValue == NULL ||
+      CFGetTypeID(windowsValue) != CFArrayGetTypeID()) {
+    if (windowsValue != NULL) CFRelease(windowsValue);
+    return NO;
+  }
+  CFArrayRef windows = (CFArrayRef)windowsValue;
+  AXUIElementRef semanticWindow = NULL;
+  *semanticWindowCount = 0;
+  for (CFIndex index = 0; index < CFArrayGetCount(windows); index += 1) {
+    AXUIElementRef window = (AXUIElementRef)CFArrayGetValueAtIndex(windows, index);
+    if (StringAttributeEquals(window, kAXRoleAttribute, kAXWindowRole) &&
+        StringAttributeEquals(window, kAXTitleAttribute, CFSTR("Keiko Native"))) {
+      *semanticWindowCount += 1;
+      semanticWindow = window;
+    }
+  }
+  if (*semanticWindowCount != 1 || semanticWindow == NULL) {
+    CFRelease(windowsValue);
+    return NO;
+  }
+  CFTypeRef positionValue = NULL;
+  CFTypeRef sizeValue = NULL;
+  CGPoint position = CGPointZero;
+  CGSize size = CGSizeZero;
+  BOOL geometryValid =
+      AXUIElementCopyAttributeValue(
+          semanticWindow, kAXPositionAttribute, &positionValue) == kAXErrorSuccess &&
+      AXUIElementCopyAttributeValue(
+          semanticWindow, kAXSizeAttribute, &sizeValue) == kAXErrorSuccess &&
+      positionValue != NULL && sizeValue != NULL &&
+      CFGetTypeID(positionValue) == AXValueGetTypeID() &&
+      CFGetTypeID(sizeValue) == AXValueGetTypeID() &&
+      AXValueGetType((AXValueRef)positionValue) == kAXValueCGPointType &&
+      AXValueGetType((AXValueRef)sizeValue) == kAXValueCGSizeType &&
+      AXValueGetValue(
+          (AXValueRef)positionValue, kAXValueCGPointType, &position) &&
+      AXValueGetValue((AXValueRef)sizeValue, kAXValueCGSizeType, &size) &&
+      size.width > 0.0 && size.height > 0.0;
+  if (positionValue != NULL) CFRelease(positionValue);
+  if (sizeValue != NULL) CFRelease(sizeValue);
+  CFRelease(windowsValue);
+  if (!geometryValid) return NO;
+  *windowPosition = position;
+
+  pid_t applicationPid = 0;
+  if (AXUIElementGetPid(application, &applicationPid) != kAXErrorSuccess ||
+      applicationPid <= 0) return NO;
+  CGRect semanticBounds = CGRectMake(
+      position.x, position.y, size.width, size.height);
+  CFArrayRef windowInfo = CGWindowListCopyWindowInfo(
+      kCGWindowListOptionOnScreenOnly, kCGNullWindowID);
+  if (windowInfo == NULL) return NO;
+  NSUInteger matchingWindowIdentityCount = 0;
+  for (NSDictionary *entry in (__bridge NSArray *)windowInfo) {
+    NSNumber *ownerPid = entry[(id)kCGWindowOwnerPID];
+    NSNumber *windowNumber = entry[(id)kCGWindowNumber];
+    NSDictionary *bounds = entry[(id)kCGWindowBounds];
+    CGRect candidateBounds = CGRectZero;
+    if (ownerPid.intValue == applicationPid &&
+        windowNumber.unsignedLongLongValue > 0 &&
+        bounds != nil &&
+        CGRectMakeWithDictionaryRepresentation(
+            (__bridge CFDictionaryRef)bounds, &candidateBounds) &&
+        CGRectEqualToRect(candidateBounds, semanticBounds)) {
+      matchingWindowIdentityCount += 1;
+      *windowIdentity = windowNumber.unsignedLongLongValue;
+    }
+  }
+  CFRelease(windowInfo);
+  if (matchingWindowIdentityCount != 1) return NO;
+
+  CGPoint center = CGPointMake(
+      position.x + size.width / 2.0,
+      position.y + size.height / 2.0);
+  *matchedDisplayCount = 0;
+  *external = NO;
+  for (NSScreen *screen in [NSScreen screens]) {
+    NSNumber *screenNumber = screen.deviceDescription[@"NSScreenNumber"];
+    if (screenNumber == nil) continue;
+    CGDirectDisplayID display = screenNumber.unsignedIntValue;
+    if (CGRectContainsPoint(CGDisplayBounds(display), center)) {
+      *matchedDisplayCount += 1;
+      *external = !CGDisplayIsBuiltin(display);
+      *displayIdentity = display;
+    }
+  }
+  return *matchedDisplayCount == 1;
 }
 
 static void Emit(BOOL passed, const char *reasonCode) {
@@ -1041,6 +1168,25 @@ static void EmitWorkspaceProjection(
 
 int main(int argc, const char *argv[]) {
   @autoreleasepool {
+    if (argc == 3 && strcmp(argv[1], "0") == 0 &&
+        strcmp(argv[2], "inspect-display-topology") == 0) {
+      NSArray<NSScreen *> *screens = [NSScreen screens];
+      NSUInteger active = screens.count;
+      NSUInteger internal = 0;
+      for (NSScreen *screen in screens) {
+        NSNumber *screenNumber = screen.deviceDescription[@"NSScreenNumber"];
+        if (screenNumber != nil && CGDisplayIsBuiltin(screenNumber.unsignedIntValue)) {
+          internal += 1;
+        }
+      }
+      if (active < 1 || active > 16 || internal > active) return 1;
+      printf(
+          "{\"activeDisplayCount\":%lu,\"externalDisplayCount\":%lu,\"internalDisplayCount\":%lu}\n",
+          (unsigned long)active,
+          (unsigned long)(active - internal),
+          (unsigned long)internal);
+      return 0;
+    }
     NSDictionary *options = @{
       (__bridge NSString *)kAXTrustedCheckOptionPrompt: @NO
     };
@@ -1082,6 +1228,37 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
       usleep(50 * 1000);
     }
     AXUIElementRef application = AXUIElementCreateApplication(pid);
+    if ([action isEqualToString:@"inspect-window-display-binding"]) {
+      NSUInteger semanticWindowCount = 0;
+      NSUInteger matchedDisplayCount = 0;
+      BOOL external = NO;
+      uint64_t windowIdentity = 0;
+      CGDirectDisplayID displayIdentity = 0;
+      CGPoint windowPosition = CGPointZero;
+      BOOL bound = InspectWindowDisplayBinding(
+          application,
+          &semanticWindowCount,
+          &matchedDisplayCount,
+          &external,
+          &windowIdentity,
+          &displayIdentity,
+          &windowPosition);
+      CFRelease(application);
+      if (!bound) {
+        Emit(NO, "missing-or-ambiguous-semantic-target");
+        return 1;
+      }
+      printf(
+          "{\"displayClass\":\"%s\",\"displayIdentity\":\"%u\",\"matchedDisplayCount\":%lu,\"semanticWindowCount\":%lu,\"windowIdentity\":\"%llu\",\"windowPosition\":\"%.3f:%.3f\"}\n",
+          external ? "external" : "internal",
+          displayIdentity,
+          (unsigned long)matchedDisplayCount,
+          (unsigned long)semanticWindowCount,
+          (unsigned long long)windowIdentity,
+          windowPosition.x,
+          windowPosition.y);
+      return 0;
+    }
     BOOL passed = NO;
     double projectionStartedAt = 0.0;
     NSUInteger nativeActionMs = 0;
@@ -1205,11 +1382,31 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
                    CFSTR("Codex hat normal geantwortet und die Laufzeit wurde beendet.")) &&
           HasUnique(application, CFSTR("Repository-Kontext an Codex: 0 Byte."));
     } else if ([action isEqualToString:@"observe-stopping"]) {
-      passed = HasCancellationProjection(application);
+      NSInteger projection = CancellationProjection(application);
+      if (projection == 2) {
+        CFRelease(application);
+        Emit(NO, "cleanup-failed");
+        return 1;
+      }
+      if (projection == 3 || projection == 4 || projection == 5) {
+        CFRelease(application);
+        Emit(NO, "containment-failed");
+        return 1;
+      }
+      passed = projection == 0;
     } else if ([action isEqualToString:@"observe-cancelled"]) {
-      passed = HasUnique(
-          application,
-          CFSTR("Der Codex-Lauf wurde abgebrochen und vollständig beendet."));
+      NSInteger terminal = CancellationTerminal(application);
+      if (terminal == 1) {
+        CFRelease(application);
+        Emit(NO, "cleanup-failed");
+        return 1;
+      }
+      if (terminal == 2 || terminal == 3 || terminal == 4) {
+        CFRelease(application);
+        Emit(NO, "containment-failed");
+        return 1;
+      }
+      passed = terminal == 0;
     } else if ([action isEqualToString:@"observe-failed"]) {
       passed = HasUnique(
           application,
@@ -1221,14 +1418,33 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
     }
     if (passed && observation != nil) {
       NSUInteger projectedMs = 0;
+      NSInteger cancellationProjection = -1;
       passed = projectionStartedAt > 0.0 &&
           WaitForProjection(
               application,
               observation,
               selectedWorkspaceProjection,
               projectionStartedAt,
-              &projectedMs);
+              &projectedMs,
+              &cancellationProjection);
       CFRelease(application);
+      if ([observation isEqualToString:@"observe-stopping"] &&
+          cancellationProjection == 2) {
+        Emit(NO, "cleanup-failed");
+        return 1;
+      }
+      if ([observation isEqualToString:@"observe-stopping"] &&
+          (cancellationProjection == 3 ||
+           cancellationProjection == 4 ||
+           cancellationProjection == 5)) {
+        Emit(NO, "containment-failed");
+        return 1;
+      }
+      if ([observation isEqualToString:@"observe-stopping"] &&
+          cancellationProjection == 1) {
+        Emit(NO, "missing-or-ambiguous-semantic-target");
+        return 1;
+      }
       if ([observation isEqualToString:@"observe-workspace-selected"]) {
         EmitWorkspaceProjection(
             passed,

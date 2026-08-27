@@ -1,5 +1,6 @@
 use super::*;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 fn request(sequence: u64, _legacy_request_id: &str) -> Vec<u8> {
     request_for(1, sequence)
@@ -330,4 +331,48 @@ fn stale_queued_wrapper_request_and_cancel_keep_document_generation() {
             .complete_application_request(accepted)
             .contains("cancelled")
     );
+}
+
+#[test]
+fn request_adapter_carries_literal_host_acceptance_without_resampling() {
+    let mut lifecycle = HostLifecycle::default();
+    let generation = lifecycle
+        .begin_renderer_session(nonce('a'))
+        .expect("renderer generation");
+    let sender =
+        lifecycle.sender_for_document("main", "tauri://localhost", generation, &nonce('a'));
+    let _accepted = lifecycle
+        .begin_application_request(&sender, &request_for(generation, 1))
+        .expect("in flight");
+    let lifecycle = Mutex::new(lifecycle);
+    let literal_host_acceptance = Instant::now();
+    let output = application_cancel(
+        &lifecycle,
+        "main",
+        "tauri://localhost",
+        generation,
+        &nonce('a'),
+        &cancel(generation, 1),
+    );
+    assert!(output.encoded.contains("cancelled"));
+    let accepted = output.accepted.expect("typed Host acceptance");
+
+    let runtime = RuntimeHost::unavailable_for_test();
+    runtime.accept_request_cancellation(
+        output
+            .cancelled_request_id
+            .as_deref()
+            .expect("accepted cancel"),
+        accepted,
+    );
+    let window = runtime
+        .cancellation_window_for_test()
+        .expect("pending runtime cancellation");
+    assert_eq!(
+        window.terminal_cutoff,
+        accepted.accepted_at + Duration::from_secs(5),
+        "the adapter must forward Host acceptance, not authorize a later timestamp"
+    );
+    assert_eq!(window.host_acceptance, Some(accepted));
+    assert!(accepted.accepted_at >= literal_host_acceptance);
 }

@@ -3,7 +3,7 @@ import { percentile95 } from "./codex-tracer-accessibility.mjs";
 import { compareCodeUnits } from "./deterministic-order.mjs";
 import { redactionMatches } from "./native-contract.mjs";
 
-const SCHEMA_VERSION = "keiko-native-codex-tracer-acceptance/v2";
+const SCHEMA_VERSION = "keiko-native-codex-tracer-acceptance/v3";
 const WORKSPACE_SCHEMA_VERSION =
   "keiko-native-codex-tracer-workspace-acceptance/v1";
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
@@ -18,12 +18,17 @@ export const acceptanceIdentityContract = Object.freeze({
   authProfileClass: "human-provisioned-chatgpt-keyring",
   authorityProfile: "keiko-codex-no-effect-v1",
   containmentProfile: "keiko-codex-readiness-v1",
+  cancellationReadinessFingerprint:
+    "f0355c5dc554bf55ff586b564536b72385a426fb1446f609a897f3c90b57dabd",
+  cancellationReadinessVersion: 42,
   experimentalSchemaSha256:
     "46c4414f08cdbb20e66ce4153ee1edcb865ed5fda67e59511a78939ddb7a82d1",
   issueReadinessFingerprint:
-    "4d8f5d77c00ae306faa1e13f040c55a2408495d2e2024f6355854d2b656326b0",
+    "0b0f0a1d60c2bcaa96db50abbfbedf0103559acd5aacb6aa7f6e716de0e50d5e",
+  issueReadinessVersion: 45,
   parentReadinessFingerprint:
-    "e7c12d4f3c32cd509c01051c0532d5833fc8e3ff54580592bc7c3b53fc4ab5f0",
+    "129d20cf03941295171316bf7051390062302cdbcd650130770812e1f6491c19",
+  parentReadinessVersion: 132,
   promptSha256:
     "e1a92579b1ca673135331829beb97792c1289a6bccdfe0303302256c546960f6",
   runtimeArtifactSha256:
@@ -172,6 +177,13 @@ export const acceptancePhysicalContract = Object.freeze({
   ]),
   observationMode: "physical-packaged-macos",
   platform: "macos-arm64",
+  cancellationTerminalAnnouncement: Object.freeze({
+    announcementCount: 1,
+    assistiveTechnology: "VoiceOver",
+    mechanism: "common-status",
+    observation: "real-cancel",
+    terminalState: "cancelled",
+  }),
 });
 
 const budgetMeasurementLimits = Object.freeze({
@@ -228,6 +240,15 @@ export function identityBindingFailures(bindings, expected) {
   for (const [key, value] of Object.entries(acceptanceIdentityContract)) {
     if (bindings?.[key] !== value) failures.push(`identity-${key}`);
   }
+  for (const key of [
+    "cancellationReadinessFingerprint",
+    "issueReadinessFingerprint",
+    "parentReadinessFingerprint",
+  ]) {
+    if (!SHA256_PATTERN.test(bindings?.[key] ?? "")) {
+      failures.push(`identity-${key}-shape`);
+    }
+  }
   if (!REVISION_PATTERN.test(bindings?.sourceRevision ?? ""))
     failures.push("identity-source-revision");
   if (bindings?.sourceRevision !== expected?.sourceRevision)
@@ -272,6 +293,7 @@ export function budgetEvidenceFailures(budgets) {
     ...Object.keys(budgetMeasurementLimits),
     "localProjectionMeasurements",
     "nativePickerCancellationMeasurements",
+    "turnCancellationTerminal",
   ].toSorted(compareCodeUnits);
   if (
     typeof budgets !== "object" ||
@@ -301,6 +323,36 @@ export function budgetEvidenceFailures(budgets) {
       budgets?.nativePickerCancellationP95Ms,
     ),
   );
+  const cancellation = budgets?.turnCancellationTerminal;
+  if (
+    typeof cancellation !== "object" ||
+    cancellation === null ||
+    Array.isArray(cancellation) ||
+    JSON.stringify(Object.keys(cancellation).toSorted(compareCodeUnits)) !==
+      JSON.stringify([
+        "boundary",
+        "elapsedMs",
+        "stoppingElapsedMs",
+        "terminalState",
+      ]) ||
+    cancellation.boundary !== "cancel-action-start-to-terminal" ||
+    !Number.isSafeInteger(cancellation.elapsedMs) ||
+    cancellation.elapsedMs < 0 ||
+    cancellation.elapsedMs > 5_000 ||
+    !["cancelled", "cleanup-failed", "containment-failed"].includes(
+      cancellation.terminalState,
+    )
+  ) {
+    failures.push("budget-turn-cancellation-terminal");
+  }
+  if (
+    !Number.isSafeInteger(cancellation?.stoppingElapsedMs) ||
+    cancellation.stoppingElapsedMs < 0 ||
+    cancellation.stoppingElapsedMs > 100 ||
+    cancellation.stoppingElapsedMs > cancellation.elapsedMs
+  ) {
+    failures.push("budget-turn-cancellation-temporal-order");
+  }
   return failures;
 }
 
@@ -521,6 +573,7 @@ function physicalEvidenceFailures(physical, expected) {
   const failures = [];
   const expectedKeys = [
     ...Object.keys(acceptancePhysicalContract),
+    "observation",
     "packageExecutableSha256",
     "runner",
   ].toSorted(compareCodeUnits);
@@ -546,6 +599,96 @@ function physicalEvidenceFailures(physical, expected) {
     )
   ) {
     failures.push("physical-runner");
+  }
+  const observation = physical?.observation;
+  const observationKeys = [
+    "appearance",
+    "cancellationTerminalAnnouncement",
+    "displayTopology",
+    "observedAt",
+    "observations",
+    "packageExecutableSha256",
+    "redaction",
+    "schemaVersion",
+    "sourceRevision",
+    "windowDisplayBinding",
+  ].toSorted(compareCodeUnits);
+  if (
+    typeof observation !== "object" ||
+    observation === null ||
+    Array.isArray(observation) ||
+    JSON.stringify(Object.keys(observation).toSorted(compareCodeUnits)) !==
+      JSON.stringify(observationKeys)
+  ) {
+    failures.push("physical-observation-fields");
+  }
+  if (
+    observation?.schemaVersion !==
+      "keiko-native-codex-tracer-physical-observation/v2" ||
+    observation?.sourceRevision !== expected?.sourceRevision ||
+    observation?.packageExecutableSha256 !==
+      expected?.packageExecutableSha256 ||
+    observation?.redaction !== "closed" ||
+    JSON.stringify(observation?.appearance) !==
+      JSON.stringify(acceptancePhysicalContract.appearance) ||
+    JSON.stringify(observation?.cancellationTerminalAnnouncement) !==
+      JSON.stringify(
+        acceptancePhysicalContract.cancellationTerminalAnnouncement,
+      )
+  ) {
+    failures.push("physical-observation-contract");
+  }
+  const binding = observation?.windowDisplayBinding;
+  if (
+    JSON.stringify(binding) !==
+    JSON.stringify({
+      displayClass: "external",
+      matchedDisplayCount: 1,
+      semanticWindowCount: 1,
+    })
+  ) {
+    failures.push("physical-observation-window-display-binding");
+  }
+  const topology = observation?.displayTopology;
+  if (
+    typeof topology !== "object" ||
+    topology === null ||
+    Array.isArray(topology) ||
+    JSON.stringify(Object.keys(topology).toSorted(compareCodeUnits)) !==
+      JSON.stringify([
+        "activeDisplayCount",
+        "externalDisplayCount",
+        "internalDisplayCount",
+      ]) ||
+    !Number.isSafeInteger(topology.activeDisplayCount) ||
+    topology.activeDisplayCount < 2 ||
+    topology.activeDisplayCount > 16 ||
+    !Number.isSafeInteger(topology.internalDisplayCount) ||
+    !Number.isSafeInteger(topology.externalDisplayCount) ||
+    topology.externalDisplayCount < 1 ||
+    topology.internalDisplayCount < 0 ||
+    topology.internalDisplayCount + topology.externalDisplayCount !==
+      topology.activeDisplayCount
+  ) {
+    failures.push("physical-observation-display-topology");
+  }
+  const observedAtMs = Date.parse(observation?.observedAt ?? "");
+  if (
+    !Number.isSafeInteger(observedAtMs) ||
+    new Date(observedAtMs).toISOString() !== observation?.observedAt
+  ) {
+    failures.push("physical-observation-timestamp");
+  }
+  const expectedObservations =
+    acceptancePhysicalContract.irreducibleObservations.map((checkpoint) => ({
+      checkpoint,
+      status: "observed",
+    }));
+  if (
+    JSON.stringify(observation?.observations) !==
+    JSON.stringify(expectedObservations)
+  ) {
+    failures.push("physical-observation-checkpoints");
   }
   return failures;
 }
@@ -586,6 +729,38 @@ export function acceptanceEvidenceFailures(evidence, expected) {
     ...referenceEnvironmentFailures(evidence?.referenceEnvironment),
     ...safeguardEvidenceFailures(evidence?.safeguards),
   );
+  const budgetTerminal =
+    evidence?.budgets?.turnCancellationTerminal?.terminalState;
+  const physicalTerminal =
+    evidence?.physical?.cancellationTerminalAnnouncement?.terminalState;
+  const observedTerminal =
+    evidence?.physical?.observation?.cancellationTerminalAnnouncement
+      ?.terminalState;
+  if (
+    ![budgetTerminal, physicalTerminal, observedTerminal].every(
+      (terminal) => terminal === budgetTerminal,
+    )
+  ) {
+    failures.push("cancellation-terminal-facts");
+  }
+  const referenceDisplays = evidence?.referenceEnvironment?.display
+    ?.replace(/^topology-v1:/u, "")
+    .split(",");
+  const referenceTopology = {
+    activeDisplayCount: referenceDisplays?.length,
+    externalDisplayCount: referenceDisplays?.filter((display) =>
+      display.startsWith("external-"),
+    ).length,
+    internalDisplayCount: referenceDisplays?.filter((display) =>
+      display.startsWith("internal-"),
+    ).length,
+  };
+  if (
+    JSON.stringify(evidence?.physical?.observation?.displayTopology) !==
+    JSON.stringify(referenceTopology)
+  ) {
+    failures.push("display-topology-facts");
+  }
   if (redactionMatches(JSON.stringify(evidence)).length > 0)
     failures.push("evidence-sensitive-content");
   return failures;

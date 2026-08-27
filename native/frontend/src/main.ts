@@ -1,7 +1,9 @@
 import * as tauriCore from "@tauri-apps/api/core";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import {
   renderFoundation,
+  requiresCodexReadinessRecovery,
   type FoundationController,
   type FoundationView,
   type RuntimeController,
@@ -112,9 +114,15 @@ export async function startRenderer(
     },
   };
   const presentWorkspace = (state: WorkspaceState): void => {
+    const recoveryRequired = requiresCodexReadinessRecovery(turnState);
+    if (recoveryRequired) {
+      runtimeState = null;
+    }
     if (state.generation !== workspaceState.generation) {
       runtimeState = null;
-      turnState = null;
+      if (!recoveryRequired) {
+        turnState = null;
+      }
     }
     workspaceState = state;
     present(currentView);
@@ -159,6 +167,7 @@ export async function startRenderer(
   runtimeController = {
     checkRuntime: async () => {
       const workspaceGeneration = workspaceState.generation;
+      const recoveringWatchdog = requiresCodexReadinessRecovery(turnState);
       runtimeState = {
         state: "checking",
         quarantinedEvents: 0,
@@ -168,6 +177,13 @@ export async function startRenderer(
         const readiness = (await port.runtimeReadiness()).result.state;
         if (workspaceState.generation !== workspaceGeneration) return;
         runtimeState = readiness;
+        if (
+          recoveringWatchdog &&
+          readiness.state === "ready" &&
+          requiresCodexReadinessRecovery(turnState)
+        ) {
+          turnState = null;
+        }
       } catch {
         if (workspaceState.generation !== workspaceGeneration) return;
         runtimeState = {
@@ -184,7 +200,8 @@ export async function startRenderer(
       if (
         activeTurnCancellation !== null ||
         workspaceState.kind !== "bound" ||
-        runtimeState?.state !== "ready"
+        runtimeState?.state !== "ready" ||
+        requiresCodexReadinessRecovery(turnState)
       ) {
         return;
       }
@@ -200,6 +217,9 @@ export async function startRenderer(
               return;
             }
             turnState = state;
+            if (requiresCodexReadinessRecovery(state)) {
+              runtimeState = null;
+            }
             if (
               state.state === "failed" &&
               state.reason === "stale-workspace"
@@ -211,7 +231,16 @@ export async function startRenderer(
               };
               runtimeState = null;
             }
-            present(currentView);
+            const requiresSynchronousCommit =
+              state.state === "stopping" ||
+              (state.state === "containment-failed" &&
+                state.reason === "internal-failure" &&
+                !state.evidence.cleanupComplete);
+            if (requiresSynchronousCommit) {
+              flushSync(() => present(currentView));
+            } else {
+              present(currentView);
+            }
           },
           cancellation.signal,
         );

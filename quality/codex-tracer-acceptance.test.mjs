@@ -69,6 +69,12 @@ function validEvidence() {
         ),
         nativePickerCancellationP95Ms: 539,
         turnCancellationProjectionMs: 80,
+        turnCancellationTerminal: {
+          boundary: "cancel-action-start-to-terminal",
+          elapsedMs: 4_900,
+          stoppingElapsedMs: 80,
+          terminalState: "cancelled",
+        },
         turnDurationMs: 110_000,
         workspaceSelectionNativeActionMs: 102,
       },
@@ -76,21 +82,53 @@ function validEvidence() {
       packageInspection: structuredClone(acceptancePackageInspectionContract),
       physical: {
         ...structuredClone(acceptancePhysicalContract),
+        cancellationTerminalAnnouncement: {
+          announcementCount: 1,
+          assistiveTechnology: "VoiceOver",
+          mechanism: "common-status",
+          observation: "real-cancel",
+          terminalState: "cancelled",
+        },
         packageExecutableSha256: expected.packageExecutableSha256,
+        observation: {
+          appearance: structuredClone(acceptancePhysicalContract.appearance),
+          cancellationTerminalAnnouncement: structuredClone(
+            acceptancePhysicalContract.cancellationTerminalAnnouncement,
+          ),
+          displayTopology: {
+            activeDisplayCount: 2,
+            externalDisplayCount: 1,
+            internalDisplayCount: 1,
+          },
+          observedAt: "2026-08-26T12:00:00.000Z",
+          observations: acceptancePhysicalContract.irreducibleObservations.map(
+            (checkpoint) => ({ checkpoint, status: "observed" }),
+          ),
+          packageExecutableSha256: expected.packageExecutableSha256,
+          redaction: "closed",
+          schemaVersion: "keiko-native-codex-tracer-physical-observation/v2",
+          sourceRevision: expected.sourceRevision,
+          windowDisplayBinding: {
+            displayClass: "external",
+            matchedDisplayCount: 1,
+            semanticWindowCount: 1,
+          },
+        },
         runner: "local-macos",
       },
       redaction: "closed",
       referenceEnvironment: {
-        display: "topology-v1:internal-main-3024x1964",
+        display:
+          "topology-v1:external-secondary-3840x2160,internal-main-3024x1964",
         hardware: "apple-m4-16-gib-mac16-1",
         operatingSystem: "macos-26.5.2-25f84",
         power: "ac-power-standard",
         referenceClass: "owner-m4-16gib-macos26",
-        scaling: "modes-v1:1512x982@120hz-2x",
+        scaling: "modes-v1:1920x1080@60hz-2x,1512x982@120hz-2x",
         thermal: "nominal",
       },
       safeguards: structuredClone(acceptanceSafeguardContract),
-      schemaVersion: "keiko-native-codex-tracer-acceptance/v2",
+      schemaVersion: "keiko-native-codex-tracer-acceptance/v3",
       status: "complete",
     },
     expected,
@@ -113,7 +151,7 @@ test("the tracer acceptance boundary accepts only the canonical no-argument invo
     assert.deepEqual(result, {
       exitCode: 2,
       output: {
-        schemaVersion: "keiko-native-codex-tracer-acceptance/v2",
+        schemaVersion: "keiko-native-codex-tracer-acceptance/v3",
         reasonCode: "invalid-command",
         status: "rejected",
       },
@@ -141,7 +179,7 @@ test("the command rejects hostile extras as one closed metadata line", () => {
   assert.equal(result.status, 2);
   assert.equal(result.stderr, "");
   assert.deepEqual(JSON.parse(result.stdout), {
-    schemaVersion: "keiko-native-codex-tracer-acceptance/v2",
+    schemaVersion: "keiko-native-codex-tracer-acceptance/v3",
     reasonCode: "invalid-command",
     status: "rejected",
   });
@@ -163,12 +201,19 @@ test("identity evidence is closed and binds the exact accepted composition", () 
   assert.deepEqual(identityBindingFailures(bindings, expected), []);
   assert.equal(
     acceptanceIdentityContract.issueReadinessFingerprint,
-    "4d8f5d77c00ae306faa1e13f040c55a2408495d2e2024f6355854d2b656326b0",
+    "0b0f0a1d60c2bcaa96db50abbfbedf0103559acd5aacb6aa7f6e716de0e50d5e",
   );
+  assert.equal(acceptanceIdentityContract.issueReadinessVersion, 45);
   assert.equal(
     acceptanceIdentityContract.parentReadinessFingerprint,
-    "e7c12d4f3c32cd509c01051c0532d5833fc8e3ff54580592bc7c3b53fc4ab5f0",
+    "129d20cf03941295171316bf7051390062302cdbcd650130770812e1f6491c19",
   );
+  assert.equal(acceptanceIdentityContract.parentReadinessVersion, 132);
+  assert.equal(
+    acceptanceIdentityContract.cancellationReadinessFingerprint,
+    "f0355c5dc554bf55ff586b564536b72385a426fb1446f609a897f3c90b57dabd",
+  );
+  assert.equal(acceptanceIdentityContract.cancellationReadinessVersion, 42);
 
   for (const key of Object.keys(bindings)) {
     const missing = structuredClone(bindings);
@@ -190,6 +235,114 @@ test("identity evidence is closed and binds the exact accepted composition", () 
     { ...bindings, promptSha256: "0".repeat(64) },
   ]) {
     assert.ok(identityBindingFailures(changed, expected).length > 0);
+  }
+
+  for (const key of [
+    "cancellationReadinessFingerprint",
+    "issueReadinessFingerprint",
+    "parentReadinessFingerprint",
+  ]) {
+    for (const invalid of [
+      "a".repeat(63),
+      "a".repeat(65),
+      "A".repeat(64),
+      "g".repeat(64),
+    ]) {
+      const changed = { ...bindings, [key]: invalid };
+      assert.ok(
+        identityBindingFailures(changed, expected).includes(
+          `identity-${key}-shape`,
+        ),
+        `${key} must be lowercase SHA-256`,
+      );
+    }
+  }
+});
+
+test("cancellation evidence binds stopping and terminal to one ordered clock", () => {
+  const { evidence } = validEvidence();
+  evidence.budgets.turnCancellationTerminal = {
+    boundary: "cancel-action-start-to-terminal",
+    elapsedMs: 4_900,
+    stoppingElapsedMs: 80,
+    terminalState: "cancelled",
+  };
+  assert.deepEqual(budgetEvidenceFailures(evidence.budgets), []);
+
+  const impossible = structuredClone(evidence.budgets);
+  impossible.turnCancellationTerminal.stoppingElapsedMs = 4_901;
+  assert.ok(
+    budgetEvidenceFailures(impossible).includes(
+      "budget-turn-cancellation-temporal-order",
+    ),
+    "stopping cannot occur after the terminal on the shared clock",
+  );
+});
+
+test("cancellation evidence rejects contradictory terminal facts", () => {
+  const { evidence, expected } = validEvidence();
+  evidence.budgets.turnCancellationTerminal.terminalState = "cleanup-failed";
+
+  assert.ok(
+    acceptanceEvidenceFailures(evidence, expected).includes(
+      "cancellation-terminal-facts",
+    ),
+    "budget, cleanup, and physical VoiceOver terminal facts must agree",
+  );
+});
+
+test("full v3 durably retains the validated physical v2 observation", () => {
+  const { evidence, expected } = validEvidence();
+  evidence.physical.observation = {
+    appearance: structuredClone(acceptancePhysicalContract.appearance),
+    cancellationTerminalAnnouncement: structuredClone(
+      acceptancePhysicalContract.cancellationTerminalAnnouncement,
+    ),
+    displayTopology: {
+      activeDisplayCount: 2,
+      externalDisplayCount: 1,
+      internalDisplayCount: 1,
+    },
+    observedAt: "2026-08-26T12:00:00.000Z",
+    observations: acceptancePhysicalContract.irreducibleObservations.map(
+      (checkpoint) => ({ checkpoint, status: "observed" }),
+    ),
+    packageExecutableSha256: expected.packageExecutableSha256,
+    redaction: "closed",
+    schemaVersion: "keiko-native-codex-tracer-physical-observation/v2",
+    sourceRevision: expected.sourceRevision,
+    windowDisplayBinding: {
+      displayClass: "external",
+      matchedDisplayCount: 1,
+      semanticWindowCount: 1,
+    },
+  };
+
+  assert.deepEqual(acceptanceEvidenceFailures(evidence, expected), []);
+
+  for (const observation of [
+    {
+      ...evidence.physical.observation,
+      displayTopology: {
+        ...evidence.physical.observation.displayTopology,
+        activeDisplayCount: 17,
+      },
+    },
+    {
+      ...evidence.physical.observation,
+      observedAt: "not-an-iso-timestamp",
+    },
+    {
+      ...evidence.physical.observation,
+      observations: evidence.physical.observation.observations.slice(1),
+    },
+  ]) {
+    const changed = structuredClone(evidence);
+    changed.physical.observation = observation;
+    assert.ok(
+      acceptanceEvidenceFailures(changed, expected).length > 0,
+      "durable v3 must independently validate the complete embedded physical v2 record",
+    );
   }
 });
 
@@ -242,6 +395,12 @@ test("numeric evidence enforces every accepted performance and resource budget",
     nativePickerCancellationMeasurements,
     nativePickerCancellationP95Ms: 539,
     turnCancellationProjectionMs: 80,
+    turnCancellationTerminal: {
+      boundary: "cancel-action-start-to-terminal",
+      elapsedMs: 4_900,
+      stoppingElapsedMs: 80,
+      terminalState: "cancelled",
+    },
     turnDurationMs: 110_000,
     workspaceSelectionNativeActionMs: 102,
   };
@@ -564,7 +723,7 @@ test("the orchestrator fails closed without leaking thrown values or writing par
   assert.deepEqual(result, {
     exitCode: 2,
     output: {
-      schemaVersion: "keiko-native-codex-tracer-acceptance/v2",
+      schemaVersion: "keiko-native-codex-tracer-acceptance/v3",
       reasonCode: "acceptance-check-failed",
       status: "rejected",
     },

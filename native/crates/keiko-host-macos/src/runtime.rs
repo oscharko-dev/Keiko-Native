@@ -7,17 +7,18 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::request_timing::{AcceptedCancellation, CancellationSource, terminal_cutoff_exceeded};
 use crate::sha256::sha256_copy;
 #[cfg(test)]
 use crate::sha256::{sha256_file, sha256_reader};
 use crate::workspace::WorkspaceRuntimeBinding;
-use crate::{AcceptedRequest, HostLifecycle, SenderContext};
+use crate::{AcceptedRequest, HostCancellationRecord, HostLifecycle, SenderContext};
 use keiko_application::runtime::{
     CODEX_RUNTIME_SHA256, RuntimeReadinessState, RuntimeReadinessView,
 };
@@ -28,9 +29,11 @@ use serde_json::{Value, json};
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_QUEUE_BYTES: usize = 4 * 1024 * 1024;
+const READER_RETIREMENT_BUDGET: Duration = Duration::from_millis(100);
 const MAX_QUEUE_FRAMES: usize = 256;
 const MAX_STDERR_BYTES: usize = 1024 * 1024;
 const MAX_QUARANTINED_EVENTS: u16 = 64;
+const MAX_DEFERRED_CANCELLATIONS: usize = 64;
 const P_PID: i32 = 1;
 const PROC_PIDTBSDINFO: i32 = 3;
 const PROCESS_STATUS_ZOMBIE: u32 = 5;
@@ -75,7 +78,12 @@ const DESCENDANT_REAP_GRACE: Duration = Duration::from_millis(100);
 // validation after the verified runtime has been staged.
 const READINESS_CLEANUP_RESERVE: Duration = Duration::from_millis(300);
 const READINESS_MAX_TERM_GRACE: Duration = Duration::from_millis(100);
-const TURN_CLEANUP_RESERVE: Duration = Duration::from_secs(5);
+const TURN_TERMINAL_BUDGET: Duration = Duration::from_secs(5);
+const TURN_TERMINAL_PROJECTION_RESERVE: Duration = Duration::from_millis(500);
+const TURN_WORKER_RETIREMENT_BUDGET: Duration = Duration::from_millis(100);
+const TERMINAL_PUBLICATION_BUDGET: Duration = Duration::from_millis(100);
+const TURN_CLEANUP_RESERVE: Duration =
+    TURN_TERMINAL_BUDGET.saturating_sub(TURN_TERMINAL_PROJECTION_RESERVE);
 const CODEX_CONTAINMENT_ARGUMENTS: &[&str] = &[
     "-c",
     "features.multi_agent=false",
@@ -237,16 +245,59 @@ struct ReadinessDeadlineObservation {
 #[derive(Debug, Default)]
 struct ActiveRuntime {
     process_group: Mutex<Option<ProcessIdentity>>,
+    retained_unpublished_children: Mutex<Vec<Child>>,
     #[cfg(test)]
     process_group_observer: Mutex<Option<SyncSender<ProcessIdentity>>>,
     #[cfg(test)]
     readiness_deadline_trace: Mutex<Vec<ReadinessDeadlineObservation>>,
     owned_processes: Mutex<HashSet<ProcessIdentity>>,
     retained_work_directories: Mutex<HashSet<PathBuf>>,
+    retained_readers: Mutex<Vec<RuntimeReader>>,
+    retained_turn_workers: Mutex<Vec<RetainedTurnWorker>>,
+    retained_publication_workers: Mutex<Vec<RetainedPublicationWorker>>,
+    deferred_publication_failures: Mutex<Vec<DeferredPublicationFailure>>,
+    tracked_directory_cleanups: Mutex<Vec<TrackedDirectoryCleanup>>,
+    deferred_cancellations: Mutex<Vec<DeferredRuntimeCancellation>>,
+    saturated_containment: Mutex<Option<AcceptedRuntimeCancellation>>,
+    deferred_cancellation_overflow: AtomicBool,
     control: Mutex<RuntimeControl>,
+    next_effect_generation: AtomicU64,
+    closed_control_failure_cleanup: AtomicBool,
     finished: Condvar,
     #[cfg(test)]
     idle_waiting: AtomicBool,
+    #[cfg(test)]
+    reader_spawn_attempt: AtomicUsize,
+    #[cfg(test)]
+    reader_spawn_failure: AtomicUsize,
+    #[cfg(test)]
+    spawn_rollback_failure: AtomicUsize,
+    #[cfg(test)]
+    reader_retirement_hook: Mutex<Option<ReaderRetirementHook>>,
+    #[cfg(test)]
+    reader_retirement_observer: Mutex<Option<SyncSender<()>>>,
+    #[cfg(test)]
+    reader_reconciliation_hook: Mutex<Option<ReaderReconciliationHook>>,
+    #[cfg(test)]
+    runtime_effect_hook: Mutex<Option<RuntimeEffectHook>>,
+    #[cfg(test)]
+    runtime_effect_trace: Mutex<Vec<RuntimeEffectStage>>,
+    #[cfg(test)]
+    terminal_publication_now: Mutex<Option<Instant>>,
+    #[cfg(test)]
+    terminal_publication_hook: Mutex<Option<TerminalPublicationHook>>,
+    #[cfg(test)]
+    request_commit_hook: Mutex<Option<RequestClaimHook>>,
+    #[cfg(test)]
+    post_begin_rollback_hook: Mutex<Option<RequestClaimHook>>,
+    #[cfg(test)]
+    cancellation_signal_hook: Mutex<Option<RequestClaimHook>>,
+    #[cfg(test)]
+    readiness_settlement_hook: Mutex<Option<RequestClaimHook>>,
+    #[cfg(test)]
+    readiness_completion_hook: Mutex<Option<RequestClaimHook>>,
+    #[cfg(test)]
+    failed_claim_settlement_hook: Mutex<Option<RequestClaimHook>>,
     running: AtomicBool,
 }
 
@@ -254,7 +305,231 @@ struct ActiveRuntime {
 struct RuntimeControl {
     request_id: Option<String>,
     pending_request_id: Option<String>,
-    cancellation: Option<RuntimeCancellation>,
+    cancellation: Option<AcceptedRuntimeCancellation>,
+    closed_control_failure_token: Option<AcceptedRuntimeCancellation>,
+    effect_generation: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RuntimeRequestReservation {
+    request_id: String,
+    effect_generation: u64,
+    cancellation: Option<AcceptedRuntimeCancellation>,
+    closed_control_failure_token: Option<AcceptedRuntimeCancellation>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RuntimeSignalAuthority {
+    request_id: String,
+    effect_generation: u64,
+    cancellation: AcceptedRuntimeCancellation,
+    process_identity: ProcessIdentity,
+}
+
+#[derive(Debug)]
+struct RuntimeEffectPermit {
+    request_id: String,
+    generation: u64,
+}
+
+#[derive(Debug)]
+enum RuntimeEffectResult<T> {
+    Completed(T),
+    Rejected(RuntimeCancellation),
+    Cancelled(T, RuntimeCancellation),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum HostTurnClaimDisposition {
+    Claimed,
+    Cancelled,
+    Rejected,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RuntimeEffectStage {
+    Bind,
+    Workspace,
+    Directory,
+    Stage,
+    Spawn,
+    Publish,
+    Readers,
+    InitializeWrite,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct RuntimeEffectHook {
+    stage: RuntimeEffectStage,
+    started: SyncSender<()>,
+    release: Arc<(Mutex<bool>, Condvar)>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct TerminalPublicationHook {
+    entered: SyncSender<()>,
+    release: Arc<(Mutex<bool>, Condvar)>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct RequestClaimHook {
+    entered: SyncSender<()>,
+    release: Arc<(Mutex<bool>, Condvar)>,
+}
+
+#[cfg(test)]
+type ReaderRetirementTestHook = (
+    mpsc::Receiver<()>,
+    mpsc::Receiver<()>,
+    Arc<(Mutex<bool>, Condvar)>,
+);
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+struct ReaderRetirementHook {
+    thread_name: &'static str,
+    body_completed: SyncSender<()>,
+    release: Arc<(Mutex<bool>, Condvar)>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct ReaderReconciliationHook {
+    entered: SyncSender<()>,
+    release: Arc<(Mutex<bool>, Condvar)>,
+}
+
+#[derive(Debug)]
+enum DeferredRuntimeCancellation {
+    Host(HostCancellationRecord),
+    ReservedHost(HostCancellationRecord),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AcceptedRuntimeCancellation {
+    reason: RuntimeCancellation,
+    pub(crate) host_acceptance: Option<AcceptedCancellation>,
+    pub(crate) accepted_at: Instant,
+    pub(crate) cleanup_cutoff: Instant,
+    pub(crate) terminal_cutoff: Instant,
+}
+
+impl AcceptedRuntimeCancellation {
+    fn new(reason: RuntimeCancellation, accepted_at: Instant) -> Self {
+        Self {
+            reason,
+            host_acceptance: None,
+            accepted_at,
+            cleanup_cutoff: accepted_at + TURN_CLEANUP_RESERVE,
+            terminal_cutoff: accepted_at + TURN_TERMINAL_BUDGET,
+        }
+    }
+
+    fn from_host(accepted: AcceptedCancellation) -> Self {
+        let reason = match accepted.source {
+            CancellationSource::User => RuntimeCancellation::User,
+            CancellationSource::RendererLost => RuntimeCancellation::RendererLost,
+            CancellationSource::AppShutdown => RuntimeCancellation::AppShutdown,
+        };
+        Self {
+            host_acceptance: Some(accepted),
+            ..Self::new(reason, accepted.accepted_at)
+        }
+    }
+
+    fn fail_safe(mut self) -> Self {
+        self.reason = RuntimeCancellation::ContainmentFailure;
+        self
+    }
+
+    fn closed(accepted_at: Instant) -> Self {
+        Self {
+            reason: RuntimeCancellation::ContainmentFailure,
+            host_acceptance: None,
+            accepted_at,
+            cleanup_cutoff: accepted_at,
+            terminal_cutoff: accepted_at,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct TrackedDirectoryCleanup {
+    path: PathBuf,
+    completed: mpsc::Receiver<bool>,
+    worker: thread::JoinHandle<()>,
+}
+
+#[derive(Debug)]
+struct RuntimeReader {
+    completed: mpsc::Receiver<()>,
+    worker: thread::JoinHandle<()>,
+}
+
+#[derive(Debug)]
+struct RetainedTurnWorker {
+    completed: mpsc::Receiver<bool>,
+    cleanup_proven: Option<bool>,
+    worker: thread::JoinHandle<()>,
+}
+
+#[derive(Debug)]
+struct OwnedTurnWorker {
+    events: mpsc::Receiver<TurnWorkerEvent>,
+    retained: RetainedTurnWorker,
+}
+
+#[derive(Debug)]
+struct RetainedPublicationWorker {
+    result: mpsc::Receiver<TerminalPublicationWorkerResult>,
+    worker: thread::JoinHandle<()>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TerminalPublicationWorkerResult {
+    Published,
+    Skipped,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+enum TerminalPublicationDisposition {
+    Pending = 0,
+    Admitted = 1,
+    Published = 2,
+    Skipped = 3,
+    Failed = 4,
+}
+
+impl TerminalPublicationDisposition {
+    fn from_worker_result(result: TerminalPublicationWorkerResult) -> Self {
+        match result {
+            TerminalPublicationWorkerResult::Published => Self::Published,
+            TerminalPublicationWorkerResult::Skipped => Self::Skipped,
+            TerminalPublicationWorkerResult::Failed => Self::Failed,
+        }
+    }
+}
+
+struct DeferredPublicationFailure(Option<Box<dyn FnOnce() + Send + 'static>>);
+
+impl std::fmt::Debug for DeferredPublicationFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("DeferredPublicationFailure")
+            .field(&self.0.is_some())
+            .finish()
+    }
+}
+
+#[derive(Debug)]
+enum TurnWorkerEvent {
+    Update(TurnRuntimeUpdate),
+    Outcome(TurnRuntimeOutcome),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -318,6 +593,457 @@ impl RuntimeCancellation {
 }
 
 impl ActiveRuntime {
+    fn terminal_publication_now(&self) -> Instant {
+        #[cfg(test)]
+        if let Some(now) = *self
+            .terminal_publication_now
+            .lock()
+            .expect("terminal publication clock")
+        {
+            return now;
+        }
+        Instant::now()
+    }
+
+    #[cfg(test)]
+    fn install_runtime_effect_hook(
+        &self,
+        stage: RuntimeEffectStage,
+    ) -> (mpsc::Receiver<()>, Arc<(Mutex<bool>, Condvar)>) {
+        let (started, observed) = mpsc::sync_channel(1);
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        *self
+            .runtime_effect_hook
+            .lock()
+            .expect("runtime effect hook") = Some(RuntimeEffectHook {
+            stage,
+            started,
+            release: Arc::clone(&release),
+        });
+        (observed, release)
+    }
+
+    #[cfg(test)]
+    fn install_terminal_publication_hook(
+        &self,
+    ) -> (mpsc::Receiver<()>, Arc<(Mutex<bool>, Condvar)>) {
+        let (entered, observed) = mpsc::sync_channel(1);
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        *self
+            .terminal_publication_hook
+            .lock()
+            .expect("terminal publication hook") = Some(TerminalPublicationHook {
+            entered,
+            release: Arc::clone(&release),
+        });
+        (observed, release)
+    }
+
+    fn enter_terminal_publication_effect(&self) {
+        #[cfg(test)]
+        {
+            let hook = self
+                .terminal_publication_hook
+                .lock()
+                .expect("terminal publication hook")
+                .take();
+            let Some(hook) = hook else {
+                return;
+            };
+            hook.entered.send(()).expect("publication worker entered");
+            let (released, wake) = &*hook.release;
+            let released = released.lock().expect("publication release");
+            let (released, wait) = wake
+                .wait_timeout_while(released, Duration::from_secs(2), |released| !*released)
+                .expect("publication wait");
+            assert!(
+                !wait.timed_out() && *released,
+                "terminal publication release timed out"
+            );
+        }
+    }
+
+    #[cfg(test)]
+    fn install_request_claim_hook(
+        target: &Mutex<Option<RequestClaimHook>>,
+    ) -> (mpsc::Receiver<()>, Arc<(Mutex<bool>, Condvar)>) {
+        let (entered, observed) = mpsc::sync_channel(1);
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        *target.lock().expect("request claim hook") = Some(RequestClaimHook {
+            entered,
+            release: Arc::clone(&release),
+        });
+        (observed, release)
+    }
+
+    #[cfg(test)]
+    fn pause_request_claim(target: &Mutex<Option<RequestClaimHook>>) -> bool {
+        let Some(hook) = target.lock().expect("request claim hook").take() else {
+            return false;
+        };
+        hook.entered.send(()).expect("request claim entered");
+        let (released, wake) = &*hook.release;
+        let released = released.lock().expect("request claim release");
+        let (released, wait) = wake
+            .wait_timeout_while(released, Duration::from_secs(2), |released| !*released)
+            .expect("request claim wait");
+        assert!(
+            !wait.timed_out() && *released,
+            "request claim release timed out"
+        );
+        true
+    }
+
+    #[cfg(test)]
+    fn install_reader_retirement_hook(
+        &self,
+        thread_name: &'static str,
+    ) -> ReaderRetirementTestHook {
+        let (body_completed, observed) = mpsc::sync_channel(1);
+        let (retirement_started, retirement_observed) = mpsc::sync_channel(1);
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        *self
+            .reader_retirement_hook
+            .lock()
+            .expect("reader retirement hook") = Some(ReaderRetirementHook {
+            thread_name,
+            body_completed,
+            release: Arc::clone(&release),
+        });
+        *self
+            .reader_retirement_observer
+            .lock()
+            .expect("reader retirement observer") = Some(retirement_started);
+        (observed, retirement_observed, release)
+    }
+
+    #[cfg(test)]
+    fn install_reader_reconciliation_hook(
+        &self,
+    ) -> (mpsc::Receiver<()>, Arc<(Mutex<bool>, Condvar)>) {
+        let (entered, observed) = mpsc::sync_channel(1);
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        *self
+            .reader_reconciliation_hook
+            .lock()
+            .expect("reader reconciliation hook") = Some(ReaderReconciliationHook {
+            entered,
+            release: Arc::clone(&release),
+        });
+        (observed, release)
+    }
+
+    #[cfg(test)]
+    fn enter_reader_reconciliation(&self) {
+        let hook = self
+            .reader_reconciliation_hook
+            .lock()
+            .expect("reader reconciliation hook")
+            .take();
+        let Some(hook) = hook else {
+            return;
+        };
+        hook.entered
+            .send(())
+            .expect("reader reconciliation entered");
+        let (released, wake) = &*hook.release;
+        let released = released.lock().expect("reader reconciliation release");
+        let (released, wait) = wake
+            .wait_timeout_while(released, Duration::from_secs(2), |released| !*released)
+            .expect("reader reconciliation wait");
+        assert!(
+            !wait.timed_out() && *released,
+            "reader reconciliation release timed out"
+        );
+    }
+
+    #[cfg(not(test))]
+    fn enter_reader_reconciliation(&self) {}
+
+    #[cfg(test)]
+    fn enter_runtime_effect(&self, stage: RuntimeEffectStage) {
+        self.runtime_effect_trace
+            .lock()
+            .expect("runtime effect trace")
+            .push(stage);
+        let hook = self
+            .runtime_effect_hook
+            .lock()
+            .expect("runtime effect hook");
+        let Some(hook) = hook.as_ref().filter(|hook| hook.stage == stage) else {
+            return;
+        };
+        hook.started.send(()).expect("runtime effect started");
+        let (released, wake) = &*hook.release;
+        let released = released.lock().expect("runtime effect release");
+        let (released, wait) = wake
+            .wait_timeout_while(released, Duration::from_secs(1), |released| !*released)
+            .expect("runtime effect release wait");
+        assert!(
+            !wait.timed_out() && *released,
+            "runtime effect release timed out"
+        );
+    }
+
+    #[cfg(not(test))]
+    fn enter_runtime_effect(&self, _stage: RuntimeEffectStage) {}
+
+    #[cfg(test)]
+    fn runtime_effect_trace(&self) -> Vec<RuntimeEffectStage> {
+        self.runtime_effect_trace
+            .lock()
+            .expect("runtime effect trace")
+            .clone()
+    }
+
+    fn close_deferred_cancellations(&self) {
+        self.deferred_cancellation_overflow
+            .store(true, Ordering::Release);
+    }
+
+    fn defer_cancellation(&self, cancellation: AcceptedRuntimeCancellation) {
+        if self
+            .deferred_cancellations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+            >= MAX_DEFERRED_CANCELLATIONS
+        {
+            self.close_deferred_cancellations();
+        }
+        let mut saturated = self
+            .saturated_containment
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        saturated.get_or_insert(cancellation);
+    }
+
+    fn defer_host_cancellations(&self, records: &[HostCancellationRecord]) {
+        let mut deferred = self
+            .deferred_cancellations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if records.is_empty() {
+            drop(deferred);
+            self.defer_cancellation(AcceptedRuntimeCancellation::closed(Instant::now()));
+        } else {
+            for record in records {
+                if !deferred.iter().any(|deferred| {
+                    matches!(
+                        deferred,
+                        DeferredRuntimeCancellation::Host(existing)
+                            | DeferredRuntimeCancellation::ReservedHost(existing)
+                            if existing.request_id == record.request_id
+                    )
+                }) {
+                    if deferred.len() >= MAX_DEFERRED_CANCELLATIONS {
+                        self.close_deferred_cancellations();
+                        break;
+                    }
+                    deferred.push(DeferredRuntimeCancellation::Host(record.clone()));
+                }
+            }
+        }
+    }
+
+    fn defer_reserved_host_cancellation(&self, record: HostCancellationRecord) -> bool {
+        let mut deferred = self
+            .deferred_cancellations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(existing) = deferred.iter_mut().find(|deferred| {
+            matches!(
+                deferred,
+                DeferredRuntimeCancellation::Host(existing)
+                    | DeferredRuntimeCancellation::ReservedHost(existing)
+                    if existing.request_id == record.request_id
+            )
+        }) {
+            *existing = DeferredRuntimeCancellation::ReservedHost(record);
+            true
+        } else if deferred.len() >= MAX_DEFERRED_CANCELLATIONS {
+            self.close_deferred_cancellations();
+            false
+        } else {
+            deferred.push(DeferredRuntimeCancellation::ReservedHost(record));
+            true
+        }
+    }
+
+    fn materialize_deferred_cancellation(&self, control: &mut RuntimeControl) {
+        let mut deferred = self
+            .deferred_cancellations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let request_id = control
+            .request_id
+            .as_deref()
+            .or(control.pending_request_id.as_deref());
+        let has_request_owner = request_id.is_some();
+        let cancellation = deferred
+            .iter()
+            .position(|item| match item {
+                DeferredRuntimeCancellation::Host(record) => {
+                    request_id == Some(record.request_id.as_str())
+                }
+                DeferredRuntimeCancellation::ReservedHost(_) => false,
+            })
+            .map(|index| match deferred.remove(index) {
+                DeferredRuntimeCancellation::Host(record) => {
+                    AcceptedRuntimeCancellation::from_host(record.accepted)
+                }
+                DeferredRuntimeCancellation::ReservedHost(record) => {
+                    AcceptedRuntimeCancellation::from_host(record.accepted)
+                }
+            });
+        if let Some(cancellation) = cancellation {
+            if control.closed_control_failure_token.is_some() {
+                control.cancellation = Some(cancellation);
+            } else {
+                control.cancellation.get_or_insert(cancellation);
+            }
+        }
+        drop(deferred);
+        let mut saturated = self
+            .saturated_containment
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(cancellation) = saturated.take() {
+            if has_request_owner {
+                if control.closed_control_failure_token.is_some() {
+                    control.cancellation = Some(cancellation);
+                } else {
+                    control.cancellation.get_or_insert(cancellation);
+                }
+            } else {
+                self.close_deferred_cancellations();
+            }
+        }
+    }
+
+    fn take_exact_deferred_host_cancellation(
+        &self,
+        request_id: &str,
+    ) -> Option<AcceptedRuntimeCancellation> {
+        let mut deferred = self
+            .deferred_cancellations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let index = deferred.iter().position(|item| {
+            matches!(
+                item,
+                DeferredRuntimeCancellation::Host(record)
+                    | DeferredRuntimeCancellation::ReservedHost(record)
+                    if record.request_id == request_id
+            )
+        })?;
+        match deferred.remove(index) {
+            DeferredRuntimeCancellation::Host(record)
+            | DeferredRuntimeCancellation::ReservedHost(record) => {
+                Some(AcceptedRuntimeCancellation::from_host(record.accepted))
+            }
+        }
+    }
+
+    fn deferred_cancellation_overflowed(&self) -> bool {
+        self.deferred_cancellation_overflow.load(Ordering::Acquire)
+    }
+
+    fn has_reserved_host_cancellation(&self, request_id: &str) -> bool {
+        self.deferred_cancellations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .any(|item| {
+                matches!(
+                    item,
+                    DeferredRuntimeCancellation::ReservedHost(record)
+                        if record.request_id == request_id
+                )
+            })
+    }
+
+    fn has_exact_deferred_host_cancellation(&self, request_id: &str) -> bool {
+        self.deferred_cancellations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .any(|item| {
+                matches!(
+                    item,
+                    DeferredRuntimeCancellation::Host(record)
+                        | DeferredRuntimeCancellation::ReservedHost(record)
+                        if record.request_id == request_id
+                )
+            })
+    }
+
+    fn exact_host_acceptance_for_settlement(
+        &self,
+        control: &mut RuntimeControl,
+        request_id: &str,
+        extracted: &mut Option<AcceptedRuntimeCancellation>,
+    ) -> Option<AcceptedCancellation> {
+        if extracted.is_none() {
+            *extracted = self.take_exact_deferred_host_cancellation(request_id);
+        }
+        if let Some(acceptance) = extracted.and_then(|cancellation| cancellation.host_acceptance) {
+            return Some(acceptance);
+        }
+        let owns_exact_request = control.request_id.as_deref() == Some(request_id)
+            || control.pending_request_id.as_deref() == Some(request_id);
+        if owns_exact_request {
+            self.materialize_deferred_cancellation(control);
+            if let Some(acceptance) = control
+                .cancellation
+                .and_then(|cancellation| cancellation.host_acceptance)
+            {
+                return Some(acceptance);
+            }
+        }
+        None
+    }
+
+    fn clear_exact_host_settlement_owner(
+        &self,
+        control: &mut RuntimeControl,
+        request_id: &str,
+        cancellation: Option<AcceptedRuntimeCancellation>,
+    ) -> bool {
+        let owns_exact_request = control.request_id.as_deref() == Some(request_id)
+            || control.pending_request_id.as_deref() == Some(request_id);
+        let owns_exact_cancellation =
+            cancellation.is_some() && control.cancellation == cancellation;
+        if !owns_exact_request || !owns_exact_cancellation {
+            return false;
+        }
+        let released_running = control.request_id.as_deref() == Some(request_id);
+        control.request_id = None;
+        control.pending_request_id = None;
+        control.effect_generation = 0;
+        control.cancellation = control.closed_control_failure_token;
+        released_running
+    }
+
+    fn clear_poisoned_exact_host_settlement_owner(
+        &self,
+        control: &mut RuntimeControl,
+        request_id: &str,
+        extracted: Option<AcceptedRuntimeCancellation>,
+    ) -> Option<bool> {
+        extracted.and_then(|cancellation| cancellation.host_acceptance)?;
+        let owns_exact_request = control.request_id.as_deref() == Some(request_id)
+            || control.pending_request_id.as_deref() == Some(request_id);
+        let closed = control.closed_control_failure_token?;
+        if !owns_exact_request || control.cancellation != Some(closed) {
+            return None;
+        }
+        let released_running = control.request_id.as_deref() == Some(request_id);
+        control.request_id = None;
+        control.pending_request_id = None;
+        control.effect_generation = 0;
+        Some(released_running)
+    }
     #[cfg(test)]
     fn record_readiness_deadline(&self, observation: ReadinessDeadlineObservation) {
         self.readiness_deadline_trace
@@ -358,32 +1084,349 @@ impl ActiveRuntime {
     }
 
     fn claim_request(&self, request_id: &str) -> bool {
-        let Ok(process_group) = self.process_group.lock() else {
+        if !self.running.load(Ordering::Acquire) {
+            self.apply_deferred_publication_failures();
+        }
+        let Some(reservation) = self.reserve_request(request_id) else {
             return false;
         };
-        if process_group.is_some()
+        let mut retained_unpublished_children = self
+            .retained_unpublished_children
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        retained_unpublished_children.retain_mut(|child| !matches!(child.try_wait(), Ok(Some(_))));
+        if !retained_unpublished_children.is_empty() {
+            self.rollback_request_reservation(&reservation);
+            return false;
+        }
+        let mut retained_readers = self
+            .retained_readers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !reconcile_retained_readers_locked(self, &mut retained_readers) {
+            self.rollback_request_reservation(&reservation);
+            return false;
+        }
+        let mut retained_turn_workers = self
+            .retained_turn_workers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !reconcile_retained_turn_workers_locked(&mut retained_turn_workers) {
+            self.rollback_request_reservation(&reservation);
+            return false;
+        }
+        let mut retained_publication_workers = self
+            .retained_publication_workers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !reconcile_retained_publication_workers_locked(&mut retained_publication_workers) {
+            self.rollback_request_reservation(&reservation);
+            return false;
+        }
+        self.apply_deferred_publication_failures();
+        let reconcile_closed_cleanup = reservation.closed_control_failure_token.is_some();
+        if reconcile_closed_cleanup {
+            if !reconcile_retained_process_group(self, Instant::now())
+                || !authenticated_owned_processes_stopped(self)
+            {
+                self.rollback_request_reservation(&reservation);
+                return false;
+            }
+            let retained_work_reconciled = reconcile_retained_work_directories(self);
+            if !retained_work_reconciled {
+                self.rollback_request_reservation(&reservation);
+                return false;
+            }
+        }
+        let Ok(process_group) = self.process_group.lock() else {
+            self.rollback_request_reservation(&reservation);
+            return false;
+        };
+        if process_group.is_some() {
+            self.rollback_request_reservation(&reservation);
+            return false;
+        }
+        drop(process_group);
+        drop(retained_unpublished_children);
+        drop(retained_publication_workers);
+        drop(retained_turn_workers);
+        drop(retained_readers);
+        let retained_work_reconciled = if reconcile_closed_cleanup {
+            true
+        } else {
+            match lock_projection_action(self) {
+                Ok(_guard) => reconcile_retained_work_directories(self),
+                Err(_) => reconcile_retained_work_directories(self),
+            }
+        };
+        if !retained_work_reconciled {
+            self.rollback_request_reservation(&reservation);
+            return false;
+        }
+        #[cfg(test)]
+        Self::pause_request_claim(&self.request_commit_hook);
+        if !self.commit_request_reservation(&reservation) {
+            return false;
+        }
+        #[cfg(test)]
+        if Self::pause_request_claim(&self.post_begin_rollback_hook) {
+            self.rollback_request_reservation(&reservation);
+            return false;
+        }
+        if !self.finalize_request_reservation(&reservation) {
+            self.rollback_request_reservation(&reservation);
+            return false;
+        }
+        true
+    }
+
+    fn reserve_request(&self, request_id: &str) -> Option<RuntimeRequestReservation> {
+        if self.deferred_cancellation_overflowed()
+            || self.has_reserved_host_cancellation(request_id)
+        {
+            return None;
+        }
+        let marker = self.closed_control_failure_cleanup.load(Ordering::Acquire);
+        let mut control = match self.control.lock() {
+            Ok(control) => control,
+            Err(poisoned) if marker => poisoned.into_inner(),
+            Err(_) => return None,
+        };
+        self.materialize_deferred_cancellation(&mut control);
+        if self.deferred_cancellation_overflowed()
+            || marker != control.closed_control_failure_token.is_some()
+            || self.running.load(Ordering::Acquire)
+            || control.request_id.is_some()
+            || (control.pending_request_id.is_some() && control.effect_generation != 0)
+        {
+            return None;
+        }
+        if control
+            .pending_request_id
+            .as_deref()
+            .is_some_and(|pending| pending != request_id)
+        {
+            return None;
+        }
+        let effect_generation = self
+            .next_effect_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        control.pending_request_id = Some(request_id.to_owned());
+        control.effect_generation = effect_generation;
+        if effect_generation == 0 {
+            control.cancellation = Some(AcceptedRuntimeCancellation::closed(Instant::now()));
+        }
+        self.materialize_deferred_cancellation(&mut control);
+        Some(RuntimeRequestReservation {
+            request_id: request_id.to_owned(),
+            effect_generation,
+            cancellation: control.cancellation,
+            closed_control_failure_token: control.closed_control_failure_token,
+        })
+    }
+
+    fn commit_request_reservation(&self, reservation: &RuntimeRequestReservation) -> bool {
+        let mut control = match self.control.lock() {
+            Ok(control) => control,
+            Err(poisoned) if reservation.closed_control_failure_token.is_some() => {
+                poisoned.into_inner()
+            }
+            Err(poisoned) => {
+                let mut control = poisoned.into_inner();
+                let retained_in_control =
+                    !self.retain_reservation_cancellations(&mut control, reservation);
+                let closed = control.cancellation.map_or_else(
+                    || AcceptedRuntimeCancellation::closed(Instant::now()),
+                    AcceptedRuntimeCancellation::fail_safe,
+                );
+                control.closed_control_failure_token = Some(closed);
+                if !retained_in_control {
+                    control.cancellation = Some(closed);
+                }
+                self.closed_control_failure_cleanup
+                    .store(true, Ordering::Release);
+                if !retained_in_control {
+                    Self::clear_pending_reservation(&mut control, reservation);
+                }
+                drop(control);
+                self.finished.notify_all();
+                return false;
+            }
+        };
+        if !self.reservation_matches(&control, reservation)
             || self
                 .running
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                 .is_err()
         {
-            return false;
-        }
-        drop(process_group);
-        if !reconcile_retained_work_directories(self) {
-            self.running.store(false, Ordering::Release);
+            if self.retain_reservation_cancellations(&mut control, reservation) {
+                Self::clear_pending_reservation(&mut control, reservation);
+            }
+            drop(control);
             self.finished.notify_all();
             return false;
         }
-        self.begin_request(request_id)
+        control.pending_request_id = None;
+        control.request_id = Some(reservation.request_id.clone());
+        true
     }
 
-    fn begin_request(&self, request_id: &str) -> bool {
-        let Ok(mut control) = self.control.lock() else {
-            self.running.store(false, Ordering::Release);
-            self.finished.notify_all();
-            return false;
+    fn finalize_request_reservation(&self, reservation: &RuntimeRequestReservation) -> bool {
+        let mut control = match self.control.lock() {
+            Ok(control) => control,
+            Err(poisoned) if reservation.closed_control_failure_token.is_some() => {
+                poisoned.into_inner()
+            }
+            Err(_) => return false,
         };
+        if control.request_id.as_deref() != Some(reservation.request_id.as_str())
+            || control.effect_generation != reservation.effect_generation
+            || control.cancellation != reservation.cancellation
+            || control.closed_control_failure_token != reservation.closed_control_failure_token
+            || self.closed_control_failure_cleanup.load(Ordering::Acquire)
+                != reservation.closed_control_failure_token.is_some()
+        {
+            return false;
+        }
+        if let Some(closed_token) = reservation.closed_control_failure_token {
+            control.closed_control_failure_token = None;
+            self.closed_control_failure_cleanup
+                .store(false, Ordering::Release);
+            if control.cancellation == Some(closed_token) {
+                control.cancellation = None;
+            }
+            self.control.clear_poison();
+        }
+        true
+    }
+
+    fn reservation_matches(
+        &self,
+        control: &RuntimeControl,
+        reservation: &RuntimeRequestReservation,
+    ) -> bool {
+        control.request_id.is_none()
+            && control.pending_request_id.as_deref() == Some(reservation.request_id.as_str())
+            && control.effect_generation == reservation.effect_generation
+            && control.cancellation == reservation.cancellation
+            && control.closed_control_failure_token == reservation.closed_control_failure_token
+            && self.closed_control_failure_cleanup.load(Ordering::Acquire)
+                == reservation.closed_control_failure_token.is_some()
+    }
+
+    fn clear_pending_reservation(
+        control: &mut RuntimeControl,
+        reservation: &RuntimeRequestReservation,
+    ) {
+        if control.request_id.is_none()
+            && control.pending_request_id.as_deref() == Some(reservation.request_id.as_str())
+            && control.effect_generation == reservation.effect_generation
+        {
+            control.pending_request_id = None;
+            control.effect_generation = 0;
+        }
+    }
+
+    fn rollback_request_reservation(&self, reservation: &RuntimeRequestReservation) {
+        let mut released_running = false;
+        match self.control.lock() {
+            Ok(mut control) => {
+                let clearable = self.retain_reservation_cancellations(&mut control, reservation);
+                if clearable
+                    && control.request_id.as_deref() == Some(reservation.request_id.as_str())
+                    && control.effect_generation == reservation.effect_generation
+                {
+                    control.request_id = None;
+                    control.effect_generation = 0;
+                    released_running = true;
+                } else if clearable {
+                    Self::clear_pending_reservation(&mut control, reservation);
+                }
+            }
+            Err(poisoned) => {
+                let mut control = poisoned.into_inner();
+                let clearable = self.retain_reservation_cancellations(&mut control, reservation);
+                if clearable
+                    && control.request_id.as_deref() == Some(reservation.request_id.as_str())
+                    && control.effect_generation == reservation.effect_generation
+                {
+                    control.request_id = None;
+                    control.effect_generation = 0;
+                    released_running = true;
+                } else if clearable {
+                    Self::clear_pending_reservation(&mut control, reservation);
+                }
+            }
+        }
+        if released_running {
+            self.running.store(false, Ordering::Release);
+        }
+        self.finished.notify_all();
+    }
+
+    fn retain_reservation_cancellations(
+        &self,
+        control: &mut RuntimeControl,
+        reservation: &RuntimeRequestReservation,
+    ) -> bool {
+        let superseding = control
+            .cancellation
+            .filter(|cancellation| Some(*cancellation) != reservation.cancellation)
+            .and_then(|cancellation| cancellation.host_acceptance);
+        let reservation_acceptance = reservation
+            .cancellation
+            .and_then(|cancellation| cancellation.host_acceptance);
+        let retained_acceptance = superseding.or(reservation_acceptance);
+        let retained = retained_acceptance.is_none_or(|accepted| {
+            self.defer_reserved_host_cancellation(HostCancellationRecord {
+                request_id: reservation.request_id.clone(),
+                accepted,
+            })
+        });
+        let owns_reservation = control.effect_generation == reservation.effect_generation
+            && (control.request_id.as_deref() == Some(reservation.request_id.as_str())
+                || control.pending_request_id.as_deref() == Some(reservation.request_id.as_str()));
+        if owns_reservation {
+            control.cancellation = if retained {
+                control.closed_control_failure_token
+            } else {
+                retained_acceptance.map(AcceptedRuntimeCancellation::from_host)
+            };
+        }
+        retained
+    }
+
+    #[cfg(test)]
+    fn begin_request(
+        &self,
+        request_id: &str,
+        reconciled_closed_token: Option<AcceptedRuntimeCancellation>,
+    ) -> bool {
+        let mut control = match self.control.lock() {
+            Ok(control) => control,
+            Err(poisoned) if reconciled_closed_token.is_some() => {
+                self.control.clear_poison();
+                poisoned.into_inner()
+            }
+            Err(_) => {
+                self.running.store(false, Ordering::Release);
+                self.finished.notify_all();
+                return false;
+            }
+        };
+        if let Some(reconciled_closed_token) = reconciled_closed_token {
+            if !self.closed_control_failure_cleanup.load(Ordering::Acquire)
+                || control.cancellation != Some(reconciled_closed_token)
+            {
+                self.running.store(false, Ordering::Release);
+                self.finished.notify_all();
+                return false;
+            }
+            *control = RuntimeControl::default();
+            self.closed_control_failure_cleanup
+                .store(false, Ordering::Release);
+        }
         if control
             .pending_request_id
             .as_deref()
@@ -393,34 +1436,114 @@ impl ActiveRuntime {
         }
         control.pending_request_id = None;
         control.request_id = Some(request_id.to_owned());
+        control.effect_generation = self
+            .next_effect_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        if control.effect_generation == 0 {
+            control.cancellation = Some(AcceptedRuntimeCancellation::closed(Instant::now()));
+        }
+        self.materialize_deferred_cancellation(&mut control);
         true
     }
 
-    fn finish_request(&self) {
-        if let Ok(mut control) = self.control.lock() {
-            *control = RuntimeControl::default();
-            self.running.store(false, Ordering::Release);
-        } else {
-            self.running.store(false, Ordering::Release);
-        }
-        self.finished.notify_all();
+    fn owns_request(&self, request_id: &str) -> bool {
+        self.running.load(Ordering::Acquire)
+            && self
+                .control
+                .lock()
+                .is_ok_and(|control| control.request_id.as_deref() == Some(request_id))
     }
 
-    fn cancel(&self, reason: RuntimeCancellation) {
-        let Ok(mut control) = self.control.lock() else {
-            return;
+    fn finish_request(&self) {
+        match self.control.lock() {
+            Ok(mut control) => {
+                self.materialize_deferred_cancellation(&mut control);
+                let retain_closed_cleanup =
+                    self.closed_control_failure_cleanup.load(Ordering::Acquire);
+                if retain_closed_cleanup {
+                    control.request_id = None;
+                    control.pending_request_id = None;
+                    control.effect_generation = 0;
+                } else {
+                    *control = RuntimeControl::default();
+                }
+            }
+            Err(poisoned) => {
+                let mut control = poisoned.into_inner();
+                self.materialize_deferred_cancellation(&mut control);
+                let retain_closed_cleanup =
+                    self.closed_control_failure_cleanup.load(Ordering::Acquire);
+                if retain_closed_cleanup {
+                    control.request_id = None;
+                    control.pending_request_id = None;
+                    control.effect_generation = 0;
+                }
+            }
+        }
+        self.running.store(false, Ordering::Release);
+        self.finished.notify_all();
+        self.apply_deferred_publication_failures();
+    }
+
+    fn defer_publication_failure(&self, failure: DeferredPublicationFailure) {
+        self.deferred_publication_failures
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(failure);
+    }
+
+    fn apply_deferred_publication_failures(&self) {
+        let failures = {
+            let mut failures = self
+                .deferred_publication_failures
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::take(&mut *failures)
         };
-        if self.running.load(Ordering::Acquire) && control.cancellation.is_none() {
-            control.cancellation = Some(reason);
+        for mut failure in failures {
+            if let Some(failure) = failure.0.take() {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(failure));
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn cancel(&self, reason: RuntimeCancellation) {
+        match self.control.lock() {
+            Ok(mut control) => {
+                if self.running.load(Ordering::Acquire) && control.cancellation.is_none() {
+                    control.cancellation =
+                        Some(AcceptedRuntimeCancellation::new(reason, Instant::now()));
+                }
+            }
+            Err(poisoned) => {
+                let mut control = poisoned.into_inner();
+                control.cancellation = Some(control.cancellation.map_or_else(
+                    || AcceptedRuntimeCancellation::closed(Instant::now()),
+                    AcceptedRuntimeCancellation::fail_safe,
+                ));
+            }
         }
     }
 
     fn cancellation(&self) -> Option<RuntimeCancellation> {
-        self.control
-            .lock()
-            .map_or(Some(RuntimeCancellation::ContainmentFailure), |control| {
-                control.cancellation
-            })
+        self.cancellation_window().map(|accepted| accepted.reason)
+    }
+
+    fn cancellation_window(&self) -> Option<AcceptedRuntimeCancellation> {
+        match self.control.lock() {
+            Ok(control) => control.cancellation,
+            Err(poisoned) => {
+                let mut control = poisoned.into_inner();
+                let fail_safe = control.cancellation.map_or_else(
+                    || AcceptedRuntimeCancellation::closed(Instant::now()),
+                    AcceptedRuntimeCancellation::fail_safe,
+                );
+                control.cancellation = Some(fail_safe);
+                Some(fail_safe)
+            }
+        }
     }
 
     fn cancellation_state(&self) -> Option<RuntimeReadinessState> {
@@ -429,20 +1552,36 @@ impl ActiveRuntime {
     }
 
     fn wait_for_idle(&self, timeout: Duration) -> bool {
-        let Ok(control) = self.control.lock() else {
-            return false;
+        let control = match self.control.lock() {
+            Ok(control) => control,
+            Err(poisoned) => {
+                let control = poisoned.into_inner();
+                if control.pending_request_id.is_none() {
+                    return false;
+                }
+                control
+            }
         };
         #[cfg(test)]
         self.idle_waiting.store(true, Ordering::Release);
         let wait = self
             .finished
-            .wait_timeout_while(control, timeout, |_| self.running.load(Ordering::Acquire));
+            .wait_timeout_while(control, timeout, |control| {
+                self.running.load(Ordering::Acquire)
+                    || control.request_id.is_some()
+                    || control.pending_request_id.is_some()
+                    || control.effect_generation != 0
+            });
         #[cfg(test)]
         self.idle_waiting.store(false, Ordering::Release);
-        let Ok((_control, _wait)) = wait else {
-            return false;
+        let (control, _wait) = match wait {
+            Ok(wait) => wait,
+            Err(poisoned) => poisoned.into_inner(),
         };
         !self.running.load(Ordering::Acquire)
+            && control.request_id.is_none()
+            && control.pending_request_id.is_none()
+            && control.effect_generation == 0
     }
 }
 
@@ -454,7 +1593,276 @@ pub struct RuntimeHost {
     invalidated_workspace_generation: Arc<AtomicU64>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RuntimeReadinessWorkspace {
+    path: PathBuf,
+    generation: Option<u64>,
+}
+
+impl RuntimeReadinessWorkspace {
+    pub(crate) fn tracked(path: PathBuf, generation: u64) -> Self {
+        Self {
+            path,
+            generation: Some(generation),
+        }
+    }
+
+    fn untracked(path: &Path) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            generation: None,
+        }
+    }
+
+    fn remains_authoritative(&self, invalidated_generation: &AtomicU64) -> bool {
+        self.generation
+            .is_none_or(|generation| generation > invalidated_generation.load(Ordering::Acquire))
+    }
+}
+
+struct TurnExecution<'a> {
+    request_id: &'a str,
+    workspace_generation: u64,
+    selected_workspace: &'a WorkspaceRuntimeBinding,
+    task: &'a str,
+    timeout: Duration,
+    retain_for_host_settlement: bool,
+}
+
+fn cancellation_cleanup_wait_budget(
+    now: Instant,
+    cancellation: Option<AcceptedRuntimeCancellation>,
+) -> Duration {
+    cancellation.map_or(TURN_TERMINAL_BUDGET, |window| {
+        window.terminal_cutoff.saturating_duration_since(now)
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum UnmatchedHostCancellationPolicy {
+    CloseContainment,
+    Ignore,
+}
+
+pub(crate) enum HostCancellationMutation<T> {
+    Completed(T, Vec<HostCancellationRecord>),
+    ControlFailed(T),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TerminalPublicationOutcome {
+    Completed(bool),
+    Skipped,
+    Deferred,
+}
+
+fn install_matching_host_cancellation(
+    control: &mut RuntimeControl,
+    running: bool,
+    records: &[HostCancellationRecord],
+    unmatched_policy: UnmatchedHostCancellationPolicy,
+) -> bool {
+    let current_request_id = if running {
+        control.request_id.as_deref()
+    } else {
+        None
+    };
+    let pending_request_id = control.pending_request_id.as_deref();
+    let matched = current_request_id
+        .or(pending_request_id)
+        .and_then(|request_id| {
+            records
+                .iter()
+                .find(|record| record.request_id == request_id)
+        })
+        .or_else(|| {
+            (current_request_id.is_none() && pending_request_id.is_none() && records.len() == 1)
+                .then(|| records.first())
+                .flatten()
+        });
+    if let Some(record) = matched {
+        if current_request_id.is_none() {
+            control.pending_request_id = Some(record.request_id.clone());
+        }
+        let cancellation = AcceptedRuntimeCancellation::from_host(record.accepted);
+        if control.closed_control_failure_token.is_some() {
+            control.cancellation = Some(cancellation);
+        } else {
+            control.cancellation.get_or_insert(cancellation);
+        }
+        return true;
+    }
+    if unmatched_policy == UnmatchedHostCancellationPolicy::CloseContainment
+        && (current_request_id.is_some() || pending_request_id.is_some())
+    {
+        control
+            .cancellation
+            .get_or_insert_with(|| AcceptedRuntimeCancellation::closed(Instant::now()));
+        return true;
+    }
+    false
+}
+
 impl RuntimeHost {
+    fn terminal_publication_now(&self) -> Instant {
+        self.active.terminal_publication_now()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn publish_terminal_update(
+        &self,
+        publish: impl FnOnce() -> bool + Send + 'static,
+    ) -> TerminalPublicationOutcome {
+        let terminal_cutoff = self.active.cancellation_window().map_or_else(
+            || Instant::now() + TERMINAL_PUBLICATION_BUDGET,
+            |window| window.terminal_cutoff,
+        );
+        self.publish_terminal_update_until(terminal_cutoff, publish)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn publish_terminal_update_until(
+        &self,
+        terminal_cutoff: Instant,
+        publish: impl FnOnce() -> bool + Send + 'static,
+    ) -> TerminalPublicationOutcome {
+        self.publish_terminal_update_until_with_failure(terminal_cutoff, publish, || {})
+    }
+
+    pub(crate) fn publish_terminal_update_until_with_failure(
+        &self,
+        terminal_cutoff: Instant,
+        publish: impl FnOnce() -> bool + Send + 'static,
+        publication_failed: impl FnOnce() + Send + 'static,
+    ) -> TerminalPublicationOutcome {
+        let wait_started_at = Instant::now();
+        let started_at = self.terminal_publication_now();
+        if started_at >= terminal_cutoff {
+            return TerminalPublicationOutcome::Skipped;
+        }
+        let (result_sender, result_receiver) = mpsc::sync_channel(1);
+        let active = Arc::clone(&self.active);
+        let disposition = Arc::new(AtomicU8::new(TerminalPublicationDisposition::Pending as u8));
+        let worker_disposition = Arc::clone(&disposition);
+        let failure = Arc::new(Mutex::new(Some(DeferredPublicationFailure(Some(
+            Box::new(publication_failed),
+        )))));
+        let worker_failure = Arc::clone(&failure);
+        let worker = match thread::Builder::new()
+            .name("keiko-terminal-publication".to_owned())
+            .spawn(move || {
+                active.enter_terminal_publication_effect();
+                let effect_started_at = active.terminal_publication_now();
+                let admitted = effect_started_at < terminal_cutoff
+                    && worker_disposition
+                        .compare_exchange(
+                            TerminalPublicationDisposition::Pending as u8,
+                            TerminalPublicationDisposition::Admitted as u8,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok();
+                let result = if !admitted {
+                    TerminalPublicationWorkerResult::Skipped
+                } else {
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(publish)) {
+                        Ok(true)
+                            if !terminal_cutoff_exceeded(
+                                active.terminal_publication_now(),
+                                terminal_cutoff,
+                            ) =>
+                        {
+                            TerminalPublicationWorkerResult::Published
+                        }
+                        Ok(true) => TerminalPublicationWorkerResult::Skipped,
+                        Ok(false) | Err(_) => TerminalPublicationWorkerResult::Failed,
+                    }
+                };
+                worker_disposition.store(
+                    TerminalPublicationDisposition::from_worker_result(result) as u8,
+                    Ordering::Release,
+                );
+                let _ = result_sender.send(result);
+                if result == TerminalPublicationWorkerResult::Failed {
+                    let failure = worker_failure
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take();
+                    if let Some(mut failure) = failure {
+                        if active.wait_for_idle(TURN_TERMINAL_BUDGET) {
+                            if let Some(failure) = failure.0.take() {
+                                let _ =
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(failure));
+                            }
+                        } else {
+                            active.defer_publication_failure(failure);
+                        }
+                    }
+                }
+            }) {
+            Ok(worker) => worker,
+            Err(_) => {
+                if let Some(failure) = failure
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                {
+                    self.active.defer_publication_failure(failure);
+                }
+                return TerminalPublicationOutcome::Completed(false);
+            }
+        };
+        let wait_budget = terminal_cutoff
+            .saturating_duration_since(started_at)
+            .min(TERMINAL_PUBLICATION_BUDGET);
+        let deadline = wait_started_at + wait_budget;
+        let result =
+            result_receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+        let retained = RetainedPublicationWorker {
+            result: result_receiver,
+            worker,
+        };
+        match result {
+            Ok(TerminalPublicationWorkerResult::Published) => {
+                retire_publication_worker(&self.active, retained, deadline);
+                TerminalPublicationOutcome::Completed(true)
+            }
+            Ok(TerminalPublicationWorkerResult::Skipped) => {
+                retire_publication_worker(&self.active, retained, deadline);
+                TerminalPublicationOutcome::Skipped
+            }
+            Ok(TerminalPublicationWorkerResult::Failed) => {
+                retain_publication_worker(&self.active, retained);
+                TerminalPublicationOutcome::Completed(false)
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                retain_publication_worker(&self.active, retained);
+                match disposition.compare_exchange(
+                    TerminalPublicationDisposition::Pending as u8,
+                    TerminalPublicationDisposition::Skipped as u8,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => TerminalPublicationOutcome::Skipped,
+                    Err(value) if value == TerminalPublicationDisposition::Published as u8 => {
+                        TerminalPublicationOutcome::Completed(true)
+                    }
+                    Err(value) if value == TerminalPublicationDisposition::Skipped as u8 => {
+                        TerminalPublicationOutcome::Skipped
+                    }
+                    Err(value) if value == TerminalPublicationDisposition::Failed as u8 => {
+                        TerminalPublicationOutcome::Completed(false)
+                    }
+                    Err(_) => TerminalPublicationOutcome::Deferred,
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                retire_publication_worker(&self.active, retained, deadline);
+                TerminalPublicationOutcome::Completed(false)
+            }
+        }
+    }
+
     pub fn from_environment() -> Self {
         let configuration = match (
             std::env::var_os(BINARY_ENV),
@@ -487,13 +1895,18 @@ impl RuntimeHost {
         request_id: &str,
         selected_workspace: Option<&Path>,
     ) -> RuntimeReadinessView {
-        self.check_with_timeout(request_id, selected_workspace, DEFAULT_REQUEST_TIMEOUT)
+        let selected_workspace = selected_workspace.map(RuntimeReadinessWorkspace::untracked);
+        self.check_with_timeout(
+            request_id,
+            selected_workspace.as_ref(),
+            DEFAULT_REQUEST_TIMEOUT,
+        )
     }
 
     fn check_with_timeout(
         &self,
         request_id: &str,
-        selected_workspace: Option<&Path>,
+        selected_workspace: Option<&RuntimeReadinessWorkspace>,
         timeout: Duration,
     ) -> RuntimeReadinessView {
         let started_at = Instant::now();
@@ -509,6 +1922,12 @@ impl RuntimeHost {
         if !self.active.claim_request(request_id) {
             return RuntimeReadinessView::terminal(RuntimeReadinessState::ContainmentFailed, 0);
         }
+        if selected_workspace.is_some_and(|workspace| {
+            !workspace.remains_authoritative(&self.invalidated_workspace_generation)
+        }) {
+            self.active.finish_request();
+            return RuntimeReadinessView::terminal(RuntimeReadinessState::Cancelled, 0);
+        }
         let result = self.configuration.as_ref().map_or_else(
             || RuntimeReadinessView::terminal(RuntimeReadinessState::Unavailable, 0),
             |configuration| {
@@ -517,6 +1936,7 @@ impl RuntimeHost {
                     selected_workspace,
                     &self.active,
                     &self.work_generation,
+                    &self.invalidated_workspace_generation,
                     deadline,
                 )
             },
@@ -526,31 +1946,416 @@ impl RuntimeHost {
     }
 
     pub fn cancel_request(&self, request_id: &str) {
-        let mut accepted = false;
-        if let Ok(mut control) = self.active.control.lock() {
-            if self.active.running.load(Ordering::Acquire)
-                && control.request_id.as_deref() == Some(request_id)
-            {
-                control
-                    .cancellation
-                    .get_or_insert(RuntimeCancellation::User);
-                accepted = true;
-            } else if control.request_id.is_none()
-                && control
-                    .pending_request_id
-                    .as_deref()
-                    .is_none_or(|pending| pending == request_id)
-            {
-                control.pending_request_id = Some(request_id.to_owned());
-                control
-                    .cancellation
-                    .get_or_insert(RuntimeCancellation::User);
-                accepted = true;
+        self.cancel_request_at(request_id, Instant::now());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn accept_request_cancellation(
+        &self,
+        request_id: &str,
+        accepted: AcceptedCancellation,
+    ) {
+        self.cancel_request_with(request_id, AcceptedRuntimeCancellation::from_host(accepted));
+    }
+
+    pub(crate) fn handoff_host_cancellation<T, Output>(
+        &self,
+        unmatched_policy: UnmatchedHostCancellationPolicy,
+        mutation: impl FnOnce() -> HostCancellationMutation<T>,
+        after_install: impl FnOnce(T) -> Output,
+    ) -> Output {
+        let output;
+        let signal_authority;
+        let kill;
+        match self.active.control.lock() {
+            Ok(mut control) => {
+                self.active.materialize_deferred_cancellation(&mut control);
+                let (value, records, host_control_failed) = match mutation() {
+                    HostCancellationMutation::Completed(value, records) => (value, records, false),
+                    HostCancellationMutation::ControlFailed(value) => (value, Vec::new(), true),
+                };
+                let running = self.active.running.load(Ordering::Acquire);
+                let signal = if host_control_failed
+                    && (running
+                        || control.request_id.is_some()
+                        || control.pending_request_id.is_some())
+                {
+                    let closed = AcceptedRuntimeCancellation::closed(Instant::now());
+                    control.cancellation = Some(closed);
+                    control.closed_control_failure_token = Some(closed);
+                    self.active
+                        .closed_control_failure_cleanup
+                        .store(true, Ordering::Release);
+                    true
+                } else {
+                    install_matching_host_cancellation(
+                        &mut control,
+                        running,
+                        &records,
+                        unmatched_policy,
+                    )
+                };
+                let request_id = if self.active.running.load(Ordering::Acquire) {
+                    control.request_id.as_deref()
+                } else {
+                    control.pending_request_id.as_deref()
+                };
+                let retain = records
+                    .iter()
+                    .filter(|record| request_id != Some(record.request_id.as_str()))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !retain.is_empty() {
+                    self.active.defer_host_cancellations(&retain);
+                }
+                output = after_install(value);
+                self.active.materialize_deferred_cancellation(&mut control);
+                signal_authority = (signal || control.cancellation.is_some())
+                    .then(|| self.capture_signal_authority(&control))
+                    .flatten();
+                kill = self
+                    .active
+                    .closed_control_failure_cleanup
+                    .load(Ordering::Acquire);
+            }
+            Err(poisoned) => {
+                let mut control = poisoned.into_inner();
+                let running = self.active.running.load(Ordering::Acquire);
+                let (value, records, host_control_failed) = match mutation() {
+                    HostCancellationMutation::Completed(value, records) => (value, records, false),
+                    HostCancellationMutation::ControlFailed(value) => (value, Vec::new(), true),
+                };
+                let active_or_pending =
+                    running || control.request_id.is_some() || control.pending_request_id.is_some();
+                let installed_host_request_id;
+                if host_control_failed && active_or_pending {
+                    let closed = AcceptedRuntimeCancellation::closed(Instant::now());
+                    control.cancellation = Some(closed);
+                    control.closed_control_failure_token = Some(closed);
+                    self.active
+                        .closed_control_failure_cleanup
+                        .store(true, Ordering::Release);
+                    installed_host_request_id = None;
+                } else {
+                    let matched = control.closed_control_failure_token.is_some()
+                        && install_matching_host_cancellation(
+                            &mut control,
+                            running,
+                            &records,
+                            unmatched_policy,
+                        );
+                    if !matched {
+                        control.cancellation = Some(control.cancellation.map_or_else(
+                            || AcceptedRuntimeCancellation::closed(Instant::now()),
+                            AcceptedRuntimeCancellation::fail_safe,
+                        ));
+                    }
+                    installed_host_request_id = matched
+                        .then(|| {
+                            if running {
+                                control.request_id.clone()
+                            } else {
+                                control.pending_request_id.clone()
+                            }
+                        })
+                        .flatten();
+                }
+                let retain = records
+                    .iter()
+                    .filter(|record| {
+                        installed_host_request_id.as_deref() != Some(record.request_id.as_str())
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !retain.is_empty() {
+                    self.active.defer_host_cancellations(&retain);
+                }
+                output = after_install(value);
+                self.active.materialize_deferred_cancellation(&mut control);
+                signal_authority = self.capture_signal_authority(&control);
+                kill = self
+                    .active
+                    .closed_control_failure_cleanup
+                    .load(Ordering::Acquire);
             }
         }
-        if accepted {
-            self.signal_active_process();
+        self.signal_captured_authority(signal_authority, kill);
+        output
+    }
+
+    fn capture_signal_authority(&self, control: &RuntimeControl) -> Option<RuntimeSignalAuthority> {
+        if !self.active.running.load(Ordering::Acquire) || control.cancellation.is_none() {
+            return None;
         }
+        let request_id = control.request_id.clone()?;
+        if control.effect_generation == 0 {
+            return None;
+        }
+        let process_identity = self
+            .active
+            .process_group
+            .lock()
+            .ok()
+            .and_then(|process_group| *process_group)?;
+        Some(RuntimeSignalAuthority {
+            request_id,
+            effect_generation: control.effect_generation,
+            cancellation: control.cancellation?,
+            process_identity,
+        })
+    }
+
+    fn signal_active_process_with_authority(
+        &self,
+        authority: &RuntimeSignalAuthority,
+        signal: i32,
+    ) -> bool {
+        let control = match self.active.control.lock() {
+            Ok(control) => control,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if !self.active.running.load(Ordering::Acquire)
+            || control.request_id.as_deref() != Some(authority.request_id.as_str())
+            || control.effect_generation != authority.effect_generation
+            || control.cancellation != Some(authority.cancellation)
+        {
+            return false;
+        }
+        let Ok(process_group) = self.active.process_group.lock() else {
+            return false;
+        };
+        if *process_group != Some(authority.process_identity)
+            || retained_process_identity_status(authority.process_identity)
+                != RetainedProcessIdentityStatus::Current
+        {
+            return false;
+        }
+        signal_process_group(authority.process_identity.process_id, signal);
+        if let Ok(owned) = self.active.owned_processes.lock() {
+            for identity in owned
+                .iter()
+                .copied()
+                .filter(|identity| process_identity(identity.process_id) == Some(*identity))
+            {
+                signal_process(identity.process_id, signal);
+            }
+        }
+        true
+    }
+
+    fn signal_captured_authority(&self, authority: Option<RuntimeSignalAuthority>, kill: bool) {
+        let Some(authority) = authority else {
+            return;
+        };
+        #[cfg(test)]
+        ActiveRuntime::pause_request_claim(&self.active.cancellation_signal_hook);
+        self.signal_active_process_with_authority(&authority, SIGTERM);
+        if kill {
+            self.signal_active_process_with_authority(&authority, SIGKILL);
+        }
+    }
+
+    pub(crate) fn cancel_request_at(&self, request_id: &str, accepted_at: Instant) {
+        self.cancel_request_with(
+            request_id,
+            AcceptedRuntimeCancellation::new(RuntimeCancellation::User, accepted_at),
+        );
+    }
+
+    fn cancel_request_with(&self, request_id: &str, cancellation: AcceptedRuntimeCancellation) {
+        let signal_authority = match self.active.control.lock() {
+            Ok(mut control) => {
+                let mut accepted = false;
+                if self.active.running.load(Ordering::Acquire)
+                    && control.request_id.as_deref() == Some(request_id)
+                {
+                    if control.closed_control_failure_token.is_some() {
+                        control.cancellation = Some(cancellation);
+                    } else {
+                        control.cancellation.get_or_insert(cancellation);
+                    }
+                    accepted = true;
+                } else if control.request_id.is_none()
+                    && control
+                        .pending_request_id
+                        .as_deref()
+                        .is_none_or(|pending| pending == request_id)
+                {
+                    control.pending_request_id = Some(request_id.to_owned());
+                    if control.closed_control_failure_token.is_some() {
+                        control.cancellation = Some(cancellation);
+                    } else {
+                        control.cancellation.get_or_insert(cancellation);
+                    }
+                    accepted = true;
+                }
+                accepted
+                    .then(|| self.capture_signal_authority(&control))
+                    .flatten()
+            }
+            Err(poisoned) => {
+                let mut control = poisoned.into_inner();
+                let exact_request = control.request_id.as_deref() == Some(request_id)
+                    || control.pending_request_id.as_deref() == Some(request_id);
+                if exact_request && control.closed_control_failure_token.is_some() {
+                    control.cancellation = Some(cancellation);
+                } else {
+                    control.cancellation = Some(control.cancellation.map_or_else(
+                        || AcceptedRuntimeCancellation::closed(Instant::now()),
+                        AcceptedRuntimeCancellation::fail_safe,
+                    ));
+                }
+                self.capture_signal_authority(&control)
+            }
+        };
+        self.signal_captured_authority(signal_authority, false);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cancellation_window_for_test(&self) -> Option<AcceptedRuntimeCancellation> {
+        self.active.cancellation_window()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_active_request_for_test(&self, request_id: &str) {
+        self.active.running.store(true, Ordering::Release);
+        let mut control = self
+            .active
+            .control
+            .lock()
+            .expect("active request test seam");
+        control.request_id = Some(request_id.to_owned());
+        control.effect_generation = self
+            .active
+            .next_effect_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn finish_active_request_for_test(&self) {
+        self.active.finish_request();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_terminal_publication_now_for_test(&self, now: Instant) {
+        *self
+            .active
+            .terminal_publication_now
+            .lock()
+            .expect("terminal publication clock") = Some(now);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_terminal_publication_hook_for_test(
+        &self,
+    ) -> (mpsc::Receiver<()>, Arc<(Mutex<bool>, Condvar)>) {
+        self.active.install_terminal_publication_hook()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_request_commit_hook_for_test(
+        &self,
+    ) -> (mpsc::Receiver<()>, Arc<(Mutex<bool>, Condvar)>) {
+        ActiveRuntime::install_request_claim_hook(&self.active.request_commit_hook)
+    }
+
+    #[cfg(test)]
+    fn install_post_begin_rollback_hook_for_test(
+        &self,
+    ) -> (mpsc::Receiver<()>, Arc<(Mutex<bool>, Condvar)>) {
+        ActiveRuntime::install_request_claim_hook(&self.active.post_begin_rollback_hook)
+    }
+
+    #[cfg(test)]
+    fn install_cancellation_signal_hook_for_test(
+        &self,
+    ) -> (mpsc::Receiver<()>, Arc<(Mutex<bool>, Condvar)>) {
+        ActiveRuntime::install_request_claim_hook(&self.active.cancellation_signal_hook)
+    }
+
+    #[cfg(test)]
+    fn install_readiness_settlement_hook_for_test(
+        &self,
+    ) -> (mpsc::Receiver<()>, Arc<(Mutex<bool>, Condvar)>) {
+        ActiveRuntime::install_request_claim_hook(&self.active.readiness_settlement_hook)
+    }
+
+    #[cfg(test)]
+    fn install_readiness_completion_hook_for_test(
+        &self,
+    ) -> (mpsc::Receiver<()>, Arc<(Mutex<bool>, Condvar)>) {
+        ActiveRuntime::install_request_claim_hook(&self.active.readiness_completion_hook)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn poison_control_for_test(&self) {
+        let active = Arc::clone(&self.active);
+        let _ = std::panic::catch_unwind(move || {
+            let _guard = active
+                .control
+                .lock()
+                .expect("runtime control before poison");
+            panic!("poison runtime control for publication test");
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_no_runtime_effects_for_test(&self) -> bool {
+        self.active.runtime_effect_trace().is_empty()
+            && !self.active.running.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn owns_request_for_test(&self, request_id: &str) -> bool {
+        self.active.owns_request(request_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_failed_claim_settlement_hook_for_test(
+        &self,
+    ) -> (mpsc::Receiver<()>, Arc<(Mutex<bool>, Condvar)>) {
+        ActiveRuntime::install_request_claim_hook(&self.active.failed_claim_settlement_hook)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_failed_claim_settlement_for_test(&self) {
+        ActiveRuntime::pause_request_claim(&self.active.failed_claim_settlement_hook);
+    }
+
+    #[cfg(test)]
+    fn fail_reader_spawn_for_test(&self, attempt: usize) {
+        self.active.reader_spawn_attempt.store(0, Ordering::Release);
+        self.active
+            .reader_spawn_failure
+            .store(attempt, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    fn fail_spawn_rollback_for_test(&self, phase: usize) {
+        self.active
+            .spawn_rollback_failure
+            .store(phase, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_projection_action_fence_for_test(&self, action: impl FnOnce()) {
+        let guard = lock_projection_action(&self.active).expect("projection action fence");
+        action();
+        drop(guard);
+    }
+
+    pub(crate) fn defer_host_cancellations(&self, records: &[HostCancellationRecord]) {
+        self.active.defer_host_cancellations(records);
+        let signal_authority = self.materialize_deferred_signal_authority();
+        self.signal_captured_authority(signal_authority, false);
+    }
+
+    pub(crate) fn defer_containment_failure(&self) {
+        self.active
+            .defer_cancellation(AcceptedRuntimeCancellation::closed(Instant::now()));
+        let signal_authority = self.materialize_deferred_signal_authority();
+        self.signal_captured_authority(signal_authority, false);
     }
 
     pub fn cancel_for_renderer_loss(&self) {
@@ -576,35 +2381,90 @@ impl RuntimeHost {
     }
 
     fn cancel_and_wait(&self, reason: RuntimeCancellation) -> bool {
-        let deadline = Instant::now() + TURN_CLEANUP_RESERVE;
         self.cancel_with_reason(reason);
-        if !self
-            .active
-            .wait_for_idle(deadline.saturating_duration_since(Instant::now()))
-        {
+        self.wait_for_accepted_cancellation_cleanup()
+    }
+
+    pub(crate) fn wait_for_accepted_cancellation_cleanup(&self) -> bool {
+        let now = Instant::now();
+        let cancellation = self.active.cancellation_window();
+        let deadline =
+            cancellation.map_or(now + TURN_TERMINAL_BUDGET, |window| window.terminal_cutoff);
+        let idle_timeout = cancellation_cleanup_wait_budget(now, cancellation);
+        if !self.active.wait_for_idle(idle_timeout) {
             return false;
         }
-        reconcile_retained_process_group(&self.active, deadline)
+        reconcile_retained_runtime_ownership(&self.active)
+            && reconcile_retained_unpublished_children(&self.active, deadline)
+            && reconcile_retained_process_group(&self.active, deadline)
             && reconcile_retained_work_directories(&self.active)
+            && !self.active.running.load(Ordering::Acquire)
+            && self.active.control.lock().is_ok_and(|control| {
+                control.request_id.is_none()
+                    && control.pending_request_id.is_none()
+                    && control.effect_generation == 0
+            })
     }
 
     fn cancel_with_reason(&self, reason: RuntimeCancellation) {
-        self.active.cancel(reason);
-        self.signal_active_process();
+        let signal_authority = match self.active.control.lock() {
+            Ok(mut control) => {
+                if self.active.running.load(Ordering::Acquire) {
+                    control.cancellation.get_or_insert_with(|| {
+                        AcceptedRuntimeCancellation::new(reason, Instant::now())
+                    });
+                } else if control.effect_generation != 0 {
+                    control.cancellation =
+                        Some(AcceptedRuntimeCancellation::new(reason, Instant::now()));
+                }
+                self.capture_signal_authority(&control)
+            }
+            Err(poisoned) => {
+                let mut control = poisoned.into_inner();
+                if !self.active.running.load(Ordering::Acquire) && control.effect_generation != 0 {
+                    let closed = AcceptedRuntimeCancellation::closed(Instant::now());
+                    control.cancellation = Some(closed);
+                    control.closed_control_failure_token = Some(closed);
+                    self.active
+                        .closed_control_failure_cleanup
+                        .store(true, Ordering::Release);
+                } else if !self.active.running.load(Ordering::Acquire)
+                    && control.pending_request_id.is_some()
+                {
+                    let closed = AcceptedRuntimeCancellation::closed(Instant::now());
+                    control.closed_control_failure_token = Some(closed);
+                    self.active
+                        .closed_control_failure_cleanup
+                        .store(true, Ordering::Release);
+                } else {
+                    control.cancellation = Some(control.cancellation.map_or_else(
+                        || AcceptedRuntimeCancellation::closed(Instant::now()),
+                        AcceptedRuntimeCancellation::fail_safe,
+                    ));
+                }
+                self.capture_signal_authority(&control)
+            }
+        };
+        self.signal_captured_authority(signal_authority, false);
     }
 
-    fn signal_active_process(&self) {
-        let process_group = self
-            .active
-            .process_group
-            .lock()
-            .ok()
-            .and_then(|active| active.map(|identity| identity.process_id));
-        if let Some(process_group) = process_group {
-            signal_active_process_group(&self.active, process_group, SIGTERM);
+    fn materialize_deferred_signal_authority(&self) -> Option<RuntimeSignalAuthority> {
+        let (mut control, poisoned) = match self.active.control.try_lock() {
+            Ok(control) => (control, false),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => (poisoned.into_inner(), true),
+        };
+        self.active.materialize_deferred_cancellation(&mut control);
+        if poisoned {
+            control.cancellation = Some(control.cancellation.map_or_else(
+                || AcceptedRuntimeCancellation::closed(Instant::now()),
+                AcceptedRuntimeCancellation::fail_safe,
+            ));
         }
+        self.capture_signal_authority(&control)
     }
 
+    #[cfg(test)]
     pub(crate) fn run_turn(
         &self,
         request_id: &str,
@@ -612,10 +2472,92 @@ impl RuntimeHost {
         selected_workspace: &WorkspaceRuntimeBinding,
         task: &str,
         timeout: Duration,
+        update: impl FnMut(TurnRuntimeUpdate),
+    ) -> TurnRuntimeOutcome {
+        self.run_turn_with_settlement(
+            TurnExecution {
+                request_id,
+                workspace_generation,
+                selected_workspace,
+                task,
+                timeout,
+                retain_for_host_settlement: false,
+            },
+            update,
+        )
+    }
+
+    pub(crate) fn run_turn_for_host_settlement(
+        &self,
+        request_id: &str,
+        workspace_generation: u64,
+        selected_workspace: &WorkspaceRuntimeBinding,
+        task: &str,
+        timeout: Duration,
+        update: impl FnMut(TurnRuntimeUpdate),
+    ) -> TurnRuntimeOutcome {
+        self.run_turn_with_settlement(
+            TurnExecution {
+                request_id,
+                workspace_generation,
+                selected_workspace,
+                task,
+                timeout,
+                retain_for_host_settlement: true,
+            },
+            update,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn claim_turn_request_for_host_settlement(&self, request_id: &str) -> bool {
+        self.active.claim_request(request_id)
+    }
+
+    pub(crate) fn claim_turn_request_for_host_settlement_disposition(
+        &self,
+        request_id: &str,
+    ) -> HostTurnClaimDisposition {
+        if self.active.claim_request(request_id) {
+            return HostTurnClaimDisposition::Claimed;
+        }
+        let mut control = match self.active.control.lock() {
+            Ok(control) => control,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let owns_exact_request = control.request_id.as_deref() == Some(request_id)
+            || control.pending_request_id.as_deref() == Some(request_id);
+        if owns_exact_request {
+            self.active.materialize_deferred_cancellation(&mut control);
+            if control
+                .cancellation
+                .is_some_and(|cancellation| cancellation.host_acceptance.is_some())
+            {
+                return HostTurnClaimDisposition::Cancelled;
+            }
+        }
+        if self.active.has_exact_deferred_host_cancellation(request_id) {
+            HostTurnClaimDisposition::Cancelled
+        } else {
+            HostTurnClaimDisposition::Rejected
+        }
+    }
+
+    fn run_turn_with_settlement(
+        &self,
+        execution: TurnExecution<'_>,
         mut update: impl FnMut(TurnRuntimeUpdate),
     ) -> TurnRuntimeOutcome {
+        let TurnExecution {
+            request_id,
+            workspace_generation,
+            selected_workspace,
+            task,
+            timeout,
+            retain_for_host_settlement,
+        } = execution;
         let deadline = Instant::now() + timeout;
-        if !self.active.claim_request(request_id) {
+        if !self.active.owns_request(request_id) && !self.active.claim_request(request_id) {
             return TurnRuntimeOutcome::terminal(
                 TurnState::ContainmentFailed,
                 TurnReason::InternalFailure,
@@ -627,29 +2569,216 @@ impl RuntimeHost {
                     .invalidated_workspace_generation
                     .load(Ordering::Acquire)
         {
-            self.active.finish_request();
+            if !retain_for_host_settlement {
+                self.active.finish_request();
+            }
             return TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::StaleWorkspace);
         }
         if !selected_workspace.remains_current() {
-            self.active.finish_request();
+            if !retain_for_host_settlement {
+                self.active.finish_request();
+            }
             return TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::StaleWorkspace);
         }
-        let result = self.configuration.as_ref().map_or_else(
+        let mut result = self.configuration.as_ref().map_or_else(
             || TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::RuntimeUnavailable),
             |configuration| {
-                perform_turn(
-                    configuration,
-                    selected_workspace,
-                    task,
-                    &self.active,
-                    &self.work_generation,
+                run_owned_turn(
+                    configuration.clone(),
+                    selected_workspace.clone(),
+                    task.to_owned(),
+                    Arc::clone(&self.active),
+                    Arc::clone(&self.work_generation),
                     deadline,
                     &mut update,
                 )
             },
         );
-        self.active.finish_request();
+        result.cancellation = result
+            .cancellation
+            .or_else(|| self.active.cancellation_window());
+        if !retain_for_host_settlement {
+            self.active.finish_request();
+        }
         result
+    }
+
+    pub(crate) fn settle_host_turn<Published, Output>(
+        &self,
+        request_id: &str,
+        publish: impl FnOnce(&mut dyn FnMut() -> Option<AcceptedCancellation>, bool) -> Published,
+        finalize: impl FnOnce(Published, Option<AcceptedCancellation>) -> Output,
+    ) -> Output {
+        let (mut control, poisoned) = match self.active.control.lock() {
+            Ok(control) => (control, false),
+            Err(poisoned) => (poisoned.into_inner(), true),
+        };
+        let mut extracted = None;
+        let initial_acceptance = self.active.exact_host_acceptance_for_settlement(
+            &mut control,
+            request_id,
+            &mut extracted,
+        );
+        if poisoned {
+            if extracted.is_none() && initial_acceptance.is_some() {
+                extracted = control
+                    .cancellation
+                    .filter(|cancellation| cancellation.host_acceptance == initial_acceptance);
+            }
+            let closed = AcceptedRuntimeCancellation::closed(Instant::now());
+            control.closed_control_failure_token = Some(closed);
+            self.active
+                .closed_control_failure_cleanup
+                .store(true, Ordering::Release);
+            let different_owner = control
+                .request_id
+                .as_deref()
+                .or(control.pending_request_id.as_deref())
+                .is_some_and(|owner| owner != request_id);
+            if !different_owner {
+                control.cancellation = Some(closed);
+            }
+        }
+        let published = {
+            let mut refresh_acceptance = || {
+                self.active.exact_host_acceptance_for_settlement(
+                    &mut control,
+                    request_id,
+                    &mut extracted,
+                )
+            };
+            publish(
+                &mut refresh_acceptance,
+                poisoned && initial_acceptance.is_none(),
+            )
+        };
+        let final_acceptance = self.active.exact_host_acceptance_for_settlement(
+            &mut control,
+            request_id,
+            &mut extracted,
+        );
+        let output = finalize(published, final_acceptance);
+        let settlement_cancellation = extracted.or_else(|| {
+            control.cancellation.filter(|cancellation| {
+                cancellation.host_acceptance.is_some()
+                    && cancellation.host_acceptance == final_acceptance
+            })
+        });
+        let released_cancelled_request = self
+            .active
+            .clear_poisoned_exact_host_settlement_owner(&mut control, request_id, extracted)
+            .unwrap_or_else(|| {
+                self.active.clear_exact_host_settlement_owner(
+                    &mut control,
+                    request_id,
+                    settlement_cancellation,
+                )
+            });
+        if released_cancelled_request {
+            self.active.running.store(false, Ordering::Release);
+        } else if control.request_id.as_deref() == Some(request_id) {
+            if self
+                .active
+                .closed_control_failure_cleanup
+                .load(Ordering::Acquire)
+            {
+                control.request_id = None;
+                control.pending_request_id = None;
+                control.effect_generation = 0;
+            } else {
+                *control = RuntimeControl::default();
+            }
+            self.active.running.store(false, Ordering::Release);
+        }
+        drop(control);
+        self.active.finished.notify_all();
+        self.active.apply_deferred_publication_failures();
+        output
+    }
+
+    fn settle_host_readiness<Output>(
+        &self,
+        request_id: &str,
+        mut view: RuntimeReadinessView,
+        finalize: impl FnOnce(RuntimeReadinessView) -> Output,
+    ) -> Output {
+        let (mut control, poisoned) = match self.active.control.lock() {
+            Ok(control) => (control, false),
+            Err(poisoned) => (poisoned.into_inner(), true),
+        };
+        let mut extracted = None;
+        let acceptance = self.active.exact_host_acceptance_for_settlement(
+            &mut control,
+            request_id,
+            &mut extracted,
+        );
+        if acceptance.is_some() && view.state != RuntimeReadinessState::CleanupFailed {
+            view = RuntimeReadinessView::terminal(
+                RuntimeReadinessState::Cancelled,
+                view.quarantined_events,
+            );
+        } else if poisoned && view.state != RuntimeReadinessState::CleanupFailed {
+            view = RuntimeReadinessView::terminal(
+                RuntimeReadinessState::ContainmentFailed,
+                view.quarantined_events,
+            );
+        }
+        if poisoned {
+            if extracted.is_none() && acceptance.is_some() {
+                extracted = control
+                    .cancellation
+                    .filter(|cancellation| cancellation.host_acceptance == acceptance);
+            }
+            let closed = AcceptedRuntimeCancellation::closed(Instant::now());
+            control.closed_control_failure_token = Some(closed);
+            self.active
+                .closed_control_failure_cleanup
+                .store(true, Ordering::Release);
+            let different_owner = control
+                .request_id
+                .as_deref()
+                .or(control.pending_request_id.as_deref())
+                .is_some_and(|owner| owner != request_id);
+            if !different_owner {
+                control.cancellation = Some(closed);
+            }
+        }
+        #[cfg(test)]
+        ActiveRuntime::pause_request_claim(&self.active.readiness_completion_hook);
+        let output = finalize(view);
+        let settlement_cancellation = extracted.or_else(|| {
+            control.cancellation.filter(|cancellation| {
+                cancellation.host_acceptance.is_some() && cancellation.host_acceptance == acceptance
+            })
+        });
+        let released_running = self
+            .active
+            .clear_poisoned_exact_host_settlement_owner(&mut control, request_id, extracted)
+            .unwrap_or_else(|| {
+                self.active.clear_exact_host_settlement_owner(
+                    &mut control,
+                    request_id,
+                    settlement_cancellation,
+                )
+            });
+        if released_running {
+            self.active.running.store(false, Ordering::Release);
+        } else if control.request_id.as_deref() == Some(request_id) {
+            control.request_id = None;
+            control.pending_request_id = None;
+            control.effect_generation = 0;
+            if !self
+                .active
+                .closed_control_failure_cleanup
+                .load(Ordering::Acquire)
+            {
+                control.cancellation = None;
+            }
+            self.active.running.store(false, Ordering::Release);
+        }
+        drop(control);
+        self.active.finished.notify_all();
+        output
     }
 
     #[cfg(test)]
@@ -701,6 +2830,7 @@ pub struct TurnRuntimeOutcome {
     pub quarantined_events: u16,
     pub repository_context_bytes_to_runtime: u64,
     pub cleaned: bool,
+    pub(crate) cancellation: Option<AcceptedRuntimeCancellation>,
 }
 
 impl TurnRuntimeOutcome {
@@ -714,8 +2844,16 @@ impl TurnRuntimeOutcome {
             quarantined_events: 0,
             repository_context_bytes_to_runtime: 0,
             cleaned: true,
+            cancellation: None,
         }
     }
+}
+
+fn cleanup_failed_turn_outcome() -> TurnRuntimeOutcome {
+    let mut outcome =
+        TurnRuntimeOutcome::terminal(TurnState::CleanupFailed, TurnReason::CleanupFailed);
+    outcome.cleaned = false;
+    outcome
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -728,6 +2866,23 @@ pub fn runtime_request(
     runtime: &RuntimeHost,
     sender: &SenderContext,
     selected_workspace: Option<&Path>,
+    request: &str,
+) -> RuntimeRequestOutput {
+    let selected_workspace = selected_workspace.map(RuntimeReadinessWorkspace::untracked);
+    runtime_request_with_workspace_authority(
+        lifecycle,
+        runtime,
+        sender,
+        selected_workspace.as_ref(),
+        request,
+    )
+}
+
+pub(crate) fn runtime_request_with_workspace_authority(
+    lifecycle: &Mutex<HostLifecycle>,
+    runtime: &RuntimeHost,
+    sender: &SenderContext,
+    selected_workspace: Option<&RuntimeReadinessWorkspace>,
     request: &str,
 ) -> RuntimeRequestOutput {
     let accepted = {
@@ -748,15 +2903,20 @@ pub fn runtime_request(
         );
     }
     let (request_id, _, timeout_ms) = request_metadata(&accepted.request);
+    let request_id = request_id.to_owned();
     let view = runtime.check_with_timeout(
-        request_id,
+        &request_id,
         selected_workspace,
         Duration::from_millis(u64::from(timeout_ms)),
     );
-    let encoded = lifecycle.lock().map_or_else(
-        |_| encode_error("unknown-request", ReasonCode::InternalFailure),
-        |mut lifecycle| lifecycle.complete_runtime_request(accepted, view),
-    );
+    #[cfg(test)]
+    ActiveRuntime::pause_request_claim(&runtime.active.readiness_settlement_hook);
+    let encoded = runtime.settle_host_readiness(&request_id, view, |view| {
+        lifecycle.lock().map_or_else(
+            |_| encode_error("unknown-request", ReasonCode::InternalFailure),
+            |mut lifecycle| lifecycle.complete_runtime_request(accepted, view),
+        )
+    });
     RuntimeRequestOutput { encoded }
 }
 
@@ -784,9 +2944,10 @@ fn failed(request_id: &str, reason: ReasonCode) -> RuntimeRequestOutput {
 
 fn perform_check(
     configuration: &RuntimeConfiguration,
-    selected_workspace: Option<&Path>,
+    selected_workspace: Option<&RuntimeReadinessWorkspace>,
     active: &ActiveRuntime,
     work_generation: &AtomicU64,
+    invalidated_workspace_generation: &AtomicU64,
     deadline: Instant,
 ) -> RuntimeReadinessView {
     #[cfg(test)]
@@ -796,27 +2957,58 @@ fn perform_check(
         timeout: None,
         deadline,
     });
-    let mut verified = match bind_configuration(configuration, selected_workspace) {
-        Ok(verified) => verified,
-        Err(state) => return RuntimeReadinessView::terminal(state, 0),
+    if Instant::now() >= deadline {
+        return RuntimeReadinessView::terminal(RuntimeReadinessState::TimedOut, 0);
+    }
+    let mut verified = match runtime_effect(active, RuntimeEffectStage::Bind, || {
+        if selected_workspace.is_some_and(|workspace| {
+            !workspace.remains_authoritative(invalidated_workspace_generation)
+        }) {
+            return Err(RuntimeReadinessState::Cancelled);
+        }
+        bind_configuration(
+            configuration,
+            selected_workspace.map(|workspace| workspace.path.as_path()),
+        )
+    }) {
+        RuntimeEffectResult::Rejected(cancellation)
+        | RuntimeEffectResult::Cancelled(_, cancellation) => {
+            return RuntimeReadinessView::terminal(cancellation.readiness_state(), 0);
+        }
+        RuntimeEffectResult::Completed(Ok(verified)) => verified,
+        RuntimeEffectResult::Completed(Err(state)) => {
+            return RuntimeReadinessView::terminal(state, 0);
+        }
     };
     if let Some(state) = active.cancellation_state() {
         return RuntimeReadinessView::terminal(state, 0);
     }
-    if Instant::now() >= deadline {
-        return RuntimeReadinessView::terminal(RuntimeReadinessState::TimedOut, 0);
-    }
     let Some(owner) = process_identity(std::process::id() as i32) else {
         return RuntimeReadinessView::terminal(RuntimeReadinessState::ContainmentFailed, 0);
     };
-    let generation = work_generation.fetch_add(1, Ordering::AcqRel) + 1;
-    let work_directory =
-        verified
-            .work_root
-            .join(runtime_work_directory_name("readiness", owner, generation));
-    if let Err(state) =
-        create_private_readiness_directory(active, &work_directory, owner, generation)
-    {
+    let work_root = verified.work_root.clone();
+    let (work_directory, created) =
+        match runtime_effect(active, RuntimeEffectStage::Directory, || {
+            let generation = work_generation.fetch_add(1, Ordering::AcqRel) + 1;
+            let work_directory =
+                work_root.join(runtime_work_directory_name("readiness", owner, generation));
+            let created =
+                create_private_readiness_directory(active, &work_directory, owner, generation);
+            (work_directory, created)
+        }) {
+            RuntimeEffectResult::Completed(result) => result,
+            RuntimeEffectResult::Rejected(cancellation) => {
+                return RuntimeReadinessView::terminal(cancellation.readiness_state(), 0);
+            }
+            RuntimeEffectResult::Cancelled((work_directory, created), cancellation) => {
+                if created.is_ok() && !remove_directory_if_present(&work_directory) {
+                    retain_work_directory(active, &work_directory);
+                    return RuntimeReadinessView::terminal(RuntimeReadinessState::CleanupFailed, 0);
+                }
+                return RuntimeReadinessView::terminal(cancellation.readiness_state(), 0);
+            }
+        };
+    if let Err(state) = created {
         return RuntimeReadinessView::terminal(state, 0);
     }
     let outcome = run_protocol(&mut verified, &work_directory, active, deadline);
@@ -844,6 +3036,141 @@ fn finalize_readiness_work(
     }
 }
 
+fn run_owned_turn(
+    configuration: RuntimeConfiguration,
+    selected_workspace: WorkspaceRuntimeBinding,
+    task: String,
+    active: Arc<ActiveRuntime>,
+    work_generation: Arc<AtomicU64>,
+    deadline: Instant,
+    update: &mut impl FnMut(TurnRuntimeUpdate),
+) -> TurnRuntimeOutcome {
+    let (events_sender, events) = mpsc::channel();
+    let (completed_sender, completed) = mpsc::sync_channel(1);
+    let worker_active = Arc::clone(&active);
+    let worker = match thread::Builder::new()
+        .name("keiko-runtime-turn".to_owned())
+        .spawn(move || {
+            let outcome = perform_turn(
+                &configuration,
+                &selected_workspace,
+                &task,
+                &worker_active,
+                &work_generation,
+                deadline,
+                &mut |event| {
+                    if !matches!(event, TurnRuntimeUpdate::Stopping(_)) {
+                        let _ = events_sender.send(TurnWorkerEvent::Update(event));
+                    }
+                },
+            );
+            let _ = events_sender.send(TurnWorkerEvent::Outcome(outcome.clone()));
+            let _ = completed_sender.send(true);
+        }) {
+        Ok(worker) => worker,
+        Err(_) => {
+            let mut outcome = TurnRuntimeOutcome::terminal(
+                TurnState::ContainmentFailed,
+                TurnReason::InternalFailure,
+            );
+            outcome.cleaned = false;
+            return outcome;
+        }
+    };
+    await_owned_turn(
+        &active,
+        OwnedTurnWorker {
+            events,
+            retained: RetainedTurnWorker {
+                completed,
+                cleanup_proven: None,
+                worker,
+            },
+        },
+        deadline,
+        update,
+    )
+}
+
+fn await_owned_turn(
+    active: &ActiveRuntime,
+    owned: OwnedTurnWorker,
+    request_deadline: Instant,
+    update: &mut impl FnMut(TurnRuntimeUpdate),
+) -> TurnRuntimeOutcome {
+    let OwnedTurnWorker { events, retained } = owned;
+    let mut retained = Some(retained);
+    let mut stopping_published = false;
+    loop {
+        let cancellation = active.cancellation_window();
+        if let Some(cancellation) = cancellation
+            && cancellation.reason.turn_state() == TurnState::Cancelled
+            && !stopping_published
+        {
+            update(TurnRuntimeUpdate::Stopping(
+                cancellation.reason.turn_reason(),
+            ));
+            stopping_published = true;
+        }
+        let now = Instant::now();
+        let wait_deadline = cancellation.map_or(request_deadline, |cancellation| {
+            cancellation.cleanup_cutoff.min(request_deadline)
+        });
+        let deadline_closed = cancellation
+            .is_some_and(|_| terminal_cutoff_exceeded(now, wait_deadline))
+            || (cancellation.is_none() && now >= wait_deadline);
+        if deadline_closed {
+            retain_turn_worker(active, retained.take().expect("owned turn worker"));
+            let mut outcome =
+                TurnRuntimeOutcome::terminal(TurnState::CleanupFailed, TurnReason::CleanupFailed);
+            outcome.cleaned = false;
+            outcome.cancellation = cancellation;
+            return outcome;
+        }
+        let wait = wait_deadline
+            .saturating_duration_since(now)
+            .min(Duration::from_millis(10));
+        match events.recv_timeout(wait) {
+            Ok(TurnWorkerEvent::Update(event)) => {
+                if matches!(event, TurnRuntimeUpdate::Stopping(_)) {
+                    stopping_published = true;
+                }
+                update(event);
+            }
+            Ok(TurnWorkerEvent::Outcome(mut outcome)) => {
+                if outcome.state == TurnState::Cancelled && !stopping_published {
+                    update(TurnRuntimeUpdate::Stopping(
+                        outcome.reason.unwrap_or(TurnReason::InternalFailure),
+                    ));
+                }
+                let retirement_deadline =
+                    wait_deadline.min(Instant::now() + TURN_WORKER_RETIREMENT_BUDGET);
+                if !retire_turn_worker(
+                    active,
+                    retained.take().expect("owned turn worker"),
+                    retirement_deadline,
+                ) {
+                    outcome.state = TurnState::CleanupFailed;
+                    outcome.reason = Some(TurnReason::CleanupFailed);
+                    outcome.cleaned = false;
+                }
+                return outcome;
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                retain_turn_worker(active, retained.take().expect("owned turn worker"));
+                let mut outcome = TurnRuntimeOutcome::terminal(
+                    TurnState::ContainmentFailed,
+                    TurnReason::InternalFailure,
+                );
+                outcome.cleaned = false;
+                outcome.cancellation = cancellation;
+                return outcome;
+            }
+        }
+    }
+}
+
 fn perform_turn(
     configuration: &RuntimeConfiguration,
     selected_workspace: &WorkspaceRuntimeBinding,
@@ -867,26 +3194,41 @@ fn perform_turn(
     if !selected_workspace.remains_current() {
         return TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::StaleWorkspace);
     }
-    let mut verified = match bind_configuration(configuration, Some(selected_workspace.path())) {
-        Ok(verified) => verified,
-        Err(RuntimeReadinessState::Unavailable) => {
+    let mut verified = match runtime_effect(active, RuntimeEffectStage::Bind, || {
+        bind_configuration(configuration, Some(selected_workspace.path()))
+    }) {
+        RuntimeEffectResult::Rejected(cancellation)
+        | RuntimeEffectResult::Cancelled(_, cancellation) => {
+            return cancellation_turn_outcome(cancellation, update);
+        }
+        RuntimeEffectResult::Completed(Ok(verified)) => verified,
+        RuntimeEffectResult::Completed(Err(RuntimeReadinessState::Unavailable)) => {
             return TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::RuntimeUnavailable);
         }
-        Err(RuntimeReadinessState::Incompatible) => {
+        RuntimeEffectResult::Completed(Err(RuntimeReadinessState::Incompatible)) => {
             return TurnRuntimeOutcome::terminal(
                 TurnState::Failed,
                 TurnReason::RuntimeIncompatible,
             );
         }
-        Err(_) => {
+        RuntimeEffectResult::Completed(Err(_)) => {
             return TurnRuntimeOutcome::terminal(
                 TurnState::ContainmentFailed,
                 TurnReason::ProtocolRejected,
             );
         }
     };
-    if !selected_workspace.remains_current() {
-        return TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::StaleWorkspace);
+    match runtime_effect(active, RuntimeEffectStage::Workspace, || {
+        selected_workspace.remains_current()
+    }) {
+        RuntimeEffectResult::Rejected(cancellation)
+        | RuntimeEffectResult::Cancelled(_, cancellation) => {
+            return cancellation_turn_outcome(cancellation, update);
+        }
+        RuntimeEffectResult::Completed(false) => {
+            return TurnRuntimeOutcome::terminal(TurnState::Failed, TurnReason::StaleWorkspace);
+        }
+        RuntimeEffectResult::Completed(true) => {}
     }
     let Some(owner) = process_identity(std::process::id() as i32) else {
         return TurnRuntimeOutcome::terminal(
@@ -894,12 +3236,33 @@ fn perform_turn(
             TurnReason::ProtocolRejected,
         );
     };
-    let generation = work_generation.fetch_add(1, Ordering::AcqRel) + 1;
-    let work_directory = verified
-        .work_root
-        .join(runtime_work_directory_name("turn", owner, generation));
-    if let Err(outcome) = create_private_turn_directory(active, &work_directory, owner, generation)
-    {
+    let work_root = verified.work_root.clone();
+    let (work_directory, created) =
+        match runtime_effect(active, RuntimeEffectStage::Directory, || {
+            let generation = work_generation.fetch_add(1, Ordering::AcqRel) + 1;
+            let work_directory =
+                work_root.join(runtime_work_directory_name("turn", owner, generation));
+            let created = create_private_turn_directory(active, &work_directory, owner, generation);
+            (work_directory, created)
+        }) {
+            RuntimeEffectResult::Completed(result) => result,
+            RuntimeEffectResult::Rejected(cancellation) => {
+                return cancellation_turn_outcome(cancellation, update);
+            }
+            RuntimeEffectResult::Cancelled((work_directory, created), cancellation) => {
+                if created.is_ok() && !remove_directory_if_present(&work_directory) {
+                    retain_work_directory(active, &work_directory);
+                    let mut outcome = TurnRuntimeOutcome::terminal(
+                        TurnState::CleanupFailed,
+                        TurnReason::CleanupFailed,
+                    );
+                    outcome.cleaned = false;
+                    return outcome;
+                }
+                return cancellation_turn_outcome(cancellation, update);
+            }
+        };
+    if let Err(outcome) = created {
         return outcome;
     }
     // Codex 0.145.0 derives its keyring account from the canonical CODEX_HOME
@@ -915,7 +3278,10 @@ fn perform_turn(
         update,
     );
     let work_cleaned = if outcome.cleaned {
-        cleanup_or_retain_work_directory(active, &work_directory)
+        let directory_deadline = active
+            .cancellation_window()
+            .map_or(deadline, |window| deadline.min(window.cleanup_cutoff));
+        cleanup_or_track_work_directory_until(active, &work_directory, directory_deadline)
     } else {
         retain_work_directory(active, &work_directory);
         false
@@ -928,12 +3294,157 @@ fn perform_turn(
     outcome
 }
 
+fn cancellation_turn_outcome(
+    cancellation: RuntimeCancellation,
+    update: &mut dyn FnMut(TurnRuntimeUpdate),
+) -> TurnRuntimeOutcome {
+    let state = cancellation.turn_state();
+    let reason = cancellation.turn_reason();
+    if state == TurnState::Cancelled {
+        update(TurnRuntimeUpdate::Stopping(reason));
+    }
+    TurnRuntimeOutcome::terminal(state, reason)
+}
+
+fn settle_turn_readers(
+    active: &ActiveRuntime,
+    readers: impl IntoIterator<Item = RuntimeReader>,
+    deadline: Instant,
+    mut outcome: TurnRuntimeOutcome,
+) -> TurnRuntimeOutcome {
+    if !retire_runtime_readers(active, readers, reader_retirement_deadline(deadline)) {
+        outcome.state = TurnState::CleanupFailed;
+        outcome.reason = Some(TurnReason::CleanupFailed);
+        outcome.cleaned = false;
+    }
+    outcome
+}
+
+fn settle_readiness_readers(
+    active: &ActiveRuntime,
+    readers: impl IntoIterator<Item = RuntimeReader>,
+    deadline: Instant,
+    mut outcome: ProtocolOutcome,
+) -> ProtocolOutcome {
+    if !retire_runtime_readers(active, readers, reader_retirement_deadline(deadline)) {
+        outcome.state = RuntimeReadinessState::CleanupFailed;
+        outcome.cleaned = false;
+    }
+    outcome
+}
+
 fn cleanup_or_retain_work_directory(active: &ActiveRuntime, path: &Path) -> bool {
-    if fs::remove_dir_all(path).is_ok() {
+    if remove_directory_if_present(path) {
         return true;
     }
     retain_work_directory(active, path);
     false
+}
+
+fn cleanup_or_track_work_directory_until(
+    active: &ActiveRuntime,
+    path: &Path,
+    deadline: Instant,
+) -> bool {
+    cleanup_or_track_work_directory_until_at(active, path, deadline, Instant::now())
+}
+
+fn cleanup_or_track_work_directory_until_at(
+    active: &ActiveRuntime,
+    path: &Path,
+    deadline: Instant,
+    observed_at: Instant,
+) -> bool {
+    cleanup_or_track_work_directory_until_with(
+        active,
+        path,
+        deadline,
+        observed_at,
+        |task| {
+            thread::Builder::new()
+                .name("keiko-turn-directory-cleanup".to_owned())
+                .spawn(task)
+        },
+        || {},
+    )
+}
+
+fn cleanup_or_track_work_directory_until_with<Spawn, AfterSpawn>(
+    active: &ActiveRuntime,
+    path: &Path,
+    deadline: Instant,
+    observed_at: Instant,
+    spawn: Spawn,
+    after_spawn: AfterSpawn,
+) -> bool
+where
+    Spawn: FnOnce(Box<dyn FnOnce() + Send + 'static>) -> io::Result<thread::JoinHandle<()>>,
+    AfterSpawn: FnOnce(),
+{
+    let path = path.to_path_buf();
+    let (sender, completed) = mpsc::sync_channel(1);
+    let worker_path = path.clone();
+    let worker = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        spawn(Box::new(move || {
+            let _ = sender.send(remove_directory_if_present(&worker_path));
+        }))
+    })) {
+        Ok(Ok(worker)) => worker,
+        Ok(Err(_)) | Err(_) => {
+            retain_work_directory(active, &path);
+            return false;
+        }
+    };
+    after_spawn();
+    let mut current_observed = observed_at;
+    loop {
+        let active_deadline = effective_cleanup_guard(active, Some(deadline)).unwrap_or(deadline);
+        if current_observed >= active_deadline {
+            retain_work_directory(active, &path);
+            active
+                .tracked_directory_cleanups
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(TrackedDirectoryCleanup {
+                    path,
+                    completed,
+                    worker,
+                });
+            return false;
+        }
+        let wait = active_deadline
+            .saturating_duration_since(current_observed)
+            .min(Duration::from_millis(5));
+        match completed.recv_timeout(wait) {
+            Ok(cleaned) => {
+                let joined = worker.join().is_ok();
+                current_observed = current_observed.max(Instant::now());
+                let completion_deadline =
+                    effective_cleanup_guard(active, Some(deadline)).unwrap_or(deadline);
+                if cleaned && joined && current_observed < completion_deadline {
+                    return true;
+                }
+                retain_work_directory(active, &path);
+                return false;
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                current_observed = current_observed.max(Instant::now());
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                retain_work_directory(active, &path);
+                active
+                    .tracked_directory_cleanups
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(TrackedDirectoryCleanup {
+                        path,
+                        completed,
+                        worker,
+                    });
+                return false;
+            }
+        }
+    }
 }
 
 fn retain_work_directory(active: &ActiveRuntime, path: &Path) {
@@ -945,15 +3456,77 @@ fn retain_work_directory(active: &ActiveRuntime, path: &Path) {
 }
 
 fn reconcile_retained_work_directories(active: &ActiveRuntime) -> bool {
-    let mut retained = active
-        .retained_work_directories
+    let mut completed_paths = Vec::new();
+    {
+        let mut cleanups = active
+            .tracked_directory_cleanups
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut pending = Vec::new();
+        for cleanup in cleanups.drain(..) {
+            match cleanup.completed.try_recv() {
+                Ok(cleaned) => {
+                    let joined = cleanup.worker.join().is_ok();
+                    if cleaned && joined {
+                        completed_paths.push(cleanup.path);
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => pending.push(cleanup),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    let _ = cleanup.worker.join();
+                }
+            }
+        }
+        *cleanups = pending;
+        if !cleanups.is_empty() {
+            return false;
+        }
+    }
+    let retained_paths = {
+        let mut retained = active
+            .retained_work_directories
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for path in completed_paths {
+            retained.remove(&path);
+        }
+        if retained.is_empty() {
+            return true;
+        }
+        retained.iter().cloned().collect::<Vec<_>>()
+    };
+    let mut started = Vec::new();
+    for path in retained_paths {
+        let (sender, completed) = mpsc::sync_channel(1);
+        let worker_path = path.clone();
+        let spawned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            thread::Builder::new()
+                .name("keiko-turn-directory-recovery".to_owned())
+                .spawn(move || {
+                    let _ = sender.send(remove_directory_if_present(&worker_path));
+                })
+        }));
+        if let Ok(Ok(worker)) = spawned {
+            started.push(TrackedDirectoryCleanup {
+                path,
+                completed,
+                worker,
+            });
+        }
+    }
+    active
+        .tracked_directory_cleanups
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    retained.retain(|path| match fs::symlink_metadata(path) {
-        Ok(_) => fs::remove_dir_all(path).is_err(),
-        Err(error) => error.kind() != io::ErrorKind::NotFound,
-    });
-    retained.is_empty()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .extend(started);
+    false
+}
+
+fn remove_directory_if_present(path: &Path) -> bool {
+    match fs::remove_dir_all(path) {
+        Ok(()) => true,
+        Err(error) => error.kind() == io::ErrorKind::NotFound,
+    }
 }
 
 fn run_turn_protocol(
@@ -965,15 +3538,33 @@ fn run_turn_protocol(
     deadline: Instant,
     update: &mut dyn FnMut(TurnRuntimeUpdate),
 ) -> TurnRuntimeOutcome {
-    let executable = match configuration.stage_verified_binary(work_directory) {
-        Ok(executable) => executable,
-        Err(RuntimeReadinessState::Unavailable | RuntimeReadinessState::Incompatible) => {
+    let executable = match runtime_effect(active, RuntimeEffectStage::Stage, || {
+        configuration.stage_verified_binary(work_directory)
+    }) {
+        RuntimeEffectResult::Rejected(cancellation) => {
+            return cancellation_turn_outcome(cancellation, update);
+        }
+        RuntimeEffectResult::Cancelled(staged, cancellation) => {
+            if let Ok(executable) = staged
+                && fs::remove_file(executable.path()).is_err()
+            {
+                return TurnRuntimeOutcome::terminal(
+                    TurnState::ContainmentFailed,
+                    TurnReason::CleanupFailed,
+                );
+            }
+            return cancellation_turn_outcome(cancellation, update);
+        }
+        RuntimeEffectResult::Completed(Ok(executable)) => executable,
+        RuntimeEffectResult::Completed(Err(
+            RuntimeReadinessState::Unavailable | RuntimeReadinessState::Incompatible,
+        )) => {
             return TurnRuntimeOutcome::terminal(
                 TurnState::ContainmentFailed,
                 TurnReason::RuntimeIncompatible,
             );
         }
-        Err(_) => {
+        RuntimeEffectResult::Completed(Err(_)) => {
             return TurnRuntimeOutcome::terminal(
                 TurnState::ContainmentFailed,
                 TurnReason::ProtocolRejected,
@@ -991,9 +3582,23 @@ fn run_turn_protocol(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
-    let mut child = match spawn_verified_runtime(&mut command, work_directory) {
-        Ok(child) => child,
-        Err(error) => {
+    let mut child = match runtime_effect(active, RuntimeEffectStage::Spawn, || {
+        spawn_verified_runtime(&mut command, work_directory)
+    }) {
+        RuntimeEffectResult::Rejected(cancellation) => {
+            return cancellation_turn_outcome(cancellation, update);
+        }
+        RuntimeEffectResult::Cancelled(spawned, cancellation) => {
+            let outcome = cancellation_turn_outcome(cancellation, update);
+            if let Ok(child) = spawned
+                && !rollback_spawned_before_publication(child, active, deadline)
+            {
+                return cleanup_failed_turn_outcome();
+            }
+            return outcome;
+        }
+        RuntimeEffectResult::Completed(Ok(child)) => child,
+        RuntimeEffectResult::Completed(Err(error)) => {
             return if error.kind() == io::ErrorKind::PermissionDenied {
                 TurnRuntimeOutcome::terminal(
                     TurnState::ContainmentFailed,
@@ -1005,15 +3610,47 @@ fn run_turn_protocol(
         }
     };
     let process_group = child.id() as i32;
-    if !publish_active_process_group(active, process_group) {
-        let _ = child.kill();
-        let _ = child.wait();
-        return TurnRuntimeOutcome::terminal(
-            TurnState::ContainmentFailed,
-            TurnReason::ProtocolRejected,
-        );
+    let published = match runtime_effect(active, RuntimeEffectStage::Publish, || {
+        let published = publish_active_process_group(active, process_group);
+        if published {
+            register_owned_process(active, process_group);
+        }
+        published
+    }) {
+        RuntimeEffectResult::Completed(published) => published,
+        RuntimeEffectResult::Rejected(cancellation) => {
+            let outcome = cancellation_turn_outcome(cancellation, update);
+            return if rollback_spawned_before_publication(child, active, deadline) {
+                outcome
+            } else {
+                cleanup_failed_turn_outcome()
+            };
+        }
+        RuntimeEffectResult::Cancelled(published, cancellation) => {
+            if published {
+                return cleanup_turn(
+                    child,
+                    process_group,
+                    cancellation_turn_outcome(cancellation, update),
+                    active,
+                    deadline,
+                );
+            }
+            let outcome = cancellation_turn_outcome(cancellation, update);
+            return if rollback_spawned_before_publication(child, active, deadline) {
+                outcome
+            } else {
+                cleanup_failed_turn_outcome()
+            };
+        }
+    };
+    if !published {
+        return if rollback_spawned_before_publication(child, active, deadline) {
+            TurnRuntimeOutcome::terminal(TurnState::ContainmentFailed, TurnReason::ProtocolRejected)
+        } else {
+            cleanup_failed_turn_outcome()
+        };
     }
-    register_owned_process(active, process_group);
     let Some(((mut stdin, stdout), stderr)) = child
         .stdin
         .take()
@@ -1034,11 +3671,67 @@ fn run_turn_protocol(
     let queued_bytes = Arc::new(AtomicUsize::new(0));
     let stderr_saturated = Arc::new(AtomicBool::new(false));
     let (sender, receiver) = mpsc::sync_channel(MAX_QUEUE_FRAMES);
-    spawn_stdout_reader(stdout, sender, Arc::clone(&queued_bytes));
-    spawn_stderr_reader(stderr, Arc::clone(&stderr_saturated));
+    let reader_threads = match runtime_effect(active, RuntimeEffectStage::Readers, || {
+        spawn_runtime_readers(
+            active,
+            stdout,
+            stderr,
+            sender,
+            Arc::clone(&queued_bytes),
+            Arc::clone(&stderr_saturated),
+        )
+    }) {
+        RuntimeEffectResult::Completed(Ok(readers)) => readers,
+        RuntimeEffectResult::Completed(Err(partial)) => {
+            drop(receiver);
+            let outcome = cleanup_turn(
+                child,
+                process_group,
+                TurnRuntimeOutcome::terminal(
+                    TurnState::ContainmentFailed,
+                    TurnReason::InternalFailure,
+                ),
+                active,
+                deadline,
+            );
+            if let Some(reader) = partial {
+                return settle_turn_readers(active, [reader], deadline, outcome);
+            }
+            return outcome;
+        }
+        RuntimeEffectResult::Rejected(cancellation) => {
+            drop(receiver);
+            return cleanup_turn(
+                child,
+                process_group,
+                cancellation_turn_outcome(cancellation, update),
+                active,
+                deadline,
+            );
+        }
+        RuntimeEffectResult::Cancelled(readers, cancellation) => {
+            drop(receiver);
+            let outcome = cleanup_turn(
+                child,
+                process_group,
+                cancellation_turn_outcome(cancellation, update),
+                active,
+                deadline,
+            );
+            match readers {
+                Ok((stdout, stderr)) => {
+                    return settle_turn_readers(active, [stdout, stderr], deadline, outcome);
+                }
+                Err(Some(stdout)) => {
+                    return settle_turn_readers(active, [stdout], deadline, outcome);
+                }
+                Err(None) => return outcome,
+            }
+        }
+    };
     let mut boundary_audit = RuntimeBoundaryAudit::new(selected_workspace.path());
-    if boundary_audit
-        .write_json_line(
+    let initialize = runtime_effect(active, RuntimeEffectStage::InitializeWrite, || {
+        boundary_audit.write_json_line(
             &mut stdin,
             &json!({
                 "method": "initialize",
@@ -1053,17 +3746,25 @@ fn run_turn_protocol(
                 }
             }),
         )
-        .is_err()
-    {
-        return cleanup_turn(
-            child,
-            process_group,
-            TurnRuntimeOutcome::terminal(
+    });
+    if !matches!(initialize, RuntimeEffectResult::Completed(Ok(()))) {
+        let outcome = match initialize {
+            RuntimeEffectResult::Rejected(cancellation)
+            | RuntimeEffectResult::Cancelled(_, cancellation) => {
+                cancellation_turn_outcome(cancellation, update)
+            }
+            RuntimeEffectResult::Completed(Err(_)) => TurnRuntimeOutcome::terminal(
                 TurnState::ContainmentFailed,
                 TurnReason::ProtocolRejected,
             ),
+            RuntimeEffectResult::Completed(Ok(())) => unreachable!(),
+        };
+        let outcome = cleanup_turn(child, process_group, outcome, active, deadline);
+        return settle_turn_readers(
             active,
+            [reader_threads.0, reader_threads.1],
             deadline,
+            outcome,
         );
     }
     let mut projection = TurnProtocolProjection::new(&configuration.codex_home, work_directory);
@@ -1092,7 +3793,29 @@ fn run_turn_protocol(
         match receiver.recv_timeout((protocol_deadline - now).min(Duration::from_millis(20))) {
             Ok(FrameEvent::Frame(frame)) => {
                 queued_bytes.fetch_sub(frame.len(), Ordering::AcqRel);
-                match projection.accept(&frame) {
+                let action = match accept_turn_frame(active, &mut projection, &frame) {
+                    Ok(action) => action,
+                    Err(cancellation) => {
+                        let state = cancellation.turn_state();
+                        let reason = cancellation.turn_reason();
+                        if state == TurnState::Cancelled {
+                            update(TurnRuntimeUpdate::Stopping(reason));
+                        }
+                        break (state, reason);
+                    }
+                };
+                let mut action_guard = match lock_projection_action(active) {
+                    Ok(guard) => guard,
+                    Err(cancellation) => {
+                        let state = cancellation.turn_state();
+                        let reason = cancellation.turn_reason();
+                        if state == TurnState::Cancelled {
+                            update(TurnRuntimeUpdate::Stopping(reason));
+                        }
+                        break (state, reason);
+                    }
+                };
+                match action {
                     TurnProjectionAction::Quarantine => {
                         update(TurnRuntimeUpdate::ProviderEventQuarantined);
                     }
@@ -1187,6 +3910,16 @@ fn run_turn_protocol(
                     }
                     TurnProjectionAction::Terminal(state, reason) => break (state, reason),
                 }
+                active.materialize_deferred_cancellation(&mut action_guard);
+                if let Some(cancellation) = action_guard.cancellation {
+                    let state = cancellation.reason.turn_state();
+                    let reason = cancellation.reason.turn_reason();
+                    drop(action_guard);
+                    if state == TurnState::Cancelled {
+                        update(TurnRuntimeUpdate::Stopping(reason));
+                    }
+                    break (state, reason);
+                }
             }
             Ok(FrameEvent::Rejected) => {
                 break (TurnState::ContainmentFailed, TurnReason::BufferLimit);
@@ -1216,12 +3949,157 @@ fn run_turn_protocol(
         quarantined_events: projection.quarantined_events,
         repository_context_bytes_to_runtime: boundary_audit.repository_context_bytes_to_runtime,
         cleaned: true,
+        cancellation: active.cancellation_window(),
     };
     if outcome.state == TurnState::Completed && outcome.agent_text.is_empty() {
         outcome.state = TurnState::ContainmentFailed;
         outcome.reason = Some(TurnReason::ProtocolRejected);
     }
-    cleanup_turn(child, process_group, outcome, active, deadline)
+    let outcome = cleanup_turn(child, process_group, outcome, active, deadline);
+    settle_turn_readers(
+        active,
+        [reader_threads.0, reader_threads.1],
+        deadline,
+        outcome,
+    )
+}
+
+fn accept_turn_frame(
+    active: &ActiveRuntime,
+    projection: &mut TurnProtocolProjection,
+    frame: &[u8],
+) -> Result<TurnProjectionAction, RuntimeCancellation> {
+    accept_turn_frame_with(active, projection, frame, || {})
+}
+
+fn accept_turn_frame_with(
+    active: &ActiveRuntime,
+    projection: &mut TurnProtocolProjection,
+    frame: &[u8],
+    before_mutation: impl FnOnce(),
+) -> Result<TurnProjectionAction, RuntimeCancellation> {
+    before_mutation();
+    let control = active
+        .control
+        .lock()
+        .map_err(|_| RuntimeCancellation::ContainmentFailure)?;
+    match control.cancellation {
+        Some(cancellation) => Err(cancellation.reason),
+        None => Ok(projection.accept(frame)),
+    }
+}
+
+fn lock_projection_action(
+    active: &ActiveRuntime,
+) -> Result<std::sync::MutexGuard<'_, RuntimeControl>, RuntimeCancellation> {
+    lock_projection_action_with(active, || {})
+}
+
+fn lock_projection_action_with(
+    active: &ActiveRuntime,
+    after_revalidation: impl FnOnce(),
+) -> Result<std::sync::MutexGuard<'_, RuntimeControl>, RuntimeCancellation> {
+    match active.control.lock() {
+        Ok(mut guard) => {
+            active.materialize_deferred_cancellation(&mut guard);
+            match guard.cancellation {
+                None => {
+                    after_revalidation();
+                    active.materialize_deferred_cancellation(&mut guard);
+                    match guard.cancellation {
+                        None => Ok(guard),
+                        Some(cancellation) => Err(cancellation.reason),
+                    }
+                }
+                Some(cancellation) => Err(cancellation.reason),
+            }
+        }
+        Err(_) => Err(RuntimeCancellation::ContainmentFailure),
+    }
+}
+
+fn runtime_effect<T>(
+    active: &ActiveRuntime,
+    stage: RuntimeEffectStage,
+    effect: impl FnOnce() -> T,
+) -> RuntimeEffectResult<T> {
+    if stage == RuntimeEffectStage::InitializeWrite {
+        return linearized_initialize_effect(active, effect);
+    }
+    let effect_permit = match authorize_runtime_effect(active) {
+        Ok(effect_permit) => effect_permit,
+        Err(cancellation) => return RuntimeEffectResult::Rejected(cancellation),
+    };
+    active.enter_runtime_effect(stage);
+    let result = effect();
+    match revalidate_runtime_effect(active, &effect_permit) {
+        Ok(()) => RuntimeEffectResult::Completed(result),
+        Err(cancellation) => RuntimeEffectResult::Cancelled(result, cancellation),
+    }
+}
+
+fn linearized_initialize_effect<T>(
+    active: &ActiveRuntime,
+    effect: impl FnOnce() -> T,
+) -> RuntimeEffectResult<T> {
+    active.enter_runtime_effect(RuntimeEffectStage::InitializeWrite);
+    let mut control = match active.control.lock() {
+        Ok(control) => control,
+        Err(_) => {
+            return RuntimeEffectResult::Rejected(RuntimeCancellation::ContainmentFailure);
+        }
+    };
+    active.materialize_deferred_cancellation(&mut control);
+    if let Some(cancellation) = control.cancellation {
+        return RuntimeEffectResult::Rejected(cancellation.reason);
+    }
+    if control.request_id.is_none() || control.effect_generation == 0 {
+        return RuntimeEffectResult::Rejected(RuntimeCancellation::ContainmentFailure);
+    }
+    RuntimeEffectResult::Completed(effect())
+}
+
+fn authorize_runtime_effect(
+    active: &ActiveRuntime,
+) -> Result<RuntimeEffectPermit, RuntimeCancellation> {
+    let mut control = active
+        .control
+        .lock()
+        .map_err(|_| RuntimeCancellation::ContainmentFailure)?;
+    active.materialize_deferred_cancellation(&mut control);
+    if let Some(cancellation) = control.cancellation {
+        return Err(cancellation.reason);
+    }
+    let Some(request_id) = control.request_id.clone() else {
+        return Err(RuntimeCancellation::ContainmentFailure);
+    };
+    if control.effect_generation == 0 {
+        return Err(RuntimeCancellation::ContainmentFailure);
+    }
+    Ok(RuntimeEffectPermit {
+        request_id,
+        generation: control.effect_generation,
+    })
+}
+
+fn revalidate_runtime_effect(
+    active: &ActiveRuntime,
+    effect_permit: &RuntimeEffectPermit,
+) -> Result<(), RuntimeCancellation> {
+    let mut control = active
+        .control
+        .lock()
+        .map_err(|_| RuntimeCancellation::ContainmentFailure)?;
+    active.materialize_deferred_cancellation(&mut control);
+    if control.request_id.as_deref() != Some(&effect_permit.request_id)
+        || control.effect_generation != effect_permit.generation
+    {
+        return Err(RuntimeCancellation::ContainmentFailure);
+    }
+    match control.cancellation {
+        Some(cancellation) => Err(cancellation.reason),
+        None => Ok(()),
+    }
 }
 
 fn cleanup_turn(
@@ -1231,7 +4109,20 @@ fn cleanup_turn(
     active: &ActiveRuntime,
     deadline: Instant,
 ) -> TurnRuntimeOutcome {
-    let cleanup_deadline = deadline.min(Instant::now() + TURN_CLEANUP_RESERVE);
+    let cleanup_started = Instant::now();
+    let cleanup_deadline = active.cancellation_window().map_or_else(
+        || turn_cleanup_deadline(cleanup_started, deadline),
+        |window| {
+            if active
+                .closed_control_failure_cleanup
+                .load(Ordering::Acquire)
+            {
+                turn_cleanup_deadline(cleanup_started, deadline)
+            } else {
+                deadline.min(window.cleanup_cutoff)
+            }
+        },
+    );
     outcome.cleaned = stop_process_group_with_term_grace(
         &mut child,
         process_group,
@@ -1241,6 +4132,52 @@ fn cleanup_turn(
         CleanupPhasePolicy::AllowParentReap,
     );
     outcome
+}
+
+fn rollback_spawned_before_publication(
+    mut child: Child,
+    active: &ActiveRuntime,
+    deadline: Instant,
+) -> bool {
+    let process_group = child.id() as i32;
+    if publish_active_process_group(active, process_group) {
+        register_owned_process(active, process_group);
+        #[cfg(test)]
+        match active.spawn_rollback_failure.swap(0, Ordering::AcqRel) {
+            1 => return false,
+            2 => {
+                signal_active_process_group(active, process_group, SIGKILL);
+                return false;
+            }
+            _ => {}
+        }
+        return stop_process_group_with_term_grace(
+            &mut child,
+            process_group,
+            active,
+            deadline,
+            Some(CANCEL_TERM_GRACE),
+            CleanupPhasePolicy::AllowParentReap,
+        );
+    }
+    let killed = child.kill().is_ok();
+    let reaped = child.wait().is_ok();
+    if !(killed && reaped) {
+        active
+            .retained_unpublished_children
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(child);
+    }
+    killed && reaped
+}
+
+fn turn_cleanup_deadline(cleanup_started: Instant, request_deadline: Instant) -> Instant {
+    request_deadline.min(
+        cleanup_started
+            .checked_add(TURN_CLEANUP_RESERVE)
+            .unwrap_or(cleanup_started),
+    )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1913,9 +4850,33 @@ fn run_protocol(
         timeout: None,
         deadline,
     });
-    let executable = match configuration.stage_verified_binary(work_directory) {
-        Ok(executable) => executable,
-        Err(state) => {
+    let executable = match runtime_effect(active, RuntimeEffectStage::Stage, || {
+        configuration.stage_verified_binary(work_directory)
+    }) {
+        RuntimeEffectResult::Rejected(cancellation) => {
+            return ProtocolOutcome {
+                state: cancellation.readiness_state(),
+                quarantined_events: 0,
+                cleaned: true,
+            };
+        }
+        RuntimeEffectResult::Cancelled(staged, cancellation) => {
+            let cleaned = match staged {
+                Ok(executable) => fs::remove_file(executable.path()).is_ok(),
+                Err(_) => true,
+            };
+            return ProtocolOutcome {
+                state: if cleaned {
+                    cancellation.readiness_state()
+                } else {
+                    RuntimeReadinessState::CleanupFailed
+                },
+                quarantined_events: 0,
+                cleaned,
+            };
+        }
+        RuntimeEffectResult::Completed(Ok(executable)) => executable,
+        RuntimeEffectResult::Completed(Err(state)) => {
             return ProtocolOutcome {
                 state,
                 quarantined_events: 0,
@@ -1934,9 +4895,32 @@ fn run_protocol(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
-    let mut child = match spawn_verified_runtime(&mut command, work_directory) {
-        Ok(child) => child,
-        Err(error) => {
+    let mut child = match runtime_effect(active, RuntimeEffectStage::Spawn, || {
+        spawn_verified_runtime(&mut command, work_directory)
+    }) {
+        RuntimeEffectResult::Rejected(cancellation) => {
+            return ProtocolOutcome {
+                state: cancellation.readiness_state(),
+                quarantined_events: 0,
+                cleaned: true,
+            };
+        }
+        RuntimeEffectResult::Cancelled(spawned, cancellation) => {
+            let cleaned = spawned
+                .map(|child| rollback_spawned_before_publication(child, active, deadline))
+                .unwrap_or(true);
+            return ProtocolOutcome {
+                state: if cleaned {
+                    cancellation.readiness_state()
+                } else {
+                    RuntimeReadinessState::CleanupFailed
+                },
+                quarantined_events: 0,
+                cleaned,
+            };
+        }
+        RuntimeEffectResult::Completed(Ok(child)) => child,
+        RuntimeEffectResult::Completed(Err(error)) => {
             return ProtocolOutcome {
                 state: if error.kind() == io::ErrorKind::PermissionDenied {
                     RuntimeReadinessState::ContainmentFailed
@@ -1949,16 +4933,61 @@ fn run_protocol(
         }
     };
     let process_group = child.id() as i32;
-    if !publish_active_process_group(active, process_group) {
-        let _ = child.kill();
-        let _ = child.wait();
+    let published = match runtime_effect(active, RuntimeEffectStage::Publish, || {
+        let published = publish_active_process_group(active, process_group);
+        if published {
+            register_owned_process(active, process_group);
+        }
+        published
+    }) {
+        RuntimeEffectResult::Completed(published) => published,
+        RuntimeEffectResult::Rejected(cancellation) => {
+            let cleaned = rollback_spawned_before_publication(child, active, deadline);
+            return ProtocolOutcome {
+                state: if cleaned {
+                    cancellation.readiness_state()
+                } else {
+                    RuntimeReadinessState::CleanupFailed
+                },
+                quarantined_events: 0,
+                cleaned,
+            };
+        }
+        RuntimeEffectResult::Cancelled(published, cancellation) => {
+            if published {
+                return cleanup_after(
+                    child,
+                    process_group,
+                    cancellation.readiness_state(),
+                    0,
+                    active,
+                    deadline,
+                );
+            }
+            let cleaned = rollback_spawned_before_publication(child, active, deadline);
+            return ProtocolOutcome {
+                state: if cleaned {
+                    cancellation.readiness_state()
+                } else {
+                    RuntimeReadinessState::CleanupFailed
+                },
+                quarantined_events: 0,
+                cleaned,
+            };
+        }
+    };
+    if !published {
+        let cleaned = rollback_spawned_before_publication(child, active, deadline);
         return ProtocolOutcome {
-            state: RuntimeReadinessState::ContainmentFailed,
+            state: if cleaned {
+                RuntimeReadinessState::ContainmentFailed
+            } else {
+                RuntimeReadinessState::CleanupFailed
+            },
             quarantined_events: 0,
-            cleaned: true,
+            cleaned,
         };
     }
-    register_owned_process(active, process_group);
     let Some(((mut stdin, stdout), stderr)) = child
         .stdin
         .take()
@@ -1977,34 +5006,94 @@ fn run_protocol(
     let queued_bytes = Arc::new(AtomicUsize::new(0));
     let stderr_saturated = Arc::new(AtomicBool::new(false));
     let (sender, receiver) = mpsc::sync_channel(MAX_QUEUE_FRAMES);
-    spawn_stdout_reader(stdout, sender, Arc::clone(&queued_bytes));
-    spawn_stderr_reader(stderr, Arc::clone(&stderr_saturated));
-    if write_json_line(
-        &mut stdin,
-        &json!({
-            "method": "initialize",
-            "id": 1,
-            "params": {
-                "clientInfo": {
-                    "name": "keiko_native",
-                    "title": "Keiko Native",
-                    "version": env!("CARGO_PKG_VERSION")
-                },
-                "capabilities": {
-                    "experimentalApi": true
-                }
-            }
-        }),
-    )
-    .is_err()
-    {
-        return cleanup_after(
-            child,
-            process_group,
-            RuntimeReadinessState::Incompatible,
-            0,
+    let reader_threads = match runtime_effect(active, RuntimeEffectStage::Readers, || {
+        spawn_runtime_readers(
             active,
+            stdout,
+            stderr,
+            sender,
+            Arc::clone(&queued_bytes),
+            Arc::clone(&stderr_saturated),
+        )
+    }) {
+        RuntimeEffectResult::Completed(Ok(readers)) => readers,
+        RuntimeEffectResult::Completed(Err(partial)) => {
+            drop(receiver);
+            let outcome = cleanup_after(
+                child,
+                process_group,
+                RuntimeReadinessState::ContainmentFailed,
+                0,
+                active,
+                deadline,
+            );
+            if let Some(reader) = partial {
+                return settle_readiness_readers(active, [reader], deadline, outcome);
+            }
+            return outcome;
+        }
+        RuntimeEffectResult::Rejected(cancellation) => {
+            drop(receiver);
+            return cleanup_after(
+                child,
+                process_group,
+                cancellation.readiness_state(),
+                0,
+                active,
+                deadline,
+            );
+        }
+        RuntimeEffectResult::Cancelled(readers, cancellation) => {
+            drop(receiver);
+            let outcome = cleanup_after(
+                child,
+                process_group,
+                cancellation.readiness_state(),
+                0,
+                active,
+                deadline,
+            );
+            return match readers {
+                Ok((stdout, stderr)) => {
+                    settle_readiness_readers(active, [stdout, stderr], deadline, outcome)
+                }
+                Err(Some(stdout)) => settle_readiness_readers(active, [stdout], deadline, outcome),
+                Err(None) => outcome,
+            };
+        }
+    };
+    let initialize = runtime_effect(active, RuntimeEffectStage::InitializeWrite, || {
+        write_json_line(
+            &mut stdin,
+            &json!({
+                "method": "initialize",
+                "id": 1,
+                "params": {
+                    "clientInfo": {
+                        "name": "keiko_native",
+                        "title": "Keiko Native",
+                        "version": env!("CARGO_PKG_VERSION")
+                    },
+                    "capabilities": {
+                        "experimentalApi": true
+                    }
+                }
+            }),
+        )
+    });
+    if !matches!(initialize, RuntimeEffectResult::Completed(Ok(()))) {
+        let state = match initialize {
+            RuntimeEffectResult::Rejected(cancellation)
+            | RuntimeEffectResult::Cancelled(_, cancellation) => cancellation.readiness_state(),
+            RuntimeEffectResult::Completed(Err(_)) => RuntimeReadinessState::Incompatible,
+            RuntimeEffectResult::Completed(Ok(())) => unreachable!(),
+        };
+        let outcome = cleanup_after(child, process_group, state, 0, active, deadline);
+        return settle_readiness_readers(
+            active,
+            [reader_threads.0, reader_threads.1],
             deadline,
+            outcome,
         );
     }
     let mut projection = ProtocolProjection::new(&configuration.codex_home);
@@ -2063,13 +5152,19 @@ fn run_protocol(
         }
     };
     drop(stdin);
-    cleanup_after(
+    let outcome = cleanup_after(
         child,
         process_group,
         state,
         projection.quarantined_events,
         active,
         deadline,
+    );
+    settle_readiness_readers(
+        active,
+        [reader_threads.0, reader_threads.1],
+        deadline,
+        outcome,
     )
 }
 
@@ -2174,38 +5269,343 @@ enum FrameEvent {
     Eof,
 }
 
+type ReaderTask = Box<dyn FnOnce() + Send + 'static>;
+
+fn spawn_runtime_readers_with(
+    stdout: impl Read + Send + 'static,
+    stderr: impl Read + Send + 'static,
+    sender: SyncSender<FrameEvent>,
+    queued_bytes: Arc<AtomicUsize>,
+    stderr_saturated: Arc<AtomicBool>,
+    spawn: &mut dyn FnMut(&str, ReaderTask) -> io::Result<thread::JoinHandle<()>>,
+) -> Result<(RuntimeReader, RuntimeReader), Option<RuntimeReader>> {
+    let stdout = spawn_stdout_reader_with(stdout, sender, queued_bytes, spawn).map_err(|_| None)?;
+    match spawn_stderr_reader_with(stderr, stderr_saturated, spawn) {
+        Ok(stderr) => Ok((stdout, stderr)),
+        Err(_) => Err(Some(stdout)),
+    }
+}
+
+fn spawn_runtime_readers(
+    active: &ActiveRuntime,
+    stdout: impl Read + Send + 'static,
+    stderr: impl Read + Send + 'static,
+    sender: SyncSender<FrameEvent>,
+    queued_bytes: Arc<AtomicUsize>,
+    stderr_saturated: Arc<AtomicBool>,
+) -> Result<(RuntimeReader, RuntimeReader), Option<RuntimeReader>> {
+    #[cfg(not(test))]
+    let _ = active;
+    spawn_runtime_readers_with(
+        stdout,
+        stderr,
+        sender,
+        queued_bytes,
+        stderr_saturated,
+        &mut |name, task| {
+            #[cfg(test)]
+            {
+                let attempt = active.reader_spawn_attempt.fetch_add(1, Ordering::AcqRel) + 1;
+                if active.reader_spawn_failure.load(Ordering::Acquire) == attempt {
+                    return Err(io::Error::other("injected reader spawn failure"));
+                }
+            }
+            #[cfg(test)]
+            let hook = active
+                .reader_retirement_hook
+                .lock()
+                .expect("reader retirement hook")
+                .clone()
+                .filter(|hook| hook.thread_name == name);
+            #[cfg(test)]
+            let task = match hook {
+                Some(hook) => Box::new(move || {
+                    task();
+                    let _ = hook.body_completed.send(());
+                    let (released, wake) = &*hook.release;
+                    let released = released.lock().expect("reader retirement release");
+                    let _ = wake
+                        .wait_timeout_while(released, Duration::from_secs(10), |released| {
+                            !*released
+                        })
+                        .expect("reader retirement wait");
+                }) as ReaderTask,
+                None => task,
+            };
+            thread::Builder::new().name(name.to_owned()).spawn(task)
+        },
+    )
+}
+
+#[cfg(test)]
 fn spawn_stdout_reader(
     stdout: impl Read + Send + 'static,
     sender: SyncSender<FrameEvent>,
     queued_bytes: Arc<AtomicUsize>,
-) {
-    thread::spawn(move || {
-        let mut reader = BufReader::new(stdout);
-        loop {
-            match read_bounded_line(&mut reader) {
-                Ok(Some(frame)) => {
-                    let frame_bytes = frame.len();
-                    let previous = queued_bytes.fetch_add(frame_bytes, Ordering::AcqRel);
-                    if previous.saturating_add(frame_bytes) > MAX_QUEUE_BYTES {
-                        queued_bytes.fetch_sub(frame_bytes, Ordering::AcqRel);
+) -> io::Result<RuntimeReader> {
+    spawn_stdout_reader_with(stdout, sender, queued_bytes, &mut |name, task| {
+        thread::Builder::new().name(name.to_owned()).spawn(task)
+    })
+}
+
+fn spawn_stdout_reader_with(
+    stdout: impl Read + Send + 'static,
+    sender: SyncSender<FrameEvent>,
+    queued_bytes: Arc<AtomicUsize>,
+    spawn: &mut dyn FnMut(&str, ReaderTask) -> io::Result<thread::JoinHandle<()>>,
+) -> io::Result<RuntimeReader> {
+    spawn_owned_reader(
+        "keiko-runtime-stdout",
+        Box::new(move || {
+            let mut reader = BufReader::new(stdout);
+            loop {
+                match read_bounded_line(&mut reader) {
+                    Ok(Some(frame)) => {
+                        let frame_bytes = frame.len();
+                        let previous = queued_bytes.fetch_add(frame_bytes, Ordering::AcqRel);
+                        if previous.saturating_add(frame_bytes) > MAX_QUEUE_BYTES {
+                            queued_bytes.fetch_sub(frame_bytes, Ordering::AcqRel);
+                            let _ = sender.send(FrameEvent::Rejected);
+                            return;
+                        }
+                        if sender.send(FrameEvent::Frame(frame)).is_err() {
+                            return;
+                        }
+                    }
+                    Ok(None) => {
+                        let _ = sender.send(FrameEvent::Eof);
+                        return;
+                    }
+                    Err(_) => {
                         let _ = sender.send(FrameEvent::Rejected);
                         return;
                     }
-                    if sender.send(FrameEvent::Frame(frame)).is_err() {
-                        return;
-                    }
-                }
-                Ok(None) => {
-                    let _ = sender.send(FrameEvent::Eof);
-                    return;
-                }
-                Err(_) => {
-                    let _ = sender.send(FrameEvent::Rejected);
-                    return;
                 }
             }
+        }),
+        spawn,
+    )
+}
+
+fn spawn_owned_reader(
+    name: &str,
+    task: ReaderTask,
+    spawn: &mut dyn FnMut(&str, ReaderTask) -> io::Result<thread::JoinHandle<()>>,
+) -> io::Result<RuntimeReader> {
+    let (completed, completion) = mpsc::sync_channel(1);
+    let worker = spawn(
+        name,
+        Box::new(move || {
+            task();
+            let _ = completed.send(());
+        }),
+    )?;
+    Ok(RuntimeReader {
+        completed: completion,
+        worker,
+    })
+}
+
+fn retire_runtime_readers(
+    active: &ActiveRuntime,
+    readers: impl IntoIterator<Item = RuntimeReader>,
+    deadline: Instant,
+) -> bool {
+    #[cfg(test)]
+    if let Some(observer) = active
+        .reader_retirement_observer
+        .lock()
+        .expect("reader retirement observer")
+        .take()
+    {
+        let _ = observer.send(());
+    }
+    let mut retained = Vec::new();
+    let mut clean = true;
+    for reader in readers {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match reader.completed.recv_timeout(remaining) {
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => {
+                while !reader.worker.is_finished() && Instant::now() < deadline {
+                    thread::yield_now();
+                }
+                if reader.worker.is_finished() {
+                    clean &= reader.worker.join().is_ok();
+                } else {
+                    retained.push(reader);
+                    clean = false;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                retained.push(reader);
+                clean = false;
+            }
         }
-    });
+    }
+    if !retained.is_empty() {
+        active
+            .retained_readers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(retained);
+    }
+    clean
+}
+
+fn reconcile_retained_readers_locked(
+    active: &ActiveRuntime,
+    retained: &mut Vec<RuntimeReader>,
+) -> bool {
+    let readers = std::mem::take(retained);
+    active.enter_reader_reconciliation();
+    let mut pending = Vec::new();
+    let mut clean = true;
+    for reader in readers {
+        match reader.completed.try_recv() {
+            Ok(()) | Err(mpsc::TryRecvError::Disconnected) => {
+                if reader.worker.is_finished() {
+                    clean &= reader.worker.join().is_ok();
+                } else {
+                    pending.push(reader);
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => pending.push(reader),
+        }
+    }
+    if !pending.is_empty() {
+        retained.extend(pending);
+        return false;
+    }
+    clean
+}
+
+fn reader_retirement_deadline(deadline: Instant) -> Instant {
+    deadline.min(Instant::now() + READER_RETIREMENT_BUDGET)
+}
+
+fn retire_turn_worker(
+    active: &ActiveRuntime,
+    mut retained: RetainedTurnWorker,
+    deadline: Instant,
+) -> bool {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    match retained.completed.recv_timeout(remaining) {
+        Ok(cleanup_proven) => {
+            retained.cleanup_proven = Some(cleanup_proven);
+        }
+        Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {}
+    }
+    if retained.cleanup_proven == Some(true) {
+        while !retained.worker.is_finished() && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        if retained.worker.is_finished() {
+            return retained.worker.join().is_ok();
+        }
+    }
+    retain_turn_worker(active, retained);
+    false
+}
+
+fn retain_turn_worker(active: &ActiveRuntime, retained: RetainedTurnWorker) {
+    active
+        .retained_turn_workers
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(retained);
+}
+
+fn reconcile_retained_turn_workers_locked(retained: &mut Vec<RetainedTurnWorker>) -> bool {
+    let workers = std::mem::take(retained);
+    let mut pending = Vec::new();
+    let mut clean = true;
+    for mut worker in workers {
+        if worker.cleanup_proven.is_none()
+            && let Ok(cleanup_proven) = worker.completed.try_recv()
+        {
+            worker.cleanup_proven = Some(cleanup_proven);
+        }
+        if worker.cleanup_proven.is_some() && worker.worker.is_finished() {
+            clean &= worker.cleanup_proven == Some(true) && worker.worker.join().is_ok();
+        } else {
+            pending.push(worker);
+        }
+    }
+    if !pending.is_empty() {
+        retained.extend(pending);
+        return false;
+    }
+    clean
+}
+
+fn retire_publication_worker(
+    active: &ActiveRuntime,
+    retained: RetainedPublicationWorker,
+    deadline: Instant,
+) -> bool {
+    while !retained.worker.is_finished() && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    if retained.worker.is_finished() {
+        return retained.worker.join().is_ok();
+    }
+    retain_publication_worker(active, retained);
+    false
+}
+
+fn retain_publication_worker(active: &ActiveRuntime, retained: RetainedPublicationWorker) {
+    active
+        .retained_publication_workers
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(retained);
+}
+
+fn reconcile_retained_publication_workers_locked(
+    retained: &mut Vec<RetainedPublicationWorker>,
+) -> bool {
+    let workers = std::mem::take(retained);
+    let mut pending = Vec::new();
+    let mut clean = true;
+    for worker in workers {
+        if worker.worker.is_finished() {
+            let _ = worker.result.try_recv();
+            clean &= worker.worker.join().is_ok();
+        } else {
+            pending.push(worker);
+        }
+    }
+    if !pending.is_empty() {
+        retained.extend(pending);
+        return false;
+    }
+    clean
+}
+
+fn reconcile_retained_runtime_ownership(active: &ActiveRuntime) -> bool {
+    let mut readers = active
+        .retained_readers
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !reconcile_retained_readers_locked(active, &mut readers) {
+        return false;
+    }
+    let mut turn_workers = active
+        .retained_turn_workers
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !reconcile_retained_turn_workers_locked(&mut turn_workers) {
+        return false;
+    }
+    let mut publication_workers = active
+        .retained_publication_workers
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let reconciled = reconcile_retained_publication_workers_locked(&mut publication_workers);
+    if reconciled {
+        active.apply_deferred_publication_failures();
+    }
+    reconciled
 }
 
 fn read_bounded_line(reader: &mut impl BufRead) -> io::Result<Option<Vec<u8>>> {
@@ -2244,23 +5644,41 @@ fn read_bounded_line(reader: &mut impl BufRead) -> io::Result<Option<Vec<u8>>> {
     }
 }
 
-fn spawn_stderr_reader(stderr: impl Read + Send + 'static, saturated: Arc<AtomicBool>) {
-    thread::spawn(move || {
-        let mut reader = BufReader::new(stderr);
-        let mut total = 0_usize;
-        let mut buffer = [0_u8; 8192];
-        loop {
-            match reader.read(&mut buffer) {
-                Ok(0) | Err(_) => return,
-                Ok(read) => {
-                    total = total.saturating_add(read);
-                    if total > MAX_STDERR_BYTES {
-                        saturated.store(true, Ordering::Release);
+#[cfg(test)]
+fn spawn_stderr_reader(
+    stderr: impl Read + Send + 'static,
+    saturated: Arc<AtomicBool>,
+) -> io::Result<RuntimeReader> {
+    spawn_stderr_reader_with(stderr, saturated, &mut |name, task| {
+        thread::Builder::new().name(name.to_owned()).spawn(task)
+    })
+}
+
+fn spawn_stderr_reader_with(
+    stderr: impl Read + Send + 'static,
+    saturated: Arc<AtomicBool>,
+    spawn: &mut dyn FnMut(&str, ReaderTask) -> io::Result<thread::JoinHandle<()>>,
+) -> io::Result<RuntimeReader> {
+    spawn_owned_reader(
+        "keiko-runtime-stderr",
+        Box::new(move || {
+            let mut reader = BufReader::new(stderr);
+            let mut total = 0_usize;
+            let mut buffer = [0_u8; 8192];
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) | Err(_) => return,
+                    Ok(read) => {
+                        total = total.saturating_add(read);
+                        if total > MAX_STDERR_BYTES {
+                            saturated.store(true, Ordering::Release);
+                        }
                     }
                 }
             }
-        }
-    });
+        }),
+        spawn,
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3721,10 +7139,8 @@ struct RealCleanupExecutor<'a> {
 impl RealCleanupExecutor<'_> {
     fn execute(&mut self, command: CleanupCommand) -> CleanupObservation {
         let started_at = Instant::now();
-        if command
-            .guard()
-            .is_some_and(|deadline| started_at >= deadline)
-        {
+        let effective_guard = effective_cleanup_guard(self.active, command.guard());
+        if effective_guard.is_some_and(|deadline| started_at >= deadline) {
             return CleanupObservation::DeadlineClosed {
                 closed_at: started_at,
             };
@@ -3809,6 +7225,9 @@ impl RealCleanupExecutor<'_> {
                 }
             }
             CleanupCommand::Sleep { duration, .. } => {
+                let duration = effective_guard.map_or(duration, |deadline| {
+                    duration.min(deadline.saturating_duration_since(started_at))
+                });
                 thread::sleep(duration);
                 CleanupObservation::Slept {
                     started_at,
@@ -3841,6 +7260,14 @@ impl RealCleanupExecutor<'_> {
                 }
             }
         }
+    }
+}
+
+fn effective_cleanup_guard(active: &ActiveRuntime, guard: Option<Instant>) -> Option<Instant> {
+    match (guard, active.cancellation_window()) {
+        (Some(guard), Some(window)) => Some(guard.min(window.cleanup_cutoff)),
+        (None, Some(window)) => Some(window.cleanup_cutoff),
+        (guard, None) => guard,
     }
 }
 
@@ -3928,6 +7355,21 @@ fn reconcile_retained_process_group(active: &ActiveRuntime, deadline: Instant) -
         thread::sleep(Duration::from_millis(10));
     }
     retire_retained_process_group_if_stopped(active, process_group)
+}
+
+fn reconcile_retained_unpublished_children(active: &ActiveRuntime, deadline: Instant) -> bool {
+    let children = {
+        let mut retained = active
+            .retained_unpublished_children
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::take(&mut *retained)
+    };
+    let mut cleaned = true;
+    for child in children {
+        cleaned &= rollback_spawned_before_publication(child, active, deadline);
+    }
+    cleaned
 }
 
 fn retire_retained_process_group_if_stopped(active: &ActiveRuntime, process_group: i32) -> bool {
@@ -4422,6 +7864,9 @@ fn classify_process_presence(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use keiko_application::runtime::RuntimeDescriptor;
+    use keiko_application::turn::TurnSession;
+    use keiko_ui_port::canonical_request_id;
     use std::io::Cursor;
     use std::os::unix::fs::symlink;
 
@@ -5259,11 +8704,12 @@ mod tests {
     fn asynchronous_readers_enforce_queue_and_stderr_budgets() {
         let (sender, receiver) = mpsc::sync_channel(1);
         let queued_bytes = Arc::new(AtomicUsize::new(MAX_QUEUE_BYTES));
-        spawn_stdout_reader(
+        let _stdout = spawn_stdout_reader(
             Cursor::new(b"{}\n".to_vec()),
             sender,
             Arc::clone(&queued_bytes),
-        );
+        )
+        .expect("stdout reader");
         assert!(matches!(
             receiver
                 .recv_timeout(Duration::from_secs(1))
@@ -5274,22 +8720,317 @@ mod tests {
 
         let (sender, receiver) = mpsc::sync_channel(1);
         drop(receiver);
-        spawn_stdout_reader(
+        let _stdout = spawn_stdout_reader(
             Cursor::new(b"{}\n".to_vec()),
             sender,
             Arc::new(AtomicUsize::new(0)),
-        );
+        )
+        .expect("stdout reader");
 
         let saturated = Arc::new(AtomicBool::new(false));
-        spawn_stderr_reader(
+        let _stderr = spawn_stderr_reader(
             Cursor::new(vec![b'x'; MAX_STDERR_BYTES + 1]),
             Arc::clone(&saturated),
-        );
+        )
+        .expect("stderr reader");
         let deadline = Instant::now() + Duration::from_secs(1);
         while !saturated.load(Ordering::Acquire) && Instant::now() < deadline {
             thread::yield_now();
         }
         assert!(saturated.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn reader_thread_creation_is_fallible_for_first_and_partial_spawn() {
+        for failed_spawn in [1, 2] {
+            let (sender, receiver) = mpsc::sync_channel(1);
+            let mut attempts = 0;
+            let started = spawn_runtime_readers_with(
+                Cursor::new(Vec::<u8>::new()),
+                Cursor::new(Vec::<u8>::new()),
+                sender,
+                Arc::new(AtomicUsize::new(0)),
+                Arc::new(AtomicBool::new(false)),
+                &mut |name, task| {
+                    attempts += 1;
+                    if attempts == failed_spawn {
+                        Err(io::Error::other("injected reader spawn failure"))
+                    } else {
+                        thread::Builder::new().name(name.to_owned()).spawn(task)
+                    }
+                },
+            );
+            let mut partial = started.expect_err("reader spawn must be fallible");
+            drop(receiver);
+            if let Some(handle) = partial.take() {
+                assert!(retire_runtime_readers(
+                    &ActiveRuntime::default(),
+                    [handle],
+                    Instant::now() + Duration::from_secs(1),
+                ));
+            }
+            assert_eq!(attempts, failed_spawn);
+        }
+    }
+
+    #[test]
+    fn reader_spawn_failure_after_child_creation_leaves_no_process_or_directory_residue() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for failed_spawn in [1, 2] {
+            let fixture = Fixture::new();
+            let repository = fixture.root.join("repository");
+            fs::create_dir(&repository).expect("repository");
+            fs::create_dir(repository.join(".git")).expect("repository marker");
+            let host = fixture.scripted_host("#!/bin/sh\nwhile :; do /bin/sleep 1; done\n");
+            host.fail_reader_spawn_for_test(failed_spawn);
+
+            let outcome = host.run_turn(
+                &format!("request-reader-{failed_spawn}"),
+                1,
+                &WorkspaceRuntimeBinding::for_test(&repository),
+                "Bounded task.",
+                Duration::from_secs(5),
+                |_| {},
+            );
+
+            assert_eq!(outcome.state, TurnState::ContainmentFailed);
+            assert!(outcome.cleaned);
+            assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
+            assert_eq!(
+                *host.active.process_group.lock().expect("process group"),
+                None
+            );
+            assert!(
+                host.active
+                    .owned_processes
+                    .lock()
+                    .expect("owned processes")
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn retained_reader_reconciliation_is_atomic_with_two_fresh_claims() {
+        let active = Arc::new(ActiveRuntime::default());
+        let worker_release = Arc::new((Mutex::new(false), Condvar::new()));
+        let released = Arc::clone(&worker_release);
+        let (completed_sender, completed) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            let (released, wake) = &*released;
+            let released = released.lock().expect("reader worker release");
+            let _ = wake
+                .wait_timeout_while(released, Duration::from_secs(2), |released| !*released)
+                .expect("reader worker wait");
+            let _ = completed_sender.send(());
+        });
+        active
+            .retained_readers
+            .lock()
+            .expect("retained readers")
+            .push(RuntimeReader { completed, worker });
+        let (reconciliation_entered, reconciliation_release) =
+            active.install_reader_reconciliation_hook();
+        let first_active = Arc::clone(&active);
+        let first = thread::spawn(move || first_active.claim_request("first-claim"));
+        reconciliation_entered
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first reconciliation entered");
+        let second_active = Arc::clone(&active);
+        let second = thread::spawn(move || second_active.claim_request("second-claim"));
+        {
+            let (released, wake) = &*reconciliation_release;
+            *released.lock().expect("reconciliation release") = true;
+            wake.notify_all();
+        }
+        assert!(!first.join().expect("first claim"));
+        assert!(
+            !second.join().expect("second claim"),
+            "a second claim must not pass while the first reconciliation owns a pending reader"
+        );
+        {
+            let (released, wake) = &*worker_release;
+            *released.lock().expect("worker release") = true;
+            wake.notify_all();
+        }
+        let recovery_deadline = Instant::now() + Duration::from_secs(1);
+        let recovered = loop {
+            if active.claim_request("recovered-claim") {
+                break true;
+            }
+            if Instant::now() >= recovery_deadline {
+                break false;
+            }
+            thread::yield_now();
+        };
+        assert!(recovered, "completed reader must permit a fresh claim");
+        active.finish_request();
+    }
+
+    #[test]
+    fn unfinished_turn_reader_blocks_fresh_recovery_until_bounded_retirement() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let repository = fixture.root.join("repository");
+        fs::create_dir(&repository).expect("repository");
+        fs::create_dir(repository.join(".git")).expect("repository marker");
+        let codex_home = r#"'"$CODEX_HOME"'"#;
+        let script = format!(
+            r#"#!/bin/sh
+set -eu
+work=$(/bin/pwd -P)
+read -r initialize
+printf '%s\n' '{{"id":1,"result":{{"userAgent":"codex_cli_rs/0.145.0","codexHome":"{codex_home}","platformFamily":"unix","platformOs":"macos"}}}}'
+read -r initialized
+read -r account
+printf '%s\n' '{{"id":2,"result":{{"account":{{"type":"chatgpt","email":"redacted","planType":"plus"}},"requiresOpenaiAuth":true}}}}'
+read -r thread
+printf '%s\n' '{{"id":3,"result":{{"thread":{{"id":"thread-1","ephemeral":true,"path":null,"gitInfo":null,"parentThreadId":null,"cwd":"'"$work"'","canAcceptDirectInput":true}},"runtimeWorkspaceRoots":[],"instructionSources":[],"approvalPolicy":"never","approvalsReviewer":"user","activePermissionProfile":null,"multiAgentMode":"explicitRequestOnly","cwd":"'"$work"'"}}}}'
+printf '%s\n' '{{"method":"thread/started","params":{{"thread":{{"id":"thread-1"}}}}}}'
+read -r turn
+printf '%s\n' '{{"id":4,"result":{{"turn":{{"id":"turn-1","status":"inProgress"}}}}}}'
+printf '%s\n' '{{"method":"turn/started","params":{{"threadId":"thread-1","turn":{{"id":"turn-1","status":"inProgress"}}}}}}'
+printf '%s\n' '{{"method":"item/started","params":{{"threadId":"thread-1","turnId":"turn-1","startedAtMs":1,"item":{{"type":"agentMessage","id":"item-1"}}}}}}'
+printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","delta":"Bounded answer."}}}}'
+printf '%s\n' '{{"method":"item/completed","params":{{"threadId":"thread-1","turnId":"turn-1","completedAtMs":2,"item":{{"type":"agentMessage","id":"item-1","text":"Bounded answer."}}}}}}'
+printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"thread-1","turn":{{"id":"turn-1","status":"completed","error":null}}}}}}'
+"#,
+        );
+        let host = fixture.scripted_host(&script);
+        let (reader_body_completed, retirement_started, release_reader) = host
+            .active
+            .install_reader_retirement_hook("keiko-runtime-stdout");
+        let running_host = host.clone();
+        let running_repository = repository.clone();
+        let pending = thread::spawn(move || {
+            running_host.run_turn(
+                "request-reader-retirement",
+                1,
+                &WorkspaceRuntimeBinding::for_test(&running_repository),
+                "Bounded task.",
+                Duration::from_secs(1),
+                |_| {},
+            )
+        });
+        reader_body_completed
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reader body completed before retirement");
+        retirement_started
+            .recv_timeout(Duration::from_secs(2))
+            .expect("bounded reader retirement started");
+        let completion_deadline = Instant::now() + Duration::from_millis(500);
+        while !pending.is_finished() && Instant::now() < completion_deadline {
+            thread::yield_now();
+        }
+        let retirement_was_bounded = pending.is_finished();
+        let fresh_was_blocked =
+            retirement_was_bounded && !host.active.claim_request("request-fresh");
+        if retirement_was_bounded && !fresh_was_blocked {
+            host.active.finish_request();
+        }
+        {
+            let (released, wake) = &*release_reader;
+            *released.lock().expect("reader release") = true;
+            wake.notify_all();
+        }
+        let outcome = pending.join().expect("turn outcome");
+        let recovery_deadline = Instant::now() + Duration::from_secs(1);
+        let recovered = loop {
+            if host.active.claim_request("request-reader-recovered") {
+                break true;
+            }
+            if Instant::now() >= recovery_deadline {
+                break false;
+            }
+            thread::yield_now();
+        };
+        if recovered {
+            host.active.finish_request();
+        }
+
+        assert!(
+            retirement_was_bounded,
+            "reader retirement must remain bounded"
+        );
+        assert!(
+            fresh_was_blocked,
+            "unfinished reader ownership must block fresh work"
+        );
+        assert_eq!(outcome.state, TurnState::CleanupFailed);
+        assert!(!outcome.cleaned);
+        assert!(
+            recovered,
+            "completed reader ownership must retire for recovery"
+        );
+    }
+
+    #[test]
+    fn unfinished_readiness_reader_blocks_fresh_recovery_until_bounded_retirement() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let home = fixture.home.to_string_lossy();
+        let host = fixture.scripted_host(&format!(
+            r#"#!/bin/sh
+read -r initialize
+printf '%s\n' '{{"id":1,"result":{{"userAgent":"codex_cli_rs/0.145.0","codexHome":"{home}","platformFamily":"unix","platformOs":"macos"}}}}'
+read -r initialized
+read -r account
+/bin/sleep 30 &
+printf '%s\n' '{{"id":2,"result":{{"account":{{"type":"chatgpt","email":"redacted","planType":"plus"}},"requiresOpenaiAuth":true}}}}'
+wait
+"#
+        ));
+        let (reader_body_completed, retirement_started, release_reader) = host
+            .active
+            .install_reader_retirement_hook("keiko-runtime-stdout");
+        let running_host = host.clone();
+        let pending = thread::spawn(move || running_host.check("request-reader-readiness", None));
+        reader_body_completed
+            .recv_timeout(Duration::from_secs(1))
+            .expect("readiness reader body completed");
+        retirement_started
+            .recv_timeout(Duration::from_secs(2))
+            .expect("readiness reader retirement started");
+        let completion_deadline = Instant::now() + Duration::from_millis(500);
+        while !pending.is_finished() && Instant::now() < completion_deadline {
+            thread::yield_now();
+        }
+        let retirement_was_bounded = pending.is_finished();
+        let fresh_was_blocked =
+            retirement_was_bounded && !host.active.claim_request("request-readiness-fresh");
+        if retirement_was_bounded && !fresh_was_blocked {
+            host.active.finish_request();
+        }
+        {
+            let (released, wake) = &*release_reader;
+            *released.lock().expect("reader release") = true;
+            wake.notify_all();
+        }
+        let outcome = pending.join().expect("readiness outcome");
+        let recovery_deadline = Instant::now() + Duration::from_secs(1);
+        let recovered = loop {
+            if host.active.claim_request("request-readiness-recovered") {
+                break true;
+            }
+            if Instant::now() >= recovery_deadline {
+                break false;
+            }
+            thread::yield_now();
+        };
+        if recovered {
+            host.active.finish_request();
+        }
+
+        assert!(retirement_was_bounded);
+        assert!(fresh_was_blocked);
+        assert_eq!(outcome.state, RuntimeReadinessState::CleanupFailed);
+        assert!(recovered);
     }
 
     #[test]
@@ -6013,6 +9754,10 @@ mod tests {
             .process_group
             .lock()
             .expect("process-group state") = None;
+        assert_eq!(
+            host.check("different-request", None).state,
+            RuntimeReadinessState::Cancelled
+        );
 
         let configuration = host.configuration.as_ref().expect("configuration");
         let active = ActiveRuntime::default();
@@ -6023,6 +9768,7 @@ mod tests {
                 configuration,
                 None,
                 &active,
+                &AtomicU64::new(0),
                 &AtomicU64::new(0),
                 Instant::now() + DEFAULT_REQUEST_TIMEOUT,
             )
@@ -6051,13 +9797,13 @@ mod tests {
         };
         host.active.running.store(true, Ordering::Release);
         host.cancel_request("request-in-registration");
-        assert!(host.active.begin_request("request-in-registration"));
+        assert!(host.active.begin_request("request-in-registration", None));
         assert_eq!(host.active.cancellation(), Some(RuntimeCancellation::User));
         host.active.finish_request();
         host.active.running.store(false, Ordering::Release);
 
         host.active.running.store(true, Ordering::Release);
-        assert!(host.active.begin_request("fresh-retry"));
+        assert!(host.active.begin_request("fresh-retry", None));
         assert_eq!(host.active.cancellation(), None);
         host.cancel_request("wrong-request");
         assert_eq!(host.active.cancellation(), None);
@@ -6091,7 +9837,10 @@ mod tests {
         drop(second);
 
         assert_eq!(first_pending.as_deref(), Some("pending-a"));
-        assert_eq!(first_cancellation, Some(RuntimeCancellation::User));
+        assert_eq!(
+            first_cancellation.map(|cancellation| cancellation.reason),
+            Some(RuntimeCancellation::User)
+        );
         assert_eq!(second_pending, first_pending);
         assert_eq!(second_cancellation, first_cancellation);
         assert!(!host.active.running.load(Ordering::Acquire));
@@ -6099,6 +9848,291 @@ mod tests {
             *host.active.process_group.lock().expect("process group"),
             None
         );
+    }
+
+    #[test]
+    fn workspace_cancel_preserves_a_generation_zero_exact_host_owner_until_settlement() {
+        let runtime = RuntimeHost::unavailable_for_test();
+        let request_id = "request-generation-zero-host-owner";
+        let accepted = AcceptedCancellation {
+            accepted_at: Instant::now() - Duration::from_millis(41),
+            source: CancellationSource::RendererLost,
+        };
+        runtime.accept_request_cancellation(request_id, accepted);
+        let exact = runtime
+            .cancellation_window_for_test()
+            .expect("literal generation-zero Host token");
+
+        runtime
+            .invalidated_workspace_generation
+            .store(9, Ordering::Release);
+        runtime.cancel_with_reason(RuntimeCancellation::WorkspaceChanged);
+
+        let control = runtime.active.control.lock().expect("exact Host owner");
+        assert_eq!(control.pending_request_id.as_deref(), Some(request_id));
+        assert_eq!(control.effect_generation, 0);
+        assert_eq!(control.cancellation, Some(exact));
+        assert_eq!(
+            control.cancellation.map(|window| window.terminal_cutoff),
+            Some(exact.terminal_cutoff)
+        );
+        drop(control);
+        assert!(
+            !runtime
+                .active
+                .claim_request("request-wrong-generation-zero-owner")
+        );
+        assert_eq!(settle_exact_host_cancel(&runtime, request_id), accepted);
+        assert!(runtime.wait_for_accepted_cancellation_cleanup());
+        assert!(
+            runtime
+                .active
+                .claim_request("request-after-generation-zero-settlement")
+        );
+        runtime.finish_active_request_for_test();
+    }
+
+    #[test]
+    fn deferred_host_cancellations_are_bounded_and_overflow_fails_closed() {
+        let active = ActiveRuntime::default();
+        let accepted_at = Instant::now();
+        let records = (0..65)
+            .map(|index| HostCancellationRecord {
+                accepted: AcceptedCancellation {
+                    accepted_at,
+                    source: CancellationSource::RendererLost,
+                },
+                request_id: format!("request-deferred-{index}"),
+            })
+            .collect::<Vec<_>>();
+
+        active.defer_host_cancellations(&records);
+
+        let deferred = active
+            .deferred_cancellations
+            .lock()
+            .expect("deferred cancellations");
+        assert!(
+            deferred.len() <= 64,
+            "unmatched Host records must have a fixed memory bound"
+        );
+        drop(deferred);
+        assert!(active.deferred_cancellation_overflowed());
+        assert!(!active.claim_request("request-unrelated-after-overflow"));
+    }
+
+    #[test]
+    fn deferred_overflow_preserves_an_exact_active_host_token_and_cutoff() {
+        let runtime = RuntimeHost::unavailable_for_test();
+        let request_id = "request-active-before-overflow";
+        runtime.set_active_request_for_test(request_id);
+        let accepted = AcceptedCancellation {
+            accepted_at: Instant::now() - Duration::from_millis(17),
+            source: CancellationSource::RendererLost,
+        };
+        runtime.accept_request_cancellation(request_id, accepted);
+        let exact = runtime
+            .cancellation_window_for_test()
+            .expect("exact active Host token");
+        let unrelated = (0..=MAX_DEFERRED_CANCELLATIONS)
+            .map(|index| HostCancellationRecord {
+                accepted: AcceptedCancellation {
+                    accepted_at: Instant::now(),
+                    source: CancellationSource::User,
+                },
+                request_id: format!("request-overflow-unrelated-{index}"),
+            })
+            .collect::<Vec<_>>();
+
+        runtime.active.defer_host_cancellations(&unrelated);
+        {
+            let mut control = runtime.active.control.lock().expect("overflow control");
+            runtime
+                .active
+                .materialize_deferred_cancellation(&mut control);
+            assert_eq!(control.cancellation, Some(exact));
+            assert_eq!(
+                control
+                    .cancellation
+                    .map(|cancellation| cancellation.terminal_cutoff),
+                Some(exact.terminal_cutoff)
+            );
+        }
+        assert_eq!(settle_exact_host_cancel(&runtime, request_id), accepted);
+        assert!(!runtime.active.claim_request("request-blocked-by-overflow"));
+    }
+
+    #[test]
+    fn overflow_never_materializes_into_an_unrelated_owner_and_exact_records_still_settle() {
+        let runtime = RuntimeHost::unavailable_for_test();
+        let exact_request = "request-exact-amid-overflow";
+        let accepted = AcceptedCancellation {
+            accepted_at: Instant::now() - Duration::from_millis(23),
+            source: CancellationSource::RendererLost,
+        };
+        let records = (0..=MAX_DEFERRED_CANCELLATIONS)
+            .map(|index| HostCancellationRecord {
+                accepted: AcceptedCancellation {
+                    accepted_at: Instant::now(),
+                    source: CancellationSource::User,
+                },
+                request_id: format!("request-overflow-fill-{index}"),
+            })
+            .collect::<Vec<_>>();
+        runtime.active.defer_host_cancellations(&records);
+        assert!(runtime.active.deferred_cancellation_overflowed());
+        {
+            let mut control = RuntimeControl {
+                request_id: Some("request-unrelated-owner".to_owned()),
+                ..RuntimeControl::default()
+            };
+            runtime
+                .active
+                .materialize_deferred_cancellation(&mut control);
+            assert!(control.cancellation.is_none());
+        }
+        runtime.accept_request_cancellation(exact_request, accepted);
+        assert_eq!(
+            runtime
+                .cancellation_window_for_test()
+                .and_then(|cancellation| cancellation.host_acceptance),
+            Some(accepted),
+            "a matching Host record accepted after overflow remains exact"
+        );
+        assert_eq!(settle_exact_host_cancel(&runtime, exact_request), accepted);
+        assert!(
+            !runtime
+                .active
+                .claim_request("request-blocked-after-exact-settlement")
+        );
+    }
+
+    #[test]
+    fn reservation_rollback_keeps_exact_host_owner_when_typed_storage_is_full() {
+        let runtime = RuntimeHost::unavailable_for_test();
+        let request_id = "request-capacity-owned-host";
+        let accepted = AcceptedCancellation {
+            accepted_at: Instant::now() - Duration::from_millis(31),
+            source: CancellationSource::RendererLost,
+        };
+        let records = (0..MAX_DEFERRED_CANCELLATIONS)
+            .map(|index| HostCancellationRecord {
+                accepted: AcceptedCancellation {
+                    accepted_at: Instant::now(),
+                    source: CancellationSource::User,
+                },
+                request_id: format!("request-capacity-fill-{index}"),
+            })
+            .collect::<Vec<_>>();
+        runtime.active.defer_host_cancellations(&records);
+        runtime.accept_request_cancellation(request_id, accepted);
+        let reservation = runtime
+            .active
+            .reserve_request(request_id)
+            .expect("exact generation-zero Host owner may reserve its request");
+        let exact = reservation.cancellation.expect("reserved exact Host token");
+
+        runtime.active.rollback_request_reservation(&reservation);
+
+        assert!(runtime.active.deferred_cancellation_overflowed());
+        let control = runtime.active.control.lock().expect("capacity exact owner");
+        assert_eq!(control.pending_request_id.as_deref(), Some(request_id));
+        assert_eq!(control.effect_generation, reservation.effect_generation);
+        assert_eq!(control.cancellation, Some(exact));
+        drop(control);
+        assert_eq!(settle_exact_host_cancel(&runtime, request_id), accepted);
+        let control = runtime.active.control.lock().expect("capacity settlement");
+        assert!(control.request_id.is_none());
+        assert!(control.pending_request_id.is_none());
+        assert!(control.cancellation.is_none());
+        assert_eq!(control.effect_generation, 0);
+    }
+
+    #[test]
+    fn delayed_unmatched_host_records_remain_exact_until_claim_or_settlement() {
+        let active = ActiveRuntime::default();
+        let now = Instant::now();
+        active.defer_host_cancellations(&[
+            HostCancellationRecord {
+                accepted: AcceptedCancellation {
+                    accepted_at: now - TURN_TERMINAL_BUDGET - Duration::from_millis(1),
+                    source: CancellationSource::RendererLost,
+                },
+                request_id: "request-stale".to_owned(),
+            },
+            HostCancellationRecord {
+                accepted: AcceptedCancellation {
+                    accepted_at: now,
+                    source: CancellationSource::RendererLost,
+                },
+                request_id: "request-live".to_owned(),
+            },
+        ]);
+        let mut control = RuntimeControl {
+            request_id: Some("request-live".to_owned()),
+            ..RuntimeControl::default()
+        };
+
+        active.materialize_deferred_cancellation(&mut control);
+
+        assert_eq!(
+            control
+                .cancellation
+                .and_then(|cancellation| cancellation.host_acceptance)
+                .map(|accepted| accepted.accepted_at),
+            Some(now)
+        );
+        assert!(
+            active
+                .deferred_cancellations
+                .lock()
+                .expect("exact deferred cancellations")
+                .iter()
+                .any(|item| matches!(
+                    item,
+                    DeferredRuntimeCancellation::Host(record)
+                        if record.request_id == "request-stale"
+                )),
+            "an accepted nonmatching Host record must remain exact beyond five seconds"
+        );
+        let stale = active
+            .take_exact_deferred_host_cancellation("request-stale")
+            .expect("delayed exact settlement");
+        assert_eq!(
+            stale.host_acceptance.map(|accepted| accepted.accepted_at),
+            Some(now - TURN_TERMINAL_BUDGET - Duration::from_millis(1))
+        );
+        assert!(
+            active
+                .deferred_cancellations
+                .lock()
+                .expect("drained exact cancellations")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn exact_deferred_host_cancellation_materializes_atomically_with_request_claim() {
+        let active = ActiveRuntime::default();
+        let accepted = AcceptedCancellation {
+            accepted_at: Instant::now(),
+            source: CancellationSource::RendererLost,
+        };
+        active.defer_host_cancellations(&[HostCancellationRecord {
+            accepted,
+            request_id: "request-claimed".to_owned(),
+        }]);
+
+        assert!(active.claim_request("request-claimed"));
+
+        assert_eq!(
+            active
+                .cancellation_window()
+                .and_then(|cancellation| cancellation.host_acceptance),
+            Some(accepted),
+            "the claim must own its deferred Host token before any runtime effect"
+        );
+        active.finish_request();
     }
 
     #[test]
@@ -6167,7 +10201,7 @@ mod tests {
         let active = ActiveRuntime::default();
         active.running.store(true, Ordering::Release);
         active.cancel(RuntimeCancellation::AppShutdown);
-        assert!(active.begin_request("request"));
+        assert!(active.begin_request("request", None));
         active.cancel(RuntimeCancellation::RendererLost);
         active.cancel(RuntimeCancellation::User);
         assert_eq!(
@@ -6519,7 +10553,7 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_host_and_unspawnable_runtime_are_distinct() {
+    fn unavailable_host_and_malformed_runtime_are_distinct() {
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -6536,14 +10570,9 @@ mod tests {
         unavailable.cancel_for_renderer_loss();
 
         let fixture = Fixture::new();
-        let unspawnable = RuntimeHost::for_test(
-            fixture.binary.clone(),
-            fixture.home.clone(),
-            fixture.work.clone(),
-            sha256_file(&fixture.binary).expect("digest"),
-        );
+        let malformed = fixture.scripted_host("#!/bin/sh\nread -r _\nexit 0\n");
         assert_eq!(
-            unspawnable.check("unspawnable", None).state,
+            malformed.check("malformed", None).state,
             RuntimeReadinessState::Incompatible
         );
     }
@@ -6600,7 +10629,24 @@ mod tests {
                 .expect("retained work set")
                 .contains(&retained)
         );
-        assert!(active.claim_request("retry-cleanup"));
+        assert!(
+            !active.claim_request("retry-cleanup"),
+            "the first retry only schedules owned asynchronous recovery"
+        );
+        let recovery_deadline = Instant::now() + Duration::from_secs(1);
+        let claimed = loop {
+            if active.claim_request("retry-cleanup") {
+                break true;
+            }
+            if Instant::now() >= recovery_deadline {
+                break false;
+            }
+            thread::yield_now();
+        };
+        assert!(
+            claimed,
+            "bounded owned recovery must unblock the next request"
+        );
         assert!(!retained.exists());
         active.finish_request();
     }
@@ -6694,6 +10740,7 @@ mod tests {
             None,
             &active,
             &AtomicU64::new(0),
+            &AtomicU64::new(0),
             Instant::now() + DEFAULT_REQUEST_TIMEOUT,
         );
         assert_eq!(readiness.state, RuntimeReadinessState::ContainmentFailed);
@@ -6749,6 +10796,91 @@ wait
             *host.active.process_group.lock().expect("process group"),
             None
         );
+    }
+
+    #[test]
+    fn readiness_settlement_poison_cannot_publish_a_computed_ready_result() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let home = fixture.home.to_string_lossy();
+        let runtime = fixture.scripted_host(&format!(
+            r#"#!/bin/sh
+read -r initialize
+printf '%s\n' '{{"id":1,"result":{{"userAgent":"codex_cli_rs/0.145.0","codexHome":"{home}","platformFamily":"unix","platformOs":"macos"}}}}'
+read -r initialized
+read -r account
+printf '%s\n' '{{"id":2,"result":{{"account":{{"type":"chatgpt","email":"redacted","planType":"plus"}},"requiresOpenaiAuth":true}}}}'
+"#
+        ));
+        let nonce = "5".repeat(64);
+        let mut lifecycle = crate::HostLifecycle::default();
+        let generation = lifecycle
+            .begin_renderer_session(nonce.clone())
+            .expect("settlement poison renderer");
+        let sender = lifecycle.sender_for_document("main", "tauri://localhost", generation, &nonce);
+        let request_id =
+            keiko_ui_port::canonical_request_id(generation, 1).expect("settlement poison ID");
+        let request = format!(
+            r#"{{"schemaVersion":1,"requestId":"{request_id}","sequence":1,"timeoutMs":1000,"operation":{{"kind":"runtime-readiness"}}}}"#
+        );
+        let lifecycle = Arc::new(Mutex::new(lifecycle));
+        let (settlement_entered, release_settlement) =
+            runtime.install_readiness_settlement_hook_for_test();
+        let running_lifecycle = Arc::clone(&lifecycle);
+        let running_runtime = runtime.clone();
+        let pending = thread::spawn(move || {
+            runtime_request(
+                &running_lifecycle,
+                &running_runtime,
+                &sender,
+                None,
+                &request,
+            )
+        });
+        settlement_entered
+            .recv_timeout(Duration::from_secs(3))
+            .expect("computed readiness paused before settlement");
+
+        runtime.poison_control_for_test();
+        release_request_claim(&release_settlement);
+
+        let output = pending.join().expect("poisoned readiness settlement");
+        assert!(output.encoded.contains(r#""state":"containment-failed""#));
+        assert!(!output.encoded.contains(r#""state":"ready""#));
+        assert!(
+            !output.encoded.contains(r#""descriptor""#),
+            "a poisoned settlement must not retain readiness authority"
+        );
+        assert!(runtime.active.control.is_poisoned());
+        {
+            let control = runtime
+                .active
+                .control
+                .lock()
+                .expect_err("settlement poison remains observable")
+                .into_inner();
+            assert!(control.request_id.is_none());
+            assert!(control.pending_request_id.is_none());
+            assert_eq!(control.effect_generation, 0);
+            assert_eq!(control.cancellation, control.closed_control_failure_token);
+            assert!(control.cancellation.is_some());
+        }
+        assert!(
+            runtime
+                .active
+                .closed_control_failure_cleanup
+                .load(Ordering::Acquire)
+        );
+        assert!(
+            runtime
+                .active
+                .claim_request("request-after-readiness-settlement-poison")
+        );
+        assert!(!runtime.active.control.is_poisoned());
+        assert!(runtime.cancellation_window_for_test().is_none());
+        runtime.finish_active_request_for_test();
     }
 
     #[test]
@@ -7510,6 +11642,38 @@ printf '%s\n' '{"method":"item/tool/call","id":7,"params":{"path":"/private/secr
     }
 
     #[test]
+    fn accepted_cancellation_fences_a_late_completion_frame_before_projection_mutation() {
+        let active = ActiveRuntime::default();
+        active.running.store(true, Ordering::Release);
+        active
+            .control
+            .lock()
+            .expect("cancellation control")
+            .cancellation = Some(AcceptedRuntimeCancellation::new(
+            RuntimeCancellation::User,
+            Instant::now(),
+        ));
+        let mut projection = TurnProtocolProjection::new(
+            Path::new("/private/tmp/codex-home"),
+            Path::new("/private/tmp/codex-work"),
+        );
+        projection.stage = TurnProjectionStage::Active;
+        projection.thread_id = Some("thread-1".to_owned());
+        projection.turn_id = Some("turn-1".to_owned());
+
+        assert_eq!(
+            accept_turn_frame(
+                &active,
+                &mut projection,
+                br#"{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","error":null}}}"#,
+            ),
+            Err(RuntimeCancellation::User)
+        );
+        assert!(projection.agent_text.is_empty());
+        assert_eq!(projection.stage, TurnProjectionStage::Active);
+    }
+
+    #[test]
     fn fake_turn_preserves_authenticated_home_uses_disposable_sqlite_and_cleans_descendants() {
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
@@ -7720,6 +11884,71 @@ while :; do /bin/sleep 1; done
     }
 
     #[test]
+    fn host_control_failure_during_readiness_retains_closed_cleanup_until_dead_proof() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let host = fixture.scripted_host(
+            r#"#!/bin/sh
+trap '' TERM
+read -r initialize
+printf '%s\n' '{"id":1,"result":{"userAgent":"codex_cli_rs/0.145.0","codexHome":"'"$CODEX_HOME"'","platformFamily":"unix","platformOs":"macos"}}'
+while :; do /bin/sleep 1; done
+"#,
+        );
+        let published = host.active.observe_next_process_group();
+        let checking_host = host.clone();
+        let pending = thread::spawn(move || checking_host.check("request-readiness-poison", None));
+        let process_group = published
+            .recv_timeout(Duration::from_secs(10))
+            .expect("active readiness process group");
+
+        let detection_started = Instant::now();
+        host.handoff_host_cancellation(
+            UnmatchedHostCancellationPolicy::CloseContainment,
+            || HostCancellationMutation::ControlFailed(()),
+            |()| (),
+        );
+        let detection_observed = Instant::now();
+        let closed = host
+            .cancellation_window_for_test()
+            .expect("readiness Host-control failure token");
+        assert!(closed.accepted_at >= detection_started);
+        assert_eq!(closed.cleanup_cutoff, closed.accepted_at);
+        assert_eq!(closed.terminal_cutoff, closed.accepted_at);
+        assert!(closed.terminal_cutoff <= detection_observed);
+        assert!(
+            !host
+                .active
+                .claim_request("request-readiness-before-settlement")
+        );
+
+        let readiness = pending.join().expect("readiness thread");
+        assert_eq!(readiness.state, RuntimeReadinessState::CleanupFailed);
+        assert_eq!(
+            host.cancellation_window_for_test()
+                .expect("retained readiness token"),
+            closed
+        );
+        let cleanup_deadline = Instant::now() + TURN_CLEANUP_RESERVE;
+        while !host
+            .active
+            .claim_request("request-readiness-after-dead-proof")
+        {
+            assert!(
+                Instant::now() <= cleanup_deadline,
+                "readiness cleanup remained retained after strict dead proof"
+            );
+            thread::yield_now();
+        }
+        assert!(!process_group_exists(process_group.process_id));
+        assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
+        assert!(host.cancellation_window_for_test().is_none());
+        host.active.finish_request();
+    }
+
+    #[test]
     fn user_cancel_turn_reports_stopping_then_cancelled_and_cleans_the_tree() {
         let _process_guard = PROCESS_TEST_LOCK
             .lock()
@@ -7755,11 +11984,16 @@ while :; do /bin/sleep 1; done
 
         let stopping_started = Instant::now();
         host.cancel_request("request-cancel-turn");
+        let cancellation_window = host
+            .active
+            .cancellation_window()
+            .expect("accepted cancellation window");
         let (cancelled, updates) = pending.join().expect("turn thread");
+        let terminal_observed_at = Instant::now();
         assert!(
-            stopping_started.elapsed() < Duration::from_secs(2),
-            "cancel escalation exceeded its bounded grace: {:?}",
-            stopping_started.elapsed()
+            !terminal_cutoff_exceeded(terminal_observed_at, cancellation_window.terminal_cutoff),
+            "cancel terminal exceeded its accepted monotonic cutoff: {:?}",
+            terminal_observed_at.saturating_duration_since(stopping_started)
         );
         assert_eq!(cancelled.state, TurnState::Cancelled);
         assert_eq!(cancelled.reason, Some(TurnReason::UserCancelled));
@@ -7771,6 +12005,3005 @@ while :; do /bin/sleep 1; done
         assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
         assert!(!host.active.running.load(Ordering::Acquire));
         assert_eq!(*host.active.process_group.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn accepted_cancel_drives_one_injected_clock_window_through_cleanup_and_terminal() {
+        let fixture = Fixture::new();
+        let tracked_directory = fixture.work.join("tracked-cancellation-cleanup");
+        fs::create_dir(&tracked_directory).expect("tracked private work directory");
+        let nonce = "a".repeat(64);
+        let mut lifecycle = crate::HostLifecycle::default();
+        let generation = lifecycle
+            .begin_renderer_session(nonce.clone())
+            .expect("renderer generation");
+        lifecycle.set_test_now_ms(0);
+        let request_id = keiko_ui_port::canonical_request_id(generation, 1).unwrap();
+        let request = format!(
+            r#"{{"schemaVersion":1,"requestId":"{request_id}","sequence":1,"timeoutMs":120000,"operation":{{"kind":"codex-turn-start","workspaceGeneration":1,"task":"Bounded task."}}}}"#
+        );
+        let sender = lifecycle.sender_for_document("main", "tauri://localhost", generation, &nonce);
+        let accepted_request = lifecycle
+            .begin_application_request(&sender, request.as_bytes())
+            .expect("Host request");
+        lifecycle.set_test_now_ms(1);
+        let lifecycle = Mutex::new(lifecycle);
+        let cancel = format!(r#"{{"schemaVersion":1,"requestId":"{request_id}"}}"#);
+        let runtime = RuntimeHost::from_configuration(None);
+        runtime.set_active_request_for_test(&request_id);
+        let output = crate::tauri_adapter::dispatch_cancel_with_runtime_fence(
+            &lifecycle,
+            &runtime,
+            "main",
+            "tauri://localhost",
+            generation,
+            &nonce,
+            &cancel,
+        );
+        let host_acceptance = output.accepted.expect("literal Host token");
+        let first_window = runtime
+            .active
+            .cancellation_window()
+            .expect("accepted cancellation window");
+        assert_eq!(first_window.host_acceptance, Some(host_acceptance));
+        let duplicate = crate::tauri_adapter::dispatch_cancel_with_runtime_fence(
+            &lifecycle,
+            &runtime,
+            "main",
+            "tauri://localhost",
+            generation,
+            &nonce,
+            &cancel,
+        );
+        assert!(duplicate.accepted.is_some());
+        assert_eq!(runtime.active.cancellation_window(), Some(first_window));
+
+        fs::set_permissions(&fixture.work, fs::Permissions::from_mode(0o500))
+            .expect("deny delayed directory cleanup");
+        let directory_cleaned = cleanup_or_track_work_directory_until_at(
+            &runtime.active,
+            &tracked_directory,
+            first_window.cleanup_cutoff,
+            host_acceptance.accepted_at + Duration::from_millis(4_600),
+        );
+        assert!(!directory_cleaned);
+        let mut session = keiko_application::turn::TurnSession::new(
+            generation,
+            1,
+            1,
+            "Bounded task.".to_owned(),
+            keiko_application::runtime::RuntimeDescriptor::approved(),
+        )
+        .unwrap();
+        session.request_stop(TurnReason::UserCancelled).unwrap();
+        session.settle_cleanup(false).unwrap();
+        lifecycle.lock().unwrap().set_test_now_ms(4_900);
+        let final_output = crate::turn::finish_turn_with_runtime(
+            &lifecycle,
+            &runtime,
+            &request_id,
+            accepted_request,
+            session.view(),
+            &mut |commit| commit().is_ok(),
+        );
+        assert!(final_output.encoded.contains(r#""state":"cleanup-failed""#));
+        assert!(!runtime.active.claim_request("request-fresh"));
+
+        fs::set_permissions(&fixture.work, fs::Permissions::from_mode(0o700))
+            .expect("restore fixture cleanup permission");
+        let reconciliation_deadline = Instant::now() + Duration::from_secs(1);
+        while !reconcile_retained_work_directories(&runtime.active) {
+            assert!(
+                Instant::now() < reconciliation_deadline,
+                "tracked cleanup worker did not settle"
+            );
+            thread::yield_now();
+        }
+        assert!(runtime.active.claim_request("request-fresh"));
+        runtime.active.finish_request();
+    }
+
+    #[test]
+    fn production_coordinator_carries_tauri_cancel_through_process_cleanup_and_host_response() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let repository = fixture.root.join("repository");
+        fs::create_dir(&repository).expect("repository identity");
+        fs::create_dir(repository.join(".git")).expect("repository marker");
+        let runtime = fixture.scripted_host(
+            r#"#!/bin/sh
+trap '' TERM
+read -r initialize
+printf '%s\n' '{"id":1,"result":{"userAgent":"codex_cli_rs/0.145.0","codexHome":"'"$CODEX_HOME"'","platformFamily":"unix","platformOs":"macos"}}'
+while :; do /bin/sleep 1; done
+"#,
+        );
+        let mut workspace = crate::WorkspaceHost::default();
+        let workspace_generation = match workspace
+            .select(crate::FolderPickerResult::Selected(repository.clone()))
+            .expect("workspace selection")
+        {
+            keiko_application::workspace::WorkspaceView::Bound { generation, .. } => generation,
+            _ => panic!("bound workspace"),
+        };
+        let nonce = "b".repeat(64);
+        let mut lifecycle = crate::HostLifecycle::default();
+        let generation = lifecycle
+            .begin_renderer_session(nonce.clone())
+            .expect("renderer generation");
+        let sender = lifecycle.sender_for_document("main", "tauri://localhost", generation, &nonce);
+        let request_id = keiko_ui_port::canonical_request_id(generation, 1).unwrap();
+        let request = format!(
+            r#"{{"schemaVersion":1,"requestId":"{request_id}","sequence":1,"timeoutMs":120000,"operation":{{"kind":"codex-turn-start","workspaceGeneration":{workspace_generation},"task":"Bounded task."}}}}"#
+        );
+        let lifecycle = Arc::new(Mutex::new(lifecycle));
+        let workspace = Arc::new(Mutex::new(workspace));
+        let updates = Arc::new(Mutex::new(Vec::new()));
+        let published = runtime.active.observe_next_process_group();
+        let running_lifecycle = Arc::clone(&lifecycle);
+        let running_workspace = Arc::clone(&workspace);
+        let running_runtime = runtime.clone();
+        let running_updates = Arc::clone(&updates);
+        let running_sender = sender.clone();
+        let pending = thread::spawn(move || {
+            crate::turn::turn_request(
+                &running_lifecycle,
+                &running_workspace,
+                &running_runtime,
+                &running_sender,
+                &request,
+                |view| running_updates.lock().expect("updates").push(view),
+            )
+        });
+        let process_group = published
+            .recv_timeout(Duration::from_secs(5))
+            .expect("active production process group");
+        assert!(process_group_exists(process_group.process_id));
+
+        let cancellation = format!(r#"{{"schemaVersion":1,"requestId":"{request_id}"}}"#);
+        let cancelled = crate::tauri_adapter::dispatch_cancel_with_runtime_fence(
+            &lifecycle,
+            &runtime,
+            "main",
+            "tauri://localhost",
+            generation,
+            &nonce,
+            &cancellation,
+        );
+        let accepted = cancelled.accepted.expect("literal Tauri Host token");
+        let completion_deadline = accepted.accepted_at + Duration::from_secs(5);
+        while !pending.is_finished() {
+            assert!(
+                Instant::now() <= completion_deadline,
+                "production coordinator exceeded the accepted terminal cutoff"
+            );
+            thread::yield_now();
+        }
+        let output = pending.join().expect("production turn thread");
+
+        assert!(output.encoded.contains(r#""state":"cancelled""#));
+        assert!(output.encoded.contains(r#""reason":"user-cancelled""#));
+        assert_eq!(
+            updates
+                .lock()
+                .expect("updates")
+                .iter()
+                .map(|view| view.state)
+                .collect::<Vec<_>>(),
+            vec![
+                TurnState::Preflighting,
+                TurnState::Stopping,
+                TurnState::Cancelled,
+            ],
+            "the actual terminal channel callback must match the final response"
+        );
+        assert!(!process_group_exists(process_group.process_id));
+        assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
+        assert!(
+            runtime
+                .active
+                .claim_request("request-fresh-after-settlement")
+        );
+        runtime.active.finish_request();
+    }
+
+    #[test]
+    fn production_host_control_failure_signals_cleans_and_retains_the_exact_runtime() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let repository = fixture.root.join("repository");
+        fs::create_dir(&repository).expect("repository identity");
+        fs::create_dir(repository.join(".git")).expect("repository marker");
+        let runtime = fixture.scripted_host(
+            r#"#!/bin/sh
+trap '' TERM
+read -r initialize
+printf '%s\n' '{"id":1,"result":{"userAgent":"codex_cli_rs/0.145.0","codexHome":"'"$CODEX_HOME"'","platformFamily":"unix","platformOs":"macos"}}'
+while :; do /bin/sleep 1; done
+"#,
+        );
+        let mut workspace = crate::WorkspaceHost::default();
+        let workspace_generation = match workspace
+            .select(crate::FolderPickerResult::Selected(repository))
+            .expect("workspace selection")
+        {
+            keiko_application::workspace::WorkspaceView::Bound { generation, .. } => generation,
+            _ => panic!("bound workspace"),
+        };
+        let nonce = "f".repeat(64);
+        let mut lifecycle = crate::HostLifecycle::default();
+        let generation = lifecycle
+            .begin_renderer_session(nonce.clone())
+            .expect("renderer generation");
+        let sender = lifecycle.sender_for_document("main", "tauri://localhost", generation, &nonce);
+        let request_id = keiko_ui_port::canonical_request_id(generation, 1).unwrap();
+        let request = format!(
+            r#"{{"schemaVersion":1,"requestId":"{request_id}","sequence":1,"timeoutMs":120000,"operation":{{"kind":"codex-turn-start","workspaceGeneration":{workspace_generation},"task":"Bounded task."}}}}"#
+        );
+        let lifecycle = Arc::new(Mutex::new(lifecycle));
+        let workspace = Arc::new(Mutex::new(workspace));
+        let published = runtime.active.observe_next_process_group();
+        let running_lifecycle = Arc::clone(&lifecycle);
+        let running_workspace = Arc::clone(&workspace);
+        let running_runtime = runtime.clone();
+        let pending = thread::spawn(move || {
+            crate::turn::turn_request(
+                &running_lifecycle,
+                &running_workspace,
+                &running_runtime,
+                &sender,
+                &request,
+                |_| {},
+            )
+        });
+        let process_group = published
+            .recv_timeout(Duration::from_secs(5))
+            .expect("active production process group");
+        assert!(process_group_exists(process_group.process_id));
+
+        let _ = std::panic::catch_unwind({
+            let lifecycle = Arc::clone(&lifecycle);
+            move || {
+                let _guard = lifecycle.lock().expect("lifecycle before poison");
+                panic!("poison active Host control");
+            }
+        });
+        let cancellation = format!(r#"{{"schemaVersion":1,"requestId":"{request_id}"}}"#);
+        let detection_started = Instant::now();
+        let failed = crate::tauri_adapter::dispatch_cancel_with_runtime_fence(
+            &lifecycle,
+            &runtime,
+            "main",
+            "tauri://localhost",
+            generation,
+            &nonce,
+            &cancellation,
+        );
+        let detection_observed = Instant::now();
+        assert!(failed.host_control_failed);
+        assert!(failed.encoded.contains("internal-failure"));
+        let closed = runtime
+            .cancellation_window_for_test()
+            .expect("closed Host-control cancellation");
+        assert!(closed.accepted_at >= detection_started);
+        assert_eq!(closed.cleanup_cutoff, closed.accepted_at);
+        assert_eq!(closed.terminal_cutoff, closed.accepted_at);
+        assert!(closed.terminal_cutoff <= detection_observed);
+        assert!(!runtime.active.claim_request("request-fresh-before-proof"));
+
+        let completion_deadline = Instant::now() + TURN_TERMINAL_BUDGET;
+        while !pending.is_finished() {
+            assert!(
+                Instant::now() <= completion_deadline,
+                "Host-control containment exceeded the terminal cutoff"
+            );
+            thread::yield_now();
+        }
+        let output = pending.join().expect("production turn thread");
+        assert!(output.encoded.contains("internal-failure"));
+        let retained = runtime
+            .cancellation_window_for_test()
+            .expect("closed control-failure token retained through settlement");
+        assert_eq!(retained.accepted_at, closed.accepted_at);
+        assert_eq!(retained.cleanup_cutoff, closed.cleanup_cutoff);
+        assert_eq!(retained.terminal_cutoff, closed.terminal_cutoff);
+        let cleanup_deadline = Instant::now() + TURN_CLEANUP_RESERVE;
+        while process_group_exists(process_group.process_id) {
+            assert!(
+                Instant::now() <= cleanup_deadline,
+                "owned production cleanup must become strictly proven"
+            );
+            thread::yield_now();
+        }
+        while !runtime.active.claim_request("request-fresh-after-proof") {
+            assert!(
+                Instant::now() <= cleanup_deadline,
+                "fresh work remained blocked after strict cleanup proof"
+            );
+            thread::yield_now();
+        }
+        assert!(!process_group_exists(process_group.process_id));
+        assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
+        assert!(runtime.cancellation_window_for_test().is_none());
+        runtime.active.finish_request();
+    }
+
+    fn runtime_with_retained_control_failure() -> (RuntimeHost, AcceptedRuntimeCancellation) {
+        let runtime = RuntimeHost::unavailable_for_test();
+        runtime.set_active_request_for_test("request-old-control-failure");
+        runtime.handoff_host_cancellation(
+            UnmatchedHostCancellationPolicy::CloseContainment,
+            || HostCancellationMutation::ControlFailed(()),
+            |()| (),
+        );
+        let closed = runtime
+            .cancellation_window_for_test()
+            .expect("old closed ControlFailed token");
+        runtime.finish_active_request_for_test();
+        (runtime, closed)
+    }
+
+    fn release_request_claim(release: &Arc<(Mutex<bool>, Condvar)>) {
+        let (released, wake) = &**release;
+        *released.lock().expect("request claim release") = true;
+        wake.notify_all();
+    }
+
+    fn install_exact_user_host_cancel(
+        runtime: &RuntimeHost,
+        request_id: &str,
+        accepted_at: Instant,
+    ) {
+        runtime.handoff_host_cancellation(
+            UnmatchedHostCancellationPolicy::Ignore,
+            || {
+                HostCancellationMutation::Completed(
+                    (),
+                    vec![HostCancellationRecord {
+                        accepted: AcceptedCancellation {
+                            accepted_at,
+                            source: CancellationSource::User,
+                        },
+                        request_id: request_id.to_owned(),
+                    }],
+                )
+            },
+            |()| (),
+        );
+    }
+
+    fn settle_exact_host_cancel(runtime: &RuntimeHost, request_id: &str) -> AcceptedCancellation {
+        let (published, finalized) = runtime.settle_host_turn(
+            request_id,
+            |refresh, _control_failed| refresh(),
+            |published, finalized| (published, finalized),
+        );
+        assert_eq!(published, finalized);
+        published.expect("exact Host cancellation settlement")
+    }
+
+    #[test]
+    fn failed_turn_claim_settles_exact_host_cancel_on_original_request() {
+        let repository = std::env::temp_dir().join(format!(
+            "keiko-failed-turn-claim-{}-{}",
+            std::process::id(),
+            FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(repository.join(".git")).expect("turn claim workspace");
+        let mut workspace = crate::WorkspaceHost::default();
+        let workspace_generation = match workspace
+            .select(crate::FolderPickerResult::Selected(repository.clone()))
+            .expect("turn claim workspace selection")
+        {
+            keiko_application::workspace::WorkspaceView::Bound { generation, .. } => generation,
+            _ => panic!("bound turn claim workspace"),
+        };
+        let nonce = "9".repeat(64);
+        let mut lifecycle = crate::HostLifecycle::default();
+        let generation = lifecycle
+            .begin_renderer_session(nonce.clone())
+            .expect("turn claim renderer");
+        let sender = lifecycle.sender_for_document("main", "tauri://localhost", generation, &nonce);
+        let request_id =
+            keiko_ui_port::canonical_request_id(generation, 1).expect("turn request ID");
+        let request = format!(
+            r#"{{"schemaVersion":1,"requestId":"{request_id}","sequence":1,"timeoutMs":120000,"operation":{{"kind":"codex-turn-start","workspaceGeneration":{workspace_generation},"task":"Bounded task."}}}}"#
+        );
+        let lifecycle = Arc::new(Mutex::new(lifecycle));
+        let workspace = Arc::new(Mutex::new(workspace));
+        let runtime = RuntimeHost::unavailable_for_test();
+        let (commit_entered, release_commit) = runtime.install_request_commit_hook_for_test();
+        let running_lifecycle = Arc::clone(&lifecycle);
+        let running_workspace = Arc::clone(&workspace);
+        let running_runtime = runtime.clone();
+        let pending = thread::spawn(move || {
+            crate::turn::turn_request(
+                &running_lifecycle,
+                &running_workspace,
+                &running_runtime,
+                &sender,
+                &request,
+                |_| {},
+            )
+        });
+        commit_entered
+            .recv_timeout(Duration::from_secs(1))
+            .expect("turn claim reserved");
+        let records = lifecycle.lock().expect("turn lifecycle").renderer_lost();
+        runtime.defer_host_cancellations(&records);
+        release_request_claim(&release_commit);
+
+        let output = pending.join().expect("failed turn claim settlement");
+        assert!(output.encoded.contains(r#""state":"cancelled""#));
+        assert!(output.encoded.contains(r#""reason":"renderer-lost""#));
+        assert!(!output.encoded.contains(r#""reason":"internal-failure""#));
+        assert!(
+            runtime
+                .active
+                .deferred_cancellations
+                .lock()
+                .expect("turn settlement storage")
+                .is_empty()
+        );
+        fs::remove_dir_all(repository).expect("remove turn claim workspace");
+    }
+
+    #[test]
+    fn failed_readiness_claim_drains_exact_host_cancel_during_host_settlement() {
+        let nonce = "8".repeat(64);
+        let mut lifecycle = crate::HostLifecycle::default();
+        let generation = lifecycle
+            .begin_renderer_session(nonce.clone())
+            .expect("readiness claim renderer");
+        let sender = lifecycle.sender_for_document("main", "tauri://localhost", generation, &nonce);
+        let request_id =
+            keiko_ui_port::canonical_request_id(generation, 1).expect("readiness request ID");
+        let request = format!(
+            r#"{{"schemaVersion":1,"requestId":"{request_id}","sequence":1,"timeoutMs":1000,"operation":{{"kind":"runtime-readiness"}}}}"#
+        );
+        let lifecycle = Arc::new(Mutex::new(lifecycle));
+        let runtime = RuntimeHost::unavailable_for_test();
+        let (commit_entered, release_commit) = runtime.install_request_commit_hook_for_test();
+        let running_lifecycle = Arc::clone(&lifecycle);
+        let running_runtime = runtime.clone();
+        let pending = thread::spawn(move || {
+            runtime_request(
+                &running_lifecycle,
+                &running_runtime,
+                &sender,
+                None,
+                &request,
+            )
+        });
+        commit_entered
+            .recv_timeout(Duration::from_secs(1))
+            .expect("readiness claim reserved");
+        let records = lifecycle
+            .lock()
+            .expect("readiness lifecycle")
+            .renderer_lost();
+        runtime.defer_host_cancellations(&records);
+        release_request_claim(&release_commit);
+
+        let output = pending.join().expect("failed readiness claim settlement");
+        assert!(output.encoded.contains(r#""code":"cancelled""#));
+        assert!(
+            runtime
+                .active
+                .deferred_cancellations
+                .lock()
+                .expect("readiness settlement storage")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn readiness_finish_gap_settles_exact_renderer_and_shutdown_host_authority() {
+        for shutdown in [false, true] {
+            let nonce = if shutdown {
+                "7".repeat(64)
+            } else {
+                "6".repeat(64)
+            };
+            let mut lifecycle = crate::HostLifecycle::default();
+            let generation = lifecycle
+                .begin_renderer_session(nonce.clone())
+                .expect("readiness gap renderer");
+            let sender =
+                lifecycle.sender_for_document("main", "tauri://localhost", generation, &nonce);
+            let request_id =
+                keiko_ui_port::canonical_request_id(generation, 1).expect("readiness gap ID");
+            let request = format!(
+                r#"{{"schemaVersion":1,"requestId":"{request_id}","sequence":1,"timeoutMs":1000,"operation":{{"kind":"runtime-readiness"}}}}"#
+            );
+            let lifecycle = Arc::new(Mutex::new(lifecycle));
+            let runtime = RuntimeHost::unavailable_for_test();
+            let (settlement_entered, release_settlement) =
+                runtime.install_readiness_settlement_hook_for_test();
+            let running_lifecycle = Arc::clone(&lifecycle);
+            let running_runtime = runtime.clone();
+            let pending = thread::spawn(move || {
+                runtime_request(
+                    &running_lifecycle,
+                    &running_runtime,
+                    &sender,
+                    None,
+                    &request,
+                )
+            });
+            settlement_entered
+                .recv_timeout(Duration::from_secs(1))
+                .expect("readiness finished before Host settlement");
+
+            runtime.handoff_host_cancellation(
+                UnmatchedHostCancellationPolicy::Ignore,
+                || {
+                    let records = if shutdown {
+                        lifecycle.lock().expect("shutdown lifecycle").shutdown()
+                    } else {
+                        lifecycle
+                            .lock()
+                            .expect("renderer lifecycle")
+                            .renderer_lost()
+                    };
+                    HostCancellationMutation::Completed((), records)
+                },
+                |()| (),
+            );
+            {
+                let control = runtime.active.control.lock().expect("gap Host authority");
+                assert_eq!(
+                    control.pending_request_id.as_deref(),
+                    Some(request_id.as_str())
+                );
+                assert!(
+                    control
+                        .cancellation
+                        .and_then(|cancellation| cancellation.host_acceptance)
+                        .is_some()
+                );
+            }
+            let exact = runtime
+                .cancellation_window_for_test()
+                .expect("literal gap cancellation");
+            assert_eq!(
+                runtime.check("request-readiness-gap-wrong", None).state,
+                RuntimeReadinessState::ContainmentFailed
+            );
+            assert!(!runtime.claim_turn_request_for_host_settlement("request-turn-gap-wrong"));
+            {
+                let control = runtime
+                    .active
+                    .control
+                    .lock()
+                    .expect("wrong-ID claims preserve exact gap authority");
+                assert_eq!(
+                    control.pending_request_id.as_deref(),
+                    Some(request_id.as_str())
+                );
+                assert_eq!(control.effect_generation, 0);
+                assert_eq!(control.cancellation, Some(exact));
+            }
+            release_request_claim(&release_settlement);
+            let output = pending.join().expect("readiness gap settlement");
+            assert!(output.encoded.contains(r#""code":"cancelled""#));
+            let control = runtime.active.control.lock().expect("settled control");
+            assert!(control.request_id.is_none());
+            assert!(control.pending_request_id.is_none());
+            assert!(control.cancellation.is_none());
+            assert_eq!(control.effect_generation, 0);
+            drop(control);
+            assert!(runtime.active.wait_for_idle(Duration::ZERO));
+            assert_eq!(
+                runtime.check("request-readiness-after-gap", None).state,
+                RuntimeReadinessState::Unavailable
+            );
+        }
+    }
+
+    #[test]
+    fn readiness_host_completion_is_atomic_with_final_exact_runtime_settlement() {
+        let nonce = "8".repeat(64);
+        let mut lifecycle = crate::HostLifecycle::default();
+        let generation = lifecycle
+            .begin_renderer_session(nonce.clone())
+            .expect("atomic readiness renderer");
+        let sender = lifecycle.sender_for_document("main", "tauri://localhost", generation, &nonce);
+        let request_id =
+            keiko_ui_port::canonical_request_id(generation, 1).expect("atomic readiness ID");
+        let request = format!(
+            r#"{{"schemaVersion":1,"requestId":"{request_id}","sequence":1,"timeoutMs":1000,"operation":{{"kind":"runtime-readiness"}}}}"#
+        );
+        let lifecycle = Arc::new(Mutex::new(lifecycle));
+        let runtime = RuntimeHost::unavailable_for_test();
+        let (completion_entered, release_completion) =
+            runtime.install_readiness_completion_hook_for_test();
+        let running_lifecycle = Arc::clone(&lifecycle);
+        let running_runtime = runtime.clone();
+        let pending = thread::spawn(move || {
+            runtime_request(
+                &running_lifecycle,
+                &running_runtime,
+                &sender,
+                None,
+                &request,
+            )
+        });
+        completion_entered
+            .recv_timeout(Duration::from_secs(1))
+            .expect("Runtime settlement owns Host completion boundary");
+
+        let (attempted_sender, attempted) = mpsc::sync_channel(1);
+        let cancelling_lifecycle = Arc::clone(&lifecycle);
+        let cancelling_runtime = runtime.clone();
+        let cancelling = thread::spawn(move || {
+            attempted_sender
+                .send(())
+                .expect("late cancellation attempted");
+            cancelling_runtime.handoff_host_cancellation(
+                UnmatchedHostCancellationPolicy::Ignore,
+                || {
+                    let records = cancelling_lifecycle
+                        .lock()
+                        .expect("late renderer lifecycle")
+                        .renderer_lost();
+                    let retained = records.len();
+                    HostCancellationMutation::Completed(retained, records)
+                },
+                std::convert::identity,
+            )
+        });
+        attempted
+            .recv_timeout(Duration::from_secs(1))
+            .expect("late cancellation reached Runtime owner");
+        assert!(!cancelling.is_finished());
+
+        release_request_claim(&release_completion);
+        let output = pending.join().expect("atomic readiness completion");
+        assert!(output.encoded.contains(r#""state":"unavailable""#));
+        assert_eq!(cancelling.join().expect("late Host cancellation"), 0);
+        let control = runtime
+            .active
+            .control
+            .lock()
+            .expect("atomic settled control");
+        assert!(control.request_id.is_none());
+        assert!(control.pending_request_id.is_none());
+        assert!(control.cancellation.is_none());
+        assert_eq!(control.effect_generation, 0);
+    }
+
+    #[test]
+    fn readiness_exact_settlement_preserves_wrong_id_and_poisoned_containment_owners() {
+        let wrong_id = RuntimeHost::unavailable_for_test();
+        wrong_id.set_active_request_for_test("request-readiness-wrong-owner");
+        let wrong_acceptance = AcceptedCancellation {
+            accepted_at: Instant::now(),
+            source: CancellationSource::User,
+        };
+        wrong_id.accept_request_cancellation("request-readiness-wrong-owner", wrong_acceptance);
+        wrong_id.poison_control_for_test();
+        let view = wrong_id.settle_host_readiness(
+            "request-readiness-settlement",
+            RuntimeReadinessView::terminal(RuntimeReadinessState::Unavailable, 0),
+            std::convert::identity,
+        );
+        assert_eq!(view.state, RuntimeReadinessState::ContainmentFailed);
+        let control = wrong_id
+            .active
+            .control
+            .lock()
+            .expect_err("wrong readiness owner remains poisoned")
+            .into_inner();
+        assert_eq!(
+            control.request_id.as_deref(),
+            Some("request-readiness-wrong-owner")
+        );
+        assert_eq!(
+            control
+                .cancellation
+                .and_then(|cancellation| cancellation.host_acceptance),
+            Some(wrong_acceptance)
+        );
+        drop(control);
+        assert_eq!(
+            settle_exact_host_cancel(&wrong_id, "request-readiness-wrong-owner"),
+            wrong_acceptance
+        );
+        assert!(
+            wrong_id
+                .active
+                .claim_request("request-after-wrong-owner-proof")
+        );
+        wrong_id.finish_active_request_for_test();
+
+        let poisoned = RuntimeHost::unavailable_for_test();
+        poisoned.poison_control_for_test();
+        let exact_acceptance = AcceptedCancellation {
+            accepted_at: Instant::now(),
+            source: CancellationSource::RendererLost,
+        };
+        poisoned
+            .active
+            .defer_host_cancellations(&[HostCancellationRecord {
+                accepted: exact_acceptance,
+                request_id: "request-readiness-poisoned".to_owned(),
+            }]);
+        let view = poisoned.settle_host_readiness(
+            "request-readiness-poisoned",
+            RuntimeReadinessView::terminal(RuntimeReadinessState::ContainmentFailed, 0),
+            std::convert::identity,
+        );
+        assert_eq!(view.state, RuntimeReadinessState::Cancelled);
+        assert!(
+            poisoned
+                .active
+                .deferred_cancellations
+                .lock()
+                .expect("poisoned exact settlement storage")
+                .is_empty()
+        );
+        assert!(poisoned.active.control.is_poisoned());
+    }
+
+    #[test]
+    fn sequential_failed_claim_settlements_drain_typed_storage_without_overflow() {
+        let runtime = RuntimeHost::unavailable_for_test();
+        for index in 0..=MAX_DEFERRED_CANCELLATIONS {
+            let request_id = format!("request-sequential-settlement-{index}");
+            runtime
+                .active
+                .defer_reserved_host_cancellation(HostCancellationRecord {
+                    accepted: AcceptedCancellation {
+                        accepted_at: Instant::now() - TURN_TERMINAL_BUDGET,
+                        source: CancellationSource::User,
+                    },
+                    request_id: request_id.clone(),
+                });
+            assert!(!runtime.active.claim_request(&request_id));
+            assert_eq!(
+                settle_exact_host_cancel(&runtime, &request_id).source,
+                CancellationSource::User
+            );
+            assert!(
+                runtime
+                    .active
+                    .deferred_cancellations
+                    .lock()
+                    .expect("sequential settlement storage")
+                    .is_empty()
+            );
+        }
+        assert!(!runtime.active.deferred_cancellation_overflowed());
+        assert!(
+            runtime
+                .active
+                .claim_request("request-after-sequential-settlements")
+        );
+        runtime.finish_active_request_for_test();
+    }
+
+    #[test]
+    fn exact_host_settlement_does_not_mutate_a_wrong_id_owner() {
+        let runtime = RuntimeHost::unavailable_for_test();
+        let accepted_at = Instant::now();
+        runtime
+            .active
+            .defer_reserved_host_cancellation(HostCancellationRecord {
+                accepted: AcceptedCancellation {
+                    accepted_at,
+                    source: CancellationSource::RendererLost,
+                },
+                request_id: "request-original-settlement".to_owned(),
+            });
+        runtime.set_active_request_for_test("request-unrelated-owner");
+
+        let settled = settle_exact_host_cancel(&runtime, "request-original-settlement");
+
+        assert_eq!(settled.accepted_at, accepted_at);
+        assert_eq!(settled.source, CancellationSource::RendererLost);
+        let control = runtime.active.control.lock().expect("wrong-ID owner");
+        assert_eq!(
+            control.request_id.as_deref(),
+            Some("request-unrelated-owner")
+        );
+        assert!(control.cancellation.is_none());
+        drop(control);
+        assert!(runtime.active.runtime_effect_trace().is_empty());
+        runtime.finish_active_request_for_test();
+    }
+
+    #[test]
+    fn rollback_retains_direct_and_deferred_reservation_owned_host_acceptance() {
+        for deferred in [false, true] {
+            let runtime = RuntimeHost::unavailable_for_test();
+            let request_id = format!("request-reservation-owned-host-{deferred}");
+            let accepted = AcceptedCancellation {
+                accepted_at: Instant::now(),
+                source: CancellationSource::RendererLost,
+            };
+            if deferred {
+                runtime
+                    .active
+                    .defer_host_cancellations(&[HostCancellationRecord {
+                        accepted,
+                        request_id: request_id.clone(),
+                    }]);
+            } else {
+                runtime.accept_request_cancellation(&request_id, accepted);
+            }
+            let reservation = runtime
+                .active
+                .reserve_request(&request_id)
+                .expect("exact Host reservation");
+            assert_eq!(
+                reservation
+                    .cancellation
+                    .and_then(|cancellation| cancellation.host_acceptance),
+                Some(accepted)
+            );
+
+            runtime.active.rollback_request_reservation(&reservation);
+
+            let control = runtime.active.control.lock().expect("rolled back control");
+            assert!(control.request_id.is_none());
+            assert!(control.pending_request_id.is_none());
+            assert!(control.cancellation.is_none());
+            assert_eq!(control.effect_generation, 0);
+            drop(control);
+            assert!(!runtime.active.claim_request(&request_id));
+            assert_eq!(settle_exact_host_cancel(&runtime, &request_id), accepted);
+            assert!(runtime.active.claim_request("request-after-host-rollback"));
+            assert!(runtime.cancellation_window_for_test().is_none());
+            runtime.finish_active_request_for_test();
+        }
+    }
+
+    #[test]
+    fn reconciliation_failures_retain_reservation_host_authority_for_turn_and_readiness() {
+        #[derive(Clone, Copy, Debug)]
+        enum FailureKind {
+            Reader,
+            Process,
+            WorkDirectory,
+        }
+
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for failure in [
+            FailureKind::Reader,
+            FailureKind::Process,
+            FailureKind::WorkDirectory,
+        ] {
+            for readiness in [false, true] {
+                for deferred in [false, true] {
+                    let runtime = RuntimeHost::unavailable_for_test();
+                    let request_id = format!(
+                        "request-retained-failure-{}-{readiness}-{deferred}",
+                        match failure {
+                            FailureKind::Reader => "reader",
+                            FailureKind::Process => "process",
+                            FailureKind::WorkDirectory => "workdir",
+                        }
+                    );
+                    let accepted = AcceptedCancellation {
+                        accepted_at: Instant::now(),
+                        source: CancellationSource::RendererLost,
+                    };
+                    if deferred {
+                        runtime
+                            .active
+                            .defer_host_cancellations(&[HostCancellationRecord {
+                                accepted,
+                                request_id: request_id.clone(),
+                            }]);
+                    } else {
+                        runtime.accept_request_cancellation(&request_id, accepted);
+                    }
+
+                    let mut release_reader = None;
+                    let mut release_directory = None;
+                    let mut process = None;
+                    let mut process_identity = None;
+                    match failure {
+                        FailureKind::Reader => {
+                            let (release, released) = mpsc::channel();
+                            let (completed, completion) = mpsc::channel();
+                            let worker = thread::spawn(move || {
+                                let _ = released.recv();
+                                let _ = completed.send(());
+                            });
+                            runtime
+                                .active
+                                .retained_readers
+                                .lock()
+                                .expect("retained reader")
+                                .push(RuntimeReader {
+                                    completed: completion,
+                                    worker,
+                                });
+                            release_reader = Some(release);
+                        }
+                        FailureKind::Process => {
+                            let child = Command::new("/bin/sleep")
+                                .arg("30")
+                                .stdin(Stdio::null())
+                                .stdout(Stdio::null())
+                                .stderr(Stdio::null())
+                                .process_group(0)
+                                .spawn()
+                                .expect("retained process fixture");
+                            let process_group = child.id() as i32;
+                            assert!(publish_active_process_group(&runtime.active, process_group));
+                            register_owned_process(&runtime.active, process_group);
+                            process_identity = runtime
+                                .active
+                                .process_group
+                                .lock()
+                                .expect("retained process identity")
+                                .to_owned();
+                            process = Some(child);
+                        }
+                        FailureKind::WorkDirectory => {
+                            let (release, released) = mpsc::channel();
+                            let (completed, completion) = mpsc::channel();
+                            let worker = thread::spawn(move || {
+                                let _ = released.recv();
+                                let _ = completed.send(true);
+                            });
+                            runtime
+                                .active
+                                .tracked_directory_cleanups
+                                .lock()
+                                .expect("tracked work directory")
+                                .push(TrackedDirectoryCleanup {
+                                    path: std::env::temp_dir().join(format!(
+                                        "keiko-absent-retained-workdir-{}",
+                                        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+                                    )),
+                                    completed: completion,
+                                    worker,
+                                });
+                            release_directory = Some(release);
+                        }
+                    }
+
+                    let claimed = if readiness {
+                        runtime.check(&request_id, None);
+                        false
+                    } else {
+                        runtime.claim_turn_request_for_host_settlement(&request_id)
+                    };
+                    assert!(
+                        !claimed,
+                        "claim unexpectedly passed {failure:?}, readiness={readiness}, deferred={deferred}"
+                    );
+                    assert_eq!(settle_exact_host_cancel(&runtime, &request_id), accepted);
+
+                    if let Some(release) = release_reader {
+                        release.send(()).expect("release retained reader");
+                    }
+                    if let Some(release) = release_directory {
+                        release.send(()).expect("release tracked directory");
+                    }
+                    if let Some(mut child) = process {
+                        let identity = process_identity.expect("retained process identity");
+                        signal_process_group(identity.process_id, SIGKILL);
+                        child.wait().expect("retained process reaped");
+                        assert!(retire_active_process_group(&runtime.active, identity));
+                    }
+                    let recovery_deadline = Instant::now() + Duration::from_secs(1);
+                    while !runtime
+                        .active
+                        .claim_request("request-fresh-after-retained-failure")
+                    {
+                        assert!(
+                            Instant::now() <= recovery_deadline,
+                            "fresh claim after {failure:?}, readiness={readiness}, deferred={deferred}"
+                        );
+                        thread::yield_now();
+                    }
+                    assert!(runtime.cancellation_window_for_test().is_none());
+                    runtime.finish_active_request_for_test();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pending_turn_and_readiness_reservations_are_superseded_before_idle_proof() {
+        #[derive(Clone, Copy)]
+        enum RequestKind {
+            Turn,
+            Readiness,
+        }
+        #[derive(Clone, Copy)]
+        enum CancellationKind {
+            Workspace,
+            Shutdown,
+        }
+
+        for poisoned in [false, true] {
+            for request_kind in [RequestKind::Turn, RequestKind::Readiness] {
+                for cancellation_kind in [CancellationKind::Workspace, CancellationKind::Shutdown] {
+                    let runtime = RuntimeHost::unavailable_for_test();
+                    let request_id = format!(
+                        "request-pending-{}-{}-{}",
+                        poisoned,
+                        matches!(request_kind, RequestKind::Readiness),
+                        matches!(cancellation_kind, CancellationKind::Shutdown)
+                    );
+                    let (commit_entered, release_commit) =
+                        runtime.install_request_commit_hook_for_test();
+                    let requesting_runtime = runtime.clone();
+                    let requesting_id = request_id.clone();
+                    let request = thread::spawn(move || match request_kind {
+                        RequestKind::Turn => requesting_runtime
+                            .claim_turn_request_for_host_settlement(&requesting_id),
+                        RequestKind::Readiness => {
+                            requesting_runtime.check(&requesting_id, None);
+                            false
+                        }
+                    });
+                    commit_entered
+                        .recv_timeout(Duration::from_secs(1))
+                        .expect("pending request reserved");
+                    if poisoned {
+                        runtime.poison_control_for_test();
+                    }
+
+                    let cancelling_runtime = runtime.clone();
+                    let cancelling = thread::spawn(move || match cancellation_kind {
+                        CancellationKind::Workspace => {
+                            cancelling_runtime.cancel_for_workspace_change_and_wait(1)
+                        }
+                        CancellationKind::Shutdown => {
+                            cancelling_runtime.cancel_for_app_shutdown_and_wait()
+                        }
+                    });
+                    let cleanup_proven = if poisoned {
+                        let cleanup_proven =
+                            cancelling.join().expect("closed-cutoff cleanup waiter");
+                        assert!(
+                            !cleanup_proven,
+                            "strict cutoff cannot claim proof while a reservation remains"
+                        );
+                        assert!(!request.is_finished());
+                        release_request_claim(&release_commit);
+                        assert!(!request.join().expect("superseded request"));
+                        cleanup_proven
+                    } else {
+                        let observation_deadline = Instant::now() + Duration::from_secs(1);
+                        while !runtime.active.idle_waiting.load(Ordering::Acquire) {
+                            assert!(
+                                Instant::now() <= observation_deadline,
+                                "cleanup waiter did not observe the pending reservation"
+                            );
+                            thread::yield_now();
+                        }
+                        assert!(
+                            !cancelling.is_finished(),
+                            "cleanup proof returned while a pending identity remained"
+                        );
+                        release_request_claim(&release_commit);
+                        assert!(!request.join().expect("superseded request"));
+                        cancelling.join().expect("pending cleanup waiter")
+                    };
+                    assert_eq!(cleanup_proven, !poisoned);
+                    let control = runtime
+                        .active
+                        .control
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    assert!(control.request_id.is_none());
+                    assert!(control.pending_request_id.is_none());
+                    assert_eq!(control.effect_generation, 0);
+                    if !poisoned {
+                        assert!(control.cancellation.is_none());
+                    }
+                    drop(control);
+                    if !poisoned {
+                        assert!(
+                            runtime
+                                .active
+                                .claim_request("request-fresh-turn-after-global-cancel")
+                        );
+                        assert!(runtime.cancellation_window_for_test().is_none());
+                        runtime.finish_active_request_for_test();
+                        let readiness =
+                            runtime.check("request-fresh-readiness-after-global-cancel", None);
+                        assert_eq!(readiness.state, RuntimeReadinessState::Unavailable);
+                        assert!(runtime.cancellation_window_for_test().is_none());
+                    }
+                    assert!(runtime.active.runtime_effect_trace().is_empty());
+                }
+            }
+        }
+    }
+
+    fn assert_poisoned_retained_global_cancel_supersedes(readiness: bool, shutdown: bool) {
+        let (runtime, old_closed) = runtime_with_retained_control_failure();
+        runtime.poison_control_for_test();
+        let request_id = format!("request-poisoned-retained-{readiness}-{shutdown}");
+        let (commit_entered, release_commit) = runtime.install_request_commit_hook_for_test();
+        let requesting_runtime = runtime.clone();
+        let requesting_id = request_id.clone();
+        let request = thread::spawn(move || {
+            if readiness {
+                requesting_runtime.check(&requesting_id, None);
+                false
+            } else {
+                requesting_runtime.claim_turn_request_for_host_settlement(&requesting_id)
+            }
+        });
+        commit_entered
+            .recv_timeout(Duration::from_secs(1))
+            .expect("poisoned retained request reserved");
+
+        let detection_started = Instant::now();
+        let cancelling_runtime = runtime.clone();
+        let cancelling = thread::spawn(move || {
+            if shutdown {
+                cancelling_runtime.cancel_for_app_shutdown_and_wait()
+            } else {
+                cancelling_runtime.cancel_for_workspace_change_and_wait(1)
+            }
+        });
+        let observation_deadline = Instant::now() + Duration::from_secs(1);
+        let newer_closed = loop {
+            let control = runtime
+                .active
+                .control
+                .lock()
+                .expect_err("Runtime control remains poisoned")
+                .into_inner();
+            let observed = control
+                .cancellation
+                .filter(|cancellation| *cancellation != old_closed);
+            if let Some(newer_closed) = observed {
+                assert_eq!(control.closed_control_failure_token, Some(newer_closed));
+                assert_eq!(
+                    control.pending_request_id.as_deref(),
+                    Some(request_id.as_str())
+                );
+                assert_ne!(control.effect_generation, 0);
+                break newer_closed;
+            }
+            drop(control);
+            assert!(Instant::now() <= observation_deadline);
+            thread::yield_now();
+        };
+        let detection_observed = Instant::now();
+        assert!(newer_closed.accepted_at >= detection_started);
+        assert!(newer_closed.accepted_at <= detection_observed);
+        assert_eq!(newer_closed.cleanup_cutoff, newer_closed.accepted_at);
+        assert_eq!(newer_closed.terminal_cutoff, newer_closed.accepted_at);
+
+        release_request_claim(&release_commit);
+        assert!(!request.join().expect("superseded retained request"));
+        assert!(!cancelling.join().expect("poisoned retained cleanup wait"));
+        assert!(runtime.active.runtime_effect_trace().is_empty());
+        {
+            let control = runtime
+                .active
+                .control
+                .lock()
+                .expect_err("Runtime control remains poisoned until strict recovery")
+                .into_inner();
+            assert_eq!(control.cancellation, Some(newer_closed));
+            assert_eq!(control.closed_control_failure_token, Some(newer_closed));
+            assert!(control.request_id.is_none());
+            assert!(control.pending_request_id.is_none());
+            assert_eq!(control.effect_generation, 0);
+        }
+
+        assert!(runtime.active.claim_request("request-after-poisoned-proof"));
+        assert!(!runtime.active.control.is_poisoned());
+        assert!(runtime.cancellation_window_for_test().is_none());
+        assert!(
+            !runtime
+                .active
+                .closed_control_failure_cleanup
+                .load(Ordering::Acquire)
+        );
+        runtime.finish_active_request_for_test();
+    }
+
+    #[test]
+    fn poisoned_retained_turn_workspace_cancel_supersedes_the_old_closed_reservation() {
+        assert_poisoned_retained_global_cancel_supersedes(false, false);
+    }
+
+    #[test]
+    fn poisoned_retained_turn_shutdown_supersedes_the_old_closed_reservation() {
+        assert_poisoned_retained_global_cancel_supersedes(false, true);
+    }
+
+    #[test]
+    fn poisoned_retained_readiness_workspace_cancel_supersedes_the_old_closed_reservation() {
+        assert_poisoned_retained_global_cancel_supersedes(true, false);
+    }
+
+    #[test]
+    fn poisoned_retained_readiness_shutdown_supersedes_the_old_closed_reservation() {
+        assert_poisoned_retained_global_cancel_supersedes(true, true);
+    }
+
+    #[test]
+    fn tracked_readiness_workspace_is_revalidated_before_runtime_effects() {
+        let runtime = RuntimeHost::unavailable_for_test();
+        runtime
+            .invalidated_workspace_generation
+            .store(7, Ordering::Release);
+        let selected = RuntimeReadinessWorkspace::tracked(PathBuf::from("/tmp/repository"), 7);
+
+        let view = runtime.check_with_timeout(
+            "request-stale-readiness-workspace",
+            Some(&selected),
+            Duration::from_secs(1),
+        );
+
+        assert_eq!(view.state, RuntimeReadinessState::Cancelled);
+        assert!(runtime.active.runtime_effect_trace().is_empty());
+        assert!(!runtime.active.running.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn reserved_recovery_aborts_for_exact_new_user_cancel_and_excludes_a_second_claim() {
+        let (runtime, old_closed) = runtime_with_retained_control_failure();
+        let (commit_entered, release_commit) = runtime.install_request_commit_hook_for_test();
+        let claiming_runtime = runtime.clone();
+        let claiming = thread::spawn(move || {
+            claiming_runtime
+                .active
+                .claim_request("request-reserved-user-cancel")
+        });
+        commit_entered
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reserved claim before commit");
+
+        assert!(
+            !runtime.active.claim_request("request-second-claim"),
+            "the pending identity and generation must exclude a second claim"
+        );
+        let accepted_at = Instant::now();
+        install_exact_user_host_cancel(&runtime, "request-reserved-user-cancel", accepted_at);
+        release_request_claim(&release_commit);
+        assert!(!claiming.join().expect("reserved claim"));
+
+        let retained = runtime
+            .cancellation_window_for_test()
+            .expect("old cleanup authority retained");
+        assert_eq!(retained, old_closed);
+        {
+            let control = runtime.active.control.lock().expect("runtime control");
+            assert_eq!(control.closed_control_failure_token, Some(old_closed));
+            assert!(control.request_id.is_none());
+            assert!(control.pending_request_id.is_none());
+            assert_eq!(control.effect_generation, 0);
+        }
+        assert!(
+            runtime
+                .active
+                .closed_control_failure_cleanup
+                .load(Ordering::Acquire)
+        );
+        assert!(runtime.active.runtime_effect_trace().is_empty());
+
+        assert!(runtime.active.claim_request("request-wrong-id"));
+        assert!(runtime.cancellation_window_for_test().is_none());
+        runtime.finish_active_request_for_test();
+        assert!(runtime.active.runtime_effect_trace().is_empty());
+
+        assert!(!runtime.active.claim_request("request-reserved-user-cancel"));
+        let settled = settle_exact_host_cancel(&runtime, "request-reserved-user-cancel");
+        assert_eq!(settled.accepted_at, accepted_at);
+        assert_eq!(settled.source, CancellationSource::User);
+        assert!(
+            !runtime
+                .active
+                .closed_control_failure_cleanup
+                .load(Ordering::Acquire)
+        );
+        assert!(
+            runtime
+                .active
+                .control
+                .lock()
+                .expect("runtime control")
+                .closed_control_failure_token
+                .is_none()
+        );
+        runtime.finish_active_request_for_test();
+    }
+
+    #[test]
+    fn reserved_recovery_aborts_for_new_control_failure_then_recovers_exactly() {
+        let (runtime, old_closed) = runtime_with_retained_control_failure();
+        let (commit_entered, release_commit) = runtime.install_request_commit_hook_for_test();
+        let claiming_runtime = runtime.clone();
+        let claiming = thread::spawn(move || {
+            claiming_runtime
+                .active
+                .claim_request("request-reserved-control-failure")
+        });
+        commit_entered
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reserved claim before commit");
+
+        let detection_started = Instant::now();
+        runtime.handoff_host_cancellation(
+            UnmatchedHostCancellationPolicy::CloseContainment,
+            || HostCancellationMutation::ControlFailed(()),
+            |()| (),
+        );
+        let detection_observed = Instant::now();
+        release_request_claim(&release_commit);
+        assert!(!claiming.join().expect("reserved claim"));
+
+        let newer_closed = runtime
+            .cancellation_window_for_test()
+            .expect("new ControlFailed authority retained");
+        assert_ne!(newer_closed, old_closed);
+        assert!(newer_closed.accepted_at >= detection_started);
+        assert!(newer_closed.accepted_at <= detection_observed);
+        assert_eq!(newer_closed.cleanup_cutoff, newer_closed.accepted_at);
+        assert_eq!(newer_closed.terminal_cutoff, newer_closed.accepted_at);
+        {
+            let control = runtime.active.control.lock().expect("runtime control");
+            assert_eq!(
+                control.closed_control_failure_token,
+                Some(newer_closed),
+                "the marker must never exist without its exact closed token"
+            );
+            assert!(control.request_id.is_none());
+            assert!(control.pending_request_id.is_none());
+            assert_eq!(control.effect_generation, 0);
+        }
+        assert!(runtime.active.runtime_effect_trace().is_empty());
+
+        assert!(
+            runtime
+                .active
+                .claim_request("request-after-control-failure-proof")
+        );
+        assert!(runtime.cancellation_window_for_test().is_none());
+        assert!(
+            !runtime
+                .active
+                .closed_control_failure_cleanup
+                .load(Ordering::Acquire)
+        );
+        runtime.finish_active_request_for_test();
+    }
+
+    #[test]
+    fn poisoned_reserved_recovery_preserves_exact_new_host_cancel_until_recovery() {
+        let (runtime, old_closed) = runtime_with_retained_control_failure();
+        runtime.poison_control_for_test();
+        let (commit_entered, release_commit) = runtime.install_request_commit_hook_for_test();
+        let claiming_runtime = runtime.clone();
+        let claiming = thread::spawn(move || {
+            claiming_runtime
+                .active
+                .claim_request("request-poisoned-reserved-cancel")
+        });
+        commit_entered
+            .recv_timeout(Duration::from_secs(1))
+            .expect("poisoned reserved claim before commit");
+
+        let accepted_at = Instant::now();
+        install_exact_user_host_cancel(&runtime, "request-poisoned-reserved-cancel", accepted_at);
+        release_request_claim(&release_commit);
+        assert!(!claiming.join().expect("poisoned reserved claim"));
+        {
+            let control = runtime
+                .active
+                .control
+                .lock()
+                .expect_err("Runtime control remains poisoned")
+                .into_inner();
+            assert_eq!(control.cancellation, Some(old_closed));
+            assert_eq!(control.closed_control_failure_token, Some(old_closed));
+            assert!(control.request_id.is_none());
+            assert!(control.pending_request_id.is_none());
+            assert_eq!(control.effect_generation, 0);
+        }
+
+        assert!(runtime.active.claim_request("request-poison-recovery"));
+        runtime.finish_active_request_for_test();
+        assert!(!runtime.active.control.is_poisoned());
+        assert!(
+            !runtime
+                .active
+                .claim_request("request-poisoned-reserved-cancel")
+        );
+        let settled = settle_exact_host_cancel(&runtime, "request-poisoned-reserved-cancel");
+        assert_eq!(settled.accepted_at, accepted_at);
+        assert_eq!(settled.source, CancellationSource::User);
+    }
+
+    #[test]
+    fn poisoned_reserved_handoff_retains_every_unmatched_exact_host_record() {
+        let (runtime, old_closed) = runtime_with_retained_control_failure();
+        runtime.poison_control_for_test();
+        let (commit_entered, release_commit) = runtime.install_request_commit_hook_for_test();
+        let claiming_runtime = runtime.clone();
+        let claiming = thread::spawn(move || {
+            claiming_runtime
+                .active
+                .claim_request("request-poison-first")
+        });
+        commit_entered
+            .recv_timeout(Duration::from_secs(1))
+            .expect("poisoned multi-record claim before commit");
+
+        let first_accepted_at = Instant::now();
+        let second_accepted_at = first_accepted_at + Duration::from_millis(1);
+        runtime.handoff_host_cancellation(
+            UnmatchedHostCancellationPolicy::Ignore,
+            || {
+                HostCancellationMutation::Completed(
+                    (),
+                    vec![
+                        HostCancellationRecord {
+                            accepted: AcceptedCancellation {
+                                accepted_at: first_accepted_at,
+                                source: CancellationSource::User,
+                            },
+                            request_id: "request-poison-first".to_owned(),
+                        },
+                        HostCancellationRecord {
+                            accepted: AcceptedCancellation {
+                                accepted_at: second_accepted_at,
+                                source: CancellationSource::RendererLost,
+                            },
+                            request_id: "request-poison-second".to_owned(),
+                        },
+                    ],
+                )
+            },
+            |()| (),
+        );
+        release_request_claim(&release_commit);
+        assert!(!claiming.join().expect("poisoned multi-record claim"));
+        assert_eq!(runtime.cancellation_window_for_test(), Some(old_closed));
+
+        assert!(runtime.active.claim_request("request-poison-wrong"));
+        assert!(runtime.cancellation_window_for_test().is_none());
+        runtime.finish_active_request_for_test();
+
+        assert!(!runtime.active.claim_request("request-poison-first"));
+        let first = settle_exact_host_cancel(&runtime, "request-poison-first");
+        assert_eq!(first.accepted_at, first_accepted_at);
+        assert_eq!(first.source, CancellationSource::User);
+
+        let second = settle_exact_host_cancel(&runtime, "request-poison-second");
+        assert_eq!(second.accepted_at, second_accepted_at);
+        assert_eq!(second.source, CancellationSource::RendererLost);
+        assert!(runtime.active.runtime_effect_trace().is_empty());
+    }
+
+    #[test]
+    fn post_begin_rollback_preserves_newer_authority_and_old_cleanup_marker() {
+        let (runtime, old_closed) = runtime_with_retained_control_failure();
+        let (rollback_entered, release_rollback) =
+            runtime.install_post_begin_rollback_hook_for_test();
+        let claiming_runtime = runtime.clone();
+        let claiming = thread::spawn(move || {
+            claiming_runtime
+                .active
+                .claim_request("request-post-begin-cancel")
+        });
+        rollback_entered
+            .recv_timeout(Duration::from_secs(1))
+            .expect("post-begin rollback pause");
+
+        let accepted_at = Instant::now() - TURN_TERMINAL_BUDGET - Duration::from_millis(1);
+        install_exact_user_host_cancel(&runtime, "request-post-begin-cancel", accepted_at);
+        release_request_claim(&release_rollback);
+        assert!(!claiming.join().expect("post-begin claim"));
+        let retained = runtime
+            .cancellation_window_for_test()
+            .expect("post-begin cleanup authority");
+        assert_eq!(retained, old_closed);
+        {
+            let control = runtime.active.control.lock().expect("runtime control");
+            assert_eq!(control.closed_control_failure_token, Some(old_closed));
+            assert!(control.request_id.is_none());
+            assert!(control.pending_request_id.is_none());
+            assert_eq!(control.effect_generation, 0);
+        }
+        assert!(!runtime.active.running.load(Ordering::Acquire));
+        assert!(runtime.active.runtime_effect_trace().is_empty());
+
+        assert!(runtime.active.claim_request("request-post-begin-wrong-id"));
+        assert!(runtime.cancellation_window_for_test().is_none());
+        runtime.finish_active_request_for_test();
+        assert!(runtime.active.runtime_effect_trace().is_empty());
+
+        assert!(!runtime.active.claim_request("request-post-begin-cancel"));
+        let settled = settle_exact_host_cancel(&runtime, "request-post-begin-cancel");
+        assert_eq!(settled.accepted_at, accepted_at);
+        assert_eq!(settled.source, CancellationSource::User);
+    }
+
+    #[test]
+    fn every_stale_cancellation_signal_refuses_newer_process_authority() {
+        #[derive(Clone, Copy, Debug)]
+        enum SignalCase {
+            ExactHostRequest,
+            DeferredHostRequest,
+            DeferredContainment,
+            RendererLoss,
+            ContainmentFailure,
+            AppShutdown,
+            HostControlFailed,
+        }
+
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for signal_case in [
+            SignalCase::ExactHostRequest,
+            SignalCase::DeferredHostRequest,
+            SignalCase::DeferredContainment,
+            SignalCase::RendererLoss,
+            SignalCase::ContainmentFailure,
+            SignalCase::AppShutdown,
+            SignalCase::HostControlFailed,
+        ] {
+            let runtime = RuntimeHost::unavailable_for_test();
+            runtime.set_active_request_for_test("request-old-signal");
+            let mut old_child = Command::new("/bin/sh")
+                .args(["-c", "trap '' TERM; while :; do /bin/sleep 1; done"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .process_group(0)
+                .spawn()
+                .expect("old signal fixture");
+            let old_group = old_child.id() as i32;
+            assert!(publish_active_process_group(&runtime.active, old_group));
+            register_owned_process(&runtime.active, old_group);
+            let old_identity = runtime
+                .active
+                .process_group
+                .lock()
+                .expect("old process identity")
+                .expect("old process published");
+
+            let (signal_entered, release_signal) =
+                runtime.install_cancellation_signal_hook_for_test();
+            let cancelling_runtime = runtime.clone();
+            let cancellation = thread::spawn(move || match signal_case {
+                SignalCase::ExactHostRequest => cancelling_runtime.accept_request_cancellation(
+                    "request-old-signal",
+                    AcceptedCancellation {
+                        accepted_at: Instant::now(),
+                        source: CancellationSource::User,
+                    },
+                ),
+                SignalCase::DeferredHostRequest => {
+                    cancelling_runtime.defer_host_cancellations(&[HostCancellationRecord {
+                        accepted: AcceptedCancellation {
+                            accepted_at: Instant::now(),
+                            source: CancellationSource::RendererLost,
+                        },
+                        request_id: "request-old-signal".to_owned(),
+                    }]);
+                }
+                SignalCase::DeferredContainment => {
+                    cancelling_runtime.defer_containment_failure();
+                }
+                SignalCase::RendererLoss => cancelling_runtime.cancel_for_renderer_loss(),
+                SignalCase::ContainmentFailure => {
+                    cancelling_runtime.cancel_for_containment_failure();
+                }
+                SignalCase::AppShutdown => cancelling_runtime.cancel_for_app_shutdown(),
+                SignalCase::HostControlFailed => {
+                    cancelling_runtime.handoff_host_cancellation(
+                        UnmatchedHostCancellationPolicy::Ignore,
+                        || HostCancellationMutation::ControlFailed(()),
+                        |()| (),
+                    );
+                }
+            });
+            signal_entered
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap_or_else(|_| panic!("{signal_case:?} installed before signal"));
+
+            signal_process_group(old_group, SIGKILL);
+            old_child.wait().expect("old process reaped");
+            assert!(retire_active_process_group(&runtime.active, old_identity));
+            runtime.finish_active_request_for_test();
+            assert!(runtime.active.claim_request("request-new-signal"));
+
+            let mut new_child = Command::new("/bin/sh")
+                .args(["-c", "while :; do /bin/sleep 1; done"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .process_group(0)
+                .spawn()
+                .expect("new signal fixture");
+            let new_group = new_child.id() as i32;
+            assert!(publish_active_process_group(&runtime.active, new_group));
+            register_owned_process(&runtime.active, new_group);
+            let new_identity = runtime
+                .active
+                .process_group
+                .lock()
+                .expect("new process identity")
+                .expect("new process published");
+
+            release_request_claim(&release_signal);
+            cancellation.join().expect("stale cancellation signal");
+            assert_eq!(new_child.try_wait().expect("new process state"), None);
+            assert!(process_group_exists(new_group));
+
+            signal_process_group(new_group, SIGKILL);
+            new_child.wait().expect("new process reaped");
+            assert!(retire_active_process_group(&runtime.active, new_identity));
+            runtime.finish_active_request_for_test();
+        }
+    }
+
+    #[test]
+    fn stale_signal_authority_refuses_replaced_token_with_same_request_generation_and_process() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for control_failed in [false, true] {
+            let runtime = RuntimeHost::unavailable_for_test();
+            runtime.set_active_request_for_test("request-token-replaced");
+            let mut child = Command::new("/bin/sleep")
+                .arg("30")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .process_group(0)
+                .spawn()
+                .expect("token replacement signal fixture");
+            let process_group = child.id() as i32;
+            assert!(publish_active_process_group(&runtime.active, process_group));
+            register_owned_process(&runtime.active, process_group);
+            let identity = runtime
+                .active
+                .process_group
+                .lock()
+                .expect("token replacement identity")
+                .expect("published token replacement process");
+            let (signal_entered, release_signal) =
+                runtime.install_cancellation_signal_hook_for_test();
+            let cancelling_runtime = runtime.clone();
+            let cancellation = thread::spawn(move || {
+                if control_failed {
+                    cancelling_runtime.handoff_host_cancellation(
+                        UnmatchedHostCancellationPolicy::Ignore,
+                        || HostCancellationMutation::ControlFailed(()),
+                        |()| (),
+                    );
+                } else {
+                    cancelling_runtime.accept_request_cancellation(
+                        "request-token-replaced",
+                        AcceptedCancellation {
+                            accepted_at: Instant::now(),
+                            source: CancellationSource::User,
+                        },
+                    );
+                }
+            });
+            signal_entered
+                .recv_timeout(Duration::from_secs(1))
+                .expect("signal authority captured");
+            {
+                let mut control = runtime.active.control.lock().expect("replace signal token");
+                let replacement = AcceptedRuntimeCancellation::closed(Instant::now());
+                control.cancellation = Some(replacement);
+                if control.closed_control_failure_token.is_some() {
+                    control.closed_control_failure_token = Some(replacement);
+                }
+            }
+            release_request_claim(&release_signal);
+            cancellation.join().expect("stale token signal");
+            assert_eq!(child.try_wait().expect("replacement process state"), None);
+            assert!(process_group_exists(process_group));
+
+            signal_process_group(process_group, SIGKILL);
+            child.wait().expect("token replacement process reaped");
+            assert!(retire_active_process_group(&runtime.active, identity));
+            runtime.finish_active_request_for_test();
+        }
+    }
+
+    #[test]
+    fn unmatched_deferred_host_record_never_acquires_active_signal_authority() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let runtime = RuntimeHost::unavailable_for_test();
+        runtime.set_active_request_for_test("request-active-unmatched");
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "while :; do /bin/sleep 1; done"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("unmatched signal fixture");
+        let process_group = child.id() as i32;
+        assert!(publish_active_process_group(&runtime.active, process_group));
+        register_owned_process(&runtime.active, process_group);
+        let identity = runtime
+            .active
+            .process_group
+            .lock()
+            .expect("unmatched process identity")
+            .expect("unmatched process published");
+        let (_signal_entered, _release_signal) =
+            runtime.install_cancellation_signal_hook_for_test();
+
+        runtime.defer_host_cancellations(&[HostCancellationRecord {
+            accepted: AcceptedCancellation {
+                accepted_at: Instant::now(),
+                source: CancellationSource::RendererLost,
+            },
+            request_id: "request-other-unmatched".to_owned(),
+        }]);
+
+        assert!(runtime.cancellation_window_for_test().is_none());
+        assert!(
+            runtime
+                .active
+                .cancellation_signal_hook
+                .lock()
+                .expect("unused signal hook")
+                .take()
+                .is_some(),
+            "an unmatched record must not reach the signal boundary"
+        );
+        assert_eq!(child.try_wait().expect("unmatched process state"), None);
+        signal_process_group(process_group, SIGKILL);
+        child.wait().expect("unmatched process reaped");
+        assert!(retire_active_process_group(&runtime.active, identity));
+        runtime.finish_active_request_for_test();
+    }
+
+    #[test]
+    fn reentrant_host_settlement_defers_then_materializes_without_control_deadlock() {
+        let runtime = RuntimeHost::unavailable_for_test();
+        runtime.set_active_request_for_test("request-reentrant-settlement");
+        let accepted = AcceptedCancellation {
+            accepted_at: Instant::now(),
+            source: CancellationSource::RendererLost,
+        };
+
+        let (published, finalized) = runtime.settle_host_turn(
+            "request-reentrant-settlement",
+            |refresh_acceptance, _control_failed| {
+                runtime.defer_host_cancellations(&[HostCancellationRecord {
+                    accepted,
+                    request_id: "request-reentrant-settlement".to_owned(),
+                }]);
+                refresh_acceptance()
+            },
+            |published, finalized| (published, finalized),
+        );
+
+        assert_eq!(published, Some(accepted));
+        assert_eq!(finalized, Some(accepted));
+        assert!(!runtime.active.running.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn saturated_reentrant_public_containment_is_bound_to_the_active_owner() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let runtime = RuntimeHost::unavailable_for_test();
+        runtime.set_active_request_for_test("request-reentrant-saturated");
+        let mut child = Command::new("/bin/sleep")
+            .arg("10")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("reentrant signal fixture");
+        let process_group = child.id() as i32;
+        assert!(publish_active_process_group(&runtime.active, process_group));
+        register_owned_process(&runtime.active, process_group);
+        let identity = runtime
+            .active
+            .process_group
+            .lock()
+            .expect("reentrant process identity")
+            .expect("reentrant process published");
+        let records = (0..MAX_DEFERRED_CANCELLATIONS)
+            .map(|index| HostCancellationRecord {
+                accepted: AcceptedCancellation {
+                    accepted_at: Instant::now(),
+                    source: CancellationSource::RendererLost,
+                },
+                request_id: format!("request-saturated-unmatched-{index}"),
+            })
+            .collect::<Vec<_>>();
+        runtime.active.defer_host_cancellations(&records);
+        let before = Instant::now();
+        let (signal_entered, release_signal) = runtime.install_cancellation_signal_hook_for_test();
+        let (callback_complete, callback_observed) = mpsc::sync_channel(1);
+        let cancelling_runtime = runtime.clone();
+        let cancellation = thread::spawn(move || {
+            cancelling_runtime.handoff_host_cancellation(
+                UnmatchedHostCancellationPolicy::Ignore,
+                || HostCancellationMutation::Completed((), Vec::new()),
+                |()| {
+                    cancelling_runtime.defer_host_cancellations(&[]);
+                    callback_complete.send(()).expect("callback completion");
+                },
+            );
+        });
+        callback_observed
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reentrant callback completes without control deadlock");
+        signal_entered
+            .recv_timeout(Duration::from_secs(1))
+            .expect("exact signal waits until after the action fence");
+        assert_eq!(child.try_wait().expect("pre-signal child state"), None);
+        release_request_claim(&release_signal);
+        cancellation.join().expect("reentrant cancellation");
+
+        let control = runtime.active.control.lock().expect("reentrant owner");
+        let cancellation = control
+            .cancellation
+            .expect("saturated containment belongs to active request");
+        assert_eq!(
+            control.request_id.as_deref(),
+            Some("request-reentrant-saturated")
+        );
+        assert_eq!(cancellation.reason, RuntimeCancellation::ContainmentFailure);
+        assert!(cancellation.terminal_cutoff <= Instant::now());
+        assert!(cancellation.accepted_at >= before);
+        assert!(runtime.active.deferred_cancellation_overflowed());
+        assert!(
+            runtime
+                .active
+                .saturated_containment
+                .lock()
+                .expect("saturated containment")
+                .is_none()
+        );
+        drop(control);
+        child.wait().expect("signalled child reaped");
+        assert!(retire_active_process_group(&runtime.active, identity));
+        runtime.finish_active_request_for_test();
+    }
+
+    #[test]
+    fn host_runtime_ownership_two_wave_filters_then_settles_exactly() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let runtime = RuntimeHost::unavailable_for_test();
+        let mut lifecycle = HostLifecycle::default();
+        let first_nonce = "6".repeat(64);
+        let first_generation = lifecycle
+            .begin_renderer_session(first_nonce.clone())
+            .expect("first renderer");
+        let first_sender = lifecycle.sender_for_document(
+            "main",
+            "tauri://localhost",
+            first_generation,
+            &first_nonce,
+        );
+        let mut non_runtime = Vec::new();
+        for sequence in 1..=MAX_DEFERRED_CANCELLATIONS as u64 {
+            let request_id = canonical_request_id(first_generation, sequence).unwrap();
+            let request = serde_json::to_vec(&json!({
+                "schemaVersion": 1,
+                "requestId": request_id,
+                "sequence": sequence,
+                "timeoutMs": 1_000,
+                "operation": { "kind": "application-health" }
+            }))
+            .unwrap();
+            non_runtime.push(
+                lifecycle
+                    .begin_application_request(&first_sender, &request)
+                    .expect("non-Runtime Host request"),
+            );
+        }
+        let first_records = lifecycle.renderer_lost();
+        assert!(first_records.is_empty());
+        runtime.handoff_host_cancellation(
+            UnmatchedHostCancellationPolicy::CloseContainment,
+            || HostCancellationMutation::Completed((), first_records),
+            |()| (),
+        );
+        assert!(!runtime.active.deferred_cancellation_overflowed());
+        assert!(runtime.cancellation_window_for_test().is_none());
+        for request in non_runtime {
+            assert!(
+                lifecycle
+                    .complete_application_request(request)
+                    .contains("cancelled")
+            );
+        }
+
+        let second_nonce = "7".repeat(64);
+        let second_generation = lifecycle
+            .begin_renderer_session(second_nonce.clone())
+            .expect("second renderer");
+        let second_sender = lifecycle.sender_for_document(
+            "main",
+            "tauri://localhost",
+            second_generation,
+            &second_nonce,
+        );
+        let request_id = canonical_request_id(second_generation, 1).unwrap();
+        let request = serde_json::to_vec(&json!({
+            "schemaVersion": 1,
+            "requestId": request_id,
+            "sequence": 1,
+            "timeoutMs": 120_000,
+            "operation": {
+                "kind": "codex-turn-start",
+                "workspaceGeneration": 1,
+                "task": "Bounded task."
+            }
+        }))
+        .unwrap();
+        let accepted_request = lifecycle
+            .begin_application_request(&second_sender, &request)
+            .expect("Runtime-owned turn");
+        runtime.set_active_request_for_test(&request_id);
+        let child = Command::new("/bin/sh")
+            .args(["-c", "trap '' TERM; while :; do /bin/sleep 1; done"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("TERM-resistant Runtime group");
+        let process_group = child.id() as i32;
+        assert!(publish_active_process_group(&runtime.active, process_group));
+        register_owned_process(&runtime.active, process_group);
+        drop(child);
+        let records = lifecycle.renderer_lost();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].request_id, request_id);
+        let literal = records[0].accepted;
+        let (signal_entered, release_signal) = runtime.install_cancellation_signal_hook_for_test();
+        let cancelling_runtime = runtime.clone();
+        let cancellation = thread::spawn(move || {
+            cancelling_runtime.handoff_host_cancellation(
+                UnmatchedHostCancellationPolicy::CloseContainment,
+                || HostCancellationMutation::Completed((), records),
+                |()| (),
+            );
+        });
+        signal_entered
+            .recv_timeout(Duration::from_secs(1))
+            .expect("post-fence exact signal authority");
+        release_request_claim(&release_signal);
+        cancellation.join().expect("literal Host handoff");
+        let exact = runtime
+            .cancellation_window_for_test()
+            .expect("exact Runtime cancellation");
+        assert_eq!(exact.host_acceptance, Some(literal));
+        assert_eq!(
+            exact.terminal_cutoff,
+            literal.accepted_at + TURN_TERMINAL_BUDGET
+        );
+        assert!(reconcile_retained_process_group(
+            &runtime.active,
+            Instant::now() + Duration::from_secs(1)
+        ));
+        assert_eq!(settle_exact_host_cancel(&runtime, &request_id), literal);
+        let mut turn = TurnSession::new(
+            second_generation,
+            1,
+            1,
+            "Bounded task.".to_owned(),
+            RuntimeDescriptor::approved(),
+        )
+        .expect("turn session");
+        turn.fail(TurnState::Failed, TurnReason::InternalFailure)
+            .expect("failed no-effect turn");
+        turn.settle_cleanup(true).expect("strict cleanup");
+        let encoded = lifecycle.complete_turn_request(accepted_request, turn.view());
+        assert!(encoded.contains(r#""state":"cancelled""#));
+        assert!(!runtime.active.deferred_cancellation_overflowed());
+        assert!(
+            runtime
+                .active
+                .claim_request("request-fresh-after-two-waves")
+        );
+        runtime.finish_active_request_for_test();
+    }
+
+    #[test]
+    fn failed_claim_disposition_reads_exact_control_authority_at_capacity() {
+        let runtime = RuntimeHost::unavailable_for_test();
+        let request_id = "request-failed-claim-control-owner";
+        let accepted = AcceptedCancellation {
+            accepted_at: Instant::now() - Duration::from_millis(19),
+            source: CancellationSource::RendererLost,
+        };
+        runtime.accept_request_cancellation(request_id, accepted);
+        let records = (0..=MAX_DEFERRED_CANCELLATIONS)
+            .map(|index| HostCancellationRecord {
+                accepted: AcceptedCancellation {
+                    accepted_at: Instant::now(),
+                    source: CancellationSource::User,
+                },
+                request_id: format!("request-failed-claim-fill-{index}"),
+            })
+            .collect::<Vec<_>>();
+        runtime.active.defer_host_cancellations(&records);
+
+        assert_eq!(
+            runtime.claim_turn_request_for_host_settlement_disposition(request_id),
+            HostTurnClaimDisposition::Cancelled
+        );
+        assert!(!runtime.active.running.load(Ordering::Acquire));
+        assert_eq!(settle_exact_host_cancel(&runtime, request_id), accepted);
+        assert!(
+            !runtime
+                .active
+                .claim_request("request-overflow-remains-global")
+        );
+    }
+
+    #[test]
+    fn poison_settlement_keeps_one_closed_marker_token_then_recovers_fresh() {
+        for readiness in [false, true] {
+            let runtime = RuntimeHost::unavailable_for_test();
+            let request_id = format!("request-poison-deferred-{readiness}");
+            let accepted = AcceptedCancellation {
+                accepted_at: Instant::now(),
+                source: CancellationSource::RendererLost,
+            };
+            runtime
+                .active
+                .defer_host_cancellations(&[HostCancellationRecord {
+                    accepted,
+                    request_id: request_id.clone(),
+                }]);
+            runtime.poison_control_for_test();
+            if readiness {
+                let view = runtime.settle_host_readiness(
+                    &request_id,
+                    RuntimeReadinessView::terminal(RuntimeReadinessState::Ready, 0),
+                    std::convert::identity,
+                );
+                assert_eq!(view.state, RuntimeReadinessState::Cancelled);
+            } else {
+                assert_eq!(settle_exact_host_cancel(&runtime, &request_id), accepted);
+            }
+            let control = runtime
+                .active
+                .control
+                .lock()
+                .expect_err("poison remains until strict recovery")
+                .into_inner();
+            assert_eq!(control.cancellation, control.closed_control_failure_token);
+            assert!(control.cancellation.is_some());
+            assert!(control.request_id.is_none());
+            assert!(control.pending_request_id.is_none());
+            drop(control);
+
+            let fresh = format!("request-poison-recovered-{readiness}");
+            assert!(runtime.active.claim_request(&fresh));
+            assert!(runtime.cancellation_window_for_test().is_none());
+            assert!(!runtime.active.control.is_poisoned());
+            runtime.finish_active_request_for_test();
+        }
+    }
+
+    #[test]
+    fn failed_preflight_channel_send_cancels_before_runtime_or_provider_effects() {
+        let fixture = Fixture::new();
+        let repository = fixture.root.join("repository");
+        fs::create_dir(&repository).expect("repository identity");
+        fs::create_dir(repository.join(".git")).expect("repository marker");
+        let runtime = fixture.scripted_host(
+            r#"#!/bin/sh
+printf spawned > "$CODEX_HOME/provider-write"
+exit 0
+"#,
+        );
+        let process_published = runtime.active.observe_next_process_group();
+        let mut workspace = crate::WorkspaceHost::default();
+        let workspace_generation = match workspace
+            .select(crate::FolderPickerResult::Selected(repository))
+            .expect("workspace selection")
+        {
+            keiko_application::workspace::WorkspaceView::Bound { generation, .. } => generation,
+            _ => panic!("bound workspace"),
+        };
+        let nonce = "d".repeat(64);
+        let mut lifecycle = crate::HostLifecycle::default();
+        let generation = lifecycle
+            .begin_renderer_session(nonce.clone())
+            .expect("renderer generation");
+        let sender = lifecycle.sender_for_document("main", "tauri://localhost", generation, &nonce);
+        let request_id = keiko_ui_port::canonical_request_id(generation, 1).unwrap();
+        let request = format!(
+            r#"{{"schemaVersion":1,"requestId":"{request_id}","sequence":1,"timeoutMs":5000,"operation":{{"kind":"codex-turn-start","workspaceGeneration":{workspace_generation},"task":"Bounded task."}}}}"#
+        );
+        let lifecycle = Mutex::new(lifecycle);
+        let mut first = true;
+
+        let output = crate::turn::turn_request_with_channel(
+            &lifecycle,
+            &Mutex::new(workspace),
+            &runtime,
+            &sender,
+            &request,
+            |_, _| {
+                if first {
+                    first = false;
+                    let records = crate::tauri_adapter::lose_renderer(&lifecycle);
+                    runtime.defer_host_cancellations(&records);
+                    false
+                } else {
+                    true
+                }
+            },
+        );
+
+        assert!(output.encoded.contains(r#""state":"cancelled""#));
+        assert!(output.encoded.contains(r#""reason":"renderer-lost""#));
+        assert!(
+            process_published
+                .recv_timeout(Duration::from_millis(10))
+                .is_err()
+        );
+        assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
+        assert!(!fixture.home.join("provider-write").exists());
+    }
+
+    #[test]
+    fn poisoned_control_preserves_or_closes_the_existing_cancellation_window() {
+        let host = RuntimeHost::from_configuration(None);
+        let accepted_at = Instant::now();
+        host.cancel_request_at("request-poison-window", accepted_at);
+        let first = host
+            .active
+            .cancellation_window()
+            .expect("first accepted cancellation");
+        let _ = std::panic::catch_unwind({
+            let active = Arc::clone(&host.active);
+            move || {
+                let _control = active.control.lock().expect("control before poison");
+                panic!("poison runtime control");
+            }
+        });
+
+        let poisoned = host
+            .active
+            .cancellation_window()
+            .expect("fail-safe cancellation");
+        let repeated = host
+            .active
+            .cancellation_window()
+            .expect("stable fail-safe cancellation");
+        assert_eq!(poisoned.accepted_at, first.accepted_at);
+        assert_eq!(poisoned.cleanup_cutoff, first.cleanup_cutoff);
+        assert_eq!(poisoned.terminal_cutoff, first.terminal_cutoff);
+        assert_eq!(poisoned.reason, RuntimeCancellation::ContainmentFailure);
+        assert_eq!(repeated, poisoned, "poison reads must not restart a budget");
+    }
+
+    #[test]
+    fn cleanup_worker_spawn_failure_is_fallible_and_retained() {
+        let fixture = Fixture::new();
+        let directory = fixture.work.join("spawn-failure");
+        fs::create_dir(&directory).expect("private directory");
+        let active = ActiveRuntime::default();
+        let now = Instant::now();
+
+        let cleaned = cleanup_or_track_work_directory_until_with(
+            &active,
+            &directory,
+            now + Duration::from_secs(5),
+            now,
+            |_task| Err(io::Error::other("injected spawn failure")),
+            || {},
+        );
+
+        assert!(!cleaned);
+        assert!(
+            active
+                .retained_work_directories
+                .lock()
+                .expect("retained work")
+                .contains(&directory),
+            "failed worker creation must fail closed and retain owned cleanup"
+        );
+    }
+
+    #[test]
+    fn cleanup_worker_spawn_panic_is_caught_and_retained() {
+        let fixture = Fixture::new();
+        let directory = fixture.work.join("spawn-panic");
+        fs::create_dir(&directory).expect("private directory");
+        let active = ActiveRuntime::default();
+        let now = Instant::now();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cleanup_or_track_work_directory_until_with(
+                &active,
+                &directory,
+                now + Duration::from_secs(5),
+                now,
+                |_task| panic!("injected spawn panic"),
+                || {},
+            )
+        }));
+
+        assert!(matches!(result, Ok(false)), "spawn unwind must fail closed");
+        assert!(
+            active
+                .retained_work_directories
+                .lock()
+                .expect("retained work")
+                .contains(&directory)
+        );
+    }
+
+    #[test]
+    fn disconnected_panicked_cleanup_recovery_never_falls_back_to_caller_io() {
+        let fixture = Fixture::new();
+        let directory = fixture.work.join("disconnected-cleanup");
+        fs::create_dir(&directory).expect("private directory");
+        let active = ActiveRuntime::default();
+        retain_work_directory(&active, &directory);
+        let (sender, completed) = mpsc::sync_channel(1);
+        drop(sender);
+        let worker = thread::spawn(|| panic!("injected cleanup worker panic"));
+        active
+            .tracked_directory_cleanups
+            .lock()
+            .expect("tracked cleanup")
+            .push(TrackedDirectoryCleanup {
+                path: directory.clone(),
+                completed,
+                worker,
+            });
+
+        assert!(
+            !reconcile_retained_work_directories(&active),
+            "recovery must retain and schedule bounded owned work after disconnect"
+        );
+        assert_eq!(
+            active
+                .tracked_directory_cleanups
+                .lock()
+                .expect("bounded owned recovery")
+                .len(),
+            1,
+            "recovery must remain represented by one owned worker until joined"
+        );
+    }
+
+    #[test]
+    fn poisoned_handoff_without_a_prior_window_closes_immediately() {
+        let host = RuntimeHost::from_configuration(None);
+        let _ = std::panic::catch_unwind({
+            let active = Arc::clone(&host.active);
+            move || {
+                let _control = active.control.lock().expect("control before poison");
+                panic!("poison before adapter handoff");
+            }
+        });
+        let handed_off_at = Instant::now();
+        let host_mutated = Arc::new(AtomicBool::new(false));
+        let mutation = Arc::clone(&host_mutated);
+        host.handoff_host_cancellation(
+            UnmatchedHostCancellationPolicy::Ignore,
+            || {
+                mutation.store(true, Ordering::Release);
+                HostCancellationMutation::Completed(
+                    (),
+                    vec![HostCancellationRecord {
+                        accepted: AcceptedCancellation {
+                            accepted_at: handed_off_at,
+                            source: CancellationSource::User,
+                        },
+                        request_id: "request-poisoned-handoff".to_owned(),
+                    }],
+                )
+            },
+            |()| (),
+        );
+
+        let window = host
+            .cancellation_window_for_test()
+            .expect("closed fail-safe window");
+        let observed_after_handoff = Instant::now();
+        assert!(
+            window.terminal_cutoff <= observed_after_handoff
+                && window.cleanup_cutoff == window.accepted_at
+                && window.terminal_cutoff == window.accepted_at,
+            "poison before the first window must not grant a future budget"
+        );
+        assert!(host_mutated.load(Ordering::Acquire));
+        assert_eq!(window.reason, RuntimeCancellation::ContainmentFailure);
+    }
+
+    #[test]
+    fn cancellation_after_directory_cleanup_starts_adopts_the_host_cutoff() {
+        let fixture = Fixture::new();
+        let directory = fixture.work.join("active-cleanup-cancel");
+        fs::create_dir(&directory).expect("private directory");
+        let host = RuntimeHost::from_configuration(None);
+        let accepted_at = Instant::now();
+        let (started_sender, started_receiver) = mpsc::sync_channel(1);
+        let (release_sender, release_receiver) = mpsc::sync_channel(1);
+        let active = Arc::clone(&host.active);
+
+        let cleaned = cleanup_or_track_work_directory_until_with(
+            &host.active,
+            &directory,
+            accepted_at + Duration::from_secs(120),
+            accepted_at + Duration::from_millis(4_600),
+            move |task| {
+                thread::Builder::new()
+                    .name("keiko-turn-directory-cleanup-test".to_owned())
+                    .spawn(move || {
+                        started_sender.send(()).expect("cleanup started");
+                        release_receiver
+                            .recv_timeout(Duration::from_secs(1))
+                            .expect("release cleanup before bounded deadline");
+                        task();
+                    })
+            },
+            move || {
+                started_receiver
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("worker started before bounded deadline");
+                active.running.store(true, Ordering::Release);
+                active.control.lock().expect("active request").request_id =
+                    Some("request-active-cleanup".to_owned());
+                let runtime = RuntimeHost {
+                    configuration: None,
+                    active,
+                    work_generation: Arc::new(AtomicU64::new(0)),
+                    invalidated_workspace_generation: Arc::new(AtomicU64::new(0)),
+                };
+                runtime.cancel_request_at("request-active-cleanup", accepted_at);
+                release_sender.send(()).expect("release cleanup");
+            },
+        );
+
+        assert!(
+            !cleaned,
+            "cleanup completing after the accepted +4,500ms cutoff cannot be credited"
+        );
+    }
+
+    #[test]
+    fn accepted_cancel_linearizes_before_frame_mutation() {
+        let fixture = Fixture::new();
+        let active = ActiveRuntime::default();
+        active.running.store(true, Ordering::Release);
+        active.control.lock().expect("active request").request_id =
+            Some("request-frame-race".to_owned());
+        let mut projection = TurnProtocolProjection::new(&fixture.home, &fixture.work);
+        let frame = serde_json::to_vec(&json!({
+            "id": 1,
+            "result": {
+                "codexHome": fixture.home,
+                "platformFamily": "unix",
+                "platformOs": "macos",
+                "userAgent": "codex_cli_rs/0.145.0"
+            }
+        }))
+        .expect("initialize frame");
+
+        let result = accept_turn_frame_with(&active, &mut projection, &frame, || {
+            active.cancel(RuntimeCancellation::User);
+        });
+
+        assert_eq!(result, Err(RuntimeCancellation::User));
+        assert_eq!(
+            projection.stage,
+            TurnProjectionStage::Initialize,
+            "cancel-won frames must not mutate projection"
+        );
+    }
+
+    #[test]
+    fn accepted_cancel_after_projection_is_fenced_before_action_callback() {
+        let fixture = Fixture::new();
+        let active = ActiveRuntime::default();
+        active.running.store(true, Ordering::Release);
+        active.control.lock().expect("active request").request_id =
+            Some("request-projection-fence".to_owned());
+        let mut projection = TurnProtocolProjection::new(&fixture.home, &fixture.work);
+        let action = projection.accept(
+            &serde_json::to_vec(&json!({
+                "id": 1,
+                "result": {
+                    "codexHome": fixture.home,
+                    "platformFamily": "unix",
+                    "platformOs": "macos",
+                    "userAgent": "codex_cli_rs/0.145.0"
+                }
+            }))
+            .expect("initialize frame"),
+        );
+        assert_eq!(action, TurnProjectionAction::SendAccountRead);
+
+        let mut callback_runs = 0;
+        match lock_projection_action_with(&active, || {
+            active.defer_cancellation(AcceptedRuntimeCancellation::new(
+                RuntimeCancellation::User,
+                Instant::now(),
+            ));
+        }) {
+            Ok(guard) => {
+                callback_runs += 1;
+                drop(guard);
+            }
+            Err(cancellation) => assert_eq!(cancellation, RuntimeCancellation::User),
+        }
+
+        assert_eq!(
+            callback_runs, 0,
+            "cancel-won actions must not reach callbacks"
+        );
+    }
+
+    #[test]
+    fn initialize_write_linearizes_after_prompt_cancellation_without_provider_bytes() {
+        let active = Arc::new(ActiveRuntime::default());
+        assert!(active.claim_request("initialize-linearization"));
+        let (effect_started, release_effect) =
+            active.install_runtime_effect_hook(RuntimeEffectStage::InitializeWrite);
+        let writing_active = Arc::clone(&active);
+        let pending = thread::spawn(move || {
+            let mut provider_bytes = Vec::new();
+            let result =
+                runtime_effect(&writing_active, RuntimeEffectStage::InitializeWrite, || {
+                    write_json_line(&mut provider_bytes, &json!({"method":"initialize","id":1}))
+                });
+            (result, provider_bytes)
+        });
+        effect_started
+            .recv_timeout(Duration::from_secs(1))
+            .expect("initialize boundary entered");
+        let acceptance_started = Instant::now();
+        active.cancel(RuntimeCancellation::User);
+        assert!(
+            acceptance_started.elapsed() < Duration::from_millis(100),
+            "initialize boundary blocked cancellation acceptance"
+        );
+        {
+            let (released, wake) = &*release_effect;
+            *released.lock().expect("initialize release") = true;
+            wake.notify_all();
+        }
+        let (result, provider_bytes) = pending.join().expect("initialize writer");
+
+        assert!(matches!(
+            result,
+            RuntimeEffectResult::Rejected(RuntimeCancellation::User)
+        ));
+        assert!(
+            provider_bytes.is_empty(),
+            "cancel-won initialize must write zero provider bytes"
+        );
+        active.finish_request();
+    }
+
+    #[test]
+    fn cancel_terminal_is_bounded_while_reversible_work_remains_owned_for_rollback() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let repository = fixture.root.join("repository");
+        fs::create_dir(&repository).expect("repository identity");
+        fs::create_dir(repository.join(".git")).expect("repository marker");
+        let host = fixture.scripted_host("#!/bin/sh\nwhile :; do /bin/sleep 1; done\n");
+        let (effect_started, release_effect) = host
+            .active
+            .install_runtime_effect_hook(RuntimeEffectStage::Directory);
+        let running_host = host.clone();
+        let running_repository = repository.clone();
+        let pending = thread::spawn(move || {
+            running_host.run_turn(
+                "bounded-owned-effect",
+                1,
+                &WorkspaceRuntimeBinding::for_test(&running_repository),
+                "Bounded task.",
+                Duration::from_secs(30),
+                |_| {},
+            )
+        });
+        effect_started
+            .recv_timeout(Duration::from_secs(1))
+            .expect("directory effect entered");
+        host.cancel_request_at(
+            "bounded-owned-effect",
+            Instant::now() - TURN_TERMINAL_BUDGET - Duration::from_millis(1),
+        );
+        let return_deadline = Instant::now() + Duration::from_millis(250);
+        while !pending.is_finished() && Instant::now() < return_deadline {
+            thread::yield_now();
+        }
+        let terminal_was_bounded = pending.is_finished();
+        let fresh_was_blocked = !host.active.claim_request("effect-still-owned");
+        if !fresh_was_blocked {
+            host.active.finish_request();
+        }
+        let workspace_cleanup_was_proven = host.cancel_for_workspace_change_and_wait(1);
+        {
+            let (released, wake) = &*release_effect;
+            *released.lock().expect("effect release") = true;
+            wake.notify_all();
+        }
+        let outcome = pending.join().expect("bounded turn outcome");
+        let recovery_deadline = Instant::now() + Duration::from_secs(1);
+        let recovered = loop {
+            if host.active.claim_request("effect-rollback-recovered") {
+                break true;
+            }
+            if Instant::now() >= recovery_deadline {
+                break false;
+            }
+            thread::yield_now();
+        };
+        if recovered {
+            host.active.finish_request();
+        }
+
+        assert!(
+            terminal_was_bounded,
+            "accepted cancellation must settle while reversible work is still blocked"
+        );
+        assert!(
+            fresh_was_blocked,
+            "unfinished work must block a fresh claim"
+        );
+        assert!(
+            !workspace_cleanup_was_proven,
+            "workspace replacement must not report cleanup while an effect worker remains owned"
+        );
+        assert_eq!(outcome.state, TurnState::CleanupFailed);
+        assert!(!outcome.cleaned);
+        assert!(recovered, "completed rollback must permit recovery");
+        assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
+    }
+
+    #[test]
+    fn blocked_terminal_publication_remains_owned_and_cannot_block_settlement() {
+        let host = RuntimeHost::unavailable_for_test();
+        host.set_active_request_for_test("terminal-publication");
+        let (started_sender, started_receiver) = mpsc::sync_channel(1);
+        let (release_sender, release_receiver) = mpsc::sync_channel(1);
+        let publishing_host = host.clone();
+        let pending = thread::spawn(move || {
+            publishing_host.publish_terminal_update(move || {
+                started_sender.send(()).expect("publication started");
+                release_receiver
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("publication released");
+                true
+            })
+        });
+        started_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("publication worker entered callback");
+        let settlement_deadline = Instant::now() + Duration::from_millis(250);
+        while !pending.is_finished() && Instant::now() < settlement_deadline {
+            thread::yield_now();
+        }
+        let settled_without_callback = pending.is_finished();
+        let fresh_was_blocked = if settled_without_callback {
+            host.active.finish_request();
+            !host.active.claim_request("publication-still-owned")
+        } else {
+            false
+        };
+        let shutdown_cleanup_was_proven = host.cancel_for_app_shutdown_and_wait();
+        release_sender.send(()).expect("release publication");
+        let outcome = pending.join().expect("publication owner");
+        if !settled_without_callback {
+            host.active.finish_request();
+        }
+        let recovery_deadline = Instant::now() + Duration::from_secs(1);
+        let recovered = loop {
+            if host.active.claim_request("publication-recovered") {
+                break true;
+            }
+            if Instant::now() >= recovery_deadline {
+                break false;
+            }
+            thread::yield_now();
+        };
+        if recovered {
+            host.active.finish_request();
+        }
+
+        assert!(
+            settled_without_callback,
+            "a blocked terminal callback must not own the settlement caller"
+        );
+        assert_eq!(outcome, TerminalPublicationOutcome::Deferred);
+        assert!(
+            fresh_was_blocked,
+            "an unfinished publication worker must block a fresh request"
+        );
+        assert!(
+            !shutdown_cleanup_was_proven,
+            "shutdown must not report cleanup while publication remains owned"
+        );
+        assert!(
+            recovered,
+            "a retired publication worker must permit recovery"
+        );
+    }
+
+    #[test]
+    fn expired_terminal_publication_window_never_invokes_the_callback() {
+        let host = RuntimeHost::unavailable_for_test();
+        host.set_active_request_for_test("expired-terminal-publication");
+        host.cancel_request_at(
+            "expired-terminal-publication",
+            Instant::now() - TURN_TERMINAL_BUDGET - Duration::from_millis(1),
+        );
+        let (called, observed) = mpsc::sync_channel(1);
+
+        let outcome = host.publish_terminal_update(move || {
+            called.send(()).expect("publication callback observation");
+            true
+        });
+
+        assert_eq!(outcome, TerminalPublicationOutcome::Skipped);
+        assert!(observed.try_recv().is_err());
+        host.active.finish_request();
+    }
+
+    #[test]
+    fn terminal_publication_uses_one_clock_at_worker_start_and_completion() {
+        for (worker_elapsed_ms, completion_elapsed_ms, expected_calls, expected_outcome) in [
+            (
+                4_999_u64,
+                4_999_u64,
+                1,
+                TerminalPublicationOutcome::Completed(true),
+            ),
+            (4_999, 5_000, 1, TerminalPublicationOutcome::Completed(true)),
+            (5_000, 5_000, 0, TerminalPublicationOutcome::Skipped),
+            (5_001, 5_001, 0, TerminalPublicationOutcome::Skipped),
+            (4_999, 5_001, 1, TerminalPublicationOutcome::Skipped),
+        ] {
+            let host = RuntimeHost::unavailable_for_test();
+            host.set_active_request_for_test("coherent-publication-clock");
+            let accepted_at = Instant::now();
+            let cutoff = accepted_at + TURN_TERMINAL_BUDGET;
+            host.set_terminal_publication_now_for_test(accepted_at + Duration::from_millis(4_900));
+            let (worker_entered, release_worker) =
+                host.install_terminal_publication_hook_for_test();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let calls_for_callback = Arc::clone(&calls);
+            let completion_clock = host.clone();
+            let publishing_host = host.clone();
+            let pending = thread::spawn(move || {
+                publishing_host.publish_terminal_update_until(cutoff, move || {
+                    calls_for_callback.fetch_add(1, Ordering::AcqRel);
+                    completion_clock.set_terminal_publication_now_for_test(
+                        accepted_at + Duration::from_millis(completion_elapsed_ms),
+                    );
+                    true
+                })
+            });
+            worker_entered
+                .recv_timeout(Duration::from_secs(1))
+                .expect("publication worker entered");
+            host.set_terminal_publication_now_for_test(
+                accepted_at + Duration::from_millis(worker_elapsed_ms),
+            );
+            {
+                let (released, wake) = &*release_worker;
+                *released.lock().expect("publication release") = true;
+                wake.notify_all();
+            }
+            let completion_deadline = Instant::now() + Duration::from_secs(1);
+            while !pending.is_finished() {
+                assert!(
+                    Instant::now() < completion_deadline,
+                    "publication outcome exceeded its bounded wait"
+                );
+                thread::yield_now();
+            }
+            let outcome = pending.join().expect("publication outcome");
+
+            assert_eq!(
+                calls.load(Ordering::Acquire),
+                expected_calls,
+                "worker={worker_elapsed_ms}ms, completion={completion_elapsed_ms}ms"
+            );
+            assert_eq!(
+                outcome, expected_outcome,
+                "worker={worker_elapsed_ms}ms, completion={completion_elapsed_ms}ms"
+            );
+            host.active.finish_request();
+        }
+    }
+
+    #[test]
+    fn late_failed_or_panicked_terminal_publication_is_applied_after_settlement() {
+        for panic_after_release in [false, true] {
+            let host = RuntimeHost::unavailable_for_test();
+            host.set_active_request_for_test("late-terminal-publication");
+            let (entered, started) = mpsc::sync_channel(1);
+            let (release, released) = mpsc::sync_channel(1);
+            let (failed, failure_observed) = mpsc::sync_channel(1);
+            let outcome = host.publish_terminal_update_until_with_failure(
+                Instant::now() + Duration::from_secs(1),
+                move || {
+                    entered.send(()).expect("publication entered");
+                    released
+                        .recv_timeout(Duration::from_secs(1))
+                        .expect("publication released");
+                    assert!(!panic_after_release, "injected publication panic");
+                    false
+                },
+                move || failed.send(()).expect("failure disposition"),
+            );
+            started
+                .recv_timeout(Duration::from_secs(1))
+                .expect("publication callback entered");
+            assert_eq!(outcome, TerminalPublicationOutcome::Deferred);
+            host.active.finish_request();
+            assert!(!host.active.claim_request("publication-unsettled"));
+            release.send(()).expect("release publication callback");
+            failure_observed
+                .recv_timeout(Duration::from_secs(1))
+                .expect("late failure must be applied");
+            let recovery_deadline = Instant::now() + Duration::from_secs(1);
+            while !host.active.claim_request("publication-recovered") {
+                assert!(
+                    Instant::now() < recovery_deadline,
+                    "publication worker did not retire"
+                );
+                thread::yield_now();
+            }
+            host.active.finish_request();
+        }
+    }
+
+    #[test]
+    fn turn_and_readiness_retain_spawn_rollback_kill_or_reap_failure() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for readiness in [false, true] {
+            for failed_phase in [1, 2] {
+                let fixture = Fixture::new();
+                let repository = fixture.root.join("repository");
+                fs::create_dir(&repository).expect("repository identity");
+                fs::create_dir(repository.join(".git")).expect("repository marker");
+                let host = fixture.scripted_host(
+                    r#"#!/bin/sh
+while :; do /bin/sleep 1; done
+"#,
+                );
+                let request_id = if readiness {
+                    "readiness-spawn-rollback"
+                } else {
+                    "turn-spawn-rollback"
+                };
+                let (effect_started, release_effect) = host
+                    .active
+                    .install_runtime_effect_hook(RuntimeEffectStage::Spawn);
+                host.fail_spawn_rollback_for_test(failed_phase);
+                let running_host = host.clone();
+                let running_repository = repository.clone();
+                let pending = thread::spawn(move || {
+                    if readiness {
+                        (running_host.check(request_id, None).state, None)
+                    } else {
+                        let outcome = running_host.run_turn(
+                            request_id,
+                            1,
+                            &WorkspaceRuntimeBinding::for_test(&running_repository),
+                            "Bounded task.",
+                            Duration::from_secs(30),
+                            |_| {},
+                        );
+                        (RuntimeReadinessState::Unavailable, Some(outcome))
+                    }
+                });
+                effect_started
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("spawn effect entered");
+                host.cancel_request_at(request_id, Instant::now());
+                {
+                    let (released, wake) = &*release_effect;
+                    *released.lock().expect("spawn release") = true;
+                    wake.notify_all();
+                }
+                let completion_deadline = Instant::now() + Duration::from_secs(5);
+                while !pending.is_finished() {
+                    assert!(
+                        Instant::now() < completion_deadline,
+                        "spawn rollback outcome exceeded its bounded deadline"
+                    );
+                    thread::yield_now();
+                }
+                let (readiness_state, turn_outcome) = pending.join().expect("runtime outcome");
+
+                if let Some(turn_outcome) = turn_outcome {
+                    assert_eq!(turn_outcome.state, TurnState::CleanupFailed);
+                    assert!(!turn_outcome.cleaned);
+                } else {
+                    assert_eq!(readiness_state, RuntimeReadinessState::CleanupFailed);
+                }
+                assert!(
+                    host.active
+                        .process_group
+                        .lock()
+                        .is_ok_and(|group| group.is_some())
+                );
+                assert!(!host.active.claim_request("rollback-not-reconciled"));
+                let recovery_deadline = Instant::now() + Duration::from_secs(5);
+                while !host.wait_for_accepted_cancellation_cleanup() {
+                    assert!(
+                        Instant::now() < recovery_deadline,
+                        "retained spawn rollback did not reconcile"
+                    );
+                    thread::yield_now();
+                }
+                assert!(host.active.claim_request("rollback-recovered"));
+                host.active.finish_request();
+            }
+        }
+    }
+
+    #[test]
+    fn literal_host_cancel_remains_prompt_at_each_production_effect_boundary() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let targets = [
+            RuntimeEffectStage::Bind,
+            RuntimeEffectStage::Directory,
+            RuntimeEffectStage::Stage,
+            RuntimeEffectStage::Spawn,
+            RuntimeEffectStage::Publish,
+            RuntimeEffectStage::Readers,
+            RuntimeEffectStage::InitializeWrite,
+        ];
+        let ordered = [
+            RuntimeEffectStage::Bind,
+            RuntimeEffectStage::Workspace,
+            RuntimeEffectStage::Directory,
+            RuntimeEffectStage::Stage,
+            RuntimeEffectStage::Spawn,
+            RuntimeEffectStage::Publish,
+            RuntimeEffectStage::Readers,
+            RuntimeEffectStage::InitializeWrite,
+        ];
+        for target in targets {
+            let fixture = Fixture::new();
+            let repository = fixture.root.join("repository");
+            fs::create_dir(&repository).expect("repository identity");
+            fs::create_dir(repository.join(".git")).expect("repository marker");
+            let runtime = fixture.scripted_host(
+                r#"#!/bin/sh
+read -r initialize
+printf '%s\n' '{"id":1,"result":{"userAgent":"codex_cli_rs/0.145.0","codexHome":"'"$CODEX_HOME"'","platformFamily":"unix","platformOs":"macos"}}'
+read -r initialized
+read -r account
+printf provider-write > "$CODEX_HOME/provider-write"
+while :; do /bin/sleep 1; done
+"#,
+            );
+            let (effect_started, release_effect) =
+                runtime.active.install_runtime_effect_hook(target);
+            let mut workspace = crate::WorkspaceHost::default();
+            let workspace_generation = match workspace
+                .select(crate::FolderPickerResult::Selected(repository))
+                .expect("workspace selection")
+            {
+                keiko_application::workspace::WorkspaceView::Bound { generation, .. } => generation,
+                _ => panic!("bound workspace"),
+            };
+            let nonce = "e".repeat(64);
+            let mut lifecycle = crate::HostLifecycle::default();
+            let generation = lifecycle
+                .begin_renderer_session(nonce.clone())
+                .expect("renderer generation");
+            let sender =
+                lifecycle.sender_for_document("main", "tauri://localhost", generation, &nonce);
+            let request_id = keiko_ui_port::canonical_request_id(generation, 1).unwrap();
+            let request = format!(
+                r#"{{"schemaVersion":1,"requestId":"{request_id}","sequence":1,"timeoutMs":120000,"operation":{{"kind":"codex-turn-start","workspaceGeneration":{workspace_generation},"task":"Bounded task."}}}}"#
+            );
+            let lifecycle = Arc::new(Mutex::new(lifecycle));
+            let workspace = Arc::new(Mutex::new(workspace));
+            let running_lifecycle = Arc::clone(&lifecycle);
+            let running_workspace = Arc::clone(&workspace);
+            let running_runtime = runtime.clone();
+            let running_sender = sender.clone();
+            let turn = thread::spawn(move || {
+                crate::turn::turn_request(
+                    &running_lifecycle,
+                    &running_workspace,
+                    &running_runtime,
+                    &running_sender,
+                    &request,
+                    |_| {},
+                )
+            });
+            effect_started
+                .recv_timeout(Duration::from_secs(5))
+                .expect("production effect boundary reached");
+            let cancellation = format!(r#"{{"schemaVersion":1,"requestId":"{request_id}"}}"#);
+            let cancel_lifecycle = Arc::clone(&lifecycle);
+            let cancel_runtime = runtime.clone();
+            let (accepted_sender, accepted_receiver) = mpsc::sync_channel(1);
+            let cancel = thread::spawn(move || {
+                let result = crate::tauri_adapter::dispatch_cancel_with_runtime_fence(
+                    &cancel_lifecycle,
+                    &cancel_runtime,
+                    "main",
+                    "tauri://localhost",
+                    generation,
+                    &nonce,
+                    &cancellation,
+                );
+                accepted_sender
+                    .send(result.accepted)
+                    .expect("cancel acceptance observation");
+            });
+            let accepted_promptly = accepted_receiver
+                .recv_timeout(Duration::from_millis(100))
+                .ok()
+                .flatten();
+            {
+                let (released, wake) = &*release_effect;
+                *released.lock().expect("effect release") = true;
+                wake.notify_all();
+            }
+            let accepted = accepted_promptly.or_else(|| {
+                accepted_receiver
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("eventual cancel acceptance")
+            });
+            cancel.join().expect("cancel thread");
+            let output = turn.join().expect("turn thread");
+
+            assert!(
+                accepted_promptly.is_some(),
+                "{target:?} blocked Host acceptance"
+            );
+            assert!(
+                accepted.is_some(),
+                "{target:?} must retain literal Host token"
+            );
+            assert!(output.encoded.contains(r#""state":"cancelled""#));
+            let target_index = ordered.iter().position(|stage| *stage == target).unwrap();
+            assert_eq!(
+                runtime.active.runtime_effect_trace(),
+                ordered[..=target_index],
+                "no later production effect may begin after cancellation at {target:?}"
+            );
+            assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
+            assert!(!fixture.home.join("provider-write").exists());
+        }
     }
 
     #[test]
@@ -8093,7 +15326,21 @@ while :; do /bin/sleep 1; done
                 .contains(&work_directory)
         );
         fs::remove_file(work_directory).expect("remove replacement fixture");
-        assert!(reconcile_retained_work_directories(&active));
+        assert!(
+            !reconcile_retained_work_directories(&active),
+            "the first reconciliation only starts the owned worker"
+        );
+        let reconciliation_deadline = Instant::now() + Duration::from_secs(1);
+        let reconciled = loop {
+            if reconcile_retained_work_directories(&active) {
+                break true;
+            }
+            if Instant::now() >= reconciliation_deadline {
+                break false;
+            }
+            thread::yield_now();
+        };
+        assert!(reconciled, "proven absence must complete bounded recovery");
     }
 
     #[test]
@@ -8251,9 +15498,26 @@ if read -r turn; then : > '{turn_received}'; fi
     fn wait_for_idle_times_out_when_request_never_finishes() {
         let never_idle = ActiveRuntime::default();
         never_idle.running.store(true, Ordering::Release);
-        assert!(never_idle.begin_request("never-idle"));
+        assert!(never_idle.begin_request("never-idle", None));
         assert!(!never_idle.wait_for_idle(Duration::from_millis(1)));
         never_idle.finish_request();
+    }
+
+    #[test]
+    fn pending_cleanup_wait_uses_only_the_authoritative_cancellation_cutoff() {
+        let now = Instant::now();
+        let accepted =
+            AcceptedRuntimeCancellation::new(RuntimeCancellation::User, now - TURN_TERMINAL_BUDGET);
+        assert_eq!(accepted.terminal_cutoff, now);
+        assert_eq!(
+            cancellation_cleanup_wait_budget(now, Some(accepted)),
+            Duration::ZERO,
+            "an exact pending cancellation never receives a fresh five-second wait"
+        );
+        assert_eq!(
+            cancellation_cleanup_wait_budget(now, None),
+            TURN_TERMINAL_BUDGET
+        );
     }
 
     #[test]
@@ -8277,7 +15541,7 @@ if read -r turn; then : > '{turn_received}'; fi
         poisoned_while_waiting
             .running
             .store(true, Ordering::Release);
-        assert!(poisoned_while_waiting.begin_request("poisoned-wait"));
+        assert!(poisoned_while_waiting.begin_request("poisoned-wait", None));
         let waiting_target = Arc::clone(&poisoned_while_waiting);
         let waiting = thread::spawn(move || waiting_target.wait_for_idle(Duration::from_secs(1)));
         while !poisoned_while_waiting.idle_waiting.load(Ordering::Acquire) {
@@ -9923,7 +17187,8 @@ exit 9
         let process_group = child.id() as i32;
         let (stdout_sender, stdout_receiver) = mpsc::sync_channel(1);
         let stdout_available = child.stdout.take().is_some_and(|stdout| {
-            spawn_stdout_reader(stdout, stdout_sender, Arc::new(AtomicUsize::new(0)));
+            let _stdout = spawn_stdout_reader(stdout, stdout_sender, Arc::new(AtomicUsize::new(0)))
+                .expect("stdout reader");
             true
         });
         let active = ActiveRuntime::default();
@@ -10013,7 +17278,8 @@ exit 9
         let process_group = child.id() as i32;
         let (stdout_sender, stdout_receiver) = mpsc::sync_channel(2);
         let stdout_available = child.stdout.take().is_some_and(|stdout| {
-            spawn_stdout_reader(stdout, stdout_sender, Arc::new(AtomicUsize::new(0)));
+            let _stdout = spawn_stdout_reader(stdout, stdout_sender, Arc::new(AtomicUsize::new(0)))
+                .expect("stdout reader");
             true
         });
         let active = ActiveRuntime::default();
@@ -10143,7 +17409,8 @@ exit 9
         let process_group = child.id() as i32;
         let (stdout_sender, stdout_receiver) = mpsc::sync_channel(2);
         let stdout_available = child.stdout.take().is_some_and(|stdout| {
-            spawn_stdout_reader(stdout, stdout_sender, Arc::new(AtomicUsize::new(0)));
+            let _stdout = spawn_stdout_reader(stdout, stdout_sender, Arc::new(AtomicUsize::new(0)))
+                .expect("stdout reader");
             true
         });
         let active = ActiveRuntime::default();
@@ -10465,6 +17732,7 @@ exit 9
             host.configuration.as_ref().expect("configuration"),
             None,
             &ActiveRuntime::default(),
+            &AtomicU64::new(0),
             &AtomicU64::new(0),
             Instant::now() - Duration::from_millis(1),
         );

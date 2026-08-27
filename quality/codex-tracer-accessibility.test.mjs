@@ -82,6 +82,34 @@ test("adapter results accept only one closed semantic outcome", () => {
       status: "failed",
     },
   );
+  assert.deepEqual(
+    classifyTracerAccessibilityResult({
+      exitCode: 1,
+      stdout:
+        '{"status":"failed","reasonCode":"containment-failed","prompted":false}\n',
+      stderr: "",
+      timedOut: false,
+    }),
+    {
+      prompted: false,
+      reasonCode: "containment-failed",
+      status: "failed",
+    },
+  );
+  assert.deepEqual(
+    classifyTracerAccessibilityResult({
+      exitCode: 1,
+      stdout:
+        '{"status":"failed","reasonCode":"cleanup-failed","prompted":false}\n',
+      stderr: "",
+      timedOut: false,
+    }),
+    {
+      prompted: false,
+      reasonCode: "cleanup-failed",
+      status: "failed",
+    },
+  );
   for (const hostile of [
     { exitCode: 0, stdout: "not-json", stderr: "", timedOut: false },
     {
@@ -119,6 +147,41 @@ test("adapter results accept only one closed semantic outcome", () => {
         : "adapter-output-invalid",
       status: "failed",
     });
+  }
+});
+
+test("fast cancellation failures stop the first semantic wait truthfully", async () => {
+  for (const reasonCode of ["cleanup-failed", "containment-failed"]) {
+    const classified = classifyTracerAccessibilityResult({
+      exitCode: 1,
+      stdout: `${JSON.stringify({
+        status: "failed",
+        reasonCode,
+        prompted: false,
+      })}\n`,
+      stderr: "",
+      timedOut: false,
+    });
+    assert.equal(classified.reasonCode, reasonCode);
+    let waits = 0;
+    const result = await waitForTracerAccessibilityAction({
+      action: "observe-stopping",
+      binary: "/bounded/adapter",
+      execute: () => classified,
+      monotonicNow: () => 0,
+      pid: 42,
+      timeoutMs: 5_000,
+      wait: async () => {
+        waits += 1;
+      },
+    });
+    assert.deepEqual(result, {
+      elapsedMs: 0,
+      prompted: false,
+      reasonCode,
+      status: "failed",
+    });
+    assert.equal(waits, 0, "truthful terminal failure must not be retried");
   }
 });
 
@@ -359,6 +422,46 @@ test("bounded semantic waits retry only missing targets and stop on permission d
   });
   assert.equal(attempts, 1);
   assert.equal(denied.reasonCode, "accessibility-permission-denied");
+
+  const cleanupFailed = await waitForTracerAccessibilityAction({
+    action: "observe-cancelled",
+    binary: "/bounded/adapter",
+    execute: () => ({
+      prompted: false,
+      reasonCode: "cleanup-failed",
+      status: "failed",
+    }),
+    monotonicNow: () => 0,
+    pid: 42,
+    timeoutMs: 5_000,
+    wait: async () => assert.fail("must not retry a truthful terminal"),
+  });
+  assert.deepEqual(cleanupFailed, {
+    elapsedMs: 0,
+    prompted: false,
+    reasonCode: "cleanup-failed",
+    status: "failed",
+  });
+
+  const containmentFailed = await waitForTracerAccessibilityAction({
+    action: "observe-cancelled",
+    binary: "/bounded/adapter",
+    execute: () => ({
+      prompted: false,
+      reasonCode: "containment-failed",
+      status: "failed",
+    }),
+    monotonicNow: () => 0,
+    pid: 42,
+    timeoutMs: 5_000,
+    wait: async () => assert.fail("must not retry a truthful terminal"),
+  });
+  assert.deepEqual(containmentFailed, {
+    elapsedMs: 0,
+    prompted: false,
+    reasonCode: "containment-failed",
+    status: "failed",
+  });
 });
 
 test("the packaged journey drives the fixed sequence and excludes observer startup", async () => {
@@ -376,7 +479,7 @@ test("the packaged journey drives the fixed sequence and excludes observer start
       const elapsedMs =
         request.action === "probe-start"
           ? 1_000
-          : request.action === "observe-stopping"
+          : request.observation === "observe-stopping"
             ? 80
             : 10;
       now += elapsedMs;
@@ -400,6 +503,17 @@ test("the packaged journey drives the fixed sequence and excludes observer start
         status: "passed",
       };
     },
+    inspectWindowDisplayBinding: async () => {
+      calls.push({ action: "inspect-window-display-binding" });
+      return {
+        displayClass: "internal",
+        displayIdentity: "1",
+        matchedDisplayCount: 1,
+        semanticWindowCount: 1,
+        windowIdentity: "2",
+        windowPosition: "10.000:20.000",
+      };
+    },
     crashRuntime: async () => calls.push({ action: "crash-runtime" }),
     monotonicNow: () => now,
     observeRuntime: async () => calls.push({ action: "observe-runtime" }),
@@ -411,6 +525,7 @@ test("the packaged journey drives the fixed sequence and excludes observer start
     calls.map(({ action }) => action),
     [
       "probe-start",
+      "inspect-window-display-binding",
       "open-canvas",
       "open-workspace-picker",
       "cancel-workspace-picker",
@@ -435,6 +550,7 @@ test("the packaged journey drives the fixed sequence and excludes observer start
       "observe-runtime",
       "cancel-turn",
       "observe-cancelled",
+      "inspect-window-display-binding",
       "focus-task",
       "set-task",
       "submit-task",
@@ -508,8 +624,299 @@ test("the packaged journey drives the fixed sequence and excludes observer start
   assert.equal(result.localProjectionSamples, 4);
   assert.equal(result.status, "passed");
   assert.equal(result.turnCancellationProjectionMs, 80);
+  assert.deepEqual(result.turnCancellationTerminal, {
+    boundary: "cancel-action-start-to-terminal",
+    elapsedMs: 90,
+    stoppingElapsedMs: 80,
+    terminalState: "cancelled",
+  });
   assert.equal(result.turnDurationMs, 30);
   assert.equal(result.workspaceSelectionNativeActionMs, 102);
+  assert.equal(result.windowDisplayBinding.displayClass, "internal");
+});
+
+test("the packaged journey rejects cancellation-time display binding drift", async () => {
+  let bindingSample = 0;
+  await assert.rejects(
+    runPackagedTracerJourney({
+      deniedWorkspaceLabel: "KeikoAcceptanceIdentity104DeniedABC123",
+      execute: async (request) => ({
+        elapsedMs: 1,
+        ...(request.observation === undefined
+          ? {}
+          : {
+              ...(request.observation === "observe-workspace-selected"
+                ? { nativeActionMs: 1 }
+                : {}),
+              projectedMs: 1,
+            }),
+        prompted: false,
+        reasonCode: null,
+        status: "passed",
+      }),
+      inspectWindowDisplayBinding: async () => {
+        bindingSample += 1;
+        return {
+          displayClass: bindingSample === 1 ? "external" : "internal",
+          displayIdentity: "1",
+          matchedDisplayCount: 1,
+          semanticWindowCount: 1,
+          windowIdentity: "2",
+          windowPosition: "10.000:20.000",
+        };
+      },
+      crashRuntime: async () => undefined,
+      monotonicNow: () => 0,
+      observeRuntime: async () => undefined,
+      prompt: acceptedPrompt,
+      workspaceLabel: "KeikoAcceptanceIdentity104ABC123",
+    }),
+    /packaged-journey-window-display-binding-changed/u,
+  );
+  assert.equal(
+    bindingSample,
+    2,
+    "binding must be inspected after cancellation",
+  );
+});
+
+test("the packaged journey rejects same-class window movement or replacement without persisting identity", async () => {
+  for (const drift of ["position", "window", "display"]) {
+    let bindingSample = 0;
+    await assert.rejects(
+      runPackagedTracerJourney({
+        deniedWorkspaceLabel: "KeikoAcceptanceIdentity104DeniedABC123",
+        execute: async (request) => ({
+          elapsedMs: 1,
+          ...(request.observation === undefined
+            ? {}
+            : {
+                ...(request.observation === "observe-workspace-selected"
+                  ? { nativeActionMs: 1 }
+                  : {}),
+                projectedMs: 1,
+              }),
+          prompted: false,
+          reasonCode: null,
+          status: "passed",
+        }),
+        inspectWindowDisplayBinding: async () => {
+          bindingSample += 1;
+          return {
+            displayClass: "external",
+            displayIdentity:
+              drift === "display" && bindingSample === 2 ? "3" : "1",
+            matchedDisplayCount: 1,
+            semanticWindowCount: 1,
+            windowIdentity:
+              drift === "window" && bindingSample === 2 ? "4" : "2",
+            windowPosition:
+              drift === "position" && bindingSample === 2
+                ? "11.000:20.000"
+                : "10.000:20.000",
+          };
+        },
+        crashRuntime: async () => undefined,
+        monotonicNow: () => 0,
+        observeRuntime: async () => undefined,
+        prompt: acceptedPrompt,
+        workspaceLabel: "KeikoAcceptanceIdentity104ABC123",
+      }),
+      /packaged-journey-window-display-binding-changed/u,
+    );
+    assert.equal(
+      bindingSample,
+      2,
+      `${drift} must be compared after cancellation`,
+    );
+  }
+});
+
+test("the packaged cancellation coordinator rejects sequential stopping and terminal waits beyond one deadline", async () => {
+  let now = 0;
+  await assert.rejects(
+    runPackagedTracerJourney({
+      deniedWorkspaceLabel: "KeikoAcceptanceIdentity104DeniedABC123",
+      execute: async (request) => {
+        const elapsedMs =
+          request.action === "cancel-turn"
+            ? 100
+            : request.action === "observe-cancelled"
+              ? 5_000
+              : 1;
+        now += elapsedMs;
+        return {
+          elapsedMs,
+          ...(request.observation === undefined
+            ? {}
+            : {
+                ...(request.observation === "observe-workspace-selected"
+                  ? { nativeActionMs: 1 }
+                  : {}),
+                projectedMs:
+                  request.observation === "observe-stopping" ? 100 : 1,
+              }),
+          prompted: false,
+          reasonCode: null,
+          status: "passed",
+        };
+      },
+      inspectWindowDisplayBinding: async () => ({
+        displayClass: "external",
+        displayIdentity: "1",
+        matchedDisplayCount: 1,
+        semanticWindowCount: 1,
+        windowIdentity: "2",
+        windowPosition: "10.000:20.000",
+      }),
+      crashRuntime: async () => undefined,
+      monotonicNow: () => now,
+      observeRuntime: async () => undefined,
+      prompt: acceptedPrompt,
+      workspaceLabel: "KeikoAcceptanceIdentity104ABC123",
+    }),
+    /packaged-journey-checkpoint-failed/u,
+  );
+});
+
+test("the packaged cancellation observer enforces the inclusive terminal boundary without a zero timeout", async () => {
+  for (const terminalElapsedMs of [4_999.5, 5_000, 5_000.1]) {
+    let now = 0;
+    let cancellationStartedAt = 0;
+    let postStoppingClockReads = 0;
+    let cancellationActive = false;
+    let delayNextDisplayInspection = false;
+    const observedTimeouts = [];
+    const journey = runPackagedTracerJourney({
+      deniedWorkspaceLabel: "KeikoAcceptanceIdentity104DeniedABC123",
+      execute: async (request) => {
+        if (request.action === "cancel-turn") {
+          cancellationStartedAt = now;
+          now += 80;
+          cancellationActive = true;
+        } else if (request.action === "observe-cancelled") {
+          observedTimeouts.push(request.timeoutMs);
+          if (!Number.isSafeInteger(request.timeoutMs) || request.timeoutMs < 1)
+            throw new Error("observer-timeout-invalid");
+          cancellationActive = false;
+          now = cancellationStartedAt + terminalElapsedMs;
+          delayNextDisplayInspection = true;
+        } else {
+          now += 1;
+        }
+        return {
+          elapsedMs: request.action === "cancel-turn" ? 80 : 1,
+          ...(request.observation === undefined
+            ? {}
+            : {
+                ...(request.observation === "observe-workspace-selected"
+                  ? { nativeActionMs: 1 }
+                  : {}),
+                projectedMs:
+                  request.observation === "observe-stopping" ? 80 : 1,
+              }),
+          prompted: false,
+          reasonCode: null,
+          status: "passed",
+        };
+      },
+      inspectWindowDisplayBinding: async () => {
+        if (delayNextDisplayInspection) {
+          delayNextDisplayInspection = false;
+          now += 1_000;
+        }
+        return {
+          displayClass: "external",
+          displayIdentity: "1",
+          matchedDisplayCount: 1,
+          semanticWindowCount: 1,
+          windowIdentity: "2",
+          windowPosition: "10.000:20.000",
+        };
+      },
+      crashRuntime: async () => undefined,
+      monotonicNow: () => {
+        if (!cancellationActive) return now;
+        postStoppingClockReads += 1;
+        if (postStoppingClockReads === 1) return cancellationStartedAt + 80;
+        if (postStoppingClockReads === 2 && terminalElapsedMs > 5_000)
+          return cancellationStartedAt + 4_999.5;
+        return cancellationStartedAt + terminalElapsedMs;
+      },
+      observeRuntime: async () => undefined,
+      prompt: acceptedPrompt,
+      workspaceLabel: "KeikoAcceptanceIdentity104ABC123",
+    });
+
+    if (terminalElapsedMs > 5_000) {
+      await assert.rejects(journey, /packaged-journey-measurement-invalid/u);
+      assert.deepEqual(observedTimeouts, [1]);
+      continue;
+    }
+    const result = await journey;
+    assert.deepEqual(observedTimeouts, [1]);
+    assert.equal(result.turnCancellationTerminal.elapsedMs, 5_000);
+  }
+});
+
+test("the packaged cancellation observer rejects time beyond the inclusive boundary before observing", async () => {
+  let now = 0;
+  let cancellationStartedAt = 0;
+  let postStoppingClockReads = 0;
+  let cancellationActive = false;
+  let terminalObserved = false;
+  await assert.rejects(
+    runPackagedTracerJourney({
+      deniedWorkspaceLabel: "KeikoAcceptanceIdentity104DeniedABC123",
+      execute: async (request) => {
+        if (request.action === "cancel-turn") {
+          cancellationStartedAt = now;
+          now += 80;
+          cancellationActive = true;
+        } else if (request.action === "observe-cancelled") {
+          terminalObserved = true;
+        } else {
+          now += 1;
+        }
+        return {
+          elapsedMs: request.action === "cancel-turn" ? 80 : 1,
+          ...(request.observation === undefined
+            ? {}
+            : {
+                ...(request.observation === "observe-workspace-selected"
+                  ? { nativeActionMs: 1 }
+                  : {}),
+                projectedMs:
+                  request.observation === "observe-stopping" ? 80 : 1,
+              }),
+          prompted: false,
+          reasonCode: null,
+          status: "passed",
+        };
+      },
+      inspectWindowDisplayBinding: async () => ({
+        displayClass: "external",
+        displayIdentity: "1",
+        matchedDisplayCount: 1,
+        semanticWindowCount: 1,
+        windowIdentity: "2",
+        windowPosition: "10.000:20.000",
+      }),
+      crashRuntime: async () => undefined,
+      monotonicNow: () => {
+        if (!cancellationActive) return now;
+        postStoppingClockReads += 1;
+        return postStoppingClockReads === 1
+          ? cancellationStartedAt + 80
+          : cancellationStartedAt + 5_000.1;
+      },
+      observeRuntime: async () => undefined,
+      prompt: acceptedPrompt,
+      workspaceLabel: "KeikoAcceptanceIdentity104ABC123",
+    }),
+    /packaged-journey-measurement-invalid/u,
+  );
+  assert.equal(terminalObserved, false);
 });
 
 test("the workspace tranche stops after four exact successful projections", async () => {

@@ -30,6 +30,8 @@ import {
   inspectReferenceEnvironment,
   measureFirstVisibleP95,
   measureNativePickerCancellationDistribution,
+  normalizeEphemeralWindowDisplayBinding,
+  normalizeWindowDisplayBinding,
   observedSafeguards,
   packageAcceptance,
   packageArtifactFailures,
@@ -40,6 +42,7 @@ import {
   snapshotDirectory,
   snapshotProtectedRuntimeProfile,
   verifyOwnedRuntimeGroupsExited,
+  windowDisplayEvidenceComposes,
 } from "./codex-tracer-acceptance-io.mjs";
 import { acceptancePhysicalContract } from "./codex-tracer-acceptance.mjs";
 import { authenticateOwnedProcessGroup } from "./macos-accessibility-driver-harness.mjs";
@@ -105,6 +108,86 @@ test("the acceptance IO exposes a bounded workspace tranche without a runtime jo
       writeWorkspaceEvidence: "function",
     },
   );
+});
+
+test("window display binding normalization is closed for internal and external displays", () => {
+  for (const displayClass of ["internal", "external"]) {
+    const binding = {
+      displayClass,
+      matchedDisplayCount: 1,
+      semanticWindowCount: 1,
+    };
+    assert.deepEqual(normalizeWindowDisplayBinding(binding), binding);
+  }
+  for (const binding of [
+    null,
+    [],
+    {},
+    {
+      displayClass: "external",
+      matchedDisplayCount: 1,
+      semanticWindowCount: 1,
+      displayName: "sensitive",
+    },
+    {
+      displayClass: "builtin",
+      matchedDisplayCount: 1,
+      semanticWindowCount: 1,
+    },
+    {
+      displayClass: "internal",
+      matchedDisplayCount: 2,
+      semanticWindowCount: 1,
+    },
+    {
+      displayClass: "external",
+      matchedDisplayCount: 1,
+      semanticWindowCount: 0,
+    },
+  ]) {
+    assert.equal(normalizeWindowDisplayBinding(binding), null);
+  }
+});
+
+test("internal automated binding composes with external physical evidence by privacy-safe aggregates", () => {
+  const automated = {
+    displayClass: "internal",
+    matchedDisplayCount: 1,
+    semanticWindowCount: 1,
+  };
+  const physical = {
+    displayClass: "external",
+    matchedDisplayCount: 1,
+    semanticWindowCount: 1,
+  };
+  assert.equal(windowDisplayEvidenceComposes(automated, physical), true);
+  assert.equal(
+    windowDisplayEvidenceComposes(automated, {
+      ...physical,
+      matchedDisplayCount: 2,
+    }),
+    false,
+  );
+});
+
+test("ephemeral binding normalization is closed without entering durable evidence", () => {
+  const binding = {
+    displayClass: "internal",
+    displayIdentity: "1",
+    matchedDisplayCount: 1,
+    semanticWindowCount: 1,
+    windowIdentity: "2",
+    windowPosition: "10.000:20.000",
+  };
+  assert.deepEqual(normalizeEphemeralWindowDisplayBinding(binding), binding);
+  for (const invalid of [
+    { ...binding, extra: true },
+    { ...binding, displayIdentity: "" },
+    { ...binding, windowIdentity: "" },
+    { ...binding, windowPosition: "" },
+  ]) {
+    assert.equal(normalizeEphemeralWindowDisplayBinding(invalid), null);
+  }
 });
 
 test("platform-neutral workspace publication injects its publisher", async () => {
@@ -933,7 +1016,6 @@ test("reference Mac inspection accepts a valid two-external-display topology", a
 
 test("reference Mac inspection emits only normalized closed reproducibility metadata", async () => {
   const calls = [];
-  const displaySerialCanary = "private-display-serial";
   const outputs = new Map([
     [
       "/usr/sbin/sysctl\0-n\0machdep.cpu.brand_string\0hw.memsize\0hw.model",
@@ -989,8 +1071,11 @@ test("reference Mac inspection emits only normalized closed reproducibility meta
     scaling: "modes-v1:1512x982@120hz-2x",
     thermal: "nominal",
   });
-  assert.equal(JSON.stringify(result).includes(displaySerialCanary), false);
   assert.equal(calls.length, 7);
+  assert.equal(
+    calls.some(({ command }) => command === "/usr/sbin/system_profiler"),
+    true,
+  );
   assert.ok(
     calls.every(
       ({ options }) =>
@@ -1736,20 +1821,43 @@ test("physical observations are closed and digest-bound to the exact packaged he
   };
   const observation = {
     appearance: structuredClone(acceptancePhysicalContract.appearance),
+    cancellationTerminalAnnouncement: {
+      announcementCount: 1,
+      assistiveTechnology: "VoiceOver",
+      mechanism: "common-status",
+      observation: "real-cancel",
+      terminalState: "cancelled",
+    },
+    displayTopology: {
+      activeDisplayCount: 2,
+      externalDisplayCount: 1,
+      internalDisplayCount: 1,
+    },
     observedAt: "2026-08-01T12:00:00.000Z",
     observations: acceptancePhysicalContract.irreducibleObservations.map(
       (checkpoint) => ({ checkpoint, status: "observed" }),
     ),
     packageExecutableSha256: expected.packageExecutableSha256,
     redaction: "closed",
-    schemaVersion: "keiko-native-codex-tracer-physical-observation/v1",
+    schemaVersion: "keiko-native-codex-tracer-physical-observation/v2",
     sourceRevision: expected.sourceRevision,
+    windowDisplayBinding: {
+      displayClass: "external",
+      matchedDisplayCount: 1,
+      semanticWindowCount: 1,
+    },
   };
 
   const observedAtMs = Date.parse(observation.observedAt);
   assert.deepEqual(
     physicalObservationFailures(observation, expected, observedAtMs),
     [],
+  );
+  const uniquelyBound = structuredClone(observation);
+  assert.deepEqual(
+    physicalObservationFailures(uniquelyBound, expected, observedAtMs),
+    [],
+    "physical evidence must bind one semantic Keiko window to one active display",
   );
   for (const key of Object.keys(observation)) {
     const missing = structuredClone(observation);
@@ -1774,6 +1882,27 @@ test("physical observations are closed and digest-bound to the exact packaged he
       ),
     },
     { ...observation, redaction: "open" },
+    {
+      ...observation,
+      cancellationTerminalAnnouncement: {
+        ...observation.cancellationTerminalAnnouncement,
+        announcementCount: 2,
+      },
+    },
+    {
+      ...observation,
+      displayTopology: {
+        ...observation.displayTopology,
+        displayName: "sensitive",
+      },
+    },
+    {
+      ...observation,
+      windowDisplayBinding: {
+        ...observation.windowDisplayBinding,
+        semanticWindowCount: 2,
+      },
+    },
   ]) {
     assert.ok(
       physicalObservationFailures(changed, expected, observedAtMs).length > 0,

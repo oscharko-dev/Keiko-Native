@@ -9,22 +9,42 @@ pub(crate) enum CancellationSource {
     AppShutdown,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AcceptedCancellation {
+    pub(crate) accepted_at: Instant,
+    pub(crate) source: CancellationSource,
+}
+
 #[derive(Debug)]
 pub(crate) struct InFlight {
+    pub(crate) accepted_cancellation: Option<AcceptedCancellation>,
     pub(crate) cancelled_at_ms: Option<u64>,
     pub(crate) cancellation_source: Option<CancellationSource>,
     pub(crate) generation: u64,
+    pub(crate) runtime_owned: bool,
     pub(crate) started_at_ms: u64,
     pub(crate) timeout_ms: u32,
 }
 
 impl InFlight {
-    pub(crate) fn cancel(&mut self, now_ms: u64, source: CancellationSource) -> u64 {
-        if self.cancelled_at_ms.is_none() {
+    pub(crate) fn cancel(
+        &mut self,
+        now_ms: u64,
+        accepted_at: Instant,
+        source: CancellationSource,
+    ) -> AcceptedCancellation {
+        if self.accepted_cancellation.is_none() {
+            self.accepted_cancellation = Some(AcceptedCancellation {
+                accepted_at,
+                source,
+            });
             self.cancelled_at_ms = Some(now_ms);
             self.cancellation_source = Some(source);
         }
-        self.cancelled_at_ms.unwrap_or(now_ms)
+        self.accepted_cancellation.unwrap_or(AcceptedCancellation {
+            accepted_at,
+            source,
+        })
     }
 }
 
@@ -54,10 +74,25 @@ impl MonotonicClock {
         u64::try_from(self.origin.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
+    pub(crate) fn now(&self) -> Instant {
+        #[cfg(test)]
+        if let Some(now_ms) = self.test_now_ms {
+            return self
+                .origin
+                .checked_add(std::time::Duration::from_millis(now_ms))
+                .unwrap_or(self.origin);
+        }
+        Instant::now()
+    }
+
     #[cfg(test)]
     pub(crate) fn set_test_now_ms(&mut self, now_ms: u64) {
         self.test_now_ms = Some(now_ms);
     }
+}
+
+pub(crate) fn terminal_cutoff_exceeded(now: Instant, cutoff: Instant) -> bool {
+    now > cutoff
 }
 
 pub(crate) fn terminal_reason(
@@ -77,4 +112,24 @@ pub(crate) fn terminal_reason(
         return Some(ReasonCode::TimedOut);
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::terminal_cutoff_exceeded;
+
+    #[test]
+    fn terminal_cutoff_is_exceeded_only_after_five_seconds() {
+        let accepted_at = Instant::now();
+        let cutoff = accepted_at + Duration::from_secs(5);
+        for (elapsed_ms, expected) in [(4_999, false), (5_000, false), (5_001, true)] {
+            assert_eq!(
+                terminal_cutoff_exceeded(accepted_at + Duration::from_millis(elapsed_ms), cutoff,),
+                expected,
+                "elapsed {elapsed_ms}ms"
+            );
+        }
+    }
 }

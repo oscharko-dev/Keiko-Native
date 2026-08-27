@@ -179,6 +179,103 @@ fn concurrent_replay_shutdown_and_replay_window_fail_closed() {
 }
 
 #[test]
+fn outstanding_request_capacity_precedes_host_acceptance_and_frees_on_completion() {
+    let (mut lifecycle, sender) = started();
+    let mut accepted = Vec::new();
+    for sequence in 1..=MAX_IN_FLIGHT_REQUESTS as u64 {
+        accepted.push(
+            lifecycle
+                .begin_application_request(&sender, &request_for(1, sequence))
+                .expect("request within exact cancellation capacity"),
+        );
+    }
+
+    let duplicate_id = canonical_request_id(1, 1).expect("canonical duplicate ID");
+    assert_eq!(
+        lifecycle.begin_application_request(&sender, &request_for(1, 1)),
+        Err((duplicate_id, ReasonCode::ReplayedRequest))
+    );
+    for sequence in [65, 66] {
+        let request_id = canonical_request_id(1, sequence).expect("canonical overflow ID");
+        assert_eq!(
+            lifecycle.begin_application_request(&sender, &request_for(1, sequence)),
+            Err((request_id, ReasonCode::InternalFailure))
+        );
+    }
+    assert_eq!(lifecycle.in_flight.len(), MAX_IN_FLIGHT_REQUESTS);
+
+    let cancellations = lifecycle.renderer_lost();
+    assert!(
+        cancellations.is_empty(),
+        "non-Runtime Host cancellations must not become Runtime records"
+    );
+    assert!(
+        lifecycle
+            .in_flight
+            .values()
+            .all(|request| request.accepted_cancellation.is_some()),
+        "every Host request retains its own terminal cancellation"
+    );
+    for request in accepted.drain(..) {
+        assert!(
+            lifecycle
+                .complete_application_request(request)
+                .contains("cancelled")
+        );
+    }
+    assert!(lifecycle.in_flight.is_empty());
+    let next_nonce = nonce('b');
+    let generation = lifecycle
+        .begin_renderer_session(next_nonce.clone())
+        .expect("replacement renderer");
+    let next_sender =
+        lifecycle.sender_for_document("main", "tauri://localhost", generation, &next_nonce);
+    let request_id = canonical_request_id(generation, 1).expect("Runtime request ID");
+    let runtime_request = format!(
+        r#"{{"schemaVersion":1,"requestId":"{request_id}","sequence":1,"timeoutMs":120000,"operation":{{"kind":"codex-turn-start","workspaceGeneration":1,"task":"Bounded task."}}}}"#,
+    );
+    lifecycle
+        .begin_application_request(&next_sender, runtime_request.as_bytes())
+        .expect("exact completion frees Host admission for a Runtime request");
+    let runtime_cancellations = lifecycle.renderer_lost();
+    assert_eq!(runtime_cancellations.len(), 1);
+    assert_eq!(runtime_cancellations[0].request_id, request_id);
+}
+
+#[test]
+fn shutdown_forwards_only_runtime_owned_records_but_cancels_every_host_request() {
+    let (mut lifecycle, sender) = started();
+    let health = lifecycle
+        .begin_application_request(&sender, &request_for(1, 1))
+        .expect("health request");
+    let readiness_id = canonical_request_id(1, 2).expect("readiness ID");
+    let readiness = format!(
+        r#"{{"schemaVersion":1,"requestId":"{readiness_id}","sequence":2,"timeoutMs":5000,"operation":{{"kind":"runtime-readiness"}}}}"#,
+    );
+    let readiness = lifecycle
+        .begin_application_request(&sender, readiness.as_bytes())
+        .expect("readiness request");
+
+    let records = lifecycle.shutdown();
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].request_id, readiness_id);
+    assert!(
+        lifecycle
+            .complete_application_request(health)
+            .contains("cancelled")
+    );
+    assert!(
+        lifecycle
+            .complete_runtime_request(
+                readiness,
+                RuntimeReadinessView::terminal(RuntimeReadinessState::Unavailable, 0),
+            )
+            .contains("cancelled")
+    );
+}
+
+#[test]
 fn request_identifier_must_match_authenticated_generation_and_sequence() {
     let (mut lifecycle, sender) = started();
     let mismatched = br#"{"schemaVersion":1,"requestId":"request-0000000000000002-0000000000000001","sequence":1,"timeoutMs":1000,"operation":{"kind":"application-health"}}"#;
@@ -312,6 +409,98 @@ fn explicit_cancellation_at_deadline_never_beats_timeout() {
         lifecycle
             .complete_application_request(accepted)
             .contains("timed-out")
+    );
+}
+
+#[test]
+fn host_records_only_the_first_eligible_cancel_acceptance() {
+    let (mut lifecycle, sender) = started();
+    lifecycle.set_test_now_ms(0);
+    let _accepted = lifecycle
+        .begin_application_request(&sender, &request(1, "request-first-token"))
+        .expect("accepted request");
+    let request_id = canonical_request_id(sender.generation, 1).expect("request ID");
+
+    lifecycle.set_test_now_ms(25);
+    assert!(
+        lifecycle
+            .cancel_application_request(&sender, &cancel_for(sender.generation, 1))
+            .contains("cancelled")
+    );
+    lifecycle.set_test_now_ms(75);
+    assert!(
+        lifecycle
+            .cancel_application_request(&sender, &cancel_for(sender.generation, 1))
+            .contains("cancelled")
+    );
+
+    let in_flight = lifecycle.in_flight.get(&request_id).expect("in flight");
+    assert_eq!(in_flight.cancelled_at_ms, Some(25));
+    assert_eq!(
+        in_flight.cancellation_source,
+        Some(CancellationSource::User)
+    );
+}
+
+#[test]
+fn host_acceptance_timestamp_is_sampled_at_the_literal_first_mutation() {
+    let (mut lifecycle, sender) = started();
+    lifecycle.set_test_now_ms(0);
+    let _accepted = lifecycle
+        .begin_application_request(&sender, &request(1, "request-literal-mutation"))
+        .expect("accepted request");
+    lifecycle.set_test_now_ms(25);
+
+    let outcome = lifecycle.cancel_application_request_with_acceptance_before_mutation(
+        &sender,
+        &cancel_for(sender.generation, 1),
+        |lifecycle| lifecycle.set_test_now_ms(75),
+    );
+
+    assert_eq!(
+        outcome.accepted.expect("literal acceptance").accepted_at,
+        lifecycle.current_instant_for_test(),
+        "validation delay before the first mutation must not consume the public window"
+    );
+}
+
+#[test]
+fn ineligible_cancels_never_create_an_acceptance_record() {
+    let (mut lifecycle, sender) = started();
+    lifecycle.set_test_now_ms(0);
+    let _accepted = lifecycle
+        .begin_application_request(&sender, &request(1, "request-no-token"))
+        .expect("accepted request");
+    let request_id = canonical_request_id(sender.generation, 1).expect("request ID");
+
+    assert!(
+        lifecycle
+            .cancel_application_request(&sender, b"not-json")
+            .contains("invalid-request")
+    );
+    assert_eq!(
+        lifecycle
+            .in_flight
+            .get(&request_id)
+            .expect("in flight")
+            .cancelled_at_ms,
+        None
+    );
+
+    lifecycle.set_test_now_ms(1_000);
+    assert!(
+        lifecycle
+            .cancel_application_request(&sender, &cancel_for(sender.generation, 1))
+            .contains("timed-out")
+    );
+    assert_eq!(
+        lifecycle
+            .in_flight
+            .get(&request_id)
+            .expect("in flight")
+            .cancelled_at_ms,
+        None,
+        "a timed-out cancel is rejected and must not create authority"
     );
 }
 

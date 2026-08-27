@@ -99,10 +99,6 @@ const referenceEnvironmentCommands = Object.freeze([
   ],
   ["/usr/bin/sw_vers", ["-productVersion"]],
   ["/usr/bin/sw_vers", ["-buildVersion"]],
-  [
-    "/usr/sbin/system_profiler",
-    ["SPDisplaysDataType", "-json", "-detailLevel", "mini"],
-  ],
   ["/usr/bin/pmset", ["-g", "batt"]],
   ["/usr/bin/pmset", ["-g", "custom"]],
   ["/usr/bin/pmset", ["-g", "therm"]],
@@ -261,12 +257,15 @@ export function physicalObservationFailures(
   const failures = [];
   const expectedKeys = [
     "appearance",
+    "cancellationTerminalAnnouncement",
+    "displayTopology",
     "observedAt",
     "observations",
     "packageExecutableSha256",
     "redaction",
     "schemaVersion",
     "sourceRevision",
+    "windowDisplayBinding",
   ].toSorted(compareCodeUnits);
   if (
     typeof observation !== "object" ||
@@ -279,7 +278,7 @@ export function physicalObservationFailures(
   }
   if (
     observation?.schemaVersion !==
-    "keiko-native-codex-tracer-physical-observation/v1"
+    "keiko-native-codex-tracer-physical-observation/v2"
   ) {
     failures.push("physical-observation-schema");
   }
@@ -304,6 +303,46 @@ export function physicalObservationFailures(
     JSON.stringify(acceptancePhysicalContract.appearance)
   ) {
     failures.push("physical-observation-appearance");
+  }
+  if (
+    JSON.stringify(observation?.cancellationTerminalAnnouncement) !==
+    JSON.stringify(acceptancePhysicalContract.cancellationTerminalAnnouncement)
+  ) {
+    failures.push("physical-observation-terminal-announcement");
+  }
+  const binding = observation?.windowDisplayBinding;
+  if (
+    JSON.stringify(binding) !==
+    JSON.stringify({
+      displayClass: "external",
+      matchedDisplayCount: 1,
+      semanticWindowCount: 1,
+    })
+  ) {
+    failures.push("physical-observation-window-display-binding");
+  }
+  const topology = observation?.displayTopology;
+  if (
+    typeof topology !== "object" ||
+    topology === null ||
+    Array.isArray(topology) ||
+    JSON.stringify(Object.keys(topology).toSorted(compareCodeUnits)) !==
+      JSON.stringify([
+        "activeDisplayCount",
+        "externalDisplayCount",
+        "internalDisplayCount",
+      ]) ||
+    !Number.isSafeInteger(topology.activeDisplayCount) ||
+    topology.activeDisplayCount < 2 ||
+    topology.activeDisplayCount > 16 ||
+    !Number.isSafeInteger(topology.internalDisplayCount) ||
+    !Number.isSafeInteger(topology.externalDisplayCount) ||
+    topology.externalDisplayCount < 1 ||
+    topology.internalDisplayCount < 0 ||
+    topology.internalDisplayCount + topology.externalDisplayCount !==
+      topology.activeDisplayCount
+  ) {
+    failures.push("physical-observation-display-topology");
   }
   const expectedObservations =
     acceptancePhysicalContract.irreducibleObservations.map((checkpoint) => ({
@@ -1752,6 +1791,156 @@ export async function inspectReferenceEnvironment(runCommand = run) {
   return environment;
 }
 
+function normalizedWorkspaceDisplay(serialized) {
+  try {
+    const displays = JSON.parse(serialized)?.SPDisplaysDataType?.flatMap(
+      ({ spdisplays_ndrvs: drivers }) => drivers ?? [],
+    );
+    const display =
+      Array.isArray(displays) && displays.length === 1 ? displays[0] : null;
+    return display?.spdisplays_connection_type === "spdisplays_internal" &&
+      display?.spdisplays_main === "spdisplays_yes" &&
+      display?._spdisplays_pixels === "3024 x 1964" &&
+      display?._spdisplays_resolution === "1512 x 982 @ 120.00Hz"
+      ? {
+          display: "built-in-main-3024x1964-120hz",
+          scaling: "logical-1512x982-2x-default",
+        }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function inspectWorkspaceReferenceEnvironment(runCommand = run) {
+  const options = {
+    inheritEnvironment: false,
+    maxOutputBytes: 64 * 1024,
+    timeoutMs: acceptanceSubprocessTimeouts.inspection,
+  };
+  const [outputs, displayOutput] = await Promise.all([
+    Promise.all(
+      referenceEnvironmentCommands.map(([command, args]) =>
+        runCommand(command, args, options),
+      ),
+    ),
+    runCommand(
+      "/usr/sbin/system_profiler",
+      ["SPDisplaysDataType", "-json", "-detailLevel", "mini"],
+      options,
+    ),
+  ]);
+  const current = normalizedReferenceEnvironment([
+    ...outputs.slice(0, 3),
+    { activeDisplayCount: 1, externalDisplayCount: 0, internalDisplayCount: 1 },
+    ...outputs.slice(3),
+  ]);
+  const display = normalizedWorkspaceDisplay(displayOutput);
+  const { displayTopology: _displayTopology, ...normalized } = current;
+  const environment = display === null ? null : { ...display, ...normalized };
+  if (workspaceReferenceEnvironmentFailures(environment).length > 0)
+    throw new Error("workspace-acceptance-reference-environment-invalid");
+  return environment;
+}
+
+async function inspectActiveDisplayTopology(adapterBinary) {
+  const serialized = await runAcceptanceSubprocess(
+    adapterBinary,
+    ["0", "inspect-display-topology"],
+    {
+      output: "stdout",
+      timeoutMs: acceptanceSubprocessTimeouts.inspection,
+    },
+  );
+  try {
+    return JSON.parse(serialized);
+  } catch {
+    return null;
+  }
+}
+
+async function inspectWindowDisplayBinding(adapterBinary, pid) {
+  const serialized = await runAcceptanceSubprocess(
+    adapterBinary,
+    [String(pid), "inspect-window-display-binding"],
+    {
+      output: "stdout",
+      timeoutMs: acceptanceSubprocessTimeouts.inspection,
+    },
+  );
+  try {
+    return normalizeEphemeralWindowDisplayBinding(JSON.parse(serialized));
+  } catch {
+    return null;
+  }
+}
+
+export function normalizeWindowDisplayBinding(binding) {
+  if (
+    typeof binding !== "object" ||
+    binding === null ||
+    Array.isArray(binding) ||
+    JSON.stringify(Object.keys(binding).toSorted(compareCodeUnits)) !==
+      JSON.stringify([
+        "displayClass",
+        "matchedDisplayCount",
+        "semanticWindowCount",
+      ]) ||
+    !["external", "internal"].includes(binding.displayClass) ||
+    binding.matchedDisplayCount !== 1 ||
+    binding.semanticWindowCount !== 1
+  ) {
+    return null;
+  }
+  return {
+    displayClass: binding.displayClass,
+    matchedDisplayCount: 1,
+    semanticWindowCount: 1,
+  };
+}
+
+export function normalizeEphemeralWindowDisplayBinding(binding) {
+  if (
+    typeof binding !== "object" ||
+    binding === null ||
+    Array.isArray(binding) ||
+    JSON.stringify(Object.keys(binding).toSorted(compareCodeUnits)) !==
+      JSON.stringify([
+        "displayClass",
+        "displayIdentity",
+        "matchedDisplayCount",
+        "semanticWindowCount",
+        "windowIdentity",
+        "windowPosition",
+      ]) ||
+    !["external", "internal"].includes(binding.displayClass) ||
+    typeof binding.displayIdentity !== "string" ||
+    !/^[0-9]+$/u.test(binding.displayIdentity) ||
+    binding.matchedDisplayCount !== 1 ||
+    binding.semanticWindowCount !== 1 ||
+    typeof binding.windowIdentity !== "string" ||
+    !/^[0-9]+$/u.test(binding.windowIdentity) ||
+    typeof binding.windowPosition !== "string" ||
+    !/^-?[0-9]+\.[0-9]{3}:-?[0-9]+\.[0-9]{3}$/u.test(binding.windowPosition)
+  ) {
+    return null;
+  }
+  return { ...binding };
+}
+
+export function windowDisplayEvidenceComposes(automated, physical) {
+  const normalizedAutomated = normalizeWindowDisplayBinding(automated);
+  const normalizedPhysical = normalizeWindowDisplayBinding(physical);
+  return (
+    normalizedAutomated !== null &&
+    normalizedPhysical !== null &&
+    normalizedAutomated.matchedDisplayCount ===
+      normalizedPhysical.matchedDisplayCount &&
+    normalizedAutomated.semanticWindowCount ===
+      normalizedPhysical.semanticWindowCount
+  );
+}
+
 export function assertStableReferenceEnvironment(before, after) {
   if (JSON.stringify(before) !== JSON.stringify(after))
     throw new Error("acceptance-reference-environment-changed");
@@ -1798,7 +1987,8 @@ async function prepareWorkspaceJourney(prepared, reportProgress) {
       }).then(() => ({ error: undefined, status: 0 })),
   );
   reportProgress("started", "post-observation:reference-environment");
-  const referenceEnvironmentBefore = await inspectReferenceEnvironment();
+  const referenceEnvironmentBefore =
+    await inspectWorkspaceReferenceEnvironment();
   reportProgress("completed", "post-observation:reference-environment");
   const [runtimeBefore, workspaceBefore] = await Promise.all([
     snapshotDirectory(prepared.internal.runtimeWorkRoot),
@@ -1883,7 +2073,7 @@ async function executeWorkspaceJourney(prepared, resources, reportProgress) {
     reportProgress("started", "post-observation:reference-environment");
     const [referenceEnvironmentAfter, runtimeAfter, workspaceAfter] =
       await Promise.all([
-        inspectReferenceEnvironment(),
+        inspectWorkspaceReferenceEnvironment(),
         snapshotDirectory(prepared.internal.runtimeWorkRoot),
         Promise.all(
           prepared.internal.workspaceRoots.map((root) =>
@@ -1947,12 +2137,11 @@ function normalizedReferenceEnvironment([
   hardware,
   version,
   build,
-  displayOutput,
+  displayTopology,
   powerOutput,
   powerProfiles,
   thermalOutput,
 ]) {
-  const display = normalizedDisplay(displayOutput);
   const powerMatch = /^Now drawing from '(AC|Battery) Power'(?:\n|$)/u.exec(
     powerOutput,
   );
@@ -1970,7 +2159,7 @@ function normalizedReferenceEnvironment([
     "Note: No CPU power status has been recorded",
   ].join("\n");
   return {
-    ...display,
+    displayTopology,
     hardware:
       hardware === "Apple M4\n17179869184\nMac16,1"
         ? "apple-m4-16-gib-mac16-1"
@@ -2166,7 +2355,10 @@ export function createCodexTracerAcceptanceIo() {
         ),
         "utf8",
       );
-      const referenceEnvironmentBefore = await inspectReferenceEnvironment();
+      const referenceEnvironmentBefore = await inspectReferenceEnvironment(
+        run,
+        () => inspectActiveDisplayTopology(adapter.binary),
+      );
       const firstVisibleKeikoOverheadP95Ms = await measureFirstVisibleP95(
         prepared.internal,
         adapter.binary,
@@ -2202,6 +2394,8 @@ export function createCodexTracerAcceptanceIo() {
               binary: adapter.binary,
               pid: child.pid,
             }),
+          inspectWindowDisplayBinding: () =>
+            inspectWindowDisplayBinding(adapter.binary, child.pid),
           observeRuntime: async () => {
             runtimeOwnerships.push(
               await authenticateOwnedStagedRuntime({
@@ -2234,14 +2428,20 @@ export function createCodexTracerAcceptanceIo() {
         ]);
         const referenceEnvironment = assertStableReferenceEnvironment(
           referenceEnvironmentBefore,
-          await inspectReferenceEnvironment(),
+          await inspectReferenceEnvironment(run, () =>
+            inspectActiveDisplayTopology(adapter.binary),
+          ),
         );
         const physicalObservation = JSON.parse(
           await readFile(physicalObservationPath, "utf8"),
         );
         if (
           physicalObservationFailures(physicalObservation, prepared.expected)
-            .length > 0
+            .length > 0 ||
+          !windowDisplayEvidenceComposes(
+            journey.windowDisplayBinding,
+            physicalObservation.windowDisplayBinding,
+          )
         ) {
           throw new Error("acceptance-physical-observation-invalid");
         }
@@ -2257,6 +2457,7 @@ export function createCodexTracerAcceptanceIo() {
               nativePickerCancellation.measurements,
             nativePickerCancellationP95Ms: nativePickerCancellation.p95Ms,
             turnCancellationProjectionMs: journey.turnCancellationProjectionMs,
+            turnCancellationTerminal: journey.turnCancellationTerminal,
             turnDurationMs: journey.turnDurationMs,
             workspaceSelectionNativeActionMs:
               journey.workspaceSelectionNativeActionMs,
@@ -2264,6 +2465,7 @@ export function createCodexTracerAcceptanceIo() {
           journey: structuredClone(acceptanceJourneyContract),
           physical: {
             ...structuredClone(acceptancePhysicalContract),
+            observation: physicalObservation,
             packageExecutableSha256: prepared.expected.packageExecutableSha256,
             runner: process.env.ImageOS
               ? `${process.env.ImageOS}-${process.env.ImageVersion ?? "current"}`

@@ -227,7 +227,14 @@ impl TurnSession {
     }
 
     pub fn fail(&mut self, state: TurnState, reason: TurnReason) -> Result<(), TurnError> {
-        if !matches!(self.state, TurnState::Preflighting | TurnState::Streaming)
+        let stopping_containment = self.state == TurnState::Stopping
+            && state == TurnState::ContainmentFailed
+            && matches!(
+                reason,
+                TurnReason::InternalFailure | TurnReason::ProtocolRejected
+            );
+        if (!matches!(self.state, TurnState::Preflighting | TurnState::Streaming)
+            && !stopping_containment)
             || !matches!(
                 state,
                 TurnState::Failed
@@ -555,6 +562,48 @@ mod tests {
         .view();
         assert_ne!(first.task_id, retry.task_id);
         assert_ne!(first.run_id, retry.run_id);
+    }
+
+    #[test]
+    fn stopping_can_settle_as_truthful_containment_failure_once() {
+        let mut current = session("Explain one terminal state.");
+        current.mark_streaming().unwrap();
+        current.request_stop(TurnReason::UserCancelled).unwrap();
+
+        current
+            .fail(TurnState::ContainmentFailed, TurnReason::InternalFailure)
+            .unwrap();
+        current.settle_cleanup(true).unwrap();
+        assert_eq!(current.view().state, TurnState::ContainmentFailed);
+        assert_eq!(current.view().reason, Some(TurnReason::InternalFailure));
+        assert_eq!(
+            current.fail(TurnState::CleanupFailed, TurnReason::CleanupFailed),
+            Err(TurnError::InvalidTransition),
+            "the first truthful terminal must remain immutable"
+        );
+    }
+
+    #[test]
+    fn stopping_accepts_only_exact_internal_containment_reasons() {
+        for reason in [TurnReason::InternalFailure, TurnReason::ProtocolRejected] {
+            let mut current = session("Explain one terminal state.");
+            current.mark_streaming().unwrap();
+            current.request_stop(TurnReason::UserCancelled).unwrap();
+            current
+                .fail(TurnState::ContainmentFailed, reason)
+                .expect("exact containment reason");
+            assert_eq!(current.view().reason, Some(reason));
+        }
+
+        for rejected in [TurnReason::BufferLimit, TurnReason::RuntimeIncompatible] {
+            let mut current = session("Explain one terminal state.");
+            current.mark_streaming().unwrap();
+            current.request_stop(TurnReason::UserCancelled).unwrap();
+            assert_eq!(
+                current.fail(TurnState::ContainmentFailed, rejected),
+                Err(TurnError::InvalidTransition)
+            );
+        }
     }
 
     #[test]

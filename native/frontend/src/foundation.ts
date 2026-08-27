@@ -358,7 +358,11 @@ function turnPanel(
   );
   const cancellable =
     turn?.state === "preflighting" || turn?.state === "streaming";
-  const authorized = workspace.kind === "bound" && runtime?.state === "ready";
+  const recoveryRequired = requiresCodexReadinessRecovery(turn);
+  const authorized =
+    workspace.kind === "bound" &&
+    runtime?.state === "ready" &&
+    !recoveryRequired;
   const descriptionId = "codex-task-description";
   const countId = "codex-task-count";
   let taskBytes = 0;
@@ -384,7 +388,7 @@ function turnPanel(
   const submit = (): void => {
     const task = taskInput?.value ?? "";
     refresh();
-    if (!taskValid || !authorized || active) return;
+    if (!taskValid || !authorized || active || recoveryRequired) return;
     if (taskInput !== null) taskInput.disabled = true;
     if (submitButton !== null) submitButton.disabled = true;
     observeTurnAction(controller.startTurn(task));
@@ -411,7 +415,7 @@ function turnPanel(
     createElement("textarea", {
       id: "codex-task",
       rows: 4,
-      disabled: active,
+      disabled: active || recoveryRequired,
       "aria-describedby": `${descriptionId} ${countId}`,
       ref: (node: HTMLTextAreaElement | null) => {
         taskInput = node;
@@ -516,9 +520,11 @@ function turnResult(turn: TurnView | null): ReactElement | null {
       ? createElement(
           "p",
           { className: "hint" },
-          turn.state === "completed"
-            ? "Die Anbieter-Antwort ist abgeschlossen. Sie ist weder akzeptiert noch ausgeliefert."
-            : "Der Lauf wurde ohne Akzeptanz oder Auslieferung beendet. Ein neuer Versuch erzeugt neue Identitäten.",
+          requiresCodexReadinessRecovery(turn)
+            ? "Die Bereinigung ist nicht bestätigt. Prüfen Sie die Codex-Bereitschaft erneut, bevor Sie fortfahren."
+            : turn.state === "completed"
+              ? "Die Anbieter-Antwort ist abgeschlossen. Sie ist weder akzeptiert noch ausgeliefert."
+              : "Der Lauf wurde ohne Akzeptanz oder Auslieferung beendet. Ein neuer Versuch erzeugt neue Identitäten.",
         )
       : null,
     terminal
@@ -531,7 +537,25 @@ function turnResult(turn: TurnView | null): ReactElement | null {
   );
 }
 
+export function requiresCodexReadinessRecovery(turn: TurnView | null): boolean {
+  return (
+    turn?.state === "containment-failed" &&
+    turn.reason === "internal-failure" &&
+    !turn.evidence.cleanupComplete
+  );
+}
+
 function turnPresentation(turn: TurnView): string {
+  if (requiresCodexReadinessRecovery(turn)) {
+    return "Keiko konnte die Beendigung des Codex-Laufs nicht bestätigen. Starten Sie keinen neuen Lauf.";
+  }
+  if (
+    turn.state === "containment-failed" &&
+    turn.reason === "internal-failure" &&
+    turn.evidence.cleanupComplete
+  ) {
+    return "Keiko hat einen internen Laufzeitfehler erkannt; die Laufzeit wurde beendet.";
+  }
   return {
     preflighting:
       "Keiko prüft Arbeitsbereich, Laufzeit, Anmeldung und Grenzen.",
