@@ -306,7 +306,7 @@ struct RuntimeControl {
     request_id: Option<String>,
     pending_request_id: Option<String>,
     cancellation: Option<AcceptedRuntimeCancellation>,
-    closed_control_failure_token: Option<AcceptedRuntimeCancellation>,
+    closed_control_failure_marker: Option<AcceptedRuntimeCancellation>,
     effect_generation: u64,
 }
 
@@ -315,7 +315,7 @@ struct RuntimeRequestReservation {
     request_id: String,
     effect_generation: u64,
     cancellation: Option<AcceptedRuntimeCancellation>,
-    closed_control_failure_token: Option<AcceptedRuntimeCancellation>,
+    closed_control_failure_marker: Option<AcceptedRuntimeCancellation>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -897,7 +897,7 @@ impl ActiveRuntime {
                 }
             });
         if let Some(cancellation) = cancellation {
-            if control.closed_control_failure_token.is_some() {
+            if control.closed_control_failure_marker.is_some() {
                 control.cancellation = Some(cancellation);
             } else {
                 control.cancellation.get_or_insert(cancellation);
@@ -910,7 +910,7 @@ impl ActiveRuntime {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(cancellation) = saturated.take() {
             if has_request_owner {
-                if control.closed_control_failure_token.is_some() {
+                if control.closed_control_failure_marker.is_some() {
                     control.cancellation = Some(cancellation);
                 } else {
                     control.cancellation.get_or_insert(cancellation);
@@ -1021,7 +1021,7 @@ impl ActiveRuntime {
         control.request_id = None;
         control.pending_request_id = None;
         control.effect_generation = 0;
-        control.cancellation = control.closed_control_failure_token;
+        control.cancellation = control.closed_control_failure_marker;
         released_running
     }
 
@@ -1034,7 +1034,7 @@ impl ActiveRuntime {
         extracted.and_then(|cancellation| cancellation.host_acceptance)?;
         let owns_exact_request = control.request_id.as_deref() == Some(request_id)
             || control.pending_request_id.as_deref() == Some(request_id);
-        let closed = control.closed_control_failure_token?;
+        let closed = control.closed_control_failure_marker?;
         if !owns_exact_request || control.cancellation != Some(closed) {
             return None;
         }
@@ -1124,7 +1124,7 @@ impl ActiveRuntime {
             return false;
         }
         self.apply_deferred_publication_failures();
-        let reconcile_closed_cleanup = reservation.closed_control_failure_token.is_some();
+        let reconcile_closed_cleanup = reservation.closed_control_failure_marker.is_some();
         if reconcile_closed_cleanup {
             if !reconcile_retained_process_group(self, Instant::now())
                 || !authenticated_owned_processes_stopped(self)
@@ -1194,7 +1194,7 @@ impl ActiveRuntime {
         };
         self.materialize_deferred_cancellation(&mut control);
         if self.deferred_cancellation_overflowed()
-            || marker != control.closed_control_failure_token.is_some()
+            || marker != control.closed_control_failure_marker.is_some()
             || self.running.load(Ordering::Acquire)
             || control.request_id.is_some()
             || (control.pending_request_id.is_some() && control.effect_generation != 0)
@@ -1222,14 +1222,14 @@ impl ActiveRuntime {
             request_id: request_id.to_owned(),
             effect_generation,
             cancellation: control.cancellation,
-            closed_control_failure_token: control.closed_control_failure_token,
+            closed_control_failure_marker: control.closed_control_failure_marker,
         })
     }
 
     fn commit_request_reservation(&self, reservation: &RuntimeRequestReservation) -> bool {
         let mut control = match self.control.lock() {
             Ok(control) => control,
-            Err(poisoned) if reservation.closed_control_failure_token.is_some() => {
+            Err(poisoned) if reservation.closed_control_failure_marker.is_some() => {
                 poisoned.into_inner()
             }
             Err(poisoned) => {
@@ -1240,7 +1240,7 @@ impl ActiveRuntime {
                     || AcceptedRuntimeCancellation::closed(Instant::now()),
                     AcceptedRuntimeCancellation::fail_safe,
                 );
-                control.closed_control_failure_token = Some(closed);
+                control.closed_control_failure_marker = Some(closed);
                 if !retained_in_control {
                     control.cancellation = Some(closed);
                 }
@@ -1275,7 +1275,7 @@ impl ActiveRuntime {
     fn finalize_request_reservation(&self, reservation: &RuntimeRequestReservation) -> bool {
         let mut control = match self.control.lock() {
             Ok(control) => control,
-            Err(poisoned) if reservation.closed_control_failure_token.is_some() => {
+            Err(poisoned) if reservation.closed_control_failure_marker.is_some() => {
                 poisoned.into_inner()
             }
             Err(_) => return false,
@@ -1283,14 +1283,14 @@ impl ActiveRuntime {
         if control.request_id.as_deref() != Some(reservation.request_id.as_str())
             || control.effect_generation != reservation.effect_generation
             || control.cancellation != reservation.cancellation
-            || control.closed_control_failure_token != reservation.closed_control_failure_token
+            || control.closed_control_failure_marker != reservation.closed_control_failure_marker
             || self.closed_control_failure_cleanup.load(Ordering::Acquire)
-                != reservation.closed_control_failure_token.is_some()
+                != reservation.closed_control_failure_marker.is_some()
         {
             return false;
         }
-        if let Some(closed_token) = reservation.closed_control_failure_token {
-            control.closed_control_failure_token = None;
+        if let Some(closed_token) = reservation.closed_control_failure_marker {
+            control.closed_control_failure_marker = None;
             self.closed_control_failure_cleanup
                 .store(false, Ordering::Release);
             if control.cancellation == Some(closed_token) {
@@ -1310,9 +1310,9 @@ impl ActiveRuntime {
             && control.pending_request_id.as_deref() == Some(reservation.request_id.as_str())
             && control.effect_generation == reservation.effect_generation
             && control.cancellation == reservation.cancellation
-            && control.closed_control_failure_token == reservation.closed_control_failure_token
+            && control.closed_control_failure_marker == reservation.closed_control_failure_marker
             && self.closed_control_failure_cleanup.load(Ordering::Acquire)
-                == reservation.closed_control_failure_token.is_some()
+                == reservation.closed_control_failure_marker.is_some()
     }
 
     fn clear_pending_reservation(
@@ -1389,7 +1389,7 @@ impl ActiveRuntime {
                 || control.pending_request_id.as_deref() == Some(reservation.request_id.as_str()));
         if owns_reservation {
             control.cancellation = if retained {
-                control.closed_control_failure_token
+                control.closed_control_failure_marker
             } else {
                 retained_acceptance.map(AcceptedRuntimeCancellation::from_host)
             };
@@ -1401,11 +1401,11 @@ impl ActiveRuntime {
     fn begin_request(
         &self,
         request_id: &str,
-        reconciled_closed_token: Option<AcceptedRuntimeCancellation>,
+        reconciled_closed_marker: Option<AcceptedRuntimeCancellation>,
     ) -> bool {
         let mut control = match self.control.lock() {
             Ok(control) => control,
-            Err(poisoned) if reconciled_closed_token.is_some() => {
+            Err(poisoned) if reconciled_closed_marker.is_some() => {
                 self.control.clear_poison();
                 poisoned.into_inner()
             }
@@ -1415,9 +1415,9 @@ impl ActiveRuntime {
                 return false;
             }
         };
-        if let Some(reconciled_closed_token) = reconciled_closed_token {
+        if let Some(reconciled_closed_marker) = reconciled_closed_marker {
             if !self.closed_control_failure_cleanup.load(Ordering::Acquire)
-                || control.cancellation != Some(reconciled_closed_token)
+                || control.cancellation != Some(reconciled_closed_marker)
             {
                 self.running.store(false, Ordering::Release);
                 self.finished.notify_all();
@@ -1685,7 +1685,7 @@ fn install_matching_host_cancellation(
             control.pending_request_id = Some(record.request_id.clone());
         }
         let cancellation = AcceptedRuntimeCancellation::from_host(record.accepted);
-        if control.closed_control_failure_token.is_some() {
+        if control.closed_control_failure_marker.is_some() {
             control.cancellation = Some(cancellation);
         } else {
             control.cancellation.get_or_insert(cancellation);
@@ -1982,7 +1982,7 @@ impl RuntimeHost {
                 {
                     let closed = AcceptedRuntimeCancellation::closed(Instant::now());
                     control.cancellation = Some(closed);
-                    control.closed_control_failure_token = Some(closed);
+                    control.closed_control_failure_marker = Some(closed);
                     self.active
                         .closed_control_failure_cleanup
                         .store(true, Ordering::Release);
@@ -2031,13 +2031,13 @@ impl RuntimeHost {
                 if host_control_failed && active_or_pending {
                     let closed = AcceptedRuntimeCancellation::closed(Instant::now());
                     control.cancellation = Some(closed);
-                    control.closed_control_failure_token = Some(closed);
+                    control.closed_control_failure_marker = Some(closed);
                     self.active
                         .closed_control_failure_cleanup
                         .store(true, Ordering::Release);
                     installed_host_request_id = None;
                 } else {
-                    let matched = control.closed_control_failure_token.is_some()
+                    let matched = control.closed_control_failure_marker.is_some()
                         && install_matching_host_cancellation(
                             &mut control,
                             running,
@@ -2169,7 +2169,7 @@ impl RuntimeHost {
                 if self.active.running.load(Ordering::Acquire)
                     && control.request_id.as_deref() == Some(request_id)
                 {
-                    if control.closed_control_failure_token.is_some() {
+                    if control.closed_control_failure_marker.is_some() {
                         control.cancellation = Some(cancellation);
                     } else {
                         control.cancellation.get_or_insert(cancellation);
@@ -2182,7 +2182,7 @@ impl RuntimeHost {
                         .is_none_or(|pending| pending == request_id)
                 {
                     control.pending_request_id = Some(request_id.to_owned());
-                    if control.closed_control_failure_token.is_some() {
+                    if control.closed_control_failure_marker.is_some() {
                         control.cancellation = Some(cancellation);
                     } else {
                         control.cancellation.get_or_insert(cancellation);
@@ -2197,7 +2197,7 @@ impl RuntimeHost {
                 let mut control = poisoned.into_inner();
                 let exact_request = control.request_id.as_deref() == Some(request_id)
                     || control.pending_request_id.as_deref() == Some(request_id);
-                if exact_request && control.closed_control_failure_token.is_some() {
+                if exact_request && control.closed_control_failure_marker.is_some() {
                     control.cancellation = Some(cancellation);
                 } else {
                     control.cancellation = Some(control.cancellation.map_or_else(
@@ -2424,7 +2424,7 @@ impl RuntimeHost {
                 if !self.active.running.load(Ordering::Acquire) && control.effect_generation != 0 {
                     let closed = AcceptedRuntimeCancellation::closed(Instant::now());
                     control.cancellation = Some(closed);
-                    control.closed_control_failure_token = Some(closed);
+                    control.closed_control_failure_marker = Some(closed);
                     self.active
                         .closed_control_failure_cleanup
                         .store(true, Ordering::Release);
@@ -2432,7 +2432,7 @@ impl RuntimeHost {
                     && control.pending_request_id.is_some()
                 {
                     let closed = AcceptedRuntimeCancellation::closed(Instant::now());
-                    control.closed_control_failure_token = Some(closed);
+                    control.closed_control_failure_marker = Some(closed);
                     self.active
                         .closed_control_failure_cleanup
                         .store(true, Ordering::Release);
@@ -2626,7 +2626,7 @@ impl RuntimeHost {
                     .filter(|cancellation| cancellation.host_acceptance == initial_acceptance);
             }
             let closed = AcceptedRuntimeCancellation::closed(Instant::now());
-            control.closed_control_failure_token = Some(closed);
+            control.closed_control_failure_marker = Some(closed);
             self.active
                 .closed_control_failure_cleanup
                 .store(true, Ordering::Release);
@@ -2730,7 +2730,7 @@ impl RuntimeHost {
                     .filter(|cancellation| cancellation.host_acceptance == acceptance);
             }
             let closed = AcceptedRuntimeCancellation::closed(Instant::now());
-            control.closed_control_failure_token = Some(closed);
+            control.closed_control_failure_marker = Some(closed);
             self.active
                 .closed_control_failure_cleanup
                 .store(true, Ordering::Release);
@@ -10864,7 +10864,7 @@ printf '%s\n' '{{"id":2,"result":{{"account":{{"type":"chatgpt","email":"redacte
             assert!(control.request_id.is_none());
             assert!(control.pending_request_id.is_none());
             assert_eq!(control.effect_generation, 0);
-            assert_eq!(control.cancellation, control.closed_control_failure_token);
+            assert_eq!(control.cancellation, control.closed_control_failure_marker);
             assert!(control.cancellation.is_some());
         }
         assert!(
@@ -13166,7 +13166,7 @@ while :; do /bin/sleep 1; done
                 .cancellation
                 .filter(|cancellation| *cancellation != old_closed);
             if let Some(newer_closed) = observed {
-                assert_eq!(control.closed_control_failure_token, Some(newer_closed));
+                assert_eq!(control.closed_control_failure_marker, Some(newer_closed));
                 assert_eq!(
                     control.pending_request_id.as_deref(),
                     Some(request_id.as_str())
@@ -13196,7 +13196,7 @@ while :; do /bin/sleep 1; done
                 .expect_err("Runtime control remains poisoned until strict recovery")
                 .into_inner();
             assert_eq!(control.cancellation, Some(newer_closed));
-            assert_eq!(control.closed_control_failure_token, Some(newer_closed));
+            assert_eq!(control.closed_control_failure_marker, Some(newer_closed));
             assert!(control.request_id.is_none());
             assert!(control.pending_request_id.is_none());
             assert_eq!(control.effect_generation, 0);
@@ -13282,7 +13282,7 @@ while :; do /bin/sleep 1; done
         assert_eq!(retained, old_closed);
         {
             let control = runtime.active.control.lock().expect("runtime control");
-            assert_eq!(control.closed_control_failure_token, Some(old_closed));
+            assert_eq!(control.closed_control_failure_marker, Some(old_closed));
             assert!(control.request_id.is_none());
             assert!(control.pending_request_id.is_none());
             assert_eq!(control.effect_generation, 0);
@@ -13316,7 +13316,7 @@ while :; do /bin/sleep 1; done
                 .control
                 .lock()
                 .expect("runtime control")
-                .closed_control_failure_token
+                .closed_control_failure_marker
                 .is_none()
         );
         runtime.finish_active_request_for_test();
@@ -13357,7 +13357,7 @@ while :; do /bin/sleep 1; done
         {
             let control = runtime.active.control.lock().expect("runtime control");
             assert_eq!(
-                control.closed_control_failure_token,
+                control.closed_control_failure_marker,
                 Some(newer_closed),
                 "the marker must never exist without its exact closed token"
             );
@@ -13409,7 +13409,7 @@ while :; do /bin/sleep 1; done
                 .expect_err("Runtime control remains poisoned")
                 .into_inner();
             assert_eq!(control.cancellation, Some(old_closed));
-            assert_eq!(control.closed_control_failure_token, Some(old_closed));
+            assert_eq!(control.closed_control_failure_marker, Some(old_closed));
             assert!(control.request_id.is_none());
             assert!(control.pending_request_id.is_none());
             assert_eq!(control.effect_generation, 0);
@@ -13514,7 +13514,7 @@ while :; do /bin/sleep 1; done
         assert_eq!(retained, old_closed);
         {
             let control = runtime.active.control.lock().expect("runtime control");
-            assert_eq!(control.closed_control_failure_token, Some(old_closed));
+            assert_eq!(control.closed_control_failure_marker, Some(old_closed));
             assert!(control.request_id.is_none());
             assert!(control.pending_request_id.is_none());
             assert_eq!(control.effect_generation, 0);
@@ -13706,8 +13706,8 @@ while :; do /bin/sleep 1; done
                 let mut control = runtime.active.control.lock().expect("replace signal token");
                 let replacement = AcceptedRuntimeCancellation::closed(Instant::now());
                 control.cancellation = Some(replacement);
-                if control.closed_control_failure_token.is_some() {
-                    control.closed_control_failure_token = Some(replacement);
+                if control.closed_control_failure_marker.is_some() {
+                    control.closed_control_failure_marker = Some(replacement);
                 }
             }
             release_request_claim(&release_signal);
@@ -14093,7 +14093,7 @@ while :; do /bin/sleep 1; done
                 .lock()
                 .expect_err("poison remains until strict recovery")
                 .into_inner();
-            assert_eq!(control.cancellation, control.closed_control_failure_token);
+            assert_eq!(control.cancellation, control.closed_control_failure_marker);
             assert!(control.cancellation.is_some());
             assert!(control.request_id.is_none());
             assert!(control.pending_request_id.is_none());
