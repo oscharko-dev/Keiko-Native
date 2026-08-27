@@ -607,10 +607,58 @@ mod tests {
     }
 
     #[test]
+    fn a151_transition_short_circuits_are_fail_closed() {
+        let mut preflight = session("Reject cancellation before stopping.");
+        assert_eq!(
+            preflight.cancel(TurnReason::UserCancelled),
+            Err(TurnError::InvalidTransition)
+        );
+
+        let mut stopping = session("Reject a cleaned stopping projection.");
+        stopping
+            .request_stop(TurnReason::RendererLost)
+            .expect("enter stopping");
+        assert_eq!(
+            stopping.settle_cleanup(true),
+            Err(TurnError::InvalidTransition)
+        );
+
+        let mut wrong_state = session("Reject a non-containment stopping failure.");
+        wrong_state
+            .request_stop(TurnReason::AppShutdown)
+            .expect("enter stopping");
+        assert_eq!(
+            wrong_state.fail(TurnState::Failed, TurnReason::InternalFailure),
+            Err(TurnError::InvalidTransition)
+        );
+
+        let mut wrong_reason = session("Reject a containment reason outside the allowlist.");
+        wrong_reason
+            .request_stop(TurnReason::UserCancelled)
+            .expect("enter stopping");
+        assert_eq!(
+            wrong_reason.fail(TurnState::ContainmentFailed, TurnReason::BufferLimit),
+            Err(TurnError::InvalidTransition)
+        );
+    }
+
+    #[test]
     fn approved_runtime_contract_is_exact() {
         assert!(runtime_contract_is_approved(&RuntimeDescriptor::approved()));
         let mut drifted = RuntimeDescriptor::approved();
         drifted.version = "0.146.0".to_owned();
         assert!(!runtime_contract_is_approved(&drifted));
+
+        let mut digest = RuntimeDescriptor::approved();
+        digest.artifact_sha256 = "0".repeat(64);
+        assert!(!runtime_contract_is_approved(&digest));
+
+        let mut containment = RuntimeDescriptor::approved();
+        containment.containment_profile = "drifted".to_owned();
+        assert!(!runtime_contract_is_approved(&containment));
+
+        let mut reusable = RuntimeDescriptor::approved();
+        reusable.fresh_start_required = false;
+        assert!(!runtime_contract_is_approved(&reusable));
     }
 }

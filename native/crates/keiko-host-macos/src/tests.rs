@@ -276,6 +276,89 @@ fn shutdown_forwards_only_runtime_owned_records_but_cancels_every_host_request()
 }
 
 #[test]
+fn a151_lifecycle_short_circuit_matrix_preserves_exact_owners() {
+    let mut page_load = HostLifecycle {
+        pending_page_loads: 2,
+        page_load_ambiguous: false,
+        ..HostLifecycle::default()
+    };
+    assert_eq!(
+        page_load.finish_renderer_page_load_with_cancellations(),
+        (None, Vec::new())
+    );
+    assert!(page_load.page_load_ambiguous);
+
+    let (mut lifecycle, sender) = started();
+    let accepted = lifecycle
+        .begin_application_request(&sender, &request_for(sender.generation, 1))
+        .expect("first exact request");
+    lifecycle
+        .session
+        .as_mut()
+        .expect("renderer session")
+        .replayed_ids
+        .clear();
+    assert_eq!(
+        lifecycle.begin_application_request(&sender, &request_for(sender.generation, 1)),
+        Err((
+            canonical_request_id(sender.generation, 1).expect("request ID"),
+            ReasonCode::ReplayedRequest,
+        ))
+    );
+    assert!(
+        lifecycle
+            .complete_application_request(accepted)
+            .contains("healthy")
+    );
+
+    let mut mismatched = lifecycle
+        .begin_application_request(&sender, &request_for(sender.generation, 2))
+        .expect("mismatched resume fixture");
+    mismatched.generation = mismatched.generation.saturating_add(1);
+    assert!(!lifecycle.resume_after_user_interaction(&mismatched));
+    lifecycle.complete_application_request(mismatched);
+
+    let readiness_id = canonical_request_id(sender.generation, 3).expect("readiness ID");
+    let readiness = format!(
+        r#"{{"schemaVersion":1,"requestId":"{readiness_id}","sequence":3,"timeoutMs":5000,"operation":{{"kind":"runtime-readiness"}}}}"#,
+    );
+    let readiness = lifecycle
+        .begin_application_request(&sender, readiness.as_bytes())
+        .expect("readiness request");
+    lifecycle
+        .session
+        .as_mut()
+        .expect("renderer session")
+        .generation = sender.generation.saturating_add(1);
+    assert!(
+        lifecycle
+            .complete_runtime_request(
+                readiness,
+                RuntimeReadinessView::terminal(RuntimeReadinessState::Unavailable, 0),
+            )
+            .contains(r#""runtime-readiness""#)
+    );
+
+    lifecycle
+        .session
+        .as_mut()
+        .expect("renderer session")
+        .generation = sender.generation;
+    let foundation = lifecycle
+        .begin_application_request(&sender, &request_for(sender.generation, 4))
+        .expect("foundation completion fixture");
+    lifecycle
+        .session
+        .as_mut()
+        .expect("renderer session")
+        .generation = sender.generation.saturating_add(1);
+    let (_, acknowledged, live) =
+        lifecycle.complete_with_availability(foundation, "encoded".to_owned(), true);
+    assert!(!acknowledged);
+    assert!(live);
+}
+
+#[test]
 fn request_identifier_must_match_authenticated_generation_and_sequence() {
     let (mut lifecycle, sender) = started();
     let mismatched = br#"{"schemaVersion":1,"requestId":"request-0000000000000002-0000000000000001","sequence":1,"timeoutMs":1000,"operation":{"kind":"application-health"}}"#;

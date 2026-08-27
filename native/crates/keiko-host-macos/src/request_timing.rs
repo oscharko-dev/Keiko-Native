@@ -118,7 +118,7 @@ pub(crate) fn terminal_reason(
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::terminal_cutoff_exceeded;
+    use super::{CancellationSource, InFlight, terminal_cutoff_exceeded};
 
     #[test]
     fn terminal_cutoff_is_exceeded_only_after_five_seconds() {
@@ -131,5 +131,32 @@ mod tests {
                 "elapsed {elapsed_ms}ms"
             );
         }
+    }
+
+    #[test]
+    fn repeated_cancellation_preserves_the_first_acceptance() {
+        let first_at = Instant::now();
+        let mut in_flight = InFlight {
+            accepted_cancellation: None,
+            cancelled_at_ms: None,
+            cancellation_source: None,
+            generation: 1,
+            runtime_owned: true,
+            started_at_ms: 10,
+            timeout_ms: 5_000,
+        };
+        let first = in_flight.cancel(20, first_at, CancellationSource::RendererLost);
+        let replay = in_flight.cancel(
+            30,
+            first_at + Duration::from_millis(10),
+            CancellationSource::AppShutdown,
+        );
+
+        assert_eq!(replay, first);
+        assert_eq!(in_flight.cancelled_at_ms, Some(20));
+        assert_eq!(
+            in_flight.cancellation_source,
+            Some(CancellationSource::RendererLost)
+        );
     }
 }

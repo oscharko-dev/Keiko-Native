@@ -122,6 +122,8 @@ fn page_load_and_script_policy_are_exact() {
     assert!(script.contains(&nonce('a')));
     assert!(script.contains("Object.freeze"));
     assert!(document_authority_script(7, "bad").is_none());
+    assert!(document_authority_script(7, &nonce('z')).is_none());
+    assert!(document_authority_script(7, &format!("{}z", "a".repeat(63))).is_none());
 
     let lifecycle = Mutex::new(HostLifecycle::default());
     assert!(activate_document(&lifecycle, Some(nonce('a'))));

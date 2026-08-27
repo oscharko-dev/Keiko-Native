@@ -139,6 +139,11 @@ fn bundled_navigation_policy_is_exact() {
         assert!(!is_bundled_navigation(&url));
     }
     assert!(canonical_origin(None).is_empty());
+    let password_without_user =
+        tauri::Url::parse("tauri://:secret@localhost/").expect("password URL");
+    assert!(password_without_user.username().is_empty());
+    assert!(password_without_user.password().is_some());
+    assert!(canonical_origin(Some(&password_without_user)).is_empty());
 }
 
 #[test]

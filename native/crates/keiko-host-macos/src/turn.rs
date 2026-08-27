@@ -733,6 +733,77 @@ mod tests {
     }
 
     #[test]
+    fn a151_t1_turn_channel_rejects_a_non_turn_operation_before_runtime_claim() {
+        let (lifecycle, sender) = session();
+        let request_id = canonical_request_id(sender.generation, 1).expect("request ID");
+        let request = format!(
+            r#"{{"schemaVersion":1,"requestId":"{request_id}","sequence":1,"timeoutMs":5000,"operation":{{"kind":"runtime-readiness"}}}}"#,
+        );
+        let runtime = RuntimeHost::unavailable_for_test();
+        let output = turn_request_with_channel(
+            &lifecycle,
+            &Mutex::new(WorkspaceHost::default()),
+            &runtime,
+            &sender,
+            &request,
+            |_, _| panic!("non-turn request must not publish a turn view"),
+        );
+        assert!(output.encoded.contains(r#""unknown-operation""#));
+        assert!(runtime.has_no_runtime_effects_for_test());
+    }
+
+    #[test]
+    fn a151_t2_turn_channel_failed_claim_settles_without_runtime_effect() {
+        let (lifecycle, sender) = session();
+        let runtime = RuntimeHost::unavailable_for_test();
+        runtime.set_active_request_for_test("a151-t2-owner");
+        let mut updates = Vec::new();
+        let output = turn_request_with_channel(
+            &lifecycle,
+            &Mutex::new(WorkspaceHost::default()),
+            &runtime,
+            &sender,
+            &request(sender.generation, 1, "Must not reach Runtime."),
+            |view, cutoff| {
+                updates.push((view, cutoff));
+                true
+            },
+        );
+        assert!(output.encoded.contains(r#""state":"cleanup-failed""#));
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[1].0.state, TurnState::CleanupFailed);
+        assert_eq!(updates[1].0.reason, Some(TurnReason::CleanupFailed));
+        assert!(!updates[1].0.evidence.cleanup_complete);
+        assert_eq!(updates[1].1, None);
+        assert!(runtime.owns_request_for_test("a151-t2-owner"));
+        runtime.finish_active_request_for_test();
+    }
+
+    #[test]
+    fn a151_t3_turn_channel_missing_workspace_settles_stale_and_cleans_claim() {
+        let (lifecycle, sender) = session();
+        let runtime = RuntimeHost::unavailable_for_test();
+        let mut updates = Vec::new();
+        let output = turn_request_with_channel(
+            &lifecycle,
+            &Mutex::new(WorkspaceHost::default()),
+            &runtime,
+            &sender,
+            &request(sender.generation, 1, "Bounded task."),
+            |view, cutoff| {
+                updates.push((view, cutoff));
+                true
+            },
+        );
+        assert!(output.encoded.contains(r#""stale-workspace""#));
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[1].0.state, TurnState::Failed);
+        assert_eq!(updates[1].0.reason, Some(TurnReason::StaleWorkspace));
+        assert_eq!(updates[1].1, None);
+        assert!(runtime.has_no_runtime_effects_for_test());
+    }
+
+    #[test]
     fn settlement_enforces_each_cancellation_terminal_precedence() {
         let outcome = |state, reason, cleaned| TurnRuntimeOutcome {
             state,
@@ -839,6 +910,111 @@ mod tests {
         let partial_view = partial_correlation.view();
         assert!(partial_view.provider_thread_established);
         assert!(!partial_view.provider_turn_established);
+    }
+
+    #[test]
+    fn a151_settlement_state_matrix_covers_cutoff_claim_and_control_failure() {
+        let new_session = || {
+            TurnSession::new(
+                1,
+                1,
+                1,
+                "Bounded task.".to_owned(),
+                RuntimeDescriptor::approved(),
+            )
+            .expect("turn session")
+        };
+        let base = new_session().view();
+        let acceptance = crate::request_timing::AcceptedCancellation {
+            accepted_at: Instant::now(),
+            source: crate::request_timing::CancellationSource::RendererLost,
+        };
+        let ordinary = settlement_publication_state(base.clone(), false, false, None);
+        assert_eq!(ordinary.state, TurnState::Preflighting);
+        assert!(!ordinary.evidence.cleanup_complete);
+        let control_failed = settlement_publication_state(base.clone(), true, false, None);
+        assert_eq!(control_failed.state, TurnState::ContainmentFailed);
+        assert!(!control_failed.evidence.cleanup_complete);
+        let cancelled = settlement_publication_state(base.clone(), false, true, Some(acceptance));
+        assert_eq!(cancelled.state, TurnState::Failed);
+        assert!(cancelled.evidence.cleanup_complete);
+        let failed_claim = settlement_publication_state(base.clone(), false, true, None);
+        assert_eq!(failed_claim.state, TurnState::Preflighting);
+        assert!(!failed_claim.evidence.cleanup_complete);
+
+        let mut crossed = new_session();
+        crossed.mark_streaming().expect("streaming");
+        crossed.append_agent_delta("answer").expect("delta");
+        let accepted_at = Instant::now() - Duration::from_secs(6);
+        let cancellation_runtime = RuntimeHost::unavailable_for_test();
+        cancellation_runtime.set_active_request_for_test("a151-crossed-cutoff");
+        cancellation_runtime.accept_request_cancellation(
+            "a151-crossed-cutoff",
+            crate::request_timing::AcceptedCancellation {
+                accepted_at,
+                source: crate::request_timing::CancellationSource::AppShutdown,
+            },
+        );
+        settle_session(
+            &mut crossed,
+            TurnRuntimeOutcome {
+                state: TurnState::Completed,
+                reason: None,
+                agent_text: "answer".to_owned(),
+                provider_thread_established: false,
+                provider_turn_established: false,
+                quarantined_events: 0,
+                repository_context_bytes_to_runtime: 0,
+                cleaned: true,
+                cancellation: cancellation_runtime.cancellation_window_for_test(),
+            },
+            false,
+        );
+        cancellation_runtime.finish_active_request_for_test();
+        assert_eq!(crossed.view().state, TurnState::ContainmentFailed);
+        assert_eq!(crossed.view().reason, Some(TurnReason::ProtocolRejected));
+    }
+
+    #[test]
+    fn a151_failed_terminal_prepare_does_not_emit_a_projection() {
+        let (lifecycle, sender) = session();
+        let accepted = lifecycle
+            .lock()
+            .expect("Host lifecycle")
+            .begin_application_request(
+                &sender,
+                request(sender.generation, 3, "Bounded task.").as_bytes(),
+            )
+            .expect("accepted turn");
+        let terminal = TurnSession::new(
+            sender.generation,
+            1,
+            3,
+            "Bounded task.".to_owned(),
+            RuntimeDescriptor::approved(),
+        )
+        .expect("turn session")
+        .view();
+        std::thread::scope(|scope| {
+            let lifecycle = &lifecycle;
+            assert!(
+                scope
+                    .spawn(move || {
+                        let _guard = lifecycle.lock().expect("poison lifecycle");
+                        panic!("injected Host lifecycle poison");
+                    })
+                    .join()
+                    .is_err()
+            );
+        });
+        let mut updates = Vec::new();
+
+        let output = finish_turn(&lifecycle, accepted, terminal, None, &mut |view| {
+            updates.push(view)
+        });
+
+        assert!(updates.is_empty());
+        assert!(output.encoded.contains(r#""internal-failure""#));
     }
 
     #[test]
