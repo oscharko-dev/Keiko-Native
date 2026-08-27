@@ -21110,6 +21110,1641 @@ exec /usr/bin/tail -f /dev/null
         assert_eq!(fs::read_dir(&fixture.work).expect("work root").count(), 0);
     }
 
+    // v53 B70 exact ledger. Each retained or corrective case below is invoked
+    // directly and contains
+    // no decision-bearing test control flow. Coordinates are from the signed
+    // 4835182 coverage inventory: E1 owns 1121; R1 owns 1181,
+    // 1279-1282, 1327, 1332, 1346, 1361, 1379, 1421, 1470, 1473,
+    // 1654, and 1665; C1 owns 2065-2066, 2114, 2140, 2209,
+    // 2257, 2270, 2283, 2285, 2493-2496, 2516, 2523-2524,
+    // 2550, 2620, and 2624. P1-P3 own 2658, 2664, 2670, 3056,
+    // 3108, 3240, 3283, 3286, 3345, 3357, 3562, 3707,
+    // 3722, 3739, 4012, 4154, 4174, 4193, 5019, 5044, and
+    // 5085. W1-F1 own 5608-5612, 5659, 5700, 6981,
+    // 7086, 4332-4333, and 4912, plus deterministic substitute 4241. The
+    // accepted exclusions are 1259, 3075, 4460, 4678, 5639, and turn.rs 140.
+
+    #[test]
+    fn a76_e1_poisoned_exact_owner_refuses_a_different_closed_marker() {
+        let active = ActiveRuntime::default();
+        let accepted = a151_host_record("a76-e1", CancellationSource::RendererLost);
+        let marker = AcceptedRuntimeCancellation::closed(Instant::now());
+        let mut control = RuntimeControl {
+            request_id: Some(accepted.request_id.clone()),
+            cancellation: Some(AcceptedRuntimeCancellation::closed(
+                Instant::now() + Duration::from_millis(1),
+            )),
+            closed_control_failure_marker: Some(marker),
+            effect_generation: 71,
+            ..RuntimeControl::default()
+        };
+        assert_eq!(
+            active.clear_poisoned_exact_host_settlement_owner(
+                &mut control,
+                &accepted.request_id,
+                Some(AcceptedRuntimeCancellation::from_host(accepted.accepted)),
+            ),
+            None
+        );
+        assert_eq!(control.request_id.as_deref(), Some("a76-e1"));
+    }
+
+    #[test]
+    fn a76_r1_reservation_refusal_and_compare_scoped_rollback_directions() {
+        let overflow = ActiveRuntime::default();
+        overflow.close_deferred_cancellations();
+        assert!(overflow.reserve_request("a76-r1-overflow").is_none());
+
+        let marker_mismatch = ActiveRuntime::default();
+        marker_mismatch
+            .closed_control_failure_cleanup
+            .store(true, Ordering::Release);
+        assert!(marker_mismatch.reserve_request("a76-r1-marker").is_none());
+
+        let running = ActiveRuntime::default();
+        running.running.store(true, Ordering::Release);
+        assert!(running.reserve_request("a76-r1-running").is_none());
+
+        let owned = ActiveRuntime::default();
+        owned.control.lock().expect("owner").request_id = Some("a76-owner".to_owned());
+        assert!(owned.reserve_request("a76-r1-owned").is_none());
+
+        let pending = ActiveRuntime::default();
+        {
+            let mut control = pending.control.lock().expect("pending");
+            control.pending_request_id = Some("a76-pending".to_owned());
+            control.effect_generation = 9;
+        }
+        assert!(pending.reserve_request("a76-r1-pending").is_none());
+
+        let finalized = ActiveRuntime::default();
+        let reservation = finalized
+            .reserve_request("a76-r1-finalize")
+            .expect("reserve");
+        assert!(finalized.commit_request_reservation(&reservation));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = finalized.control.lock().expect("control before poison");
+            panic!("poison finalize control");
+        }));
+        assert!(!finalized.finalize_request_reservation(&reservation));
+        finalized.rollback_request_reservation(&reservation);
+
+        let rollback = ActiveRuntime::default();
+        let reservation = rollback
+            .reserve_request("a76-r1-rollback")
+            .expect("reserve");
+        assert!(rollback.commit_request_reservation(&reservation));
+        rollback
+            .control
+            .lock()
+            .expect("rollback owner")
+            .effect_generation = reservation.effect_generation.wrapping_add(1);
+        rollback.rollback_request_reservation(&reservation);
+        assert!(rollback.running.load(Ordering::Acquire));
+        rollback.running.store(false, Ordering::Release);
+
+        let retained = ActiveRuntime::default();
+        let reservation = retained.reserve_request("a76-r1-retain").expect("reserve");
+        let mut wrong = RuntimeControl {
+            pending_request_id: Some("a76-r1-other".to_owned()),
+            effect_generation: reservation.effect_generation,
+            ..RuntimeControl::default()
+        };
+        assert!(retained.retain_reservation_cancellations(&mut wrong, &reservation));
+        assert_eq!(wrong.pending_request_id.as_deref(), Some("a76-r1-other"));
+        retained.rollback_request_reservation(&reservation);
+    }
+
+    #[test]
+    fn a76_r4_retained_unpublished_child_blocks_claim_until_exact_reap() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let active = ActiveRuntime::default();
+        let child = Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("retained child");
+        active
+            .retained_unpublished_children
+            .lock()
+            .expect("retained children")
+            .push(child);
+        assert!(!active.claim_request("a76-r4-blocked"));
+        let mut child = active
+            .retained_unpublished_children
+            .lock()
+            .expect("retained children")
+            .pop()
+            .expect("owned child");
+        child.kill().expect("kill retained child");
+        child.wait().expect("wait retained child");
+        assert!(active.claim_request("a76-r4-recovered"));
+        active.finish_request();
+    }
+
+    #[test]
+    fn a76_r5_zero_budget_idle_wait_observes_running_ownership() {
+        let active = ActiveRuntime::default();
+        active.running.store(true, Ordering::Release);
+        assert!(!active.wait_for_idle(Duration::ZERO));
+        active.running.store(false, Ordering::Release);
+        active.finished.notify_all();
+        assert!(active.wait_for_idle(Duration::ZERO));
+    }
+
+    #[test]
+    fn a76_r2_full_reserved_storage_preserves_cancellation_during_commit_failure() {
+        let active = ActiveRuntime::default();
+        let record = a151_host_record("a76-r2", CancellationSource::AppShutdown);
+        {
+            let mut control = active.control.lock().expect("Host owner");
+            control.pending_request_id = Some(record.request_id.clone());
+            control.cancellation = Some(AcceptedRuntimeCancellation::from_host(record.accepted));
+        }
+        let reservation = active.reserve_request(&record.request_id).expect("reserve");
+        active
+            .deferred_cancellations
+            .lock()
+            .expect("reserved cancellations")
+            .extend(
+                std::iter::repeat_with(|| {
+                    DeferredRuntimeCancellation::ReservedHost(a151_host_record(
+                        "a76-r2-full",
+                        CancellationSource::User,
+                    ))
+                })
+                .take(MAX_DEFERRED_CANCELLATIONS),
+            );
+        active.running.store(true, Ordering::Release);
+        assert!(!active.commit_request_reservation(&reservation));
+        assert_eq!(
+            active.control.lock().expect("retained owner").cancellation,
+            reservation.cancellation
+        );
+        active.running.store(false, Ordering::Release);
+    }
+
+    #[test]
+    fn a76_r3_closed_marker_finalize_preserves_a_distinct_host_token() {
+        let active = ActiveRuntime::default();
+        let marker = AcceptedRuntimeCancellation::closed(Instant::now());
+        let record = a151_host_record("a76-r3", CancellationSource::RendererLost);
+        let cancellation = AcceptedRuntimeCancellation::from_host(record.accepted);
+        let reservation = RuntimeRequestReservation {
+            request_id: record.request_id.clone(),
+            effect_generation: 77,
+            cancellation: Some(cancellation),
+            closed_control_failure_marker: Some(marker),
+        };
+        {
+            let mut control = active.control.lock().expect("closed owner");
+            control.request_id = Some(record.request_id);
+            control.effect_generation = 77;
+            control.cancellation = Some(cancellation);
+            control.closed_control_failure_marker = Some(marker);
+        }
+        active
+            .closed_control_failure_cleanup
+            .store(true, Ordering::Release);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = active.control.lock().expect("control before poison");
+            panic!("poison marker finalize control");
+        }));
+        assert!(active.finalize_request_reservation(&reservation));
+        assert_eq!(
+            active.control.lock().expect("finalized").cancellation,
+            Some(cancellation)
+        );
+    }
+
+    #[test]
+    fn a76_c1_host_handoff_claim_and_global_cancellation_directions() {
+        let healthy = RuntimeHost::unavailable_for_test();
+        healthy.handoff_host_cancellation(
+            UnmatchedHostCancellationPolicy::Ignore,
+            || HostCancellationMutation::ControlFailed(()),
+            |()| (),
+        );
+        assert!(healthy.cancellation_window_for_test().is_none());
+
+        let pending = RuntimeHost::unavailable_for_test();
+        pending
+            .active
+            .control
+            .lock()
+            .expect("pending")
+            .pending_request_id = Some("a76-c1-pending".to_owned());
+        pending.handoff_host_cancellation(
+            UnmatchedHostCancellationPolicy::Ignore,
+            || HostCancellationMutation::ControlFailed(()),
+            |()| (),
+        );
+        assert_eq!(
+            pending
+                .cancellation_window_for_test()
+                .expect("closed")
+                .reason,
+            RuntimeCancellation::ContainmentFailure
+        );
+
+        let poisoned = RuntimeHost::unavailable_for_test();
+        poisoned.poison_control_for_test();
+        poisoned.handoff_host_cancellation(
+            UnmatchedHostCancellationPolicy::Ignore,
+            || HostCancellationMutation::Completed((), Vec::new()),
+            |()| (),
+        );
+        assert_eq!(
+            poisoned
+                .cancellation_window_for_test()
+                .expect("poisoned")
+                .reason,
+            RuntimeCancellation::ContainmentFailure
+        );
+
+        let claim = RuntimeHost::unavailable_for_test();
+        claim.active.running.store(true, Ordering::Release);
+        {
+            let mut control = claim.active.control.lock().expect("exact pending");
+            control.pending_request_id = Some("a76-c1-claim".to_owned());
+            control.cancellation = Some(AcceptedRuntimeCancellation::new(
+                RuntimeCancellation::RendererLost,
+                Instant::now(),
+            ));
+        }
+        assert_eq!(
+            claim.claim_turn_request_for_host_settlement_disposition("a76-c1-claim"),
+            HostTurnClaimDisposition::Rejected
+        );
+        claim.active.running.store(false, Ordering::Release);
+
+        let global = RuntimeHost::unavailable_for_test();
+        {
+            let mut control = global.active.control.lock().expect("poisoned pending");
+            control.pending_request_id = Some("a76-c1-global".to_owned());
+        }
+        global.poison_control_for_test();
+        global.cancel_for_app_shutdown();
+        assert_eq!(
+            global
+                .cancellation_window_for_test()
+                .expect("global closed")
+                .reason,
+            RuntimeCancellation::ContainmentFailure
+        );
+        assert!(global.materialize_deferred_signal_authority().is_none());
+    }
+
+    #[test]
+    fn a76_c2_exact_request_replaces_a_closed_marker_in_healthy_and_poisoned_control() {
+        let healthy = RuntimeHost::unavailable_for_test();
+        let marker = AcceptedRuntimeCancellation::closed(Instant::now());
+        {
+            let mut control = healthy.active.control.lock().expect("closed running");
+            control.request_id = Some("a76-c2-healthy".to_owned());
+            control.effect_generation = 81;
+            control.cancellation = Some(marker);
+            control.closed_control_failure_marker = Some(marker);
+        }
+        healthy.active.running.store(true, Ordering::Release);
+        healthy.cancel_request("a76-c2-healthy");
+        assert_eq!(
+            healthy
+                .cancellation_window_for_test()
+                .expect("user token")
+                .reason,
+            RuntimeCancellation::User
+        );
+        healthy.finish_active_request_for_test();
+
+        let poisoned = RuntimeHost::unavailable_for_test();
+        let marker = AcceptedRuntimeCancellation::closed(Instant::now());
+        {
+            let mut control = poisoned.active.control.lock().expect("closed pending");
+            control.request_id = Some("a76-c2-poisoned".to_owned());
+            control.effect_generation = 83;
+            control.cancellation = Some(marker);
+            control.closed_control_failure_marker = Some(marker);
+        }
+        poisoned.active.running.store(true, Ordering::Release);
+        poisoned.poison_control_for_test();
+        poisoned.cancel_request("a76-c2-poisoned");
+        assert_eq!(
+            poisoned
+                .active
+                .control
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .cancellation
+                .expect("exact token")
+                .reason,
+            RuntimeCancellation::User
+        );
+        poisoned.finish_active_request_for_test();
+    }
+
+    #[test]
+    fn a76_c3_cleanup_proof_pending_owner_and_signal_lock_are_fail_closed() {
+        let request_owner = RuntimeHost::unavailable_for_test();
+        request_owner
+            .active
+            .control
+            .lock()
+            .expect("request owner")
+            .request_id = Some("a76-c3-request".to_owned());
+        assert!(!request_owner.wait_for_accepted_cancellation_cleanup());
+
+        let pending_owner = RuntimeHost::unavailable_for_test();
+        pending_owner
+            .active
+            .control
+            .lock()
+            .expect("pending owner")
+            .pending_request_id = Some("a76-c3-pending".to_owned());
+        assert!(!pending_owner.wait_for_accepted_cancellation_cleanup());
+
+        let generation_owner = RuntimeHost::unavailable_for_test();
+        generation_owner
+            .active
+            .control
+            .lock()
+            .expect("generation owner")
+            .effect_generation = 1;
+        assert!(!generation_owner.wait_for_accepted_cancellation_cleanup());
+
+        let pending_cancel = RuntimeHost::unavailable_for_test();
+        let marker = AcceptedRuntimeCancellation::closed(Instant::now());
+        {
+            let mut control = pending_cancel
+                .active
+                .control
+                .lock()
+                .expect("closed pending");
+            control.pending_request_id = Some("a76-c3-cancel".to_owned());
+            control.cancellation = Some(marker);
+            control.closed_control_failure_marker = Some(marker);
+        }
+        pending_cancel.cancel_request("a76-c3-cancel");
+        assert_eq!(
+            pending_cancel
+                .cancellation_window_for_test()
+                .expect("pending exact cancellation")
+                .reason,
+            RuntimeCancellation::User
+        );
+
+        let poisoned_running = RuntimeHost::unavailable_for_test();
+        poisoned_running.set_active_request_for_test("a76-c3-global-running");
+        poisoned_running.poison_control_for_test();
+        poisoned_running.cancel_for_app_shutdown();
+        assert_eq!(
+            poisoned_running
+                .active
+                .control
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .cancellation
+                .expect("poisoned running cancellation")
+                .reason,
+            RuntimeCancellation::ContainmentFailure
+        );
+        poisoned_running.finish_active_request_for_test();
+
+        let signal = RuntimeHost::unavailable_for_test();
+        let cancellation =
+            AcceptedRuntimeCancellation::new(RuntimeCancellation::RendererLost, Instant::now());
+        signal.active.running.store(true, Ordering::Release);
+        {
+            let mut control = signal.active.control.lock().expect("signal owner");
+            control.request_id = Some("a76-c3-signal".to_owned());
+            control.effect_generation = 107;
+            control.cancellation = Some(cancellation);
+        }
+        let identity = unavailable_process_identity(31338);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = signal
+                .active
+                .process_group
+                .lock()
+                .expect("process group before poison");
+            panic!("poison process group");
+        }));
+        assert!(!signal.signal_active_process_with_authority(
+            &RuntimeSignalAuthority {
+                request_id: "a76-c3-signal".to_owned(),
+                effect_generation: 107,
+                cancellation,
+                process_identity: identity,
+            },
+            SIGTERM,
+        ));
+        signal.finish_active_request_for_test();
+    }
+
+    #[test]
+    fn a76_c4_host_control_failure_and_poisoned_match_cover_each_owner_shape() {
+        let running = RuntimeHost::unavailable_for_test();
+        running.set_active_request_for_test("a76-c4-running");
+        running.handoff_host_cancellation(
+            UnmatchedHostCancellationPolicy::Ignore,
+            || HostCancellationMutation::ControlFailed(()),
+            |()| (),
+        );
+        assert_eq!(
+            running
+                .cancellation_window_for_test()
+                .expect("running failure")
+                .reason,
+            RuntimeCancellation::ContainmentFailure
+        );
+        running.finish_active_request_for_test();
+
+        let request_owner = RuntimeHost::unavailable_for_test();
+        request_owner
+            .active
+            .control
+            .lock()
+            .expect("request owner")
+            .request_id = Some("a76-c4-request".to_owned());
+        request_owner.handoff_host_cancellation(
+            UnmatchedHostCancellationPolicy::Ignore,
+            || HostCancellationMutation::ControlFailed(()),
+            |()| (),
+        );
+        assert_eq!(
+            request_owner
+                .cancellation_window_for_test()
+                .expect("request failure")
+                .reason,
+            RuntimeCancellation::ContainmentFailure
+        );
+
+        let poisoned_pending = RuntimeHost::unavailable_for_test();
+        poisoned_pending
+            .active
+            .control
+            .lock()
+            .expect("pending owner")
+            .pending_request_id = Some("a76-c4-pending".to_owned());
+        poisoned_pending.poison_control_for_test();
+        poisoned_pending.handoff_host_cancellation(
+            UnmatchedHostCancellationPolicy::Ignore,
+            || HostCancellationMutation::ControlFailed(()),
+            |()| (),
+        );
+        assert!(
+            poisoned_pending
+                .active
+                .closed_control_failure_cleanup
+                .load(Ordering::Acquire)
+        );
+
+        let poisoned_match = RuntimeHost::unavailable_for_test();
+        let marker = AcceptedRuntimeCancellation::closed(Instant::now());
+        {
+            let mut control = poisoned_match.active.control.lock().expect("matched owner");
+            control.request_id = Some("a76-c4-match".to_owned());
+            control.effect_generation = 109;
+            control.cancellation = Some(marker);
+            control.closed_control_failure_marker = Some(marker);
+        }
+        poisoned_match.active.running.store(true, Ordering::Release);
+        poisoned_match.poison_control_for_test();
+        let record = a151_host_record("a76-c4-match", CancellationSource::RendererLost);
+        poisoned_match.handoff_host_cancellation(
+            UnmatchedHostCancellationPolicy::Ignore,
+            || HostCancellationMutation::Completed((), vec![record.clone()]),
+            |()| (),
+        );
+        assert_eq!(
+            poisoned_match
+                .active
+                .control
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .cancellation
+                .and_then(|cancellation| cancellation.host_acceptance),
+            Some(record.accepted)
+        );
+        poisoned_match.finish_active_request_for_test();
+    }
+
+    #[test]
+    fn a76_e2_effect_authority_rejects_missing_and_changed_generations() {
+        let initialize = ActiveRuntime::default();
+        assert_eq!(
+            format!("{:?}", linearized_initialize_effect(&initialize, || 1_u8)),
+            "Rejected(ContainmentFailure)"
+        );
+
+        let authorize = ActiveRuntime::default();
+        authorize.control.lock().expect("effect owner").request_id =
+            Some("a76-e2-authorize".to_owned());
+        assert_eq!(
+            authorize_runtime_effect(&authorize).expect_err("zero generation"),
+            RuntimeCancellation::ContainmentFailure
+        );
+
+        let revalidate = ActiveRuntime::default();
+        {
+            let mut control = revalidate.control.lock().expect("effect owner");
+            control.request_id = Some("a76-e2-revalidate".to_owned());
+            control.effect_generation = 93;
+        }
+        let permit = RuntimeEffectPermit {
+            request_id: "a76-e2-revalidate".to_owned(),
+            generation: 94,
+        };
+        assert_eq!(
+            revalidate_runtime_effect(&revalidate, &permit),
+            Err(RuntimeCancellation::ContainmentFailure)
+        );
+    }
+
+    #[test]
+    fn a76_w1_retained_workers_take_exact_closed_deadline_paths() {
+        let active = ActiveRuntime::default();
+        let (release_turn, turn_release) = mpsc::sync_channel(1);
+        let (turn_completed, turn_done) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            turn_release.recv().expect("turn release");
+            turn_completed.send(()).expect("turn completion");
+        });
+        let (_cleanup_sender, cleanup_completed) = mpsc::sync_channel(1);
+        assert!(!retire_turn_worker(
+            &active,
+            RetainedTurnWorker {
+                completed: cleanup_completed,
+                cleanup_proven: Some(true),
+                worker,
+            },
+            Instant::now(),
+        ));
+        release_turn.send(()).expect("release turn");
+        turn_done
+            .recv_timeout(Duration::from_secs(1))
+            .expect("turn done");
+        assert_eq!(
+            active
+                .retained_turn_workers
+                .lock()
+                .expect("retained turns")
+                .len(),
+            1
+        );
+
+        let (release_publication, publication_release) = mpsc::sync_channel(1);
+        let (publication_completed, publication_done) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            publication_release.recv().expect("publication release");
+            publication_completed
+                .send(())
+                .expect("publication completion");
+        });
+        let (_result_sender, result) = mpsc::sync_channel(1);
+        assert!(!retire_publication_worker(
+            &active,
+            RetainedPublicationWorker { result, worker },
+            Instant::now(),
+        ));
+        release_publication.send(()).expect("release publication");
+        publication_done
+            .recv_timeout(Duration::from_secs(1))
+            .expect("publication done");
+        assert_eq!(
+            active
+                .retained_publication_workers
+                .lock()
+                .expect("retained publications")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a76_w2_directory_cleanup_false_and_panicked_join_are_retained() {
+        let fixture = Fixture::new();
+        let active = ActiveRuntime::default();
+        let false_path = fixture.root.join("a76-w2-false");
+        active
+            .retained_work_directories
+            .lock()
+            .expect("retained paths")
+            .insert(false_path.clone());
+        let (false_sender, false_completed) = mpsc::sync_channel(1);
+        let (false_ready, false_ready_receiver) = mpsc::sync_channel(1);
+        let false_worker = thread::spawn(move || {
+            false_sender.send(false).expect("false result");
+            false_ready.send(()).expect("false ready");
+        });
+        false_ready_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("false cleanup ready");
+        active
+            .tracked_directory_cleanups
+            .lock()
+            .expect("tracked cleanup")
+            .push(TrackedDirectoryCleanup {
+                path: false_path.clone(),
+                completed: false_completed,
+                worker: false_worker,
+            });
+        assert!(!reconcile_retained_work_directories(&active));
+        assert!(
+            active
+                .retained_work_directories
+                .lock()
+                .expect("retained paths")
+                .contains(&false_path)
+        );
+
+        let panic_path = fixture.root.join("a76-w2-panic");
+        active
+            .retained_work_directories
+            .lock()
+            .expect("retained paths")
+            .insert(panic_path.clone());
+        let (panic_sender, panic_completed) = mpsc::sync_channel(1);
+        let (panic_ready, panic_ready_receiver) = mpsc::sync_channel(1);
+        let panic_worker = thread::spawn(move || {
+            panic_sender.send(true).expect("panic result");
+            panic_ready.send(()).expect("panic ready");
+            panic!("injected cleanup worker panic");
+        });
+        panic_ready_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("panic cleanup ready");
+        active
+            .tracked_directory_cleanups
+            .lock()
+            .expect("tracked cleanup")
+            .push(TrackedDirectoryCleanup {
+                path: panic_path.clone(),
+                completed: panic_completed,
+                worker: panic_worker,
+            });
+        assert!(!reconcile_retained_work_directories(&active));
+        assert!(
+            active
+                .retained_work_directories
+                .lock()
+                .expect("retained paths")
+                .contains(&panic_path)
+        );
+    }
+
+    #[test]
+    fn a76_w3_cleanup_reducers_close_at_started_and_completed_boundaries() {
+        let now = Instant::now();
+        let controller = CleanupController {
+            policy: CleanupPhasePolicy::PreserveFinalReconciliation,
+            process_group: 101,
+            deadline: now,
+            cleanup_started: now,
+            eof_grace: Duration::ZERO,
+            term_grace: Duration::ZERO,
+        };
+        assert_eq!(
+            reduce_cleanup_reconciliation(
+                controller,
+                CleanupContinuation::Final,
+                CleanupProofStep::ActiveIdentity,
+                CleanupProof::default(),
+                CleanupObservation::Begin { observed_at: now },
+            ),
+            CleanupResult::Terminal(CleanupTerminal::Retained)
+        );
+        assert_eq!(
+            reduce_cleanup_effect(
+                controller,
+                CleanupEffect::RefreshOwned,
+                CleanupObservation::OwnedRefreshed {
+                    started_at: now,
+                    completed_at: now,
+                    refreshed: true,
+                },
+            ),
+            CleanupResult::Terminal(CleanupTerminal::Retained)
+        );
+    }
+
+    #[test]
+    fn a76_w4_false_turn_cleanup_and_pending_reader_block_strict_reconciliation() {
+        let active = ActiveRuntime::default();
+        let (reader_release, release_reader) = mpsc::sync_channel(1);
+        let (reader_done_sender, reader_done) = mpsc::sync_channel(1);
+        let (completed_sender, completed) = mpsc::sync_channel(1);
+        let reader_worker = thread::spawn(move || {
+            release_reader.recv().expect("reader release");
+            reader_done_sender.send(()).expect("reader done");
+        });
+        active
+            .retained_readers
+            .lock()
+            .expect("retained readers")
+            .push(RuntimeReader {
+                completed,
+                worker: reader_worker,
+            });
+        assert!(!reconcile_retained_runtime_ownership(&active));
+        reader_release.send(()).expect("release reader");
+        reader_done
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reader completion");
+        drop(completed_sender);
+        assert_eq!(
+            active
+                .retained_readers
+                .lock()
+                .expect("retained reader")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a76_f1_binary_identity_directory_chain_and_orphan_name_directions() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let runtime = fixture.scripted_host("#!/bin/sh\nexit 0\n");
+        let configuration = runtime.configuration.as_ref().expect("configuration");
+        let mut verified = bind_configuration(configuration, None).expect("verified");
+        assert_eq!(verified.revalidate_binary_identity(), Ok(()));
+        let mut permissions = fs::metadata(&fixture.binary)
+            .expect("binary metadata")
+            .permissions();
+        permissions.set_mode(0o600);
+        fs::set_permissions(&fixture.binary, permissions).expect("non executable binary");
+        verified.binary_identity = FileIdentity::from_metadata(
+            &verified
+                .binary_file
+                .metadata()
+                .expect("descriptor metadata"),
+        );
+        assert_eq!(
+            verified.revalidate_binary_identity(),
+            Err(RuntimeReadinessState::Incompatible)
+        );
+        assert!(!protected_directory_chain(&fixture.binary));
+
+        let ignored = fixture.work.join("unrelated-directory");
+        fs::create_dir(&ignored).expect("unrelated directory");
+        assert_eq!(recover_orphaned_runtime_directories(&fixture.work), Ok(()));
+        assert!(ignored.exists());
+    }
+
+    #[test]
+    fn a76_f2_unpublished_child_rollback_uses_the_direct_kill_path() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let active = ActiveRuntime::default();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = active
+                .process_group
+                .lock()
+                .expect("process group before poison");
+            panic!("poison rollback process group");
+        }));
+        let child = Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("rollback child");
+        assert!(rollback_spawned_before_publication(
+            child,
+            &active,
+            Instant::now() + Duration::from_secs(1),
+        ));
+        assert!(
+            active
+                .retained_unpublished_children
+                .lock()
+                .expect("retained")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a76_p1_duplicate_streaming_projection_fails_closed_and_ignores_later_update() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let repository = fixture.root.join("a76-p1-repository");
+        fs::create_dir(&repository).expect("repository");
+        fs::create_dir(repository.join(".git")).expect("repository marker");
+        let runtime = fixture.scripted_host(
+            r#"#!/bin/sh
+work=$(/bin/pwd -P)
+read -r initialize
+printf '%s\n' '{"id":1,"result":{"userAgent":"codex_cli_rs/0.145.0","codexHome":"'"$CODEX_HOME"'","platformFamily":"unix","platformOs":"macos"}}'
+read -r initialized
+read -r account
+printf '%s\n' '{"id":2,"result":{"account":{"type":"chatgpt","email":"redacted","planType":"plus"},"requiresOpenaiAuth":true}}'
+read -r thread
+printf '%s\n' '{"id":3,"result":{"thread":{"id":"thread-1","ephemeral":true,"path":null,"gitInfo":null,"parentThreadId":null,"cwd":"'"$work"'","canAcceptDirectInput":true},"runtimeWorkspaceRoots":[],"instructionSources":[],"approvalPolicy":"never","approvalsReviewer":"user","activePermissionProfile":null,"multiAgentMode":"explicitRequestOnly","cwd":"'"$work"'"}}'
+printf '%s\n' '{"method":"thread/started","params":{"thread":{"id":"thread-1"}}}'
+read -r turn
+printf '%s\n' '{"id":4,"result":{"turn":{"id":"turn-1","status":"inProgress"}}}'
+printf '%s\n' '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"inProgress"}}}'
+printf '%s\n' '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"inProgress"}}}'
+printf '%s\n' '{"method":"item/completed","params":{"threadId":"thread-1","turnId":"turn-1","completedAtMs":2,"item":{"type":"agentMessage","id":"item-1","text":"ignored"}}}'
+read -r blocked
+"#,
+        );
+        let mut workspace = crate::WorkspaceHost::default();
+        let _ = workspace
+            .select(crate::FolderPickerResult::Selected(repository))
+            .expect("workspace");
+        let mut lifecycle = crate::HostLifecycle::default();
+        let nonce = "a".repeat(64);
+        let generation = lifecycle
+            .begin_renderer_session(nonce.clone())
+            .expect("renderer");
+        let sender = lifecycle.sender_for_document("main", "tauri://localhost", generation, &nonce);
+        let request_id = canonical_request_id(generation, 1).expect("request ID");
+        let request = serde_json::to_string(&serde_json::json!({
+            "schemaVersion": 1,
+            "requestId": request_id,
+            "sequence": 1,
+            "timeoutMs": 2_000,
+            "operation": {
+                "kind": "codex-turn-start",
+                "workspaceGeneration": 1,
+                "task": "Bounded task."
+            }
+        }))
+        .expect("request");
+        let mut updates = Vec::new();
+        let output = crate::turn::turn_request_with_channel(
+            &Mutex::new(lifecycle),
+            &Mutex::new(workspace),
+            &runtime,
+            &sender,
+            &request,
+            |view, cutoff| {
+                updates.push((view, cutoff));
+                true
+            },
+        );
+        assert!(output.encoded.contains(r#""state":"containment-failed""#));
+        assert_eq!(
+            updates.last().expect("terminal").0.state,
+            TurnState::ContainmentFailed
+        );
+        assert!(runtime.wait_for_accepted_cancellation_cleanup());
+    }
+
+    #[test]
+    fn a76_p2_readiness_revalidates_workspace_and_post_bind_cancellation() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let runtime = fixture.scripted_host("#!/bin/sh\nexit 0\n");
+        runtime.set_active_request_for_test("a76-p2-workspace");
+        let selected = RuntimeReadinessWorkspace::tracked(fixture.root.clone(), 7);
+        runtime
+            .invalidated_workspace_generation
+            .store(7, Ordering::Release);
+        let view = perform_check(
+            runtime.configuration.as_ref().expect("configuration"),
+            Some(&selected),
+            &runtime.active,
+            &runtime.work_generation,
+            &runtime.invalidated_workspace_generation,
+            Instant::now() + Duration::from_secs(1),
+        );
+        assert_eq!(view.state, RuntimeReadinessState::Cancelled);
+        runtime.finish_active_request_for_test();
+
+        let runtime = fixture.scripted_host("#!/bin/sh\nexit 0\n");
+        runtime.set_active_request_for_test("a76-p2-post-bind");
+        let cancelling = Arc::clone(&runtime.active);
+        let _hook = install_verified_binary_after_open_hook(move || {
+            cancelling.cancel(RuntimeCancellation::RendererLost);
+        });
+        let view = perform_check(
+            runtime.configuration.as_ref().expect("configuration"),
+            None,
+            &runtime.active,
+            &runtime.work_generation,
+            &runtime.invalidated_workspace_generation,
+            Instant::now() + Duration::from_secs(1),
+        );
+        assert_eq!(view.state, RuntimeReadinessState::Cancelled);
+        runtime.finish_active_request_for_test();
+    }
+
+    #[test]
+    fn a76_p3_turn_workspace_generation_deadline_and_identity_are_exact() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let repository = fixture.root.join("a76-p3-repository");
+        fs::create_dir(&repository).expect("repository");
+        fs::create_dir(repository.join(".git")).expect("repository marker");
+        let binding = WorkspaceRuntimeBinding::for_test(&repository);
+
+        let ordinary = RuntimeHost::unavailable_for_test();
+        let stale = ordinary.run_turn(
+            "a76-p3-ordinary",
+            0,
+            &binding,
+            "Bounded task.",
+            Duration::from_secs(1),
+            |_| {},
+        );
+        assert_eq!(stale.reason, Some(TurnReason::StaleWorkspace));
+        assert!(ordinary.has_no_runtime_effects_for_test());
+
+        let retained = RuntimeHost::unavailable_for_test();
+        retained.set_active_request_for_test("a76-p3-retained");
+        let stale = retained.run_turn_for_host_settlement(
+            "a76-p3-retained",
+            0,
+            &binding,
+            "Bounded task.",
+            Duration::from_secs(1),
+            |_| {},
+        );
+        assert_eq!(stale.reason, Some(TurnReason::StaleWorkspace));
+        assert!(retained.owns_request_for_test("a76-p3-retained"));
+        retained.finish_active_request_for_test();
+
+        let configured = fixture.scripted_host("#!/bin/sh\nexit 0\n");
+        configured.set_active_request_for_test("a76-p3-deadline");
+        let deadline = perform_turn(
+            configured.configuration.as_ref().expect("configuration"),
+            &binding,
+            "Bounded task.",
+            &configured.active,
+            &configured.work_generation,
+            Instant::now(),
+            &mut |_| {},
+        );
+        assert_eq!(deadline.state, TurnState::TimedOut);
+        configured.finish_active_request_for_test();
+
+        let moved = fixture.root.join("a76-p3-moved");
+        fs::rename(&repository, &moved).expect("move repository");
+        let configured = fixture.scripted_host("#!/bin/sh\nexit 0\n");
+        configured.set_active_request_for_test("a76-p3-identity");
+        let stale = perform_turn(
+            configured.configuration.as_ref().expect("configuration"),
+            &binding,
+            "Bounded task.",
+            &configured.active,
+            &configured.work_generation,
+            Instant::now() + Duration::from_secs(1),
+            &mut |_| {},
+        );
+        assert_eq!(stale.reason, Some(TurnReason::StaleWorkspace));
+        configured.finish_active_request_for_test();
+    }
+
+    #[test]
+    fn a76_p4_turn_publish_refusal_rolls_back_without_registering_the_child() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let repository = fixture.root.join("a76-p4-turn-repository");
+        fs::create_dir(&repository).expect("repository");
+        fs::create_dir(repository.join(".git")).expect("repository marker");
+        let runtime = fixture.scripted_host("#!/bin/sh\nread -r blocked\n");
+        runtime.set_active_request_for_test("a76-p4-turn");
+        let owner = process_identity(std::process::id() as i32).expect("owner");
+        let work_directory = fixture
+            .work
+            .join(runtime_work_directory_name("turn", owner, 76));
+        create_private_turn_directory(&runtime.active, &work_directory, owner, 76)
+            .expect("turn directory");
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = runtime
+                .active
+                .process_group
+                .lock()
+                .expect("process group before poison");
+            panic!("poison turn process group");
+        }));
+        let mut verified = bind_configuration(
+            runtime.configuration.as_ref().expect("configuration"),
+            Some(&repository),
+        )
+        .expect("verified");
+        let outcome = run_turn_protocol(
+            &mut verified,
+            &work_directory,
+            &WorkspaceRuntimeBinding::for_test(&repository),
+            "Bounded task.",
+            &runtime.active,
+            Instant::now() + Duration::from_secs(1),
+            &mut |_| {},
+        );
+        assert_eq!(outcome.state, TurnState::ContainmentFailed);
+        *runtime
+            .active
+            .process_group
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        assert!(reconcile_retained_unpublished_children(
+            &runtime.active,
+            Instant::now() + Duration::from_secs(1),
+        ));
+        runtime.finish_active_request_for_test();
+        assert!(remove_directory_if_present(&work_directory));
+    }
+
+    #[test]
+    fn a76_p5_readiness_publish_refusal_rolls_back_without_registering_the_child() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let runtime = fixture.scripted_host("#!/bin/sh\nread -r blocked\n");
+        runtime.set_active_request_for_test("a76-p5-readiness");
+        let owner = process_identity(std::process::id() as i32).expect("owner");
+        let work_directory = fixture
+            .work
+            .join(runtime_work_directory_name("readiness", owner, 76));
+        create_private_readiness_directory(&runtime.active, &work_directory, owner, 76)
+            .expect("readiness directory");
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = runtime
+                .active
+                .process_group
+                .lock()
+                .expect("process group before poison");
+            panic!("poison readiness process group");
+        }));
+        let mut verified =
+            bind_configuration(runtime.configuration.as_ref().expect("configuration"), None)
+                .expect("verified");
+        let outcome = run_protocol(
+            &mut verified,
+            &work_directory,
+            &runtime.active,
+            Instant::now() + Duration::from_secs(1),
+        );
+        assert_eq!(outcome.state, RuntimeReadinessState::ContainmentFailed);
+        *runtime
+            .active
+            .process_group
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        assert!(reconcile_retained_unpublished_children(
+            &runtime.active,
+            Instant::now() + Duration::from_secs(1),
+        ));
+        runtime.finish_active_request_for_test();
+        assert!(remove_directory_if_present(&work_directory));
+    }
+
+    #[test]
+    fn a76_p6_turn_directory_creation_failure_is_an_exact_terminal() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let repository = fixture.root.join("a76-p6-repository");
+        fs::create_dir(&repository).expect("repository");
+        fs::create_dir(repository.join(".git")).expect("repository marker");
+        let runtime = fixture.scripted_host("#!/bin/sh\nexit 0\n");
+        let (directory_entered, release_directory) = runtime
+            .active
+            .install_runtime_effect_hook(RuntimeEffectStage::Directory);
+        let checking = runtime.clone();
+        let binding = WorkspaceRuntimeBinding::for_test(&repository);
+        let pending = thread::spawn(move || {
+            checking.run_turn(
+                "a76-p6-directory",
+                1,
+                &binding,
+                "Bounded task.",
+                Duration::from_secs(2),
+                |_| {},
+            )
+        });
+        directory_entered
+            .recv_timeout(Duration::from_secs(1))
+            .expect("directory effect");
+        fs::remove_dir(&fixture.work).expect("remove empty work root");
+        release_request_claim(&release_directory);
+        let outcome = pending.join().expect("directory outcome");
+        assert_eq!(outcome.state, TurnState::Failed);
+        assert_eq!(outcome.reason, Some(TurnReason::RuntimeUnavailable));
+        assert!(!runtime.active.running.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn b71_reservation_materialization_closes_saturated_idle_control() {
+        let active = ActiveRuntime::default();
+        *active
+            .saturated_containment
+            .lock()
+            .expect("saturated containment") =
+            Some(AcceptedRuntimeCancellation::closed(Instant::now()));
+        assert!(active.reserve_request("b71-saturated-idle").is_none());
+        assert!(active.deferred_cancellation_overflowed());
+    }
+
+    #[test]
+    fn b71_poisoned_commit_retains_exact_host_token_when_storage_is_full() {
+        let active = ActiveRuntime::default();
+        let record = a151_host_record("b71-full-host", CancellationSource::RendererLost);
+        let cancellation = AcceptedRuntimeCancellation::from_host(record.accepted);
+        {
+            let mut control = active.control.lock().expect("exact pending owner");
+            control.pending_request_id = Some(record.request_id.clone());
+            control.cancellation = Some(cancellation);
+        }
+        let reservation = active
+            .reserve_request(&record.request_id)
+            .expect("exact reservation");
+        active
+            .deferred_cancellations
+            .lock()
+            .expect("full deferred storage")
+            .extend(
+                std::iter::repeat_with(|| {
+                    DeferredRuntimeCancellation::ReservedHost(a151_host_record(
+                        "b71-full-unrelated",
+                        CancellationSource::User,
+                    ))
+                })
+                .take(MAX_DEFERRED_CANCELLATIONS),
+            );
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = active.control.lock().expect("control before poison");
+            panic!("poison full Host reservation");
+        }));
+        assert!(!active.commit_request_reservation(&reservation));
+        let control = active
+            .control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(control.cancellation, Some(cancellation));
+        assert_eq!(control.pending_request_id.as_deref(), Some("b71-full-host"));
+    }
+
+    #[test]
+    fn b71_poisoned_handoff_observes_nonrunning_exact_request_owner() {
+        let runtime = RuntimeHost::unavailable_for_test();
+        {
+            let mut control = runtime.active.control.lock().expect("exact request owner");
+            control.request_id = Some("b71-poisoned-owner".to_owned());
+            control.effect_generation = 91;
+        }
+        runtime.poison_control_for_test();
+        runtime.handoff_host_cancellation(
+            UnmatchedHostCancellationPolicy::Ignore,
+            || HostCancellationMutation::ControlFailed(()),
+            |()| (),
+        );
+        assert_eq!(
+            runtime
+                .cancellation_window_for_test()
+                .expect("closed owner")
+                .reason,
+            RuntimeCancellation::ContainmentFailure
+        );
+        runtime.finish_active_request_for_test();
+    }
+
+    #[test]
+    fn b71_cleanup_rechecks_running_after_idle_and_reader_reconciliation() {
+        let runtime = RuntimeHost::unavailable_for_test();
+        let (entered, release) = runtime.active.install_reader_reconciliation_hook();
+        let waiting = runtime.clone();
+        let result = thread::spawn(move || waiting.wait_for_accepted_cancellation_cleanup());
+        entered
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reader reconciliation entered");
+        runtime.active.running.store(true, Ordering::Release);
+        release_request_claim(&release);
+        assert!(!result.join().expect("cleanup result"));
+        runtime.active.running.store(false, Ordering::Release);
+        runtime.active.finished.notify_all();
+    }
+
+    #[test]
+    fn b71_cleanup_rechecks_exact_request_owner_after_idle() {
+        let runtime = RuntimeHost::unavailable_for_test();
+        let (entered, release) = runtime.active.install_reader_reconciliation_hook();
+        let waiting = runtime.clone();
+        let result = thread::spawn(move || waiting.wait_for_accepted_cancellation_cleanup());
+        entered
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reader reconciliation entered");
+        runtime
+            .active
+            .control
+            .lock()
+            .expect("late request owner")
+            .request_id = Some("b71-late-request".to_owned());
+        release_request_claim(&release);
+        assert!(!result.join().expect("cleanup result"));
+        *runtime.active.control.lock().expect("clear request owner") = RuntimeControl::default();
+        runtime.active.finished.notify_all();
+    }
+
+    #[test]
+    fn b71_cleanup_rechecks_pending_request_owner_after_idle() {
+        let runtime = RuntimeHost::unavailable_for_test();
+        let (entered, release) = runtime.active.install_reader_reconciliation_hook();
+        let waiting = runtime.clone();
+        let result = thread::spawn(move || waiting.wait_for_accepted_cancellation_cleanup());
+        entered
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reader reconciliation entered");
+        runtime
+            .active
+            .control
+            .lock()
+            .expect("late pending owner")
+            .pending_request_id = Some("b71-late-pending".to_owned());
+        release_request_claim(&release);
+        assert!(!result.join().expect("cleanup result"));
+        *runtime.active.control.lock().expect("clear pending owner") = RuntimeControl::default();
+        runtime.active.finished.notify_all();
+    }
+
+    #[test]
+    fn b71_claim_disposition_observes_exact_running_request_without_acceptance() {
+        let runtime = RuntimeHost::unavailable_for_test();
+        runtime.active.running.store(true, Ordering::Release);
+        {
+            let mut control = runtime.active.control.lock().expect("exact running owner");
+            control.request_id = Some("b71-running-disposition".to_owned());
+            control.effect_generation = 93;
+        }
+        assert_eq!(
+            runtime.claim_turn_request_for_host_settlement_disposition("b71-running-disposition"),
+            HostTurnClaimDisposition::Rejected
+        );
+        runtime.finish_active_request_for_test();
+    }
+
+    #[test]
+    fn b71_host_settlement_rejects_moved_workspace_for_retained_owner() {
+        let fixture = Fixture::new();
+        let repository = fixture.root.join("b71-retained-repository");
+        fs::create_dir(&repository).expect("repository");
+        fs::create_dir(repository.join(".git")).expect("repository marker");
+        let binding = WorkspaceRuntimeBinding::for_test(&repository);
+        let moved = fixture.root.join("b71-retained-moved");
+        fs::rename(&repository, moved).expect("move repository");
+        let runtime = RuntimeHost::unavailable_for_test();
+        runtime.set_active_request_for_test("b71-retained-moved");
+        let outcome = runtime.run_turn_for_host_settlement(
+            "b71-retained-moved",
+            1,
+            &binding,
+            "Bounded task.",
+            Duration::from_secs(1),
+            |_| {},
+        );
+        assert_eq!(outcome.reason, Some(TurnReason::StaleWorkspace));
+        assert!(runtime.owns_request_for_test("b71-retained-moved"));
+        runtime.finish_active_request_for_test();
+    }
+
+    #[test]
+    fn b71_ready_protocol_with_replaced_work_path_reports_cleanup_failure() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let home = fixture.home.to_string_lossy();
+        let runtime = fixture.scripted_host(&format!(
+            r#"#!/bin/sh
+set -eu
+work=$(/bin/pwd -P)
+parent=$(/usr/bin/dirname "$work")
+read -r initialize
+printf '%s\n' '{{"id":1,"result":{{"userAgent":"codex_cli_rs/0.145.0","codexHome":"{home}","platformFamily":"unix","platformOs":"macos"}}}}'
+read -r initialized
+read -r account
+cd "$parent"
+/bin/rm -rf "$work"
+/usr/bin/touch "$work"
+printf '%s\n' '{{"id":2,"result":{{"account":{{"type":"chatgpt","email":"redacted","planType":"plus"}},"requiresOpenaiAuth":true}}}}'
+"#
+        ));
+        let view = runtime.check("b71-replaced-work-path", None);
+        assert_eq!(view.state, RuntimeReadinessState::CleanupFailed);
+        assert_eq!(view.quarantined_events, 0);
+        assert!(view.descriptor.is_none());
+        assert!(!runtime.active.running.load(Ordering::Acquire));
+        assert_eq!(
+            *runtime.active.process_group.lock().expect("process group"),
+            None
+        );
+        assert!(
+            runtime
+                .active
+                .owned_processes
+                .lock()
+                .expect("owned processes")
+                .is_empty()
+        );
+        assert!(
+            runtime
+                .active
+                .retained_readers
+                .lock()
+                .expect("retained readers")
+                .is_empty()
+        );
+        let retained = runtime
+            .active
+            .retained_work_directories
+            .lock()
+            .expect("retained work path");
+        assert_eq!(retained.len(), 1);
+        assert!(
+            retained
+                .iter()
+                .next()
+                .expect("file-shaped work path")
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn b71_owned_turn_outcome_with_false_cleanup_retains_blocked_worker() {
+        let active = ActiveRuntime::default();
+        let (release_worker, worker_release) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            worker_release.recv().expect("worker release");
+        });
+        let (events_sender, events) = mpsc::channel();
+        events_sender
+            .send(TurnWorkerEvent::Outcome(TurnRuntimeOutcome::terminal(
+                TurnState::Failed,
+                TurnReason::ProviderFailed,
+            )))
+            .expect("queued outcome");
+        let (cleanup_sender, completed) = mpsc::sync_channel(1);
+        cleanup_sender.send(false).expect("queued cleanup proof");
+        let outcome = await_owned_turn(
+            &active,
+            OwnedTurnWorker {
+                events,
+                retained: RetainedTurnWorker {
+                    completed,
+                    cleanup_proven: None,
+                    worker,
+                },
+            },
+            Instant::now() + Duration::from_secs(1),
+            &mut |_| {},
+        );
+        assert_eq!(outcome.state, TurnState::CleanupFailed);
+        let retained = active
+            .retained_turn_workers
+            .lock()
+            .expect("retained turn worker")
+            .pop()
+            .expect("owned retained worker");
+        release_worker.send(()).expect("release worker");
+        retained.worker.join().expect("join worker");
+    }
+
+    #[test]
+    fn b71_cancelled_turn_directory_failure_skips_cleanup_of_uncreated_path() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let repository = fixture.root.join("b71-cancelled-directory-repository");
+        fs::create_dir(&repository).expect("repository");
+        fs::create_dir(repository.join(".git")).expect("repository marker");
+        let runtime = fixture.scripted_host("#!/bin/sh\nexit 0\n");
+        let (entered, release) = runtime
+            .active
+            .install_runtime_effect_hook(RuntimeEffectStage::Directory);
+        let checking = runtime.clone();
+        let binding = WorkspaceRuntimeBinding::for_test(&repository);
+        let pending = thread::spawn(move || {
+            checking.run_turn(
+                "b71-cancelled-directory",
+                1,
+                &binding,
+                "Bounded task.",
+                Duration::from_secs(2),
+                |_| {},
+            )
+        });
+        entered
+            .recv_timeout(Duration::from_secs(1))
+            .expect("directory effect entered");
+        runtime.cancel_request("b71-cancelled-directory");
+        fs::remove_dir(&fixture.work).expect("remove work root");
+        release_request_claim(&release);
+        let outcome = pending.join().expect("cancelled directory outcome");
+        assert_eq!(outcome.state, TurnState::Cancelled);
+        assert!(outcome.cleaned);
+    }
+
+    #[test]
+    fn b71_cancelled_turn_publish_refusal_uses_unpublished_rollback() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let repository = fixture.root.join("b71-cancelled-publish-repository");
+        fs::create_dir(&repository).expect("repository");
+        fs::create_dir(repository.join(".git")).expect("repository marker");
+        let runtime = fixture.scripted_host("#!/bin/sh\nread -r blocked\n");
+        runtime.set_active_request_for_test("b71-cancelled-publish");
+        let owner = process_identity(std::process::id() as i32).expect("owner");
+        let work_directory = fixture
+            .work
+            .join(runtime_work_directory_name("turn", owner, 152));
+        create_private_turn_directory(&runtime.active, &work_directory, owner, 152)
+            .expect("turn directory");
+        let (entered, release) = runtime
+            .active
+            .install_runtime_effect_hook(RuntimeEffectStage::Publish);
+        let running = runtime.clone();
+        let running_repository = repository.clone();
+        let running_work = work_directory.clone();
+        let pending = thread::spawn(move || {
+            let mut verified = bind_configuration(
+                running.configuration.as_ref().expect("configuration"),
+                Some(&running_repository),
+            )
+            .expect("verified");
+            run_turn_protocol(
+                &mut verified,
+                &running_work,
+                &WorkspaceRuntimeBinding::for_test(&running_repository),
+                "Bounded task.",
+                &running.active,
+                Instant::now() + Duration::from_secs(2),
+                &mut |_| {},
+            )
+        });
+        entered
+            .recv_timeout(Duration::from_secs(1))
+            .expect("publish effect entered");
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = runtime
+                .active
+                .process_group
+                .lock()
+                .expect("process group before poison");
+            panic!("poison publish ownership");
+        }));
+        runtime.accept_request_cancellation(
+            "b71-cancelled-publish",
+            AcceptedCancellation {
+                accepted_at: Instant::now(),
+                source: CancellationSource::RendererLost,
+            },
+        );
+        release_request_claim(&release);
+        let outcome = pending.join().expect("cancelled publish outcome");
+        assert_eq!(outcome.state, TurnState::Cancelled);
+        assert!(outcome.cleaned);
+        *runtime
+            .active
+            .process_group
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        runtime.finish_active_request_for_test();
+        assert!(remove_directory_if_present(&work_directory));
+    }
+
+    #[test]
+    fn b71_linearized_initialize_rejects_zero_generation_owner() {
+        let active = ActiveRuntime::default();
+        active
+            .control
+            .lock()
+            .expect("zero generation owner")
+            .request_id = Some("b71-zero-generation".to_owned());
+        assert_eq!(
+            format!("{:?}", linearized_initialize_effect(&active, || 71_u8)),
+            "Rejected(ContainmentFailure)"
+        );
+    }
+
+    #[test]
+    fn b71_verified_configuration_rejects_open_directory_descriptor() {
+        let fixture = Fixture::new();
+        let binary_file = File::open(&fixture.work).expect("open directory");
+        let binary_identity =
+            FileIdentity::from_metadata(&binary_file.metadata().expect("directory metadata"));
+        let verified = VerifiedConfiguration {
+            binary: fixture.work.clone(),
+            binary_file,
+            binary_identity,
+            codex_home: fixture.home.clone(),
+            expected_sha256: "0".repeat(64),
+            work_root: fixture.work.clone(),
+        };
+        assert_eq!(
+            verified.revalidate_binary_identity(),
+            Err(RuntimeReadinessState::Incompatible)
+        );
+    }
+
+    #[test]
+    fn b71_cancelled_readiness_spawn_rolls_back_unpublished_child() {
+        let _process_guard = PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let runtime = fixture.scripted_host("#!/bin/sh\nread -r blocked\n");
+        runtime.set_active_request_for_test("b71-cancelled-readiness-spawn");
+        let owner = process_identity(std::process::id() as i32).expect("owner");
+        let work_directory =
+            fixture
+                .work
+                .join(runtime_work_directory_name("readiness", owner, 153));
+        create_private_readiness_directory(&runtime.active, &work_directory, owner, 153)
+            .expect("readiness directory");
+        let (entered, release) = runtime
+            .active
+            .install_runtime_effect_hook(RuntimeEffectStage::Spawn);
+        let running = runtime.clone();
+        let running_work = work_directory.clone();
+        let pending = thread::spawn(move || {
+            let mut verified =
+                bind_configuration(running.configuration.as_ref().expect("configuration"), None)
+                    .expect("verified");
+            run_protocol(
+                &mut verified,
+                &running_work,
+                &running.active,
+                Instant::now() + Duration::from_secs(2),
+            )
+        });
+        entered
+            .recv_timeout(Duration::from_secs(1))
+            .expect("spawn effect entered");
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = runtime
+                .active
+                .process_group
+                .lock()
+                .expect("process group before poison");
+            panic!("poison spawn ownership");
+        }));
+        runtime.accept_request_cancellation(
+            "b71-cancelled-readiness-spawn",
+            AcceptedCancellation {
+                accepted_at: Instant::now(),
+                source: CancellationSource::RendererLost,
+            },
+        );
+        release_request_claim(&release);
+        let outcome = pending.join().expect("cancelled spawn outcome");
+        assert_eq!(outcome.state, RuntimeReadinessState::Cancelled);
+        assert!(outcome.cleaned);
+        *runtime
+            .active
+            .process_group
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        runtime.finish_active_request_for_test();
+        assert!(remove_directory_if_present(&work_directory));
+    }
+
+    #[test]
+    fn b71_false_cleanup_proof_retains_blocked_turn_worker_at_closed_deadline() {
+        let active = ActiveRuntime::default();
+        let (release_worker, worker_release) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            worker_release.recv().expect("worker release");
+        });
+        let (_cleanup_sender, completed) = mpsc::sync_channel(1);
+        assert!(!retire_turn_worker(
+            &active,
+            RetainedTurnWorker {
+                completed,
+                cleanup_proven: Some(false),
+                worker,
+            },
+            Instant::now(),
+        ));
+        let retained = active
+            .retained_turn_workers
+            .lock()
+            .expect("retained turn worker")
+            .pop()
+            .expect("owned retained worker");
+        release_worker.send(()).expect("release worker");
+        retained.worker.join().expect("join worker");
+    }
+
     struct Fixture {
         root: PathBuf,
         binary: PathBuf,

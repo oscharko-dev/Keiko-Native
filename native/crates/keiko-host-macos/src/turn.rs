@@ -804,6 +804,123 @@ mod tests {
     }
 
     #[test]
+    fn a76_turn_channel_rejects_missing_turn_input_after_exact_admission() {
+        let (lifecycle, sender) = session();
+        let request_id = canonical_request_id(sender.generation, 1).expect("request ID");
+        let encoded = serde_json::to_string(&json!({
+            "schemaVersion": 1,
+            "requestId": request_id,
+            "sequence": 1,
+            "timeoutMs": 5_000,
+            "operation": {
+                "kind": "codex-turn-start",
+                "workspaceGeneration": 1
+            }
+        }))
+        .expect("invalid turn request");
+        let runtime = RuntimeHost::unavailable_for_test();
+        let output = turn_request_with_channel(
+            &lifecycle,
+            &Mutex::new(WorkspaceHost::default()),
+            &runtime,
+            &sender,
+            &encoded,
+            |_, _| panic!("invalid turn must not publish"),
+        );
+        assert!(output.encoded.contains(r#""invalid-request""#));
+        assert!(runtime.has_no_runtime_effects_for_test());
+    }
+
+    #[test]
+    fn a76_healthy_terminal_publication_keeps_the_computed_state() {
+        let (lifecycle, sender) = session();
+        let encoded = request(sender.generation, 1, "Bounded task.");
+        let accepted = lifecycle
+            .lock()
+            .expect("Host admission")
+            .begin_application_request(&sender, encoded.as_bytes())
+            .expect("accepted turn");
+        let request_id = canonical_request_id(sender.generation, 1).expect("request ID");
+        let runtime = RuntimeHost::unavailable_for_test();
+        runtime.set_active_request_for_test(&request_id);
+        let mut terminal = TurnSession::new(
+            sender.generation,
+            1,
+            1,
+            "Bounded task.".to_owned(),
+            RuntimeDescriptor::approved(),
+        )
+        .expect("turn session");
+        terminal
+            .fail(TurnState::Failed, TurnReason::ProviderFailed)
+            .expect("terminal");
+        terminal.settle_cleanup(true).expect("cleanup");
+        let mut published = Vec::new();
+        let output = finish_turn_with_runtime(
+            &lifecycle,
+            &runtime,
+            &request_id,
+            accepted,
+            terminal.view(),
+            &mut |commit| {
+                published.push(commit().expect("prepared terminal").view);
+                true
+            },
+        );
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].state, TurnState::Failed);
+        assert!(output.encoded.contains(r#""provider-failed""#));
+        assert!(runtime.has_no_runtime_effects_for_test());
+    }
+
+    #[test]
+    fn b71_late_exact_acceptance_overrides_failed_publication_result() {
+        let (lifecycle, sender) = session();
+        let encoded = request(sender.generation, 1, "Bounded task.");
+        let accepted = lifecycle
+            .lock()
+            .expect("Host admission")
+            .begin_application_request(&sender, encoded.as_bytes())
+            .expect("accepted turn");
+        let request_id = canonical_request_id(sender.generation, 1).expect("request ID");
+        let runtime = RuntimeHost::unavailable_for_test();
+        runtime.set_active_request_for_test(&request_id);
+        let mut terminal = TurnSession::new(
+            sender.generation,
+            1,
+            1,
+            "Bounded task.".to_owned(),
+            RuntimeDescriptor::approved(),
+        )
+        .expect("turn session");
+        terminal
+            .fail(TurnState::Failed, TurnReason::ProviderFailed)
+            .expect("terminal");
+        terminal.settle_cleanup(true).expect("cleanup");
+        let record = crate::HostCancellationRecord {
+            request_id: request_id.clone(),
+            accepted: crate::request_timing::AcceptedCancellation {
+                accepted_at: Instant::now(),
+                source: crate::request_timing::CancellationSource::RendererLost,
+            },
+        };
+        let output = finish_turn_with_runtime(
+            &lifecycle,
+            &runtime,
+            &request_id,
+            accepted,
+            terminal.view(),
+            &mut |_| {
+                runtime.defer_host_cancellations(std::slice::from_ref(&record));
+                false
+            },
+        );
+        assert!(output.encoded.contains(r#""state":"containment-failed""#));
+        assert!(output.encoded.contains(r#""cleanupComplete":true"#));
+        assert!(runtime.has_no_runtime_effects_for_test());
+    }
+
+    #[test]
     fn settlement_enforces_each_cancellation_terminal_precedence() {
         let outcome = |state, reason, cleaned| TurnRuntimeOutcome {
             state,

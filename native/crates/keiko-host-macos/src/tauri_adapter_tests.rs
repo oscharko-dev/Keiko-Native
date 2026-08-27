@@ -139,6 +139,14 @@ fn page_load_and_script_policy_are_exact() {
 }
 
 #[test]
+fn a76_numeric_document_nonce_is_valid_authority_material() {
+    let numeric = nonce('8');
+    let script = document_authority_script(76, &numeric).expect("numeric nonce");
+    assert!(script.contains("generation:76"));
+    assert!(script.contains(&numeric));
+}
+
+#[test]
 fn document_start_install_loss_and_shutdown_fail_closed() {
     let lifecycle = Mutex::new(HostLifecycle::default());
     let runtime = RuntimeHost::unavailable_for_test();
