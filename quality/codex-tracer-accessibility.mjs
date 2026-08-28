@@ -484,9 +484,11 @@ export async function runPackagedTracerJourney({
   const turnCancellationProjectionMs = (
     await recordLocalProjection("cancel-turn", "observe-stopping")
   ).projectedMs;
-  const stoppingElapsedMs = Math.round(monotonicNow() - cancellationStartedAt);
+  const cancellationProjectionObservedAt = monotonicNow();
+  const stoppingElapsedMs = turnCancellationProjectionMs;
   const cancellationElapsedBeforeTerminalMs =
-    monotonicNow() - cancellationStartedAt;
+    Math.max(cancellationProjectionObservedAt, monotonicNow()) -
+    cancellationStartedAt;
   if (
     !Number.isFinite(cancellationElapsedBeforeTerminalMs) ||
     cancellationElapsedBeforeTerminalMs < 0 ||

@@ -635,6 +635,62 @@ test("the packaged journey drives the fixed sequence and excludes observer start
   assert.equal(result.windowDisplayBinding.displayClass, "internal");
 });
 
+test("cancel stopping uses the action projection clock instead of adapter orchestration time", async () => {
+  let now = 0;
+  const result = await runPackagedTracerJourney({
+    deniedWorkspaceLabel: "KeikoAcceptanceIdentity104DeniedABC123",
+    execute: async (request) => {
+      const elapsedMs =
+        request.observation === "observe-stopping"
+          ? 250
+          : request.action === "observe-cancelled"
+            ? 10
+            : 1;
+      now += elapsedMs;
+      return {
+        elapsedMs,
+        ...(request.observation === undefined
+          ? {}
+          : {
+              ...(request.observation === "observe-workspace-selected"
+                ? { nativeActionMs: 1 }
+                : {}),
+              projectedMs: request.observation === "observe-stopping" ? 80 : 1,
+            }),
+        prompted: false,
+        reasonCode: null,
+        status: "passed",
+      };
+    },
+    inspectWindowDisplayBinding: async () => ({
+      displayClass: "external",
+      displayIdentity: "1",
+      matchedDisplayCount: 1,
+      semanticWindowCount: 1,
+      windowIdentity: "2",
+      windowPosition: "10.000:20.000",
+    }),
+    crashRuntime: async () => undefined,
+    monotonicNow: () => now,
+    observeRuntime: async () => undefined,
+    prompt: acceptedPrompt,
+    workspaceLabel: "KeikoAcceptanceIdentity104ABC123",
+  });
+
+  assert.deepEqual(
+    {
+      status: result.status,
+      stoppingElapsedMs: result.turnCancellationTerminal.stoppingElapsedMs,
+      turnCancellationProjectionMs: result.turnCancellationProjectionMs,
+    },
+    {
+      status: "passed",
+      stoppingElapsedMs: 80,
+      turnCancellationProjectionMs: 80,
+    },
+  );
+});
+
 test("the packaged journey rejects cancellation-time display binding drift", async () => {
   let bindingSample = 0;
   await assert.rejects(
