@@ -157,7 +157,7 @@ test("the packaged tracer adapter is a closed nonactivating AX and AppKit surfac
   );
   assert.match(
     selectWorkspace ?? "",
-    /\[observation isEqualToString:@"observe-workspace-selected"\][\s\S]*?PressPickerControlWithProjectionTiming\([\s\S]*?&nativeActionMs,[\s\S]*?&projectionStartedAt\)[\s\S]*?else[\s\S]*?projectionStartedAt = MonotonicSeconds\(\);[\s\S]*?PressPickerControl\(application, CFSTR\("OKButton"\)\)/u,
+    /\[observation isEqualToString:@"observe-workspace-selected"\][\s\S]*?PressPickerControlWithProjectionTiming\([\s\S]*?&nativeActionMs,[\s\S]*?&projectionStartedAt\)[\s\S]*?else[\s\S]*?PressPickerControlWithProjectionTiming\([\s\S]*?&nativeActionMs,[\s\S]*?&projectionStartedAt\)/u,
   );
   assert.match(
     tracerAccessibilitySource,
@@ -561,6 +561,48 @@ int main(void) {
     }
   },
 );
+
+test("permission denial starts local projection timing after the native action returns", () => {
+  const selectWorkspace = tracerAccessibilitySource.match(
+    /else if \(\[action isEqualToString:@"select-workspace"\]\) \{[\s\S]*?\n    \} else if/u,
+  )?.[0];
+  const permissionDenialAction = selectWorkspace?.match(
+    /\} else \{([\s\S]*?)\n          \}/u,
+  )?.[1];
+  const startsAtActionReturn =
+    /PressPickerControlWithProjectionTiming\([\s\S]*?&nativeActionMs,[\s\S]*?&projectionStartedAt\)/u.test(
+      permissionDenialAction ?? "",
+    );
+  const startsBeforeAction =
+    /projectionStartedAt = MonotonicSeconds\(\);[\s\S]*?PressPickerControl\(/u.test(
+      permissionDenialAction ?? "",
+    );
+  const nativeActionStartedAtMs = 1_000;
+  const nativeActionReturnedAtMs = 1_140;
+  const projectionObservedAtMs = 1_140;
+  const projectionStartedAtMs = startsAtActionReturn
+    ? nativeActionReturnedAtMs
+    : startsBeforeAction
+      ? nativeActionStartedAtMs
+      : Number.NaN;
+  const overallActionMs = projectionObservedAtMs - nativeActionStartedAtMs;
+  const projectedMs = projectionObservedAtMs - projectionStartedAtMs;
+
+  assert.deepEqual(
+    {
+      overallActionMs,
+      overallActionWithinBound: overallActionMs <= 5_000,
+      projectedMs,
+      projectionWithinBound: projectedMs <= 100,
+    },
+    {
+      overallActionMs: 140,
+      overallActionWithinBound: true,
+      projectedMs: 0,
+      projectionWithinBound: true,
+    },
+  );
+});
 
 test("canvas projection starts with a real timed welcome action", () => {
   assert.match(

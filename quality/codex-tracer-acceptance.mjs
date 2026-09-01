@@ -19,16 +19,16 @@ export const acceptanceIdentityContract = Object.freeze({
   authorityProfile: "keiko-codex-no-effect-v1",
   containmentProfile: "keiko-codex-readiness-v1",
   cancellationReadinessFingerprint:
-    "e9de40b890e72165e16e80fbb52699b4b6288289a340d8c58f89c1839f6a4eb2",
-  cancellationReadinessVersion: 57,
+    "816ac4eea9929db80f431d53faa22e4c4b8460e6e0d3a4356a492363219f1e47",
+  cancellationReadinessVersion: 58,
   experimentalSchemaSha256:
     "46c4414f08cdbb20e66ce4153ee1edcb865ed5fda67e59511a78939ddb7a82d1",
   issueReadinessFingerprint:
-    "cb0e423efb454e8ac21648e1c18aa6ba6342d821492e796e7824b62e783ddeda",
-  issueReadinessVersion: 60,
+    "280b69550ef56721f56479d0f1076c0ad04474adae6c9000b70e941ab92bea6f",
+  issueReadinessVersion: 61,
   parentReadinessFingerprint:
-    "2a58bb5d9602b00f351e3c2672a13b2201a2c7439b21def6127f37f74ce736e5",
-  parentReadinessVersion: 147,
+    "3a402df1524c4e5cee061c5e4489154b605c9e533fa421b814319a1af63f47ed",
+  parentReadinessVersion: 148,
   promptSha256:
     "e1a92579b1ca673135331829beb97792c1289a6bccdfe0303302256c546960f6",
   runtimeArtifactSha256:
