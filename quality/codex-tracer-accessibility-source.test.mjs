@@ -604,6 +604,45 @@ test("permission denial starts local projection timing after the native action r
   );
 });
 
+test("cancellation starts local stopping timing after the native action returns", () => {
+  const cancelTurn = tracerAccessibilitySource.match(
+    /else if \(\[action isEqualToString:@"cancel-turn"\]\) \{[\s\S]*?\n    \} else if/u,
+  )?.[0];
+  const startsAfterAction =
+    /passed = Press\([\s\S]*?CFSTR\("Codex-Lauf abbrechen"\)\);[\s\S]*?projectionStartedAt = MonotonicSeconds\(\);/u.test(
+      cancelTurn ?? "",
+    );
+  const startsBeforeAction =
+    /projectionStartedAt = MonotonicSeconds\(\);[\s\S]*?passed = Press\([\s\S]*?CFSTR\("Codex-Lauf abbrechen"\)\);/u.test(
+      cancelTurn ?? "",
+    );
+  const nativeActionStartedAtMs = 1_000;
+  const nativeActionReturnedAtMs = 1_140;
+  const stoppingObservedAtMs = 1_140;
+  const projectionStartedAtMs = startsAfterAction
+    ? nativeActionReturnedAtMs
+    : startsBeforeAction
+      ? nativeActionStartedAtMs
+      : Number.NaN;
+  const overallActionMs = stoppingObservedAtMs - nativeActionStartedAtMs;
+  const projectedMs = stoppingObservedAtMs - projectionStartedAtMs;
+
+  assert.deepEqual(
+    {
+      overallActionMs,
+      overallActionWithinBound: overallActionMs <= 5_000,
+      projectedMs,
+      projectionWithinBound: projectedMs <= 100,
+    },
+    {
+      overallActionMs: 140,
+      overallActionWithinBound: true,
+      projectedMs: 0,
+      projectionWithinBound: true,
+    },
+  );
+});
+
 test("canvas projection starts with a real timed welcome action", () => {
   assert.match(
     tracerAccessibilitySource,

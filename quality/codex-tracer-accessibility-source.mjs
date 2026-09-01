@@ -1366,8 +1366,8 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
     } else if ([action isEqualToString:@"submit-task"]) {
       passed = Press(application, CFSTR("Begrenzten Auftrag starten"));
     } else if ([action isEqualToString:@"cancel-turn"]) {
-      projectionStartedAt = MonotonicSeconds();
       passed = Press(application, CFSTR("Codex-Lauf abbrechen"));
+      projectionStartedAt = MonotonicSeconds();
     } else if ([action isEqualToString:@"set-unicode"]) {
       passed = SetValue(
           application, CFSTR("ime-harness"), CFSTR("Καλημέρα 世界"));
