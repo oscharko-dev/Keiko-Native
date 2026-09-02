@@ -12,6 +12,12 @@ import {
   tracerAccessibilitySource,
 } from "./codex-tracer-accessibility-source.mjs";
 
+const macArm64Test =
+  process.platform === "darwin" && process.arch === "arm64"
+    ? test
+    : (name, callback) =>
+        test(name, { skip: "requires authoritative macOS arm64" }, callback);
+
 test("the packaged tracer adapter is a closed AXUIElement-only action surface", () => {
   assert.deepEqual(tracerAccessibilityActions, [
     "probe-start",
@@ -283,6 +289,234 @@ test("a cancellation press failure is terminal across adapter processes", async 
   assert.equal(result.reasonCode, "bounded-wait-expired");
 });
 
+macArm64Test(
+  "picker readiness behavior rejects incomplete traversal and predicate inversion",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "keiko-tracer-ax-behavior-"));
+    const source = join(root, "picker-readiness.c");
+    const binary = join(root, "picker-readiness");
+    const descendant = tracerAccessibilitySource
+      .match(
+        /static AXUIElementRef FindDescendantByIdentifier\([\s\S]*?\n\}\n\nstatic/u,
+      )?.[0]
+      .replace(/\n\nstatic$/u, "");
+    const actionable = tracerAccessibilitySource
+      .match(
+        /static AXUIElementRef FindUniqueActionablePickerControl\([\s\S]*?\n\}\n\nstatic/u,
+      )?.[0]
+      .replace(/\n\nstatic$/u, "");
+    assert.ok(descendant);
+    assert.ok(actionable);
+    const harness = `
+#include <stdlib.h>
+#include <string.h>
+
+typedef int BOOL;
+typedef int AXError;
+typedef long CFIndex;
+typedef unsigned long NSUInteger;
+typedef const char *CFStringRef;
+typedef void *CFTypeRef;
+typedef struct FakeNode *AXUIElementRef;
+typedef struct FakeArray *CFArrayRef;
+typedef struct FakeArray *CFMutableArrayRef;
+typedef struct FakeBoolean *CFBooleanRef;
+typedef struct { CFIndex location; CFIndex length; } CFRange;
+
+#define YES 1
+#define NO 0
+#define kAXErrorSuccess 0
+#define kAXErrorCannotComplete -25204
+#define kAXErrorAttributeUnsupported -25205
+#define kAXErrorNoValue -25212
+
+static const char childrenAttribute[] = "children";
+static const char identifierAttribute[] = "identifier";
+static const char enabledAttribute[] = "enabled";
+static const char pressAction[] = "press";
+#define kAXChildrenAttribute childrenAttribute
+#define kAXIdentifierAttribute identifierAttribute
+#define kAXEnabledAttribute enabledAttribute
+#define kAXPressAction pressAction
+
+struct FakeArray {
+  int type;
+  CFIndex count;
+  const void *values[256];
+};
+struct FakeBoolean { int type; BOOL value; };
+struct FakeNode {
+  const char *identifier;
+  AXError childrenError;
+  AXError enabledError;
+  AXError actionsError;
+  struct FakeArray children;
+  struct FakeArray actions;
+  struct FakeBoolean enabled;
+};
+
+static const int kCFTypeArrayCallBacks = 0;
+static CFRange CFRangeMake(CFIndex location, CFIndex length) {
+  return (CFRange){location, length};
+}
+static unsigned long CFArrayGetTypeID(void) { return 1; }
+static unsigned long CFBooleanGetTypeID(void) { return 2; }
+static unsigned long CFGetTypeID(CFTypeRef value) {
+  return (unsigned long)*(int *)value;
+}
+static BOOL CFBooleanGetValue(CFBooleanRef value) { return value->value; }
+static CFMutableArrayRef CFArrayCreateMutable(
+    void *allocator, CFIndex capacity, const void *callbacks) {
+  (void)allocator;
+  (void)capacity;
+  (void)callbacks;
+  CFMutableArrayRef value = calloc(1, sizeof(*value));
+  if (value != NULL) value->type = 1;
+  return value;
+}
+static CFIndex CFArrayGetCount(CFArrayRef value) { return value->count; }
+static const void *CFArrayGetValueAtIndex(CFArrayRef value, CFIndex index) {
+  return value->values[index];
+}
+static void CFArrayAppendValue(CFMutableArrayRef value, const void *entry) {
+  value->values[value->count++] = entry;
+}
+static BOOL CFArrayContainsValue(
+    CFArrayRef value, CFRange range, const void *entry) {
+  for (CFIndex index = range.location;
+       index < range.location + range.length;
+       index += 1) {
+    if (value->values[index] == entry) return YES;
+  }
+  return NO;
+}
+static void *CFRetain(const void *value) { return (void *)value; }
+static void CFRelease(const void *value) { (void)value; }
+static BOOL StringAttributeEquals(
+    AXUIElementRef element, CFStringRef attribute, CFStringRef expected) {
+  (void)attribute;
+  return strcmp(element->identifier, expected) == 0;
+}
+static AXError AXUIElementCopyAttributeValue(
+    AXUIElementRef element, CFStringRef attribute, CFTypeRef *value) {
+  if (attribute == kAXChildrenAttribute) {
+    if (element->childrenError != kAXErrorSuccess)
+      return element->childrenError;
+    *value = &element->children;
+    return kAXErrorSuccess;
+  }
+  if (element->enabledError != kAXErrorSuccess) return element->enabledError;
+  *value = &element->enabled;
+  return kAXErrorSuccess;
+}
+static AXError AXUIElementCopyActionNames(
+    AXUIElementRef element, CFArrayRef *actions) {
+  if (element->actionsError != kAXErrorSuccess) return element->actionsError;
+  *actions = &element->actions;
+  return kAXErrorSuccess;
+}
+static AXUIElementRef FindPickerPanel(AXUIElementRef application) {
+  return application;
+}
+static void InitializeNode(struct FakeNode *node, const char *identifier) {
+  memset(node, 0, sizeof(*node));
+  node->identifier = identifier;
+  node->children.type = 1;
+  node->actions.type = 1;
+  node->enabled.type = 2;
+  node->enabled.value = YES;
+}
+static void AddChild(struct FakeNode *parent, struct FakeNode *child) {
+  parent->children.values[parent->children.count++] = child;
+}
+
+${descendant}
+
+${actionable}
+
+int main(void) {
+  struct FakeNode root;
+  struct FakeNode control;
+  InitializeNode(&root, "panel");
+  InitializeNode(&control, "CancelButton");
+  AddChild(&root, &control);
+  control.actions.values[control.actions.count++] = kAXPressAction;
+  if (FindUniqueActionablePickerControl(&root, "CancelButton") != &control)
+    return 1;
+
+  control.enabled.value = NO;
+  if (FindUniqueActionablePickerControl(&root, "CancelButton") != NULL)
+    return 2;
+  control.enabled.value = YES;
+  control.actions.count = 0;
+  if (FindUniqueActionablePickerControl(&root, "CancelButton") != NULL)
+    return 3;
+  control.actions.values[control.actions.count++] = kAXPressAction;
+
+  struct FakeNode duplicate;
+  InitializeNode(&duplicate, "CancelButton");
+  AddChild(&root, &duplicate);
+  if (FindUniqueActionablePickerControl(&root, "CancelButton") != NULL)
+    return 4;
+
+  struct FakeNode wideRoot;
+  struct FakeNode wide[65];
+  InitializeNode(&wideRoot, "panel");
+  for (int index = 0; index < 65; index += 1) {
+    InitializeNode(&wide[index], index == 0 ? "CancelButton" : "other");
+    AddChild(&wideRoot, &wide[index]);
+  }
+  wide[0].actions.values[wide[0].actions.count++] = kAXPressAction;
+  if (FindUniqueActionablePickerControl(&wideRoot, "CancelButton") != NULL)
+    return 5;
+
+  struct FakeNode deepRoot;
+  struct FakeNode first[64];
+  struct FakeNode grandchildren[64];
+  InitializeNode(&deepRoot, "panel");
+  for (int index = 0; index < 64; index += 1) {
+    InitializeNode(&first[index], index == 1 ? "CancelButton" : "other");
+    InitializeNode(&grandchildren[index], "grandchild");
+    AddChild(&deepRoot, &first[index]);
+    AddChild(&first[0], &grandchildren[index]);
+  }
+  first[1].actions.values[first[1].actions.count++] = kAXPressAction;
+  if (FindUniqueActionablePickerControl(&deepRoot, "CancelButton") != NULL)
+    return 6;
+
+  struct FakeNode partialRoot;
+  struct FakeNode partialControl;
+  struct FakeNode unavailable;
+  InitializeNode(&partialRoot, "panel");
+  InitializeNode(&partialControl, "CancelButton");
+  InitializeNode(&unavailable, "other");
+  unavailable.childrenError = kAXErrorCannotComplete;
+  AddChild(&partialRoot, &partialControl);
+  AddChild(&partialRoot, &unavailable);
+  partialControl.actions.values[partialControl.actions.count++] =
+      kAXPressAction;
+  if (FindUniqueActionablePickerControl(
+          &partialRoot, "CancelButton") != NULL)
+    return 7;
+  return 0;
+}
+`;
+    try {
+      await writeFile(source, harness, "utf8");
+      const compile = spawnSync(
+        "/usr/bin/xcrun",
+        ["clang", "-std=c11", "-Wall", "-Werror", source, "-o", binary],
+        { encoding: "utf8", shell: false },
+      );
+      assert.equal(compile.status, 0, compile.stderr);
+      const run = spawnSync(binary, [], { encoding: "utf8", shell: false });
+      assert.equal(run.status, 0, run.stderr);
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  },
+);
+
 test("canvas projection starts with a real timed welcome action", () => {
   assert.match(
     tracerAccessibilitySource,
@@ -371,12 +605,6 @@ test("a supplied invalid UTF-8 observation fails closed", () => {
     /NSString \*observation =[\s\S]*?argc == 4 && observation == nil/u,
   );
 });
-
-const macArm64Test =
-  process.platform === "darwin" && process.arch === "arm64"
-    ? test
-    : (name, callback) =>
-        test(name, { skip: "requires authoritative macOS arm64" }, callback);
 
 macArm64Test(
   "the bounded adapter compiles with public macOS frameworks",
