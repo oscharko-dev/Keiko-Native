@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { waitForTracerAccessibilityAction } from "./codex-tracer-accessibility.mjs";
 import {
   tracerAccessibilityActivatingActions,
   tracerAccessibilityActions,
@@ -168,7 +169,7 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
   );
   assert.match(
     tracerAccessibilitySource,
-    /PressReadyPickerCancellation\(application, &projectionStartedAt\)/u,
+    /PressReadyPickerCancellation\(\s*application, &projectionStartedAt, &failureReasonCode\)/u,
   );
   assert.match(
     tracerAccessibilitySource,
@@ -215,8 +216,22 @@ test("picker cancellation waits for one actionable semantic control before timin
   assert.match(actionableControl ?? "", /kAXEnabledAttribute/u);
   assert.match(actionableControl ?? "", /AXUIElementCopyActionNames/u);
   assert.match(actionableControl ?? "", /kAXPressAction/u);
+  assert.match(
+    actionableControl ?? "",
+    /if \(isEnabled && exposesPress\) return control;/u,
+  );
   assert.match(uniqueIdentifier ?? "", /ambiguous/u);
   assert.match(uniqueIdentifier ?? "", /CFArrayContainsValue/u);
+  assert.match(uniqueIdentifier ?? "", /BOOL complete = YES;/u);
+  assert.match(uniqueIdentifier ?? "", /childCount > 64[\s\S]*?complete = NO/u);
+  assert.match(
+    uniqueIdentifier ?? "",
+    /CFArrayGetCount\(queue\) >= 128[\s\S]*?complete = NO/u,
+  );
+  assert.match(
+    uniqueIdentifier ?? "",
+    /if \(\(!complete \|\| ambiguous\) && result != NULL\)/u,
+  );
   assert.match(
     uniquePanel ?? "",
     /if \(result != NULL\) \{[\s\S]*?CFRelease\(result\);[\s\S]*?result = NULL;[\s\S]*?break;/u,
@@ -227,7 +242,7 @@ test("picker cancellation waits for one actionable semantic control before timin
   );
   assert.match(
     timedCancellation ?? "",
-    /WaitForUniqueActionablePickerControl\([\s\S]*?actionStartedAt = MonotonicSeconds\(\);[\s\S]*?AXUIElementPerformAction\(control, kAXPressAction\);[\s\S]*?\*projectionStartedAt = actionStartedAt/u,
+    /WaitForUniqueActionablePickerControl\([\s\S]*?\*failureReasonCode = "bounded-wait-expired";[\s\S]*?actionStartedAt = MonotonicSeconds\(\);[\s\S]*?AXUIElementPerformAction\(control, kAXPressAction\);[\s\S]*?\*projectionStartedAt = actionStartedAt/u,
   );
   assert.equal(
     timedCancellation?.match(/AXUIElementPerformAction/gu)?.length,
@@ -236,12 +251,36 @@ test("picker cancellation waits for one actionable semantic control before timin
   assert.doesNotMatch(timedCancellation ?? "", /usleep|actionReturnedAt/u);
   assert.match(
     cancellationAction ?? "",
-    /PressReadyPickerCancellation\(application, &projectionStartedAt\)/u,
+    /PressReadyPickerCancellation\([\s\S]*?&projectionStartedAt,[\s\S]*?&failureReasonCode\)/u,
   );
   assert.doesNotMatch(
     cancellationAction ?? "",
     /PressEither|CFSTR\("Cancel"\)|CFSTR\("Abbrechen"\)|projectionStartedAt = MonotonicSeconds/u,
   );
+});
+
+test("a cancellation press failure is terminal across adapter processes", async () => {
+  let attempts = 0;
+  const result = await waitForTracerAccessibilityAction({
+    action: "cancel-workspace-picker",
+    binary: "/bounded/adapter",
+    execute: () => {
+      attempts += 1;
+      return {
+        prompted: false,
+        reasonCode: "bounded-wait-expired",
+        status: "failed",
+      };
+    },
+    monotonicNow: () => 0,
+    observation: "observe-workspace-cancelled",
+    pid: 42,
+    timeoutMs: 5_000,
+    wait: async () => assert.fail("a failed press must not be retried"),
+  });
+
+  assert.equal(attempts, 1);
+  assert.equal(result.reasonCode, "bounded-wait-expired");
 });
 
 test("canvas projection starts with a real timed welcome action", () => {

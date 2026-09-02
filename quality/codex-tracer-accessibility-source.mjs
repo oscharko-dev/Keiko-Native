@@ -337,12 +337,12 @@ static AXUIElementRef FindDescendantByIdentifier(
     AXUIElementRef root, CFStringRef identifier) {
   CFMutableArrayRef queue =
       CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
+  if (queue == NULL) return NULL;
   CFArrayAppendValue(queue, root);
   AXUIElementRef result = NULL;
   BOOL ambiguous = NO;
-  for (CFIndex cursor = 0;
-       cursor < CFArrayGetCount(queue) && cursor < 128;
-       cursor += 1) {
+  BOOL complete = YES;
+  for (CFIndex cursor = 0; cursor < CFArrayGetCount(queue); cursor += 1) {
     AXUIElementRef element =
         (AXUIElementRef)CFArrayGetValueAtIndex(queue, cursor);
     if (StringAttributeEquals(element, kAXIdentifierAttribute, identifier)) {
@@ -353,26 +353,41 @@ static AXUIElementRef FindDescendantByIdentifier(
       result = (AXUIElementRef)CFRetain(element);
     }
     CFTypeRef value = NULL;
-    if (AXUIElementCopyAttributeValue(
-            element, kAXChildrenAttribute, &value) != kAXErrorSuccess ||
-        value == NULL)
+    AXError childrenError = AXUIElementCopyAttributeValue(
+        element, kAXChildrenAttribute, &value);
+    if (childrenError == kAXErrorAttributeUnsupported ||
+        childrenError == kAXErrorNoValue) {
+      if (value != NULL) CFRelease(value);
       continue;
-    if (CFGetTypeID(value) == CFArrayGetTypeID()) {
-      CFArrayRef children = (CFArrayRef)value;
-      CFIndex count = MIN(CFArrayGetCount(children), 64);
-      for (CFIndex index = 0;
-           index < count && CFArrayGetCount(queue) < 128;
-           index += 1) {
+    }
+    if (childrenError != kAXErrorSuccess || value == NULL ||
+        CFGetTypeID(value) != CFArrayGetTypeID()) {
+      if (value != NULL) CFRelease(value);
+      complete = NO;
+      break;
+    }
+    CFArrayRef children = (CFArrayRef)value;
+    CFIndex childCount = CFArrayGetCount(children);
+    if (childCount > 64) {
+      complete = NO;
+    } else {
+      for (CFIndex index = 0; index < childCount; index += 1) {
         const void *child = CFArrayGetValueAtIndex(children, index);
-        if (!CFArrayContainsValue(
+        if (CFArrayContainsValue(
                 queue, CFRangeMake(0, CFArrayGetCount(queue)), child))
-          CFArrayAppendValue(queue, child);
+          continue;
+        if (CFArrayGetCount(queue) >= 128) {
+          complete = NO;
+          break;
+        }
+        CFArrayAppendValue(queue, child);
       }
     }
     CFRelease(value);
+    if (!complete) break;
   }
   CFRelease(queue);
-  if (ambiguous && result != NULL) {
+  if ((!complete || ambiguous) && result != NULL) {
     CFRelease(result);
     result = NULL;
   }
@@ -950,10 +965,13 @@ static AXUIElementRef WaitForUniqueActionablePickerControl(
 }
 
 static BOOL PressReadyPickerCancellation(
-    AXUIElementRef application, double *projectionStartedAt) {
+    AXUIElementRef application,
+    double *projectionStartedAt,
+    const char **failureReasonCode) {
   AXUIElementRef control = WaitForUniqueActionablePickerControl(
       application, CFSTR("CancelButton"));
   if (control == NULL) return NO;
+  *failureReasonCode = "bounded-wait-expired";
   double actionStartedAt = MonotonicSeconds();
   if (actionStartedAt < 0.0) {
     CFRelease(control);
@@ -1071,6 +1089,8 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
     double projectionStartedAt = 0.0;
     NSUInteger nativeActionMs = 0;
     NSString *selectedWorkspaceProjection = nil;
+    const char *failureReasonCode =
+        "missing-or-ambiguous-semantic-target";
     if ([action isEqualToString:@"probe-start"]) {
       BOOL welcome = HasUnique(application, CFSTR("Foundation öffnen"));
       BOOL canvas = HasUnique(application, CFSTR("codex-task"));
@@ -1143,8 +1163,8 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
         }
       }
     } else if ([action isEqualToString:@"cancel-workspace-picker"]) {
-      passed =
-          PressReadyPickerCancellation(application, &projectionStartedAt);
+      passed = PressReadyPickerCancellation(
+          application, &projectionStartedAt, &failureReasonCode);
     } else if ([action isEqualToString:@"observe-workspace-cancelled"]) {
       passed = HasUnique(
           application,
@@ -1215,17 +1235,16 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
       if ([observation isEqualToString:@"observe-workspace-selected"]) {
         EmitWorkspaceProjection(
             passed,
-            "missing-or-ambiguous-semantic-target",
+            failureReasonCode,
             projectedMs,
             nativeActionMs);
       } else {
-        EmitProjection(
-            passed, "missing-or-ambiguous-semantic-target", projectedMs);
+        EmitProjection(passed, failureReasonCode, projectedMs);
       }
       return passed ? 0 : 1;
     }
     CFRelease(application);
-    Emit(passed, "missing-or-ambiguous-semantic-target");
+    Emit(passed, failureReasonCode);
     return passed ? 0 : 1;
   }
 }
