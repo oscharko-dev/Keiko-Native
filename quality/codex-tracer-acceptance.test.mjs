@@ -163,11 +163,11 @@ test("identity evidence is closed and binds the exact accepted composition", () 
   assert.deepEqual(identityBindingFailures(bindings, expected), []);
   assert.equal(
     acceptanceIdentityContract.issueReadinessFingerprint,
-    "88ce4f0738afe6e450e4fe3c6b19856ea71fa78def9e090c21066e9e606556e7",
+    "e0fbe5525f6d0a6b226637b28d5d01fa2942280bae9992af94e9f2bbb16d1ec5",
   );
   assert.equal(
     acceptanceIdentityContract.parentReadinessFingerprint,
-    "f4c0686298f1c6d1a89e57361d5a81d42fc98e3d971095e50076ca3f06baafcd",
+    "7379fa729c801391761bd84f2148203e67b37219cd84fd73c00e6c0d2f0b39d6",
   );
 
   for (const key of Object.keys(bindings)) {
@@ -372,7 +372,12 @@ test("reference environment evidence is closed, normalized, and bound to the dec
     { ...referenceEnvironment, hardware: "unknown" },
     { ...referenceEnvironment, operatingSystem: "macos-current" },
     { ...referenceEnvironment, display: "external" },
+    { ...referenceEnvironment, display: [referenceEnvironment.display] },
     { ...referenceEnvironment, scaling: "unknown" },
+    {
+      ...referenceEnvironment,
+      scaling: { value: referenceEnvironment.scaling },
+    },
     {
       ...referenceEnvironment,
       display: "topology-v1:external-secondary-3840x2160",

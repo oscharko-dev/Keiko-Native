@@ -26,6 +26,7 @@ import { compareCodeUnits } from "./deterministic-order.mjs";
 import { evidenceFailures, redactionMatches } from "./native-contract.mjs";
 import {
   acceptanceBudgetLimits,
+  acceptanceIdentityContract,
   acceptanceJourneyContract,
   acceptancePackageInspectionContract,
   acceptancePhysicalContract,
@@ -1650,10 +1651,12 @@ function normalizedDisplayEntry(display) {
   ) {
     return null;
   }
-  const physical = displayDimensionPattern.exec(
-    display._spdisplays_pixels ?? "",
-  );
-  const logical = displayModePattern.exec(display._spdisplays_resolution ?? "");
+  const physicalValue = display._spdisplays_pixels;
+  const logicalValue = display._spdisplays_resolution;
+  if (typeof physicalValue !== "string" || typeof logicalValue !== "string")
+    return null;
+  const physical = displayDimensionPattern.exec(physicalValue);
+  const logical = displayModePattern.exec(logicalValue);
   const main = display.spdisplays_main;
   if (
     physical === null ||
@@ -1715,12 +1718,9 @@ function normalizedDisplay(serialized) {
     const normalized = displays.map(normalizedDisplayEntry);
     if (normalized.some((entry) => entry === null)) return null;
     const entries = normalized.map(({ display, mode }) => `${display}|${mode}`);
-    if (
-      normalized.filter(({ main }) => main).length !== 1 ||
-      new Set(entries).size !== entries.length
-    ) {
-      return null;
-    }
+    if (normalized.filter(({ main }) => main).length !== 1) return null;
+    // This multiset preserves multiplicity while erasing physical identity. A main-role
+    // exchange is therefore stable only when the exchanged panels are indistinguishable.
     const ordered = normalized.toSorted((left, right) =>
       compareCodeUnits(
         `${left.display}|${left.mode}`,
@@ -2094,24 +2094,8 @@ export function createCodexTracerAcceptanceIo() {
         };
         return {
           bindings: {
-            authProfileClass: "human-provisioned-chatgpt-keyring",
-            authorityProfile: "keiko-codex-no-effect-v1",
-            containmentProfile: "keiko-codex-readiness-v1",
-            experimentalSchemaSha256:
-              "46c4414f08cdbb20e66ce4153ee1edcb865ed5fda67e59511a78939ddb7a82d1",
-            issueReadinessFingerprint:
-              "1a0be864b3855b81c649c5843e936828ebaeb27477463ccf0af86f9da61d3391",
-            packageExecutableSha256: inspected.executableSha256,
-            packageManifestSha256: inspected.packageManifestSha256,
-            parentReadinessFingerprint:
-              "12ed4a0225fdf1fac2a75731fdbb25e949cf61349cc0a7ab7d8bad09c0eab7a3",
-            promptSha256: acceptedEnvironment.promptSha256,
-            runtimeArtifactSha256: acceptedEnvironment.runtimeSha256,
-            runtimePackage: "@openai/codex",
-            runtimeVersion: "0.145.0",
-            sourceRevision,
-            stableSchemaSha256:
-              "27fc5257cdd29b97b2abb064caadec32a72b7567d6df26a7f82c5f452c8bdfb9",
+            ...acceptanceIdentityContract,
+            ...expected,
           },
           expected,
           internal: {

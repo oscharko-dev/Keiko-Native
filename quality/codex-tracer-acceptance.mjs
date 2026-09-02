@@ -21,9 +21,9 @@ export const acceptanceIdentityContract = Object.freeze({
   experimentalSchemaSha256:
     "46c4414f08cdbb20e66ce4153ee1edcb865ed5fda67e59511a78939ddb7a82d1",
   issueReadinessFingerprint:
-    "88ce4f0738afe6e450e4fe3c6b19856ea71fa78def9e090c21066e9e606556e7",
+    "e0fbe5525f6d0a6b226637b28d5d01fa2942280bae9992af94e9f2bbb16d1ec5",
   parentReadinessFingerprint:
-    "f4c0686298f1c6d1a89e57361d5a81d42fc98e3d971095e50076ca3f06baafcd",
+    "7379fa729c801391761bd84f2148203e67b37219cd84fd73c00e6c0d2f0b39d6",
   promptSha256:
     "e1a92579b1ca673135331829beb97792c1289a6bccdfe0303302256c546960f6",
   runtimeArtifactSha256:
@@ -430,7 +430,6 @@ function displayTopologyFailures(display, scaling) {
   if (
     !valid ||
     mainCount !== 1 ||
-    new Set(entries).size !== entries.length ||
     JSON.stringify(entries) !== JSON.stringify(canonical)
   ) {
     return ["reference-environment-display-topology"];

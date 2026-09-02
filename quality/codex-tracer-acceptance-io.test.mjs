@@ -1113,7 +1113,84 @@ test("reference Mac inspection accepts one external and mixed topologies determi
   }
 });
 
-test("reference Mac inspection rejects empty, ambiguous, partial, duplicate, and excessive topologies", async () => {
+test("reference Mac inspection preserves valid same-signature display multiplicity", async () => {
+  const result = await inspectDisplayProfile(
+    displayProfile([
+      externalDisplay({ main: true }),
+      externalDisplay(),
+      externalDisplay(),
+    ]),
+  );
+  assert.equal(
+    result.display,
+    "topology-v1:external-main-3840x2160,external-secondary-3840x2160,external-secondary-3840x2160",
+  );
+  assert.equal(
+    result.scaling,
+    "modes-v1:1920x1080@60hz-2x,1920x1080@60hz-2x,1920x1080@60hz-2x",
+  );
+});
+
+test("reference Mac inspection normalizes valid fractional scale and refresh", async () => {
+  const result = await inspectDisplayProfile(
+    displayProfile([
+      {
+        ...externalDisplay({ main: true }),
+        _spdisplays_resolution: "2560 x 1440 @ 59.940Hz",
+      },
+    ]),
+  );
+  assert.equal(result.display, "topology-v1:external-main-3840x2160");
+  assert.equal(result.scaling, "modes-v1:2560x1440@59.94hz-3/2x");
+});
+
+test("identity-free stability equates only indistinguishable main-role exchange", async () => {
+  const display = (serial, main, refresh = "60.00") => ({
+    ...externalDisplay({ main, refresh }),
+    "_spdisplays_display-serial-number": serial,
+  });
+  const before = await inspectDisplayProfile(
+    displayProfile([
+      display("private-a", true),
+      display("private-b", false),
+      display("private-c", false),
+    ]),
+  );
+  const indistinguishableSwap = await inspectDisplayProfile(
+    displayProfile([
+      display("private-a", false),
+      display("private-b", true),
+      display("private-c", false),
+    ]),
+  );
+  assert.deepEqual(
+    assertStableReferenceEnvironment(before, indistinguishableSwap),
+    before,
+  );
+
+  const distinguishableBefore = await inspectDisplayProfile(
+    displayProfile([
+      display("private-a", true, "60.00"),
+      display("private-b", false, "144.00"),
+    ]),
+  );
+  const distinguishableSwap = await inspectDisplayProfile(
+    displayProfile([
+      display("private-a", false, "60.00"),
+      display("private-b", true, "144.00"),
+    ]),
+  );
+  assert.throws(
+    () =>
+      assertStableReferenceEnvironment(
+        distinguishableBefore,
+        distinguishableSwap,
+      ),
+    /acceptance-reference-environment-changed/u,
+  );
+});
+
+test("reference Mac inspection rejects empty, ambiguous, partial, non-string, and excessive topologies", async () => {
   const main = externalDisplay({ main: true });
   const secondary = externalDisplay();
   const hostile = [
@@ -1123,6 +1200,14 @@ test("reference Mac inspection rejects empty, ambiguous, partial, duplicate, and
     displayProfile([main, { ...main }]),
     displayProfile([{ ...main, _spdisplays_pixels: undefined }]),
     displayProfile([{ ...main, _spdisplays_resolution: undefined }]),
+    displayProfile([{ ...main, _spdisplays_pixels: ["3840 x 2160"] }]),
+    displayProfile([{ ...main, _spdisplays_pixels: 3840 }]),
+    displayProfile([{ ...main, _spdisplays_pixels: { width: 3840 } }]),
+    displayProfile([
+      { ...main, _spdisplays_resolution: ["1920 x 1080 @ 60.00Hz"] },
+    ]),
+    displayProfile([{ ...main, _spdisplays_resolution: 1920 }]),
+    displayProfile([{ ...main, _spdisplays_resolution: { width: 1920 } }]),
     displayProfile([{ ...main, spdisplays_online: "spdisplays_no" }]),
     displayProfile([{ ...main, _spdisplays_pixels: "3840 by 2160" }]),
     displayProfile([{ ...main, _spdisplays_resolution: "1920 x 1081 @ 60Hz" }]),
@@ -1133,7 +1218,6 @@ test("reference Mac inspection rejects empty, ambiguous, partial, duplicate, and
     displayProfile([
       { ...main, spdisplays_connection_type: "private-connection" },
     ]),
-    displayProfile([main, secondary, { ...secondary }]),
     displayProfile([
       main,
       ...Array.from({ length: 16 }, () => externalDisplay()),
@@ -1183,6 +1267,25 @@ test("reference Mac inspection strips display identity and raw profiler fields",
   const result = await inspectDisplayProfile(displayProfile([display]));
   const serialized = JSON.stringify(result);
   assert.ok(identityCanaries.every((canary) => !serialized.includes(canary)));
+});
+
+test("production package preparation composes canonical accepted identities", async () => {
+  const source = await readFile(
+    new URL("./codex-tracer-acceptance-io.mjs", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("    async preparePackage() {");
+  const end = source.indexOf("    async runProductionJourney", start);
+  assert.ok(start >= 0 && end > start, "production preparePackage body");
+  const preparePackage = source.slice(start, end);
+  assert.match(
+    preparePackage,
+    /bindings:\s*\{\s*\.\.\.acceptanceIdentityContract,\s*\.\.\.expected,?\s*\}/u,
+  );
+  assert.doesNotMatch(
+    preparePackage,
+    /issueReadinessFingerprint\s*:|parentReadinessFingerprint\s*:/u,
+  );
 });
 
 test("reference Mac inspection rejects malformed or changed platform output", async () => {
