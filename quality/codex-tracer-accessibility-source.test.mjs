@@ -263,6 +263,7 @@ test("picker cancellation waits for one actionable semantic control before timin
     cancellationAction ?? "",
     /PressEither|CFSTR\("Cancel"\)|CFSTR\("Abbrechen"\)|projectionStartedAt = MonotonicSeconds/u,
   );
+  assert.doesNotMatch(tracerAccessibilitySource, /static BOOL PressEither\(/u);
 });
 
 test("a cancellation press failure is terminal across adapter processes", async () => {

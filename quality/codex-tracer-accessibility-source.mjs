@@ -838,11 +838,6 @@ static BOOL Press(AXUIElementRef application, CFStringRef expected) {
   return Perform(application, expected, kAXPressAction);
 }
 
-static BOOL PressEither(
-    AXUIElementRef application, CFStringRef first, CFStringRef second) {
-  return Press(application, first) || Press(application, second);
-}
-
 static BOOL SetValue(
     AXUIElementRef application, CFStringRef expected, CFStringRef value) {
   AXUIElementRef element = FindUnique(application, expected);
