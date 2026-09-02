@@ -872,6 +872,65 @@ test("native picker cancellation p95 uses twenty fresh packaged-app launches", a
   );
 });
 
+test("reference Mac inspection accepts a valid two-external-display topology", async () => {
+  const outputs = new Map([
+    [
+      "/usr/sbin/sysctl\0-n\0machdep.cpu.brand_string\0hw.memsize\0hw.model",
+      "Apple M4\n17179869184\nMac16,1",
+    ],
+    ["/usr/bin/sw_vers\0-productVersion", "26.5.2"],
+    ["/usr/bin/sw_vers\0-buildVersion", "25F84"],
+    [
+      "/usr/sbin/system_profiler\0SPDisplaysDataType\0-json\0-detailLevel\0mini",
+      JSON.stringify({
+        SPDisplaysDataType: [
+          {
+            spdisplays_ndrvs: [
+              {
+                _spdisplays_pixels: "3840 x 2160",
+                _spdisplays_resolution: "1920 x 1080 @ 144.00Hz",
+                spdisplays_main: "spdisplays_yes",
+                spdisplays_online: "spdisplays_yes",
+              },
+              {
+                _spdisplays_pixels: "3840 x 2160",
+                _spdisplays_resolution: "1920 x 1080 @ 60.00Hz",
+                spdisplays_online: "spdisplays_yes",
+              },
+            ],
+          },
+        ],
+      }),
+    ],
+    [
+      "/usr/bin/pmset\0-g\0batt",
+      "Now drawing from 'AC Power'\n -InternalBattery-0 85%; charging",
+    ],
+    [
+      "/usr/bin/pmset\0-g\0custom",
+      "Battery Power:\n lowpowermode 0\nAC Power:\n lowpowermode 0",
+    ],
+    [
+      "/usr/bin/pmset\0-g\0therm",
+      "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded",
+    ],
+  ]);
+
+  const result = await inspectReferenceEnvironment((command, args) =>
+    Promise.resolve(outputs.get([command, ...args].join("\0"))),
+  );
+
+  assert.deepEqual(result, {
+    display: "topology-v1:external-main-3840x2160,external-secondary-3840x2160",
+    hardware: "apple-m4-16-gib-mac16-1",
+    operatingSystem: "macos-26.5.2-25f84",
+    power: "ac-power-standard",
+    referenceClass: "owner-m4-16gib-macos26",
+    scaling: "modes-v1:1920x1080@144hz-2x,1920x1080@60hz-2x",
+    thermal: "nominal",
+  });
+});
+
 test("reference Mac inspection emits only normalized closed reproducibility metadata", async () => {
   const calls = [];
   const displaySerialCanary = "private-display-serial";
@@ -894,6 +953,7 @@ test("reference Mac inspection emits only normalized closed reproducibility meta
                 _spdisplays_resolution: "1512 x 982 @ 120.00Hz",
                 spdisplays_connection_type: "spdisplays_internal",
                 spdisplays_main: "spdisplays_yes",
+                spdisplays_online: "spdisplays_yes",
               },
             ],
           },
@@ -921,12 +981,12 @@ test("reference Mac inspection emits only normalized closed reproducibility meta
   );
 
   assert.deepEqual(result, {
-    display: "built-in-main-3024x1964-120hz",
+    display: "topology-v1:internal-main-3024x1964",
     hardware: "apple-m4-16-gib-mac16-1",
     operatingSystem: "macos-26.5.2-25f84",
     power: "ac-power-standard",
     referenceClass: "owner-m4-16gib-macos26",
-    scaling: "logical-1512x982-2x-default",
+    scaling: "modes-v1:1512x982@120hz-2x",
     thermal: "nominal",
   });
   assert.equal(JSON.stringify(result).includes(displaySerialCanary), false);
@@ -975,6 +1035,156 @@ test("reference Mac inspection emits only normalized closed reproducibility meta
   );
 });
 
+function referenceEnvironmentOutputs(displayOutput) {
+  return new Map([
+    [
+      "/usr/sbin/sysctl\0-n\0machdep.cpu.brand_string\0hw.memsize\0hw.model",
+      "Apple M4\n17179869184\nMac16,1",
+    ],
+    ["/usr/bin/sw_vers\0-productVersion", "26.5.2"],
+    ["/usr/bin/sw_vers\0-buildVersion", "25F84"],
+    [
+      "/usr/sbin/system_profiler\0SPDisplaysDataType\0-json\0-detailLevel\0mini",
+      typeof displayOutput === "string"
+        ? displayOutput
+        : JSON.stringify(displayOutput),
+    ],
+    [
+      "/usr/bin/pmset\0-g\0batt",
+      "Now drawing from 'AC Power'\n -InternalBattery-0 85%; charging",
+    ],
+    [
+      "/usr/bin/pmset\0-g\0custom",
+      "Battery Power:\n lowpowermode 0\nAC Power:\n lowpowermode 0",
+    ],
+    [
+      "/usr/bin/pmset\0-g\0therm",
+      "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded",
+    ],
+  ]);
+}
+
+async function inspectDisplayProfile(displayOutput) {
+  const outputs = referenceEnvironmentOutputs(displayOutput);
+  return inspectReferenceEnvironment((command, args) =>
+    Promise.resolve(outputs.get([command, ...args].join("\0"))),
+  );
+}
+
+function displayProfile(displays) {
+  return { SPDisplaysDataType: [{ spdisplays_ndrvs: displays }] };
+}
+
+function externalDisplay({ main = false, refresh = "60.00" } = {}) {
+  return {
+    _spdisplays_pixels: "3840 x 2160",
+    _spdisplays_resolution: `1920 x 1080 @ ${refresh}Hz`,
+    ...(main ? { spdisplays_main: "spdisplays_yes" } : {}),
+    spdisplays_online: "spdisplays_yes",
+  };
+}
+
+test("reference Mac inspection accepts one external and mixed topologies deterministically", async () => {
+  const external = await inspectDisplayProfile(
+    displayProfile([externalDisplay({ main: true })]),
+  );
+  assert.equal(external.display, "topology-v1:external-main-3840x2160");
+  assert.equal(external.scaling, "modes-v1:1920x1080@60hz-2x");
+
+  const internal = {
+    _spdisplays_pixels: "3024 x 1964",
+    _spdisplays_resolution: "1512 x 982 @ 120.00Hz",
+    spdisplays_connection_type: "spdisplays_internal",
+    spdisplays_main: "spdisplays_yes",
+    spdisplays_online: "spdisplays_yes",
+  };
+  const mixed = displayProfile([internal, externalDisplay()]);
+  const reordered = displayProfile([externalDisplay(), internal]);
+  const expected = {
+    display: "topology-v1:external-secondary-3840x2160,internal-main-3024x1964",
+    scaling: "modes-v1:1920x1080@60hz-2x,1512x982@120hz-2x",
+  };
+  for (const profile of [mixed, reordered]) {
+    const result = await inspectDisplayProfile(profile);
+    assert.deepEqual(
+      { display: result.display, scaling: result.scaling },
+      expected,
+    );
+  }
+});
+
+test("reference Mac inspection rejects empty, ambiguous, partial, duplicate, and excessive topologies", async () => {
+  const main = externalDisplay({ main: true });
+  const secondary = externalDisplay();
+  const hostile = [
+    { SPDisplaysDataType: [] },
+    displayProfile([]),
+    displayProfile([secondary]),
+    displayProfile([main, { ...main }]),
+    displayProfile([{ ...main, _spdisplays_pixels: undefined }]),
+    displayProfile([{ ...main, _spdisplays_resolution: undefined }]),
+    displayProfile([{ ...main, spdisplays_online: "spdisplays_no" }]),
+    displayProfile([{ ...main, _spdisplays_pixels: "3840 by 2160" }]),
+    displayProfile([{ ...main, _spdisplays_resolution: "1920 x 1081 @ 60Hz" }]),
+    displayProfile([{ ...main, _spdisplays_resolution: "1920 x 1080 @ 0Hz" }]),
+    displayProfile([
+      { ...main, _spdisplays_resolution: "1920 x 1080 @ 60.0000Hz" },
+    ]),
+    displayProfile([
+      { ...main, spdisplays_connection_type: "private-connection" },
+    ]),
+    displayProfile([main, secondary, { ...secondary }]),
+    displayProfile([
+      main,
+      ...Array.from({ length: 16 }, () => externalDisplay()),
+    ]),
+    { SPDisplaysDataType: [{}] },
+    { SPDisplaysDataType: [{ spdisplays_ndrvs: [main] }], extra: "raw" },
+  ];
+  for (const [index, profile] of hostile.entries()) {
+    await assert.rejects(
+      inspectDisplayProfile(profile),
+      /acceptance-reference-environment-invalid/u,
+      `hostile topology ${index}`,
+    );
+  }
+  for (const malformed of ["{", '{"SPDisplaysDataType":[']) {
+    await assert.rejects(
+      inspectDisplayProfile(malformed),
+      /acceptance-reference-environment-invalid/u,
+    );
+  }
+  await assert.rejects(
+    inspectDisplayProfile("x".repeat(64 * 1024 + 1)),
+    /acceptance-reference-environment-invalid/u,
+  );
+});
+
+test("reference Mac inspection strips display identity and raw profiler fields", async () => {
+  const identityCanaries = [
+    "private-name",
+    "private-serial",
+    "private-vendor",
+    "private-model",
+    "private-edid",
+    "private-coordinates",
+    "private-raw-profile",
+  ];
+  const display = {
+    ...externalDisplay({ main: true }),
+    _name: identityCanaries[0],
+    "_spdisplays_display-serial-number": identityCanaries[1],
+    "_spdisplays_display-vendor-id": identityCanaries[2],
+    "_spdisplays_display-product-id": identityCanaries[3],
+    _spdisplays_edid: identityCanaries[4],
+    spdisplays_bounds: identityCanaries[5],
+    unexpected_raw_field: identityCanaries[6],
+  };
+  const result = await inspectDisplayProfile(displayProfile([display]));
+  const serialized = JSON.stringify(result);
+  assert.ok(identityCanaries.every((canary) => !serialized.includes(canary)));
+});
+
 test("reference Mac inspection rejects malformed or changed platform output", async () => {
   await assert.rejects(
     inspectReferenceEnvironment(async () => "unexpected"),
@@ -984,12 +1194,12 @@ test("reference Mac inspection rejects malformed or changed platform output", as
 
 test("reference Mac evidence fails closed when conditions change during measurement", () => {
   const reference = {
-    display: "built-in-main-3024x1964-120hz",
+    display: "topology-v1:external-main-3840x2160",
     hardware: "apple-m4-16-gib-mac16-1",
     operatingSystem: "macos-26.5.2-25f84",
     power: "ac-power-standard",
     referenceClass: "owner-m4-16gib-macos26",
-    scaling: "logical-1512x982-2x-default",
+    scaling: "modes-v1:1920x1080@60hz-2x",
     thermal: "nominal",
   };
 
@@ -1000,7 +1210,25 @@ test("reference Mac evidence fails closed when conditions change during measurem
   for (const changed of [
     { ...reference, power: null },
     { ...reference, thermal: null },
-    { ...reference, scaling: null },
+    {
+      ...reference,
+      display:
+        "topology-v1:external-main-3840x2160,internal-secondary-3024x1964",
+      scaling: "modes-v1:1920x1080@60hz-2x,1512x982@120hz-2x",
+    },
+    {
+      ...reference,
+      display:
+        "topology-v1:external-secondary-3840x2160,internal-main-3024x1964",
+      scaling: "modes-v1:1920x1080@60hz-2x,1512x982@120hz-2x",
+    },
+    {
+      ...reference,
+      display: "topology-v1:external-main-5120x2880",
+      scaling: "modes-v1:2560x1440@60hz-2x",
+    },
+    { ...reference, scaling: "modes-v1:2560x1440@60hz-3/2x" },
+    { ...reference, scaling: "modes-v1:1920x1080@144hz-2x" },
   ]) {
     assert.throws(
       () => assertStableReferenceEnvironment(reference, changed),

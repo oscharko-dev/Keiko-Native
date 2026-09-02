@@ -81,12 +81,12 @@ function validEvidence() {
       },
       redaction: "closed",
       referenceEnvironment: {
-        display: "built-in-main-3024x1964-120hz",
+        display: "topology-v1:internal-main-3024x1964",
         hardware: "apple-m4-16-gib-mac16-1",
         operatingSystem: "macos-26.5.2-25f84",
         power: "ac-power-standard",
         referenceClass: "owner-m4-16gib-macos26",
-        scaling: "logical-1512x982-2x-default",
+        scaling: "modes-v1:1512x982@120hz-2x",
         thermal: "nominal",
       },
       safeguards: structuredClone(acceptanceSafeguardContract),
@@ -163,11 +163,11 @@ test("identity evidence is closed and binds the exact accepted composition", () 
   assert.deepEqual(identityBindingFailures(bindings, expected), []);
   assert.equal(
     acceptanceIdentityContract.issueReadinessFingerprint,
-    "1a0be864b3855b81c649c5843e936828ebaeb27477463ccf0af86f9da61d3391",
+    "88ce4f0738afe6e450e4fe3c6b19856ea71fa78def9e090c21066e9e606556e7",
   );
   assert.equal(
     acceptanceIdentityContract.parentReadinessFingerprint,
-    "12ed4a0225fdf1fac2a75731fdbb25e949cf61349cc0a7ab7d8bad09c0eab7a3",
+    "f4c0686298f1c6d1a89e57361d5a81d42fc98e3d971095e50076ca3f06baafcd",
   );
 
   for (const key of Object.keys(bindings)) {
@@ -341,6 +341,22 @@ test("reference environment evidence is closed, normalized, and bound to the dec
   const referenceEnvironment = validEvidence().evidence.referenceEnvironment;
 
   assert.deepEqual(referenceEnvironmentFailures(referenceEnvironment), []);
+  for (const topology of [
+    {
+      display: "topology-v1:external-main-3840x2160",
+      scaling: "modes-v1:1920x1080@60hz-2x",
+    },
+    {
+      display:
+        "topology-v1:external-secondary-3840x2160,internal-main-3024x1964",
+      scaling: "modes-v1:1920x1080@144hz-2x,1512x982@120hz-2x",
+    },
+  ]) {
+    assert.deepEqual(
+      referenceEnvironmentFailures({ ...referenceEnvironment, ...topology }),
+      [],
+    );
+  }
   for (const key of Object.keys(referenceEnvironment)) {
     const partial = structuredClone(referenceEnvironment);
     delete partial[key];
@@ -357,6 +373,48 @@ test("reference environment evidence is closed, normalized, and bound to the dec
     { ...referenceEnvironment, operatingSystem: "macos-current" },
     { ...referenceEnvironment, display: "external" },
     { ...referenceEnvironment, scaling: "unknown" },
+    {
+      ...referenceEnvironment,
+      display: "topology-v1:external-secondary-3840x2160",
+      scaling: "modes-v1:1920x1080@60hz-2x",
+    },
+    {
+      ...referenceEnvironment,
+      display: "topology-v1:external-main-3840x2160,internal-main-3024x1964",
+      scaling: "modes-v1:1920x1080@60hz-2x,1512x982@120hz-2x",
+    },
+    {
+      ...referenceEnvironment,
+      display:
+        "topology-v1:internal-main-3024x1964,external-secondary-3840x2160",
+      scaling: "modes-v1:1512x982@120hz-2x,1920x1080@60hz-2x",
+    },
+    {
+      ...referenceEnvironment,
+      display: "topology-v1:external-main-3840x2160",
+      scaling: "modes-v1:1920x1080@60hz-3/2x",
+    },
+    {
+      ...referenceEnvironment,
+      display: "topology-v1:external-main-3840x2160",
+      scaling: "modes-v1:1920x1080@0hz-2x",
+    },
+    {
+      ...referenceEnvironment,
+      display: "topology-v1:external-main-3840x2160",
+      scaling: "modes-v1:1920x1080@60.0hz-2x",
+    },
+    {
+      ...referenceEnvironment,
+      display: "topology-v1:external-main-3840x2160",
+      scaling: "modes-v1:1920x1080@60hz-4/2x",
+    },
+    {
+      ...referenceEnvironment,
+      display:
+        "topology-v1:external-main-3840x2160,external-secondary-3840x2160",
+      scaling: "modes-v1:1920x1080@60hz-2x",
+    },
     { ...referenceEnvironment, power: "battery-power-standard" },
     { ...referenceEnvironment, power: "unknown" },
     { ...referenceEnvironment, thermal: "warning" },
