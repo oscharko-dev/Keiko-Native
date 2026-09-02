@@ -141,7 +141,11 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
   );
   assert.match(
     selectWorkspace ?? "",
-    /\[observation isEqualToString:@"observe-workspace-selected"\][\s\S]*?PressPickerControlWithProjectionTiming\([\s\S]*?&nativeActionMs,[\s\S]*?&projectionStartedAt\)[\s\S]*?else[\s\S]*?projectionStartedAt = MonotonicSeconds\(\);[\s\S]*?PressPickerControl\(application, CFSTR\("OKButton"\)\)/u,
+    /\[observation isEqualToString:@"observe-workspace-selected"\][\s\S]*?PressPickerControlWithProjectionTiming\([\s\S]*?&nativeActionMs,[\s\S]*?&projectionStartedAt\)[\s\S]*?else[\s\S]*?PressPickerControlWithProjectionTiming\([\s\S]*?&nativeActionMs,[\s\S]*?&projectionStartedAt\)/u,
+  );
+  assert.doesNotMatch(
+    selectWorkspace ?? "",
+    /else[\s\S]*?projectionStartedAt = MonotonicSeconds\(\);[\s\S]*?PressPickerControl\(application, CFSTR\("OKButton"\)\)/u,
   );
   assert.match(
     tracerAccessibilitySource,

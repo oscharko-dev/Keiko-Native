@@ -1154,8 +1154,11 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
                 &nativeActionMs,
                 &projectionStartedAt);
           } else {
-            projectionStartedAt = MonotonicSeconds();
-            passed = PressPickerControl(application, CFSTR("OKButton"));
+            passed = PressPickerControlWithProjectionTiming(
+                application,
+                CFSTR("OKButton"),
+                &nativeActionMs,
+                &projectionStartedAt);
           }
         }
       }
