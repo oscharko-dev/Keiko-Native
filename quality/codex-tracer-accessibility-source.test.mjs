@@ -229,10 +229,18 @@ test("picker cancellation waits for one actionable semantic control before timin
   assert.match(uniqueIdentifier ?? "", /ambiguous/u);
   assert.match(uniqueIdentifier ?? "", /CFArrayContainsValue/u);
   assert.match(uniqueIdentifier ?? "", /BOOL complete = YES;/u);
-  assert.match(uniqueIdentifier ?? "", /childCount > 64[\s\S]*?complete = NO/u);
+  assert.match(
+    tracerAccessibilitySource,
+    /kMaximumPickerTraversalElements = 512/u,
+  );
+  assert.match(tracerAccessibilitySource, /kMaximumPickerChildren = 256/u);
   assert.match(
     uniqueIdentifier ?? "",
-    /CFArrayGetCount\(queue\) >= 128[\s\S]*?complete = NO/u,
+    /childCount > kMaximumPickerChildren[\s\S]*?complete = NO/u,
+  );
+  assert.match(
+    uniqueIdentifier ?? "",
+    /CFArrayGetCount\(queue\) >= kMaximumPickerTraversalElements[\s\S]*?complete = NO/u,
   );
   assert.match(
     uniqueIdentifier ?? "",
@@ -343,7 +351,7 @@ static const char pressAction[] = "press";
 struct FakeArray {
   int type;
   CFIndex count;
-  const void *values[256];
+  const void **values;
 };
 struct FakeBoolean { int type; BOOL value; };
 struct FakeNode {
@@ -357,6 +365,8 @@ struct FakeNode {
 };
 
 static const int kCFTypeArrayCallBacks = 0;
+static const CFIndex kMaximumPickerTraversalElements = 512;
+static const CFIndex kMaximumPickerChildren = 256;
 static CFRange CFRangeMake(CFIndex location, CFIndex length) {
   return (CFRange){location, length};
 }
@@ -372,7 +382,10 @@ static CFMutableArrayRef CFArrayCreateMutable(
   (void)capacity;
   (void)callbacks;
   CFMutableArrayRef value = calloc(1, sizeof(*value));
-  if (value != NULL) value->type = 1;
+  if (value != NULL) {
+    value->type = 1;
+    value->values = calloc(1024, sizeof(*value->values));
+  }
   return value;
 }
 static CFIndex CFArrayGetCount(CFArrayRef value) { return value->count; }
@@ -423,7 +436,9 @@ static void InitializeNode(struct FakeNode *node, const char *identifier) {
   memset(node, 0, sizeof(*node));
   node->identifier = identifier;
   node->children.type = 1;
+  node->children.values = calloc(300, sizeof(*node->children.values));
   node->actions.type = 1;
+  node->actions.values = calloc(4, sizeof(*node->actions.values));
   node->enabled.type = 2;
   node->enabled.value = YES;
 }
@@ -461,21 +476,34 @@ int main(void) {
     return 4;
 
   struct FakeNode wideRoot;
-  struct FakeNode wide[65];
+  struct FakeNode wide[241];
   InitializeNode(&wideRoot, "panel");
-  for (int index = 0; index < 65; index += 1) {
-    InitializeNode(&wide[index], index == 0 ? "CancelButton" : "other");
+  for (int index = 0; index < 241; index += 1) {
+    InitializeNode(&wide[index], index == 240 ? "CancelButton" : "other");
     AddChild(&wideRoot, &wide[index]);
   }
-  wide[0].actions.values[wide[0].actions.count++] = kAXPressAction;
-  if (FindUniqueActionablePickerControl(&wideRoot, "CancelButton") != NULL)
+  wide[240].actions.values[wide[240].actions.count++] = kAXPressAction;
+  if (FindUniqueActionablePickerControl(&wideRoot, "CancelButton") !=
+      &wide[240])
     return 5;
 
+  struct FakeNode tooWideRoot;
+  struct FakeNode tooWide[257];
+  InitializeNode(&tooWideRoot, "panel");
+  for (int index = 0; index < 257; index += 1) {
+    InitializeNode(
+        &tooWide[index], index == 0 ? "CancelButton" : "other");
+    AddChild(&tooWideRoot, &tooWide[index]);
+  }
+  tooWide[0].actions.values[tooWide[0].actions.count++] = kAXPressAction;
+  if (FindUniqueActionablePickerControl(&tooWideRoot, "CancelButton") != NULL)
+    return 6;
+
   struct FakeNode deepRoot;
-  struct FakeNode first[64];
-  struct FakeNode grandchildren[64];
+  struct FakeNode first[256];
+  struct FakeNode grandchildren[256];
   InitializeNode(&deepRoot, "panel");
-  for (int index = 0; index < 64; index += 1) {
+  for (int index = 0; index < 256; index += 1) {
     InitializeNode(&first[index], index == 1 ? "CancelButton" : "other");
     InitializeNode(&grandchildren[index], "grandchild");
     AddChild(&deepRoot, &first[index]);
@@ -483,7 +511,7 @@ int main(void) {
   }
   first[1].actions.values[first[1].actions.count++] = kAXPressAction;
   if (FindUniqueActionablePickerControl(&deepRoot, "CancelButton") != NULL)
-    return 6;
+    return 7;
 
   struct FakeNode partialRoot;
   struct FakeNode partialControl;
@@ -498,7 +526,7 @@ int main(void) {
       kAXPressAction;
   if (FindUniqueActionablePickerControl(
           &partialRoot, "CancelButton") != NULL)
-    return 7;
+    return 8;
   return 0;
 }
 `;

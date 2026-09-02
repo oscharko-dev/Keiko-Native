@@ -46,6 +46,8 @@ export const tracerAccessibilitySource = String.raw`#import <ApplicationServices
 
 static const NSUInteger kMaximumElements = 2048;
 static const NSUInteger kMaximumDepth = 12;
+static const CFIndex kMaximumPickerTraversalElements = 512;
+static const CFIndex kMaximumPickerChildren = 256;
 
 static BOOL ActivateApplication(pid_t pid) {
   NSRunningApplication *application =
@@ -368,7 +370,7 @@ static AXUIElementRef FindDescendantByIdentifier(
     }
     CFArrayRef children = (CFArrayRef)value;
     CFIndex childCount = CFArrayGetCount(children);
-    if (childCount > 64) {
+    if (childCount > kMaximumPickerChildren) {
       complete = NO;
     } else {
       for (CFIndex index = 0; index < childCount; index += 1) {
@@ -376,7 +378,7 @@ static AXUIElementRef FindDescendantByIdentifier(
         if (CFArrayContainsValue(
                 queue, CFRangeMake(0, CFArrayGetCount(queue)), child))
           continue;
-        if (CFArrayGetCount(queue) >= 128) {
+        if (CFArrayGetCount(queue) >= kMaximumPickerTraversalElements) {
           complete = NO;
           break;
         }
