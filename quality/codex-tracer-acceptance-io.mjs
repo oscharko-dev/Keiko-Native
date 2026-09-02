@@ -26,6 +26,7 @@ import { compareCodeUnits } from "./deterministic-order.mjs";
 import { evidenceFailures, redactionMatches } from "./native-contract.mjs";
 import {
   acceptanceBudgetLimits,
+  acceptanceIdentityContract,
   acceptanceJourneyContract,
   acceptancePackageInspectionContract,
   acceptancePhysicalContract,
@@ -1613,25 +1614,121 @@ export async function measureNativePickerCancellationDistribution(
   };
 }
 
+const displayDimensionPattern = /^([1-9][0-9]{0,4}) x ([1-9][0-9]{0,4})$/u;
+const displayModePattern =
+  /^([1-9][0-9]{0,4}) x ([1-9][0-9]{0,4}) @ ([1-9][0-9]{0,3})(?:\.([0-9]{1,3}))?Hz$/u;
+const maximumReferenceDisplays = 16;
+
+function greatestCommonDivisor(left, right) {
+  let divisor = right;
+  let remainder = left;
+  while (divisor !== 0) {
+    [remainder, divisor] = [divisor, remainder % divisor];
+  }
+  return remainder;
+}
+
+function normalizedRefresh(integer, fraction = "") {
+  const trimmedFraction = fraction.replace(/0+$/u, "");
+  return trimmedFraction.length === 0
+    ? integer
+    : `${integer}.${trimmedFraction}`;
+}
+
+function normalizedDisplayKind(connection) {
+  if (connection === "spdisplays_internal") return "internal";
+  if ([undefined, null, "spdisplays_external"].includes(connection))
+    return "external";
+  return null;
+}
+
+function normalizedDisplayEntry(display) {
+  if (
+    typeof display !== "object" ||
+    display === null ||
+    Array.isArray(display) ||
+    display.spdisplays_online !== "spdisplays_yes"
+  ) {
+    return null;
+  }
+  const physicalValue = display._spdisplays_pixels;
+  const logicalValue = display._spdisplays_resolution;
+  if (typeof physicalValue !== "string" || typeof logicalValue !== "string")
+    return null;
+  const physical = displayDimensionPattern.exec(physicalValue);
+  const logical = displayModePattern.exec(logicalValue);
+  const main = display.spdisplays_main;
+  if (
+    physical === null ||
+    logical === null ||
+    ![undefined, null, "spdisplays_no", "spdisplays_yes"].includes(main)
+  ) {
+    return null;
+  }
+  const dimensions = [...physical.slice(1), ...logical.slice(1, 3)].map(Number);
+  const [physicalWidth, physicalHeight, logicalWidth, logicalHeight] =
+    dimensions;
+  if (
+    dimensions.some((value) => value > 32_768) ||
+    physicalWidth * logicalHeight !== physicalHeight * logicalWidth
+  ) {
+    return null;
+  }
+  const divisor = greatestCommonDivisor(physicalWidth, logicalWidth);
+  const numerator = physicalWidth / divisor;
+  const denominator = logicalWidth / divisor;
+  if (numerator < denominator || numerator > 99 || denominator > 99)
+    return null;
+  const kind = normalizedDisplayKind(display.spdisplays_connection_type);
+  if (kind === null) return null;
+  const role = main === "spdisplays_yes" ? "main" : "secondary";
+  const scale =
+    denominator === 1 ? `${numerator}` : `${numerator}/${denominator}`;
+  return {
+    display: `${kind}-${role}-${physicalWidth}x${physicalHeight}`,
+    main: role === "main",
+    mode: `${logicalWidth}x${logicalHeight}@${normalizedRefresh(logical[3], logical[4])}hz-${scale}x`,
+  };
+}
+
 function normalizedDisplay(serialized) {
   try {
+    if (typeof serialized !== "string" || serialized.length > 64 * 1024)
+      return null;
     const profile = JSON.parse(serialized);
-    const displays = profile?.SPDisplaysDataType?.flatMap(
-      ({ spdisplays_ndrvs: drivers }) => drivers ?? [],
-    );
-    if (!Array.isArray(displays) || displays.length !== 1) return null;
-    const display = displays[0];
     if (
-      display?.spdisplays_connection_type !== "spdisplays_internal" ||
-      display?.spdisplays_main !== "spdisplays_yes" ||
-      display?._spdisplays_pixels !== "3024 x 1964" ||
-      display?._spdisplays_resolution !== "1512 x 982 @ 120.00Hz"
+      typeof profile !== "object" ||
+      profile === null ||
+      Array.isArray(profile) ||
+      JSON.stringify(Object.keys(profile)) !==
+        JSON.stringify(["SPDisplaysDataType"]) ||
+      !Array.isArray(profile.SPDisplaysDataType) ||
+      profile.SPDisplaysDataType.length === 0 ||
+      profile.SPDisplaysDataType.length > maximumReferenceDisplays
     ) {
       return null;
     }
+    const drivers = profile.SPDisplaysDataType.map(
+      (group) => group?.spdisplays_ndrvs,
+    );
+    if (drivers.some((entries) => !Array.isArray(entries))) return null;
+    const displays = drivers.flat();
+    if (displays.length === 0 || displays.length > maximumReferenceDisplays)
+      return null;
+    const normalized = displays.map(normalizedDisplayEntry);
+    if (normalized.some((entry) => entry === null)) return null;
+    if (normalized.filter(({ main }) => main).length !== 1) return null;
+    // This multiset preserves multiplicity while erasing physical identity. A main-role
+    // exchange is therefore stable only when the exchanged panels are indistinguishable.
+    const ordered = normalized.toSorted((left, right) =>
+      compareCodeUnits(
+        `${left.display}|${left.mode}`,
+        `${right.display}|${right.mode}`,
+      ),
+    );
     return {
-      display: "built-in-main-3024x1964-120hz",
-      scaling: "logical-1512x982-2x-default",
+      display: `topology-v1:${ordered.map((entry) => entry.display).join(",")}`,
+      scaling: `modes-v1:${ordered.map((entry) => entry.mode).join(",")}`,
     };
   } catch {
     return null;
@@ -1996,24 +2093,8 @@ export function createCodexTracerAcceptanceIo() {
         };
         return {
           bindings: {
-            authProfileClass: "human-provisioned-chatgpt-keyring",
-            authorityProfile: "keiko-codex-no-effect-v1",
-            containmentProfile: "keiko-codex-readiness-v1",
-            experimentalSchemaSha256:
-              "46c4414f08cdbb20e66ce4153ee1edcb865ed5fda67e59511a78939ddb7a82d1",
-            issueReadinessFingerprint:
-              "1a0be864b3855b81c649c5843e936828ebaeb27477463ccf0af86f9da61d3391",
-            packageExecutableSha256: inspected.executableSha256,
-            packageManifestSha256: inspected.packageManifestSha256,
-            parentReadinessFingerprint:
-              "12ed4a0225fdf1fac2a75731fdbb25e949cf61349cc0a7ab7d8bad09c0eab7a3",
-            promptSha256: acceptedEnvironment.promptSha256,
-            runtimeArtifactSha256: acceptedEnvironment.runtimeSha256,
-            runtimePackage: "@openai/codex",
-            runtimeVersion: "0.145.0",
-            sourceRevision,
-            stableSchemaSha256:
-              "27fc5257cdd29b97b2abb064caadec32a72b7567d6df26a7f82c5f452c8bdfb9",
+            ...acceptanceIdentityContract,
+            ...expected,
           },
           expected,
           internal: {

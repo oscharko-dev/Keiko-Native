@@ -8,6 +8,11 @@ const WORKSPACE_SCHEMA_VERSION =
   "keiko-native-codex-tracer-workspace-acceptance/v1";
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const REVISION_PATTERN = /^[0-9a-f]{40}$/u;
+const DISPLAY_ENTRY_PATTERN =
+  /^(internal|external)-(main|secondary)-([1-9][0-9]{0,4})x([1-9][0-9]{0,4})$/u;
+const DISPLAY_MODE_PATTERN =
+  /^([1-9][0-9]{0,4})x([1-9][0-9]{0,4})@([1-9][0-9]{0,3}(?:\.[0-9]{0,2}[1-9])?)hz-([1-9][0-9]?)(?:\/([2-9]|[1-9][0-9]))?x$/u;
+const MAX_REFERENCE_DISPLAYS = 16;
 
 export const acceptanceIdentityContract = Object.freeze({
   authProfileClass: "human-provisioned-chatgpt-keyring",
@@ -16,9 +21,9 @@ export const acceptanceIdentityContract = Object.freeze({
   experimentalSchemaSha256:
     "46c4414f08cdbb20e66ce4153ee1edcb865ed5fda67e59511a78939ddb7a82d1",
   issueReadinessFingerprint:
-    "1a0be864b3855b81c649c5843e936828ebaeb27477463ccf0af86f9da61d3391",
+    "e0fbe5525f6d0a6b226637b28d5d01fa2942280bae9992af94e9f2bbb16d1ec5",
   parentReadinessFingerprint:
-    "12ed4a0225fdf1fac2a75731fdbb25e949cf61349cc0a7ab7d8bad09c0eab7a3",
+    "7379fa729c801391761bd84f2148203e67b37219cd84fd73c00e6c0d2f0b39d6",
   promptSha256:
     "e1a92579b1ca673135331829beb97792c1289a6bccdfe0303302256c546960f6",
   runtimeArtifactSha256:
@@ -193,11 +198,9 @@ const localProjectionContract = Object.freeze([
 ]);
 
 const referenceEnvironmentContract = Object.freeze({
-  display: "built-in-main-3024x1964-120hz",
   hardware: "apple-m4-16-gib-mac16-1",
   operatingSystem: "macos-26.5.2-25f84",
   referenceClass: "owner-m4-16gib-macos26",
-  scaling: "logical-1512x982-2x-default",
   thermal: "nominal",
 });
 const acceptedPowerConditions = new Set(["ac-power-standard"]);
@@ -377,7 +380,9 @@ export function referenceEnvironmentFailures(environment) {
   const failures = [];
   const expectedKeys = [
     ...Object.keys(referenceEnvironmentContract),
+    "display",
     "power",
+    "scaling",
   ].toSorted(compareCodeUnits);
   if (
     typeof environment !== "object" ||
@@ -392,9 +397,81 @@ export function referenceEnvironmentFailures(environment) {
     if (environment?.[key] !== value)
       failures.push(`reference-environment-${key}`);
   }
+  failures.push(
+    ...displayTopologyFailures(environment?.display, environment?.scaling),
+  );
   if (!acceptedPowerConditions.has(environment?.power))
     failures.push("reference-environment-power");
   return failures;
+}
+
+function displayTopologyFailures(display, scaling) {
+  if (
+    typeof display !== "string" ||
+    !display.startsWith("topology-v1:") ||
+    typeof scaling !== "string" ||
+    !scaling.startsWith("modes-v1:")
+  ) {
+    return ["reference-environment-display-topology"];
+  }
+  const displays = display.slice("topology-v1:".length).split(",");
+  const modes = scaling.slice("modes-v1:".length).split(",");
+  if (
+    displays.length === 0 ||
+    displays.length > MAX_REFERENCE_DISPLAYS ||
+    displays.length !== modes.length
+  ) {
+    return ["reference-environment-display-topology"];
+  }
+  const entries = displays.map((entry, index) => `${entry}|${modes[index]}`);
+  const valid = entries.every((entry) => validDisplayTopologyEntry(entry));
+  const mainCount = displays.filter((entry) => entry.includes("-main-")).length;
+  const canonical = entries.toSorted(compareCodeUnits);
+  if (
+    !valid ||
+    mainCount !== 1 ||
+    JSON.stringify(entries) !== JSON.stringify(canonical)
+  ) {
+    return ["reference-environment-display-topology"];
+  }
+  return [];
+}
+
+function validDisplayTopologyEntry(entry) {
+  const [display, mode, extra] = entry.split("|");
+  const displayMatch = DISPLAY_ENTRY_PATTERN.exec(display ?? "");
+  const modeMatch = DISPLAY_MODE_PATTERN.exec(mode ?? "");
+  if (extra !== undefined || displayMatch === null || modeMatch === null)
+    return false;
+  const [, , , physicalWidth, physicalHeight] = displayMatch;
+  const [, logicalWidth, logicalHeight, refresh, numerator, denominator = "1"] =
+    modeMatch;
+  const dimensions = [
+    physicalWidth,
+    physicalHeight,
+    logicalWidth,
+    logicalHeight,
+  ].map(Number);
+  const [physicalW, physicalH, logicalW, logicalH] = dimensions;
+  const scaleNumerator = Number(numerator);
+  const scaleDenominator = Number(denominator);
+  return (
+    dimensions.every((value) => value <= 32_768) &&
+    Number(refresh) <= 1_000 &&
+    scaleNumerator >= scaleDenominator &&
+    greatestCommonDivisor(scaleNumerator, scaleDenominator) === 1 &&
+    physicalW * scaleDenominator === logicalW * scaleNumerator &&
+    physicalH * scaleDenominator === logicalH * scaleNumerator
+  );
+}
+
+function greatestCommonDivisor(left, right) {
+  let divisor = right;
+  let remainder = left;
+  while (divisor !== 0) {
+    [remainder, divisor] = [divisor, remainder % divisor];
+  }
+  return remainder;
 }
 
 export function safeguardEvidenceFailures(safeguards) {
