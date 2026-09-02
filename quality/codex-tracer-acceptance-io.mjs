@@ -1717,7 +1717,6 @@ function normalizedDisplay(serialized) {
       return null;
     const normalized = displays.map(normalizedDisplayEntry);
     if (normalized.some((entry) => entry === null)) return null;
-    const entries = normalized.map(({ display, mode }) => `${display}|${mode}`);
     if (normalized.filter(({ main }) => main).length !== 1) return null;
     // This multiset preserves multiplicity while erasing physical identity. A main-role
     // exchange is therefore stable only when the exchanged panels are indistinguishable.
