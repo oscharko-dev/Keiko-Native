@@ -168,7 +168,7 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
   );
   assert.match(
     tracerAccessibilitySource,
-    /PressPickerControl\(application, CFSTR\("CancelButton"\)\)/u,
+    /PressReadyPickerCancellation\(application, &projectionStartedAt\)/u,
   );
   assert.match(
     tracerAccessibilitySource,
@@ -189,6 +189,58 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
   assert.doesNotMatch(
     tracerAccessibilitySource,
     /no-effect prompt|Users\/|repository content|credential|authorization|picker-stage/iu,
+  );
+});
+
+test("picker cancellation waits for one actionable semantic control before timing", () => {
+  const actionableControl = tracerAccessibilitySource.match(
+    /static AXUIElementRef FindUniqueActionablePickerControl\([\s\S]*?\n\}\n\nstatic/u,
+  )?.[0];
+  const uniqueIdentifier = tracerAccessibilitySource.match(
+    /static AXUIElementRef FindDescendantByIdentifier\([\s\S]*?\n\}\n\nstatic/u,
+  )?.[0];
+  const uniquePanel = tracerAccessibilitySource.match(
+    /static AXUIElementRef FindPickerPanel\([\s\S]*?\n\}\n\nstatic/u,
+  )?.[0];
+  const readinessWait = tracerAccessibilitySource.match(
+    /static AXUIElementRef WaitForUniqueActionablePickerControl\([\s\S]*?\n\}\n\nstatic/u,
+  )?.[0];
+  const timedCancellation = tracerAccessibilitySource.match(
+    /static BOOL PressReadyPickerCancellation\([\s\S]*?\n\}\n\nstatic/u,
+  )?.[0];
+  const cancellationAction = tracerAccessibilitySource.match(
+    /else if \(\[action isEqualToString:@"cancel-workspace-picker"\]\) \{[\s\S]*?\n    \} else if/u,
+  )?.[0];
+
+  assert.match(actionableControl ?? "", /kAXEnabledAttribute/u);
+  assert.match(actionableControl ?? "", /AXUIElementCopyActionNames/u);
+  assert.match(actionableControl ?? "", /kAXPressAction/u);
+  assert.match(uniqueIdentifier ?? "", /ambiguous/u);
+  assert.match(uniqueIdentifier ?? "", /CFArrayContainsValue/u);
+  assert.match(
+    uniquePanel ?? "",
+    /if \(result != NULL\) \{[\s\S]*?CFRelease\(result\);[\s\S]*?result = NULL;[\s\S]*?break;/u,
+  );
+  assert.match(
+    readinessWait ?? "",
+    /startedAt = MonotonicSeconds\(\);[\s\S]*?deadline = startedAt \+ 5\.0;[\s\S]*?FindUniqueActionablePickerControl\([\s\S]*?usleep\(5 \* 1000\)/u,
+  );
+  assert.match(
+    timedCancellation ?? "",
+    /WaitForUniqueActionablePickerControl\([\s\S]*?actionStartedAt = MonotonicSeconds\(\);[\s\S]*?AXUIElementPerformAction\(control, kAXPressAction\);[\s\S]*?\*projectionStartedAt = actionStartedAt/u,
+  );
+  assert.equal(
+    timedCancellation?.match(/AXUIElementPerformAction/gu)?.length,
+    1,
+  );
+  assert.doesNotMatch(timedCancellation ?? "", /usleep|actionReturnedAt/u);
+  assert.match(
+    cancellationAction ?? "",
+    /PressReadyPickerCancellation\(application, &projectionStartedAt\)/u,
+  );
+  assert.doesNotMatch(
+    cancellationAction ?? "",
+    /PressEither|CFSTR\("Cancel"\)|CFSTR\("Abbrechen"\)|projectionStartedAt = MonotonicSeconds/u,
   );
 });
 

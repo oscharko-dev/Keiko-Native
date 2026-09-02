@@ -321,8 +321,12 @@ static AXUIElementRef FindPickerPanel(AXUIElementRef application) {
         (AXUIElementRef)CFArrayGetValueAtIndex(windows, index);
     if (StringAttributeEquals(
             window, kAXIdentifierAttribute, CFSTR("open-panel"))) {
+      if (result != NULL) {
+        CFRelease(result);
+        result = NULL;
+        break;
+      }
       result = (AXUIElementRef)CFRetain(window);
-      break;
     }
   }
   CFRelease(value);
@@ -335,14 +339,18 @@ static AXUIElementRef FindDescendantByIdentifier(
       CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
   CFArrayAppendValue(queue, root);
   AXUIElementRef result = NULL;
+  BOOL ambiguous = NO;
   for (CFIndex cursor = 0;
        cursor < CFArrayGetCount(queue) && cursor < 128;
        cursor += 1) {
     AXUIElementRef element =
         (AXUIElementRef)CFArrayGetValueAtIndex(queue, cursor);
     if (StringAttributeEquals(element, kAXIdentifierAttribute, identifier)) {
+      if (result != NULL) {
+        ambiguous = YES;
+        break;
+      }
       result = (AXUIElementRef)CFRetain(element);
-      break;
     }
     CFTypeRef value = NULL;
     if (AXUIElementCopyAttributeValue(
@@ -354,12 +362,20 @@ static AXUIElementRef FindDescendantByIdentifier(
       CFIndex count = MIN(CFArrayGetCount(children), 64);
       for (CFIndex index = 0;
            index < count && CFArrayGetCount(queue) < 128;
-           index += 1)
-        CFArrayAppendValue(queue, CFArrayGetValueAtIndex(children, index));
+           index += 1) {
+        const void *child = CFArrayGetValueAtIndex(children, index);
+        if (!CFArrayContainsValue(
+                queue, CFRangeMake(0, CFArrayGetCount(queue)), child))
+          CFArrayAppendValue(queue, child);
+      }
     }
     CFRelease(value);
   }
   CFRelease(queue);
+  if (ambiguous && result != NULL) {
+    CFRelease(result);
+    result = NULL;
+  }
   return result;
 }
 
@@ -619,6 +635,33 @@ static BOOL PressPickerControl(
   AXError error = AXUIElementPerformAction(control, kAXPressAction);
   CFRelease(control);
   return error == kAXErrorSuccess;
+}
+
+static AXUIElementRef FindUniqueActionablePickerControl(
+    AXUIElementRef application, CFStringRef identifier) {
+  AXUIElementRef panel = FindPickerPanel(application);
+  if (panel == NULL) return NULL;
+  AXUIElementRef control =
+      FindDescendantByIdentifier(panel, identifier);
+  CFRelease(panel);
+  if (control == NULL) return NULL;
+  CFTypeRef enabled = NULL;
+  CFArrayRef actions = NULL;
+  BOOL isEnabled =
+      AXUIElementCopyAttributeValue(
+          control, kAXEnabledAttribute, &enabled) == kAXErrorSuccess &&
+      enabled != NULL && CFGetTypeID(enabled) == CFBooleanGetTypeID() &&
+      CFBooleanGetValue((CFBooleanRef)enabled);
+  BOOL exposesPress =
+      AXUIElementCopyActionNames(control, &actions) == kAXErrorSuccess &&
+      actions != NULL &&
+      CFArrayContainsValue(
+          actions, CFRangeMake(0, CFArrayGetCount(actions)), kAXPressAction);
+  if (enabled != NULL) CFRelease(enabled);
+  if (actions != NULL) CFRelease(actions);
+  if (isEnabled && exposesPress) return control;
+  CFRelease(control);
+  return NULL;
 }
 
 static double MonotonicSeconds(void);
@@ -891,6 +934,38 @@ static BOOL WaitForUnique(
   }
 }
 
+static AXUIElementRef WaitForUniqueActionablePickerControl(
+    AXUIElementRef application, CFStringRef identifier) {
+  const double startedAt = MonotonicSeconds();
+  if (startedAt < 0.0) return NULL;
+  const double deadline = startedAt + 5.0;
+  while (YES) {
+    AXUIElementRef control =
+        FindUniqueActionablePickerControl(application, identifier);
+    if (control != NULL) return control;
+    usleep(5 * 1000);
+    double now = MonotonicSeconds();
+    if (now < 0.0 || now >= deadline) return NULL;
+  }
+}
+
+static BOOL PressReadyPickerCancellation(
+    AXUIElementRef application, double *projectionStartedAt) {
+  AXUIElementRef control = WaitForUniqueActionablePickerControl(
+      application, CFSTR("CancelButton"));
+  if (control == NULL) return NO;
+  double actionStartedAt = MonotonicSeconds();
+  if (actionStartedAt < 0.0) {
+    CFRelease(control);
+    return NO;
+  }
+  AXError error = AXUIElementPerformAction(control, kAXPressAction);
+  CFRelease(control);
+  if (error != kAXErrorSuccess) return NO;
+  *projectionStartedAt = actionStartedAt;
+  return YES;
+}
+
 static BOOL WaitForProjection(
     AXUIElementRef application,
     NSString *observation,
@@ -1068,12 +1143,8 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
         }
       }
     } else if ([action isEqualToString:@"cancel-workspace-picker"]) {
-      projectionStartedAt = MonotonicSeconds();
-      passed = PressPickerControl(application, CFSTR("CancelButton"));
-      if (!passed) {
-        projectionStartedAt = MonotonicSeconds();
-        passed = PressEither(application, CFSTR("Cancel"), CFSTR("Abbrechen"));
-      }
+      passed =
+          PressReadyPickerCancellation(application, &projectionStartedAt);
     } else if ([action isEqualToString:@"observe-workspace-cancelled"]) {
       passed = HasUnique(
           application,
