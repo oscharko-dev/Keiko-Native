@@ -1,15 +1,21 @@
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use tauri::ipc::Channel;
 use tauri::webview::{PageLoadEvent, PageLoadPayload};
 use tauri::{AppHandle, Manager, RunEvent, Runtime, State, Webview, WebviewWindow, Window};
 
 use crate::document_nonce::secure_document_nonce;
+use crate::runtime::{
+    HostCancellationMutation, RuntimeReadinessWorkspace, TerminalPublicationOutcome,
+    UnmatchedHostCancellationPolicy,
+    runtime_request_with_workspace_authority as dispatch_runtime_request,
+};
 use crate::{
-    FolderPickerResult, FoundationHost, HostLifecycle, RuntimeHost, SenderContext, WorkspaceHost,
-    application_cancel as dispatch_cancel, application_request as dispatch_request,
-    canonical_origin, foundation_request as dispatch_foundation_request, is_bundled_navigation,
-    runtime_request as dispatch_runtime_request, turn_request as dispatch_turn_request,
+    FolderPickerResult, FoundationHost, HostCancellationRecord, HostLifecycle, RuntimeHost,
+    SenderContext, WorkspaceHost, application_cancel as dispatch_cancel,
+    application_request as dispatch_request, canonical_origin,
+    foundation_request as dispatch_foundation_request, is_bundled_navigation,
     workspace_request as dispatch_workspace_request,
 };
 
@@ -47,6 +53,7 @@ pub fn document_authority_script(generation: u64, document_nonce: &str) -> Optio
     ))
 }
 
+#[cfg(test)]
 pub fn page_load_transition<F>(
     lifecycle: &Mutex<HostLifecycle>,
     window_label: &str,
@@ -77,42 +84,162 @@ where
     }
 }
 
-pub fn install_result(lifecycle: &Mutex<HostLifecycle>, succeeded: bool) {
+pub(crate) fn page_load_transition_with_runtime<F>(
+    lifecycle: &Mutex<HostLifecycle>,
+    runtime: &RuntimeHost,
+    window_label: &str,
+    url: &tauri::Url,
+    event: PageLoadEvent,
+    nonce_producer: F,
+) -> (PageLoadDecision, Option<bool>, Option<String>)
+where
+    F: FnOnce() -> Option<String>,
+{
+    let decision = page_load_decision(window_label, url, event);
+    match decision {
+        PageLoadDecision::BeginDocument => runtime.handoff_host_cancellation(
+            UnmatchedHostCancellationPolicy::CloseContainment,
+            || {
+                lifecycle.lock().map_or_else(
+                    |_| HostCancellationMutation::ControlFailed(None),
+                    |mut lifecycle| {
+                        let records = lifecycle.prepare_renderer_page_load_replacement();
+                        HostCancellationMutation::Completed(Some(lifecycle), records)
+                    },
+                )
+            },
+            |lifecycle| {
+                let started = lifecycle.is_some_and(|mut lifecycle| {
+                    lifecycle.start_renderer_page_load(|_| nonce_producer())
+                });
+                (decision, Some(started), None)
+            },
+        ),
+        PageLoadDecision::InstallAuthority => runtime.handoff_host_cancellation(
+            UnmatchedHostCancellationPolicy::CloseContainment,
+            || {
+                lifecycle.lock().map_or_else(
+                    |_| HostCancellationMutation::ControlFailed(None),
+                    |mut lifecycle| {
+                        let (authority, records) =
+                            lifecycle.finish_renderer_page_load_with_cancellations();
+                        HostCancellationMutation::Completed(authority, records)
+                    },
+                )
+            },
+            |authority| {
+                let script = authority
+                    .and_then(|(generation, nonce)| document_authority_script(generation, &nonce));
+                (decision, None, script)
+            },
+        ),
+        PageLoadDecision::Ignore => (decision, None, None),
+    }
+}
+
+pub fn install_result(lifecycle: &Mutex<HostLifecycle>, runtime: &RuntimeHost, succeeded: bool) {
     if succeeded {
         return;
     }
-    if let Ok(mut lifecycle) = lifecycle.lock() {
-        lifecycle.renderer_lost();
-    }
+    lose_renderer_and_stop(lifecycle, runtime);
 }
 
-pub fn lose_renderer(lifecycle: &Mutex<HostLifecycle>) {
-    if let Ok(mut lifecycle) = lifecycle.lock() {
-        lifecycle.renderer_lost();
-    }
-}
-
-pub fn stop_runtime(runtime: &RuntimeHost) {
-    runtime.cancel_for_renderer_loss();
-}
-
-pub fn stop_runtime_for_shutdown(runtime: &RuntimeHost) -> bool {
-    runtime.cancel_for_app_shutdown_and_wait()
+pub(crate) fn lose_renderer(lifecycle: &Mutex<HostLifecycle>) -> Vec<HostCancellationRecord> {
+    lifecycle
+        .lock()
+        .map_or_else(|_| Vec::new(), |mut lifecycle| lifecycle.renderer_lost())
 }
 
 pub(crate) fn runtime_isolation_root(
     workspace: &Mutex<WorkspaceHost>,
-) -> Result<Option<std::path::PathBuf>, keiko_ui_port::ReasonCode> {
-    workspace
+) -> Result<Option<RuntimeReadinessWorkspace>, keiko_ui_port::ReasonCode> {
+    let mut workspace = workspace
         .lock()
-        .map(|workspace| workspace.bound_root_for_isolation())
-        .map_err(|_| keiko_ui_port::ReasonCode::InternalFailure)
+        .map_err(|_| keiko_ui_port::ReasonCode::InternalFailure)?;
+    let view = workspace
+        .status()
+        .map_err(|_| keiko_ui_port::ReasonCode::InternalFailure)?;
+    match view {
+        keiko_application::workspace::WorkspaceView::Bound { generation, .. } => workspace
+            .bound_root_for_isolation()
+            .map(|path| RuntimeReadinessWorkspace::tracked(path, generation))
+            .ok_or(keiko_ui_port::ReasonCode::InternalFailure)
+            .map(Some),
+        _ => Ok(None),
+    }
 }
 
-pub fn shut_down(lifecycle: &Mutex<HostLifecycle>) {
-    if let Ok(mut lifecycle) = lifecycle.lock() {
-        lifecycle.shutdown();
+pub(crate) fn shut_down(lifecycle: &Mutex<HostLifecycle>) -> Vec<HostCancellationRecord> {
+    lifecycle
+        .lock()
+        .map_or_else(|_| Vec::new(), |mut lifecycle| lifecycle.shutdown())
+}
+
+pub(crate) fn lose_renderer_and_stop(lifecycle: &Mutex<HostLifecycle>, runtime: &RuntimeHost) {
+    runtime.handoff_host_cancellation(
+        UnmatchedHostCancellationPolicy::CloseContainment,
+        || {
+            let records = lose_renderer(lifecycle);
+            HostCancellationMutation::Completed((), records)
+        },
+        |()| (),
+    );
+}
+
+pub(crate) fn shut_down_and_stop(lifecycle: &Mutex<HostLifecycle>, runtime: &RuntimeHost) -> bool {
+    runtime.handoff_host_cancellation(
+        UnmatchedHostCancellationPolicy::CloseContainment,
+        || {
+            let records = shut_down(lifecycle);
+            HostCancellationMutation::Completed((), records)
+        },
+        |()| (),
+    );
+    runtime.wait_for_accepted_cancellation_cleanup()
+}
+
+fn forward_turn_event<E>(
+    lifecycle: &Mutex<HostLifecycle>,
+    runtime: &RuntimeHost,
+    renderer_loss_forwarded: &mut bool,
+    view: keiko_application::turn::TurnView,
+    send: &mut impl FnMut(keiko_application::turn::TurnView) -> Result<(), E>,
+) -> Option<HostCancellationRecord> {
+    if send(view).is_ok() {
+        return None;
     }
+    record_turn_event_failure(lifecycle, runtime, renderer_loss_forwarded)
+}
+
+fn record_turn_event_failure(
+    lifecycle: &Mutex<HostLifecycle>,
+    runtime: &RuntimeHost,
+    renderer_loss_forwarded: &mut bool,
+) -> Option<HostCancellationRecord> {
+    if *renderer_loss_forwarded {
+        return None;
+    }
+    *renderer_loss_forwarded = true;
+    let cancellations = lose_renderer(lifecycle);
+    let first = cancellations.first().cloned();
+    runtime.defer_host_cancellations(&cancellations);
+    first
+}
+
+fn publish_terminal_turn_event(
+    runtime: &RuntimeHost,
+    terminal_cutoff: Instant,
+    send: impl FnOnce() -> bool + Send + 'static,
+    publication_failed: impl FnOnce() + Send + 'static,
+) -> bool {
+    matches!(
+        runtime.publish_terminal_update_until_with_failure(
+            terminal_cutoff,
+            send,
+            publication_failed,
+        ),
+        TerminalPublicationOutcome::Completed(true) | TerminalPublicationOutcome::Skipped
+    )
 }
 
 #[tauri::command]
@@ -148,18 +275,65 @@ pub fn application_cancel(
     request: String,
 ) -> String {
     let origin = canonical_origin(window.url().ok().as_ref());
-    let output = dispatch_cancel(
+    let output = dispatch_cancel_with_runtime_fence(
         lifecycle.inner(),
+        runtime.inner(),
         window.label(),
         &origin,
         generation,
         &document_nonce,
         &request,
     );
-    if let Some(request_id) = output.cancelled_request_id.as_deref() {
-        runtime.cancel_request(request_id);
-    }
     output.encoded
+}
+
+pub(crate) fn dispatch_cancel_with_runtime_fence(
+    lifecycle: &Mutex<HostLifecycle>,
+    runtime: &RuntimeHost,
+    window_label: &str,
+    origin: &str,
+    generation: u64,
+    document_nonce: &str,
+    request: &str,
+) -> crate::ApplicationCancelOutput {
+    runtime.handoff_host_cancellation(
+        UnmatchedHostCancellationPolicy::Ignore,
+        || {
+            let output = dispatch_cancel(
+                lifecycle,
+                window_label,
+                origin,
+                generation,
+                document_nonce,
+                request,
+            );
+            let records = application_cancel_records(&output);
+            if output.host_control_failed {
+                HostCancellationMutation::ControlFailed(output)
+            } else {
+                HostCancellationMutation::Completed(output, records)
+            }
+        },
+        |output| output,
+    )
+}
+
+fn application_cancel_records(
+    output: &crate::ApplicationCancelOutput,
+) -> Vec<HostCancellationRecord> {
+    if !output.runtime_owned {
+        return Vec::new();
+    }
+    output
+        .cancelled_request_id
+        .clone()
+        .zip(output.accepted)
+        .map(|(request_id, accepted)| HostCancellationRecord {
+            accepted,
+            request_id,
+        })
+        .into_iter()
+        .collect()
 }
 
 #[tauri::command]
@@ -251,7 +425,7 @@ pub async fn runtime_request(
             lifecycle.inner(),
             runtime.inner(),
             &sender,
-            selected_workspace.as_deref(),
+            selected_workspace.as_ref(),
             &request,
         )
         .encoded
@@ -284,16 +458,51 @@ pub async fn codex_turn_request(
         let lifecycle = app.state::<Mutex<HostLifecycle>>();
         let runtime = app.state::<RuntimeHost>();
         let workspace = app.state::<Mutex<WorkspaceHost>>();
-        dispatch_turn_request(
+        let mut renderer_loss_forwarded = false;
+        crate::turn::turn_request_with_channel(
             lifecycle.inner(),
             workspace.inner(),
             runtime.inner(),
             &sender,
             &request,
-            |view| {
-                if on_event.send(view).is_err() {
-                    runtime.cancel_for_renderer_loss();
+            |view, terminal_cutoff| {
+                if matches!(
+                    view.state,
+                    keiko_application::turn::TurnState::Completed
+                        | keiko_application::turn::TurnState::Cancelled
+                        | keiko_application::turn::TurnState::Failed
+                        | keiko_application::turn::TurnState::TimedOut
+                        | keiko_application::turn::TurnState::ContainmentFailed
+                        | keiko_application::turn::TurnState::CleanupFailed
+                ) {
+                    let terminal_channel = on_event.clone();
+                    let publication_cutoff = terminal_cutoff
+                        .unwrap_or_else(|| Instant::now() + Duration::from_millis(100));
+                    let failure_app = app.clone();
+                    return publish_terminal_turn_event(
+                        runtime.inner(),
+                        publication_cutoff,
+                        move || terminal_channel.send(view).is_ok(),
+                        move || {
+                            let lifecycle = failure_app.state::<Mutex<HostLifecycle>>();
+                            let runtime = failure_app.state::<RuntimeHost>();
+                            lose_renderer_and_stop(lifecycle.inner(), runtime.inner());
+                        },
+                    );
                 }
+                let mut published = false;
+                let _ = forward_turn_event(
+                    lifecycle.inner(),
+                    runtime.inner(),
+                    &mut renderer_loss_forwarded,
+                    view,
+                    &mut |view| {
+                        let result = on_event.send(view);
+                        published = result.is_ok();
+                        result
+                    },
+                );
+                published
             },
         )
         .encoded
@@ -370,8 +579,9 @@ pub fn navigation_policy<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
 
 pub fn handle_page_load<R: Runtime>(webview: &Webview<R>, payload: &PageLoadPayload<'_>) {
     let lifecycle = webview.state::<Mutex<HostLifecycle>>();
-    let (decision, started, install_script) = page_load_transition(
+    let (decision, started, install_script) = page_load_transition_with_runtime(
         lifecycle.inner(),
+        webview.state::<RuntimeHost>().inner(),
         webview.label(),
         payload.url(),
         payload.event(),
@@ -379,14 +589,17 @@ pub fn handle_page_load<R: Runtime>(webview: &Webview<R>, payload: &PageLoadPayl
     );
     match decision {
         PageLoadDecision::BeginDocument => {
-            stop_runtime(webview.state::<RuntimeHost>().inner());
             if started != Some(true) {
                 eprintln!("keiko-renderer-authority-generation-failed");
             }
         }
         PageLoadDecision::InstallAuthority => {
             let installed = install_script.is_some_and(|script| webview.eval(&script).is_ok());
-            install_result(lifecycle.inner(), installed);
+            install_result(
+                lifecycle.inner(),
+                webview.state::<RuntimeHost>().inner(),
+                installed,
+            );
             if !installed {
                 eprintln!("keiko-renderer-authority-install-failed");
             }
@@ -396,38 +609,41 @@ pub fn handle_page_load<R: Runtime>(webview: &Webview<R>, payload: &PageLoadPayl
 }
 
 pub fn handle_web_content_process_terminate<R: Runtime>(webview: &Webview<R>) {
-    lose_renderer(webview.state::<Mutex<HostLifecycle>>().inner());
-    stop_runtime(webview.state::<RuntimeHost>().inner());
+    lose_renderer_and_stop(
+        webview.state::<Mutex<HostLifecycle>>().inner(),
+        webview.state::<RuntimeHost>().inner(),
+    );
 }
 
 pub fn handle_window_event<R: Runtime>(window: &Window<R>, event: &tauri::WindowEvent) {
     if matches!(event, tauri::WindowEvent::Destroyed) {
-        lose_renderer(window.state::<Mutex<HostLifecycle>>().inner());
-        stop_runtime(window.state::<RuntimeHost>().inner());
+        lose_renderer_and_stop(
+            window.state::<Mutex<HostLifecycle>>().inner(),
+            window.state::<RuntimeHost>().inner(),
+        );
     }
 }
 
-fn begin_exit_request_shutdown(
-    lifecycle: &Mutex<HostLifecycle>,
-    stop_runtime: impl FnOnce() -> bool,
-) -> bool {
-    shut_down(lifecycle);
-    !stop_runtime()
+fn cleanup_failure_prevents_exit(cleanup_proven: bool) -> bool {
+    !cleanup_proven
 }
 
 pub fn handle_run_event<R: Runtime>(handle: &AppHandle<R>, event: RunEvent) {
     match event {
         RunEvent::ExitRequested { api, .. } => {
-            if begin_exit_request_shutdown(handle.state::<Mutex<HostLifecycle>>().inner(), || {
-                stop_runtime_for_shutdown(handle.state::<RuntimeHost>().inner())
-            }) {
+            if cleanup_failure_prevents_exit(shut_down_and_stop(
+                handle.state::<Mutex<HostLifecycle>>().inner(),
+                handle.state::<RuntimeHost>().inner(),
+            )) {
                 api.prevent_exit();
                 eprintln!("keiko-native-runtime-shutdown-cleanup-failed");
             }
         }
         RunEvent::Exit => {
-            shut_down(handle.state::<Mutex<HostLifecycle>>().inner());
-            if !stop_runtime_for_shutdown(handle.state::<RuntimeHost>().inner()) {
+            if cleanup_failure_prevents_exit(shut_down_and_stop(
+                handle.state::<Mutex<HostLifecycle>>().inner(),
+                handle.state::<RuntimeHost>().inner(),
+            )) {
                 eprintln!("keiko-native-runtime-shutdown-cleanup-failed");
             }
         }

@@ -6,9 +6,9 @@ use keiko_application::{ApplicationResult, application_response, current_build_i
 #[cfg(test)]
 use keiko_ui_port::canonical_request_id;
 use keiko_ui_port::{
-    MAX_SEQUENCE, ReasonCode, UiRequest, cancel_request_id, dispatch_health, encode_cancelled,
-    encode_error, encode_success, parse_cancel, parse_request, request_id_matches,
-    request_metadata,
+    MAX_SEQUENCE, Operation, ReasonCode, UiRequest, cancel_request_id, dispatch_health,
+    encode_cancelled, encode_error, encode_success, parse_cancel, parse_request,
+    request_id_matches, request_metadata, request_operation,
 };
 
 mod acknowledgement;
@@ -29,12 +29,16 @@ pub use foundation::{FoundationHost, FoundationRequestOutput, foundation_request
 pub use request_adapter::{
     ApplicationCancelOutput, ApplicationRequestOutput, application_cancel, application_request,
 };
-use request_timing::{CancellationSource, InFlight, MonotonicClock, terminal_reason};
+use request_timing::{
+    AcceptedCancellation, CancellationSource, InFlight, MonotonicClock, terminal_cutoff_exceeded,
+    terminal_reason,
+};
 pub use runtime::{RuntimeHost, RuntimeRequestOutput, runtime_request};
 pub use turn::{TurnRequestOutput, turn_request};
 pub use workspace::{FolderPickerResult, WorkspaceHost, WorkspaceRequestOutput, workspace_request};
 
 const REPLAY_WINDOW: usize = 64;
+const MAX_IN_FLIGHT_REQUESTS: usize = 64;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SenderContext {
@@ -57,6 +61,20 @@ struct RendererSession {
 pub struct AcceptedRequest {
     generation: u64,
     request: UiRequest,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct HostCancelOutcome {
+    accepted: Option<AcceptedCancellation>,
+    encoded: String,
+    request_id: Option<String>,
+    runtime_owned: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct HostCancellationRecord {
+    pub(crate) accepted: AcceptedCancellation,
+    pub(crate) request_id: String,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -96,32 +114,62 @@ impl HostLifecycle {
     where
         F: FnOnce(&HostLifecycle) -> Option<String>,
     {
+        self.begin_renderer_page_load_with_cancellations(nonce_producer)
+            .0
+    }
+
+    pub(crate) fn begin_renderer_page_load_with_cancellations<F>(
+        &mut self,
+        nonce_producer: F,
+    ) -> (bool, Vec<HostCancellationRecord>)
+    where
+        F: FnOnce(&HostLifecycle) -> Option<String>,
+    {
+        let cancellations = self.prepare_renderer_page_load_replacement();
+        let started = self.start_renderer_page_load(nonce_producer);
+        (started, cancellations)
+    }
+
+    pub(crate) fn prepare_renderer_page_load_replacement(&mut self) -> Vec<HostCancellationRecord> {
         if self.pending_page_loads > 0 {
             self.page_load_ambiguous = true;
         }
         self.pending_page_loads = self.pending_page_loads.saturating_add(1);
-        activate_renderer_document(self, nonce_producer)
+        self.retire_renderer_authority()
+    }
+
+    pub(crate) fn start_renderer_page_load<F>(&mut self, nonce_producer: F) -> bool
+    where
+        F: FnOnce(&HostLifecycle) -> Option<String>,
+    {
+        nonce_producer(self)
+            .and_then(|nonce| self.begin_renderer_session(nonce))
+            .is_some()
     }
 
     pub fn finish_renderer_page_load(&mut self) -> Option<(u64, String)> {
+        self.finish_renderer_page_load_with_cancellations().0
+    }
+
+    pub(crate) fn finish_renderer_page_load_with_cancellations(
+        &mut self,
+    ) -> (Option<(u64, String)>, Vec<HostCancellationRecord>) {
         if self.pending_page_loads == 0 {
-            self.renderer_lost();
-            return None;
+            return (None, self.renderer_lost());
         }
         self.pending_page_loads -= 1;
         if self.page_load_ambiguous {
-            self.retire_renderer_authority();
+            let cancellations = self.retire_renderer_authority();
             if self.pending_page_loads == 0 {
                 self.page_load_ambiguous = false;
             }
-            return None;
+            return (None, cancellations);
         }
         if self.pending_page_loads != 0 {
             self.page_load_ambiguous = true;
-            self.retire_renderer_authority();
-            return None;
+            return (None, self.retire_renderer_authority());
         }
-        self.current_document_authority()
+        (self.current_document_authority(), Vec::new())
     }
 
     pub fn begin_renderer_session(&mut self, document_nonce: String) -> Option<u64> {
@@ -149,26 +197,38 @@ impl HostLifecycle {
         Some(self.generation)
     }
 
-    pub fn renderer_lost(&mut self) {
-        self.retire_renderer_authority();
+    pub(crate) fn renderer_lost(&mut self) -> Vec<HostCancellationRecord> {
+        let cancellations = self.retire_renderer_authority();
         self.page_load_ambiguous = false;
         self.pending_page_loads = 0;
+        cancellations
     }
 
-    fn retire_renderer_authority(&mut self) {
-        self.cancel_generation();
+    fn retire_renderer_authority(&mut self) -> Vec<HostCancellationRecord> {
+        let cancellations = self.cancel_generation();
         self.session = None;
+        cancellations
     }
 
-    pub fn shutdown(&mut self) {
+    pub(crate) fn shutdown(&mut self) -> Vec<HostCancellationRecord> {
         self.accepting = false;
         let now_ms = self.clock.now_ms();
-        for request in self.in_flight.values_mut() {
-            request.cancel(now_ms, CancellationSource::AppShutdown);
-        }
+        let accepted_at = self.clock.now();
+        let cancellations = self
+            .in_flight
+            .iter_mut()
+            .filter_map(|(request_id, request)| {
+                let accepted = request.cancel(now_ms, accepted_at, CancellationSource::AppShutdown);
+                request.runtime_owned.then(|| HostCancellationRecord {
+                    accepted,
+                    request_id: request_id.clone(),
+                })
+            })
+            .collect();
         self.page_load_ambiguous = false;
         self.pending_page_loads = 0;
         self.session = None;
+        cancellations
     }
 
     pub fn sender_for_document(
@@ -206,6 +266,10 @@ impl HostLifecycle {
             return Err((request_id, ReasonCode::InvalidRequest));
         }
         let started_at_ms = self.clock.now_ms();
+        let runtime_owned = matches!(
+            request_operation(&request),
+            Operation::CodexTurnStart { .. } | Operation::RuntimeReadiness
+        );
         let session = self
             .session
             .as_mut()
@@ -221,6 +285,9 @@ impl HostLifecycle {
         if sequence <= session.last_sequence {
             return Err((request_id, ReasonCode::StaleRequest));
         }
+        if self.in_flight.len() >= MAX_IN_FLIGHT_REQUESTS {
+            return Err((request_id, ReasonCode::InternalFailure));
+        }
         session.last_sequence = sequence;
         if session.replayed_ids.len() == REPLAY_WINDOW {
             session.replayed_ids.pop_front();
@@ -229,9 +296,11 @@ impl HostLifecycle {
         self.in_flight.insert(
             request_id,
             InFlight {
+                accepted_cancellation: None,
                 cancelled_at_ms: None,
                 cancellation_source: None,
                 generation: context.generation,
+                runtime_owned,
                 started_at_ms,
                 timeout_ms,
             },
@@ -262,29 +331,109 @@ impl HostLifecycle {
     }
 
     pub fn cancel_application_request(&mut self, context: &SenderContext, bytes: &[u8]) -> String {
+        self.cancel_application_request_with_acceptance(context, bytes)
+            .encoded
+    }
+
+    pub(crate) fn cancel_application_request_with_acceptance(
+        &mut self,
+        context: &SenderContext,
+        bytes: &[u8],
+    ) -> HostCancelOutcome {
+        self.cancel_application_request_with_acceptance_before_mutation_impl(context, bytes, |_| {})
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cancel_application_request_with_acceptance_before_mutation(
+        &mut self,
+        context: &SenderContext,
+        bytes: &[u8],
+        before_mutation: impl FnOnce(&mut Self),
+    ) -> HostCancelOutcome {
+        self.cancel_application_request_with_acceptance_before_mutation_impl(
+            context,
+            bytes,
+            before_mutation,
+        )
+    }
+
+    fn cancel_application_request_with_acceptance_before_mutation_impl(
+        &mut self,
+        context: &SenderContext,
+        bytes: &[u8],
+        before_mutation: impl FnOnce(&mut Self),
+    ) -> HostCancelOutcome {
         if let Err((request_id, reason)) = self.validate_sender(context) {
-            return encode_error(&request_id, reason);
+            return HostCancelOutcome {
+                accepted: None,
+                encoded: encode_error(&request_id, reason),
+                request_id: None,
+                runtime_owned: false,
+            };
         }
         let request = match parse_cancel(bytes) {
             Ok(request) => request,
-            Err(reason) => return encode_error("unknown-request", reason),
+            Err(reason) => {
+                return HostCancelOutcome {
+                    accepted: None,
+                    encoded: encode_error("unknown-request", reason),
+                    request_id: None,
+                    runtime_owned: false,
+                };
+            }
         };
         let request_id = cancel_request_id(&request);
         let now_ms = self.clock.now_ms();
-        let Some(in_flight) = self.in_flight.get_mut(request_id) else {
-            return encode_error(request_id, ReasonCode::Unauthorized);
+        let Some(in_flight) = self.in_flight.get(request_id) else {
+            return HostCancelOutcome {
+                accepted: None,
+                encoded: encode_error(request_id, ReasonCode::Unauthorized),
+                request_id: None,
+                runtime_owned: false,
+            };
         };
         if in_flight.generation != context.generation {
-            return encode_error(request_id, ReasonCode::Unauthorized);
+            return HostCancelOutcome {
+                accepted: None,
+                encoded: encode_error(request_id, ReasonCode::Unauthorized),
+                request_id: None,
+                runtime_owned: false,
+            };
         }
-        let cancelled_at_ms = in_flight.cancel(now_ms, CancellationSource::User);
-        if cancelled_at_ms.saturating_sub(in_flight.started_at_ms)
-            >= u64::from(in_flight.timeout_ms)
-        {
-            encode_error(request_id, ReasonCode::TimedOut)
-        } else {
-            encode_cancelled(request_id)
+        if let Some(accepted) = in_flight.accepted_cancellation {
+            return HostCancelOutcome {
+                accepted: Some(accepted),
+                encoded: encode_cancelled(request_id),
+                request_id: Some(request_id.to_owned()),
+                runtime_owned: in_flight.runtime_owned,
+            };
         }
+        if now_ms.saturating_sub(in_flight.started_at_ms) >= u64::from(in_flight.timeout_ms) {
+            return HostCancelOutcome {
+                accepted: None,
+                encoded: encode_error(request_id, ReasonCode::TimedOut),
+                request_id: None,
+                runtime_owned: false,
+            };
+        }
+        before_mutation(self);
+        let accepted_at = self.clock.now();
+        let in_flight = self
+            .in_flight
+            .get_mut(request_id)
+            .expect("validated request remains present during one Host mutation");
+        let accepted = in_flight.cancel(now_ms, accepted_at, CancellationSource::User);
+        HostCancelOutcome {
+            accepted: Some(accepted),
+            encoded: encode_cancelled(request_id),
+            request_id: Some(request_id.to_owned()),
+            runtime_owned: in_flight.runtime_owned,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_instant_for_test(&self) -> std::time::Instant {
+        self.clock.now()
     }
 
     fn complete_with_encoded(&mut self, accepted: AcceptedRequest, encoded: String) -> String {
@@ -300,21 +449,67 @@ impl HostLifecycle {
         self.complete_foundation_request_with_availability(accepted, encoded, quit_requested, true)
     }
 
-    fn complete_turn_request(&mut self, accepted: AcceptedRequest, mut state: TurnView) -> String {
+    #[cfg(test)]
+    fn complete_turn_request(&mut self, accepted: AcceptedRequest, state: TurnView) -> String {
+        let (request_id, _, _) = request_metadata(&accepted.request);
+        let runtime_acceptance = self
+            .in_flight
+            .get(request_id)
+            .and_then(|request| request.accepted_cancellation);
+        self.complete_turn_request_with_publication(
+            accepted,
+            state,
+            runtime_acceptance,
+            |_| {},
+            |_| {},
+        )
+    }
+
+    #[cfg(test)]
+    fn complete_turn_request_with_publication(
+        &mut self,
+        accepted: AcceptedRequest,
+        state: TurnView,
+        runtime_acceptance: Option<AcceptedCancellation>,
+        before_publication: impl FnOnce(&mut Self),
+        mut update: impl FnMut(TurnView),
+    ) -> String {
+        before_publication(self);
+        let publication =
+            self.prepare_turn_request_publication(&accepted, state, runtime_acceptance);
+        if let Ok(publication) = &publication {
+            update(publication.view.clone());
+        }
+        self.finalize_turn_request_publication(&accepted, publication, runtime_acceptance)
+    }
+
+    pub(crate) fn prepare_turn_request_publication(
+        &self,
+        accepted: &AcceptedRequest,
+        mut state: TurnView,
+        runtime_acceptance: Option<AcceptedCancellation>,
+    ) -> Result<crate::turn::PreparedTerminalPublication, String> {
         let completed_at_ms = self.clock.now_ms();
         let (request_id, _, _) = request_metadata(&accepted.request);
-        let request_id = request_id.to_owned();
-        let Some(in_flight) = self.in_flight.remove(&request_id) else {
-            return encode_error(&request_id, ReasonCode::InternalFailure);
+        let Some(in_flight) = self.in_flight.get(request_id) else {
+            return Err(encode_error(request_id, ReasonCode::InternalFailure));
         };
+        if in_flight.generation != accepted.generation {
+            return Err(encode_error(request_id, ReasonCode::InternalFailure));
+        }
         // Turn shutdown first records AppShutdown on every in-flight request.
         // Treating completion as unavailable here would erase that precise
         // terminal outcome and replace it with a generic host failure.
-        let terminal_reason = terminal_reason(&in_flight, completed_at_ms, true);
+        let terminal_reason = terminal_reason(in_flight, completed_at_ms, true);
+        let cancellation_mismatch = in_flight.accepted_cancellation != runtime_acceptance;
         if !state.evidence.cleanup_complete {
             state.state = TurnState::CleanupFailed;
             state.reason = Some(TurnReason::CleanupFailed);
             state.evidence.terminal_state = TurnState::CleanupFailed;
+        } else if cancellation_mismatch {
+            state.state = TurnState::ContainmentFailed;
+            state.reason = Some(TurnReason::ProtocolRejected);
+            state.evidence.terminal_state = TurnState::ContainmentFailed;
         } else if state.state != TurnState::ContainmentFailed {
             match terminal_reason {
                 None => {}
@@ -338,13 +533,50 @@ impl HostLifecycle {
                         state.evidence.terminal_state = TurnState::TimedOut;
                     }
                 }
-                Some(reason) => return encode_error(&request_id, reason),
+                Some(reason) => return Err(encode_error(request_id, reason)),
             }
         }
-        encode_success(&application_response(
-            &request_id,
-            ApplicationResult::CodexTurn { state },
-        ))
+        if in_flight.accepted_cancellation.is_some_and(|accepted| {
+            terminal_cutoff_exceeded(
+                self.clock.now(),
+                accepted.accepted_at + std::time::Duration::from_secs(5),
+            )
+        }) {
+            state.state = TurnState::ContainmentFailed;
+            state.reason = Some(TurnReason::ProtocolRejected);
+            state.evidence.terminal_state = TurnState::ContainmentFailed;
+        }
+        Ok(crate::turn::PreparedTerminalPublication {
+            view: state,
+            terminal_cutoff: in_flight
+                .accepted_cancellation
+                .map(|accepted| accepted.accepted_at + std::time::Duration::from_secs(5)),
+        })
+    }
+
+    pub(crate) fn finalize_turn_request_publication(
+        &mut self,
+        accepted: &AcceptedRequest,
+        publication: Result<crate::turn::PreparedTerminalPublication, String>,
+        runtime_acceptance: Option<AcceptedCancellation>,
+    ) -> String {
+        let publication = publication.and_then(|publication| {
+            self.prepare_turn_request_publication(accepted, publication.view, runtime_acceptance)
+        });
+        let (request_id, _, _) = request_metadata(&accepted.request);
+        let request_id = request_id.to_owned();
+        if self.in_flight.remove(&request_id).is_none() {
+            return encode_error(&request_id, ReasonCode::InternalFailure);
+        }
+        match publication {
+            Ok(publication) => encode_success(&application_response(
+                &request_id,
+                ApplicationResult::CodexTurn {
+                    state: publication.view,
+                },
+            )),
+            Err(encoded) => encoded,
+        }
     }
 
     fn complete_runtime_request(
@@ -453,14 +685,22 @@ impl HostLifecycle {
         Ok(())
     }
 
-    fn cancel_generation(&mut self) {
+    fn cancel_generation(&mut self) -> Vec<HostCancellationRecord> {
         let generation = self.session.as_ref().map(|session| session.generation);
         let now_ms = self.clock.now_ms();
-        for request in self.in_flight.values_mut() {
-            if Some(request.generation) == generation {
-                request.cancel(now_ms, CancellationSource::RendererLost);
-            }
-        }
+        let accepted_at = self.clock.now();
+        self.in_flight
+            .iter_mut()
+            .filter(|(_, request)| Some(request.generation) == generation)
+            .filter_map(|(request_id, request)| {
+                let accepted =
+                    request.cancel(now_ms, accepted_at, CancellationSource::RendererLost);
+                request.runtime_owned.then(|| HostCancellationRecord {
+                    accepted,
+                    request_id: request_id.clone(),
+                })
+            })
+            .collect()
     }
 
     #[cfg(test)]
@@ -481,10 +721,21 @@ pub fn activate_renderer_document<F>(lifecycle: &mut HostLifecycle, nonce_produc
 where
     F: FnOnce(&HostLifecycle) -> Option<String>,
 {
-    lifecycle.retire_renderer_authority();
-    nonce_producer(lifecycle)
+    activate_renderer_document_with_cancellations(lifecycle, nonce_producer).0
+}
+
+fn activate_renderer_document_with_cancellations<F>(
+    lifecycle: &mut HostLifecycle,
+    nonce_producer: F,
+) -> (bool, Vec<HostCancellationRecord>)
+where
+    F: FnOnce(&HostLifecycle) -> Option<String>,
+{
+    let cancellations = lifecycle.retire_renderer_authority();
+    let started = nonce_producer(lifecycle)
         .and_then(|nonce| lifecycle.begin_renderer_session(nonce))
-        .is_some()
+        .is_some();
+    (started, cancellations)
 }
 
 fn valid_document_nonce(value: &str) -> bool {

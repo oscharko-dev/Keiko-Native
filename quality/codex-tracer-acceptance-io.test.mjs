@@ -30,6 +30,8 @@ import {
   inspectReferenceEnvironment,
   measureFirstVisibleP95,
   measureNativePickerCancellationDistribution,
+  normalizeEphemeralWindowDisplayBinding,
+  normalizeWindowDisplayBinding,
   observedSafeguards,
   packageAcceptance,
   packageArtifactFailures,
@@ -40,6 +42,7 @@ import {
   snapshotDirectory,
   snapshotProtectedRuntimeProfile,
   verifyOwnedRuntimeGroupsExited,
+  windowDisplayEvidenceComposes,
 } from "./codex-tracer-acceptance-io.mjs";
 import { acceptancePhysicalContract } from "./codex-tracer-acceptance.mjs";
 import { authenticateOwnedProcessGroup } from "./macos-accessibility-driver-harness.mjs";
@@ -105,6 +108,86 @@ test("the acceptance IO exposes a bounded workspace tranche without a runtime jo
       writeWorkspaceEvidence: "function",
     },
   );
+});
+
+test("window display binding normalization is closed for internal and external displays", () => {
+  for (const displayClass of ["internal", "external"]) {
+    const binding = {
+      displayClass,
+      matchedDisplayCount: 1,
+      semanticWindowCount: 1,
+    };
+    assert.deepEqual(normalizeWindowDisplayBinding(binding), binding);
+  }
+  for (const binding of [
+    null,
+    [],
+    {},
+    {
+      displayClass: "external",
+      matchedDisplayCount: 1,
+      semanticWindowCount: 1,
+      displayName: "sensitive",
+    },
+    {
+      displayClass: "builtin",
+      matchedDisplayCount: 1,
+      semanticWindowCount: 1,
+    },
+    {
+      displayClass: "internal",
+      matchedDisplayCount: 2,
+      semanticWindowCount: 1,
+    },
+    {
+      displayClass: "external",
+      matchedDisplayCount: 1,
+      semanticWindowCount: 0,
+    },
+  ]) {
+    assert.equal(normalizeWindowDisplayBinding(binding), null);
+  }
+});
+
+test("internal automated binding composes with external physical evidence by privacy-safe aggregates", () => {
+  const automated = {
+    displayClass: "internal",
+    matchedDisplayCount: 1,
+    semanticWindowCount: 1,
+  };
+  const physical = {
+    displayClass: "external",
+    matchedDisplayCount: 1,
+    semanticWindowCount: 1,
+  };
+  assert.equal(windowDisplayEvidenceComposes(automated, physical), true);
+  assert.equal(
+    windowDisplayEvidenceComposes(automated, {
+      ...physical,
+      matchedDisplayCount: 2,
+    }),
+    false,
+  );
+});
+
+test("ephemeral binding normalization is closed without entering durable evidence", () => {
+  const binding = {
+    displayClass: "internal",
+    displayIdentity: "1",
+    matchedDisplayCount: 1,
+    semanticWindowCount: 1,
+    windowIdentity: "2",
+    windowPosition: "10.000:20.000",
+  };
+  assert.deepEqual(normalizeEphemeralWindowDisplayBinding(binding), binding);
+  for (const invalid of [
+    { ...binding, extra: true },
+    { ...binding, displayIdentity: "" },
+    { ...binding, windowIdentity: "" },
+    { ...binding, windowPosition: "" },
+  ]) {
+    assert.equal(normalizeEphemeralWindowDisplayBinding(invalid), null);
+  }
 });
 
 test("platform-neutral workspace publication injects its publisher", async () => {
@@ -989,8 +1072,11 @@ test("reference Mac inspection emits only normalized closed reproducibility meta
     scaling: "modes-v1:1512x982@120hz-2x",
     thermal: "nominal",
   });
-  assert.equal(JSON.stringify(result).includes(displaySerialCanary), false);
   assert.equal(calls.length, 7);
+  assert.equal(
+    calls.some(({ command }) => command === "/usr/sbin/system_profiler"),
+    true,
+  );
   assert.ok(
     calls.every(
       ({ options }) =>
@@ -1064,10 +1150,12 @@ function referenceEnvironmentOutputs(displayOutput) {
   ]);
 }
 
-async function inspectDisplayProfile(displayOutput) {
+async function inspectDisplayProfile(displayOutput, inspectDisplayTopology) {
   const outputs = referenceEnvironmentOutputs(displayOutput);
-  return inspectReferenceEnvironment((command, args) =>
-    Promise.resolve(outputs.get([command, ...args].join("\0"))),
+  return inspectReferenceEnvironment(
+    (command, args) =>
+      Promise.resolve(outputs.get([command, ...args].join("\0"))),
+    inspectDisplayTopology,
   );
 }
 
@@ -1083,6 +1171,102 @@ function externalDisplay({ main = false, refresh = "60.00" } = {}) {
     spdisplays_online: "spdisplays_yes",
   };
 }
+
+test("reference inspection invokes and agrees with the AppKit display aggregate", async () => {
+  const cases = [
+    {
+      displays: [externalDisplay({ main: true })],
+      topology: {
+        activeDisplayCount: 1,
+        externalDisplayCount: 1,
+        internalDisplayCount: 0,
+      },
+    },
+    {
+      displays: [
+        {
+          _spdisplays_pixels: "3024 x 1964",
+          _spdisplays_resolution: "1512 x 982 @ 120.00Hz",
+          spdisplays_connection_type: "spdisplays_internal",
+          spdisplays_main: "spdisplays_yes",
+          spdisplays_online: "spdisplays_yes",
+        },
+      ],
+      topology: {
+        activeDisplayCount: 1,
+        externalDisplayCount: 0,
+        internalDisplayCount: 1,
+      },
+    },
+  ];
+  for (const { displays, topology } of cases) {
+    let inspections = 0;
+    await inspectDisplayProfile(displayProfile(displays), async () => {
+      inspections += 1;
+      return topology;
+    });
+    assert.equal(inspections, 1);
+  }
+});
+
+test("reference inspection rejects mismatched or malformed AppKit aggregates", async () => {
+  const profile = displayProfile([externalDisplay({ main: true })]);
+  for (const topology of [
+    {
+      activeDisplayCount: 2,
+      externalDisplayCount: 2,
+      internalDisplayCount: 0,
+    },
+    {
+      activeDisplayCount: 1,
+      externalDisplayCount: 0,
+      internalDisplayCount: 1,
+    },
+    {
+      activeDisplayCount: 1,
+      externalDisplayCount: 1,
+      internalDisplayCount: 0,
+      displayIdentity: "private",
+    },
+    null,
+  ]) {
+    await assert.rejects(
+      inspectDisplayProfile(profile, async () => topology),
+      /acceptance-reference-environment-invalid/u,
+    );
+  }
+});
+
+test("reference inspection rejects AppKit topology drift between samples", async () => {
+  const before = await inspectDisplayProfile(
+    displayProfile([externalDisplay({ main: true })]),
+    async () => ({
+      activeDisplayCount: 1,
+      externalDisplayCount: 1,
+      internalDisplayCount: 0,
+    }),
+  );
+  const after = await inspectDisplayProfile(
+    displayProfile([
+      {
+        _spdisplays_pixels: "3024 x 1964",
+        _spdisplays_resolution: "1512 x 982 @ 120.00Hz",
+        spdisplays_connection_type: "spdisplays_internal",
+        spdisplays_main: "spdisplays_yes",
+        spdisplays_online: "spdisplays_yes",
+      },
+    ]),
+    async () => ({
+      activeDisplayCount: 1,
+      externalDisplayCount: 0,
+      internalDisplayCount: 1,
+    }),
+  );
+  assert.throws(
+    () => assertStableReferenceEnvironment(before, after),
+    /acceptance-reference-environment-changed/u,
+  );
+});
 
 test("reference Mac inspection accepts one external and mixed topologies deterministically", async () => {
   const external = await inspectDisplayProfile(
@@ -1736,20 +1920,43 @@ test("physical observations are closed and digest-bound to the exact packaged he
   };
   const observation = {
     appearance: structuredClone(acceptancePhysicalContract.appearance),
+    cancellationTerminalAnnouncement: {
+      announcementCount: 1,
+      assistiveTechnology: "VoiceOver",
+      mechanism: "common-status",
+      observation: "real-cancel",
+      terminalState: "cancelled",
+    },
+    displayTopology: {
+      activeDisplayCount: 2,
+      externalDisplayCount: 1,
+      internalDisplayCount: 1,
+    },
     observedAt: "2026-08-01T12:00:00.000Z",
     observations: acceptancePhysicalContract.irreducibleObservations.map(
       (checkpoint) => ({ checkpoint, status: "observed" }),
     ),
     packageExecutableSha256: expected.packageExecutableSha256,
     redaction: "closed",
-    schemaVersion: "keiko-native-codex-tracer-physical-observation/v1",
+    schemaVersion: "keiko-native-codex-tracer-physical-observation/v2",
     sourceRevision: expected.sourceRevision,
+    windowDisplayBinding: {
+      displayClass: "external",
+      matchedDisplayCount: 1,
+      semanticWindowCount: 1,
+    },
   };
 
   const observedAtMs = Date.parse(observation.observedAt);
   assert.deepEqual(
     physicalObservationFailures(observation, expected, observedAtMs),
     [],
+  );
+  const uniquelyBound = structuredClone(observation);
+  assert.deepEqual(
+    physicalObservationFailures(uniquelyBound, expected, observedAtMs),
+    [],
+    "physical evidence must bind one semantic Keiko window to one active display",
   );
   for (const key of Object.keys(observation)) {
     const missing = structuredClone(observation);
@@ -1774,6 +1981,27 @@ test("physical observations are closed and digest-bound to the exact packaged he
       ),
     },
     { ...observation, redaction: "open" },
+    {
+      ...observation,
+      cancellationTerminalAnnouncement: {
+        ...observation.cancellationTerminalAnnouncement,
+        announcementCount: 2,
+      },
+    },
+    {
+      ...observation,
+      displayTopology: {
+        ...observation.displayTopology,
+        displayName: "sensitive",
+      },
+    },
+    {
+      ...observation,
+      windowDisplayBinding: {
+        ...observation.windowDisplayBinding,
+        semanticWindowCount: 2,
+      },
+    },
   ]) {
     assert.ok(
       physicalObservationFailures(changed, expected, observedAtMs).length > 0,

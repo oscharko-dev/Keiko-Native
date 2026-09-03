@@ -18,8 +18,19 @@ const macArm64Test =
     : (name, callback) =>
         test(name, { skip: "requires authoritative macOS arm64" }, callback);
 
-test("the packaged tracer adapter is a closed AXUIElement-only action surface", () => {
+test("the packaged tracer adapter is a closed nonactivating AX and AppKit surface", () => {
+  assert.ok(
+    tracerAccessibilityActions.includes("inspect-window-display-binding"),
+    "the adapter must expose one nonactivating semantic Keiko window/display binding",
+  );
+  assert.ok(
+    !tracerAccessibilityActivatingActions.includes(
+      "inspect-window-display-binding",
+    ),
+  );
   assert.deepEqual(tracerAccessibilityActions, [
+    "inspect-display-topology",
+    "inspect-window-display-binding",
     "probe-start",
     "open-canvas",
     "probe-canvas",
@@ -62,6 +73,8 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
       (action) => !tracerAccessibilityActivatingActions.includes(action),
     ),
     [
+      "inspect-display-topology",
+      "inspect-window-display-binding",
       "probe-canvas",
       "observe-workspace-cancelled",
       "observe-workspace-permission-denied",
@@ -77,6 +90,9 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
   for (const action of tracerAccessibilityActions)
     assert.ok(tracerAccessibilitySource.includes(`@\"${action}\"`));
   assert.match(tracerAccessibilitySource, /AXUIElementCreateApplication/u);
+  assert.match(tracerAccessibilitySource, /CGWindowListCopyWindowInfo/u);
+  assert.match(tracerAccessibilitySource, /kCGWindowNumber/u);
+  assert.match(tracerAccessibilitySource, /windowPosition/u);
   assert.match(tracerAccessibilitySource, /AXIsProcessTrustedWithOptions/u);
   assert.match(
     tracerAccessibilitySource,
@@ -141,7 +157,7 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
   );
   assert.match(
     selectWorkspace ?? "",
-    /\[observation isEqualToString:@"observe-workspace-selected"\][\s\S]*?PressPickerControlWithProjectionTiming\([\s\S]*?&nativeActionMs,[\s\S]*?&projectionStartedAt\)[\s\S]*?else[\s\S]*?projectionStartedAt = MonotonicSeconds\(\);[\s\S]*?PressPickerControl\(application, CFSTR\("OKButton"\)\)/u,
+    /\[observation isEqualToString:@"observe-workspace-selected"\][\s\S]*?PressPickerControlWithProjectionTiming\([\s\S]*?&nativeActionMs,[\s\S]*?&projectionStartedAt\)[\s\S]*?else[\s\S]*?PressPickerControlWithProjectionTiming\([\s\S]*?&nativeActionMs,[\s\S]*?&projectionStartedAt\)/u,
   );
   assert.match(
     tracerAccessibilitySource,
@@ -179,7 +195,7 @@ test("the packaged tracer adapter is a closed AXUIElement-only action surface", 
   );
   assert.match(
     tracerAccessibilitySource,
-    /HasCancellationProjection\(application\)/u,
+    /CancellationProjection\(application\)/u,
   );
   const setValue = tracerAccessibilitySource.match(
     /static BOOL SetValue\([\s\S]*?\n\}\n\nstatic BOOL Focus/u,
@@ -546,6 +562,87 @@ int main(void) {
   },
 );
 
+test("permission denial starts local projection timing after the native action returns", () => {
+  const selectWorkspace = tracerAccessibilitySource.match(
+    /else if \(\[action isEqualToString:@"select-workspace"\]\) \{[\s\S]*?\n    \} else if/u,
+  )?.[0];
+  const permissionDenialAction = selectWorkspace?.match(
+    /\} else \{([\s\S]*?)\n          \}/u,
+  )?.[1];
+  const startsAtActionReturn =
+    /PressPickerControlWithProjectionTiming\([\s\S]*?&nativeActionMs,[\s\S]*?&projectionStartedAt\)/u.test(
+      permissionDenialAction ?? "",
+    );
+  const startsBeforeAction =
+    /projectionStartedAt = MonotonicSeconds\(\);[\s\S]*?PressPickerControl\(/u.test(
+      permissionDenialAction ?? "",
+    );
+  const nativeActionStartedAtMs = 1_000;
+  const nativeActionReturnedAtMs = 1_140;
+  const projectionObservedAtMs = 1_140;
+  const projectionStartedAtMs = startsAtActionReturn
+    ? nativeActionReturnedAtMs
+    : startsBeforeAction
+      ? nativeActionStartedAtMs
+      : Number.NaN;
+  const overallActionMs = projectionObservedAtMs - nativeActionStartedAtMs;
+  const projectedMs = projectionObservedAtMs - projectionStartedAtMs;
+
+  assert.deepEqual(
+    {
+      overallActionMs,
+      overallActionWithinBound: overallActionMs <= 5_000,
+      projectedMs,
+      projectionWithinBound: projectedMs <= 100,
+    },
+    {
+      overallActionMs: 140,
+      overallActionWithinBound: true,
+      projectedMs: 0,
+      projectionWithinBound: true,
+    },
+  );
+});
+
+test("cancellation starts local stopping timing after the native action returns", () => {
+  const cancelTurn = tracerAccessibilitySource.match(
+    /else if \(\[action isEqualToString:@"cancel-turn"\]\) \{[\s\S]*?\n    \} else if/u,
+  )?.[0];
+  const startsAfterAction =
+    /passed = Press\([\s\S]*?CFSTR\("Codex-Lauf abbrechen"\)\);[\s\S]*?projectionStartedAt = MonotonicSeconds\(\);/u.test(
+      cancelTurn ?? "",
+    );
+  const startsBeforeAction =
+    /projectionStartedAt = MonotonicSeconds\(\);[\s\S]*?passed = Press\([\s\S]*?CFSTR\("Codex-Lauf abbrechen"\)\);/u.test(
+      cancelTurn ?? "",
+    );
+  const nativeActionStartedAtMs = 1_000;
+  const nativeActionReturnedAtMs = 1_140;
+  const stoppingObservedAtMs = 1_140;
+  const projectionStartedAtMs = startsAfterAction
+    ? nativeActionReturnedAtMs
+    : startsBeforeAction
+      ? nativeActionStartedAtMs
+      : Number.NaN;
+  const overallActionMs = stoppingObservedAtMs - nativeActionStartedAtMs;
+  const projectedMs = stoppingObservedAtMs - projectionStartedAtMs;
+
+  assert.deepEqual(
+    {
+      overallActionMs,
+      overallActionWithinBound: overallActionMs <= 5_000,
+      projectedMs,
+      projectionWithinBound: projectedMs <= 100,
+    },
+    {
+      overallActionMs: 140,
+      overallActionWithinBound: true,
+      projectedMs: 0,
+      projectionWithinBound: true,
+    },
+  );
+});
+
 test("canvas projection starts with a real timed welcome action", () => {
   assert.match(
     tracerAccessibilitySource,
@@ -594,10 +691,10 @@ test("the canvas probe verifies its semantic set in one bounded tree traversal",
 
 test("the cancellation probe checks alternative terminal states in one traversal", () => {
   const cancellationProbe = tracerAccessibilitySource.match(
-    /static BOOL HasCancellationProjection\([\s\S]*?\n\}/u,
+    /static NSInteger CancellationProjection\([\s\S]*?\n\}/u,
   )?.[0];
 
-  assert.match(cancellationProbe ?? "", /HasAnyUniqueValue\(/u);
+  assert.match(cancellationProbe ?? "", /UniqueValueIndex\(/u);
   assert.doesNotMatch(cancellationProbe ?? "", /HasUnique\(/u);
 });
 
@@ -632,6 +729,108 @@ test("a supplied invalid UTF-8 observation fails closed", () => {
   assert.match(
     tracerAccessibilitySource,
     /NSString \*observation =[\s\S]*?argc == 4 && observation == nil/u,
+  );
+});
+
+test("the cancellation terminal probe distinguishes incomplete cleanup", () => {
+  const terminalProbe = tracerAccessibilitySource.match(
+    /else if \(\[action isEqualToString:@"observe-cancelled"\]\) \{[\s\S]*?\n    \} else if/u,
+  )?.[0];
+
+  assert.match(terminalProbe ?? "", /Emit\(NO, "cleanup-failed"\)/u);
+  assert.match(terminalProbe ?? "", /Emit\(NO, "containment-failed"\)/u);
+  assert.match(terminalProbe ?? "", /return 1;/u);
+  assert.match(terminalProbe ?? "", /CancellationTerminal\(application\)/u);
+  assert.doesNotMatch(terminalProbe ?? "", /HasUnique\(/u);
+  const cancellationTerminal = tracerAccessibilitySource.match(
+    /static NSInteger CancellationTerminal\([\s\S]*?\n\}/u,
+  )?.[0];
+  assert.match(
+    cancellationTerminal ?? "",
+    /Der Codex-Lauf wurde abgebrochen und vollständig beendet\./u,
+  );
+  assert.match(
+    cancellationTerminal ?? "",
+    /Die Laufzeit konnte nicht vollständig bereinigt werden\./u,
+  );
+  assert.match(
+    cancellationTerminal ?? "",
+    /Eine nicht erlaubte Anbieteraktivität wurde abgefangen/u,
+  );
+  assert.match(
+    cancellationTerminal ?? "",
+    /Keiko hat einen internen Laufzeitfehler erkannt/u,
+  );
+  assert.match(
+    cancellationTerminal ?? "",
+    /Keiko konnte die Beendigung des Codex-Laufs nicht bestätigen/u,
+  );
+  assert.match(cancellationTerminal ?? "", /UniqueValueIndex\(/u);
+});
+
+test("fast cancellation failures are classified before the first stopping sample", () => {
+  const projectionProbe = tracerAccessibilitySource.match(
+    /static NSInteger CancellationProjection\([\s\S]*?\n\}/u,
+  )?.[0];
+  assert.match(projectionProbe ?? "", /Keiko beendet den Codex-Lauf sicher\./u);
+  assert.match(
+    projectionProbe ?? "",
+    /Der Codex-Lauf wurde abgebrochen und vollständig beendet\./u,
+  );
+  assert.match(
+    projectionProbe ?? "",
+    /Die Laufzeit konnte nicht vollständig bereinigt werden\./u,
+  );
+  assert.match(
+    projectionProbe ?? "",
+    /Keiko hat einen internen Laufzeitfehler erkannt/u,
+  );
+  assert.match(
+    projectionProbe ?? "",
+    /Keiko konnte die Beendigung des Codex-Laufs nicht bestätigen/u,
+  );
+  assert.match(
+    projectionProbe ?? "",
+    /Eine nicht erlaubte Anbieteraktivität wurde abgefangen/u,
+  );
+
+  const stoppingProbe = tracerAccessibilitySource.match(
+    /else if \(\[action isEqualToString:@"observe-stopping"\]\) \{[\s\S]*?\n    \} else if/u,
+  )?.[0];
+  assert.match(stoppingProbe ?? "", /Emit\(NO, "cleanup-failed"\)/u);
+  assert.match(stoppingProbe ?? "", /Emit\(NO, "containment-failed"\)/u);
+  const pairedProjection = tracerAccessibilitySource.match(
+    /if \(passed && observation != nil\) \{[\s\S]*?\n    \}/u,
+  )?.[0];
+  assert.match(pairedProjection ?? "", /cancellationProjection == 2/u);
+  assert.match(pairedProjection ?? "", /Emit\(NO, "cleanup-failed"\)/u);
+  assert.match(pairedProjection ?? "", /cancellationProjection == 3/u);
+  assert.match(pairedProjection ?? "", /cancellationProjection == 4/u);
+  assert.match(pairedProjection ?? "", /cancellationProjection == 5/u);
+  assert.match(pairedProjection ?? "", /Emit\(NO, "containment-failed"\)/u);
+  assert.doesNotMatch(
+    pairedProjection ?? "",
+    /cancellationProjection == [345][\s\S]{0,200}EmitProjection/u,
+  );
+});
+
+test("the packaged stopping checkpoint accepts only the stopping projection", () => {
+  const stoppingProbe = tracerAccessibilitySource.match(
+    /else if \(\[action isEqualToString:@"observe-stopping"\]\) \{[\s\S]*?\n    \} else if/u,
+  )?.[0];
+  assert.match(stoppingProbe ?? "", /passed = projection == 0;/u);
+  assert.doesNotMatch(
+    stoppingProbe ?? "",
+    /projection == 0 \|\| projection == 1/u,
+  );
+
+  const pairedProjection = tracerAccessibilitySource.match(
+    /if \(passed && observation != nil\) \{[\s\S]*?\n    \}/u,
+  )?.[0];
+  assert.match(pairedProjection ?? "", /cancellationProjection == 1/u);
+  assert.match(
+    pairedProjection ?? "",
+    /Emit\(NO, "missing-or-ambiguous-semantic-target"\)/u,
   );
 });
 

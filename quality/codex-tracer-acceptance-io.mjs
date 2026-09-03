@@ -30,6 +30,7 @@ import {
   acceptanceJourneyContract,
   acceptancePackageInspectionContract,
   acceptancePhysicalContract,
+  referenceDisplayTopology,
   referenceEnvironmentFailures,
   workspaceAcceptanceBudgetLimits,
   workspaceAcceptanceIdentityContract,
@@ -261,12 +262,15 @@ export function physicalObservationFailures(
   const failures = [];
   const expectedKeys = [
     "appearance",
+    "cancellationTerminalAnnouncement",
+    "displayTopology",
     "observedAt",
     "observations",
     "packageExecutableSha256",
     "redaction",
     "schemaVersion",
     "sourceRevision",
+    "windowDisplayBinding",
   ].toSorted(compareCodeUnits);
   if (
     typeof observation !== "object" ||
@@ -279,7 +283,7 @@ export function physicalObservationFailures(
   }
   if (
     observation?.schemaVersion !==
-    "keiko-native-codex-tracer-physical-observation/v1"
+    "keiko-native-codex-tracer-physical-observation/v2"
   ) {
     failures.push("physical-observation-schema");
   }
@@ -304,6 +308,46 @@ export function physicalObservationFailures(
     JSON.stringify(acceptancePhysicalContract.appearance)
   ) {
     failures.push("physical-observation-appearance");
+  }
+  if (
+    JSON.stringify(observation?.cancellationTerminalAnnouncement) !==
+    JSON.stringify(acceptancePhysicalContract.cancellationTerminalAnnouncement)
+  ) {
+    failures.push("physical-observation-terminal-announcement");
+  }
+  const binding = observation?.windowDisplayBinding;
+  if (
+    JSON.stringify(binding) !==
+    JSON.stringify({
+      displayClass: "external",
+      matchedDisplayCount: 1,
+      semanticWindowCount: 1,
+    })
+  ) {
+    failures.push("physical-observation-window-display-binding");
+  }
+  const topology = observation?.displayTopology;
+  if (
+    typeof topology !== "object" ||
+    topology === null ||
+    Array.isArray(topology) ||
+    JSON.stringify(Object.keys(topology).toSorted(compareCodeUnits)) !==
+      JSON.stringify([
+        "activeDisplayCount",
+        "externalDisplayCount",
+        "internalDisplayCount",
+      ]) ||
+    !Number.isSafeInteger(topology.activeDisplayCount) ||
+    topology.activeDisplayCount < 2 ||
+    topology.activeDisplayCount > 16 ||
+    !Number.isSafeInteger(topology.internalDisplayCount) ||
+    !Number.isSafeInteger(topology.externalDisplayCount) ||
+    topology.externalDisplayCount < 1 ||
+    topology.internalDisplayCount < 0 ||
+    topology.internalDisplayCount + topology.externalDisplayCount !==
+      topology.activeDisplayCount
+  ) {
+    failures.push("physical-observation-display-topology");
   }
   const expectedObservations =
     acceptancePhysicalContract.irreducibleObservations.map((checkpoint) => ({
@@ -1735,7 +1779,27 @@ function normalizedDisplay(serialized) {
   }
 }
 
-export async function inspectReferenceEnvironment(runCommand = run) {
+function matchesReferenceDisplayTopology(observed, expected) {
+  const keys = [
+    "activeDisplayCount",
+    "externalDisplayCount",
+    "internalDisplayCount",
+  ];
+  return (
+    expected !== null &&
+    typeof observed === "object" &&
+    observed !== null &&
+    !Array.isArray(observed) &&
+    JSON.stringify(Object.keys(observed).toSorted(compareCodeUnits)) ===
+      JSON.stringify(keys) &&
+    keys.every((key) => observed[key] === expected[key])
+  );
+}
+
+export async function inspectReferenceEnvironment(
+  runCommand = run,
+  inspectDisplayTopology,
+) {
   const options = {
     inheritEnvironment: false,
     maxOutputBytes: 64 * 1024,
@@ -1749,7 +1813,117 @@ export async function inspectReferenceEnvironment(runCommand = run) {
   const environment = normalizedReferenceEnvironment(outputs);
   if (referenceEnvironmentFailures(environment).length > 0)
     throw new Error("acceptance-reference-environment-invalid");
+  if (inspectDisplayTopology !== undefined) {
+    const observedTopology =
+      typeof inspectDisplayTopology === "function"
+        ? await inspectDisplayTopology()
+        : null;
+    const expectedTopology = referenceDisplayTopology(
+      environment.display,
+      environment.scaling,
+    );
+    if (!matchesReferenceDisplayTopology(observedTopology, expectedTopology))
+      throw new Error("acceptance-reference-environment-invalid");
+  }
   return environment;
+}
+
+async function inspectActiveDisplayTopology(adapterBinary) {
+  const serialized = await runAcceptanceSubprocess(
+    adapterBinary,
+    ["0", "inspect-display-topology"],
+    {
+      output: "stdout",
+      timeoutMs: acceptanceSubprocessTimeouts.inspection,
+    },
+  );
+  try {
+    return JSON.parse(serialized);
+  } catch {
+    return null;
+  }
+}
+
+async function inspectWindowDisplayBinding(adapterBinary, pid) {
+  const serialized = await runAcceptanceSubprocess(
+    adapterBinary,
+    [String(pid), "inspect-window-display-binding"],
+    {
+      output: "stdout",
+      timeoutMs: acceptanceSubprocessTimeouts.inspection,
+    },
+  );
+  try {
+    return normalizeEphemeralWindowDisplayBinding(JSON.parse(serialized));
+  } catch {
+    return null;
+  }
+}
+
+export function normalizeWindowDisplayBinding(binding) {
+  if (
+    typeof binding !== "object" ||
+    binding === null ||
+    Array.isArray(binding) ||
+    JSON.stringify(Object.keys(binding).toSorted(compareCodeUnits)) !==
+      JSON.stringify([
+        "displayClass",
+        "matchedDisplayCount",
+        "semanticWindowCount",
+      ]) ||
+    !["external", "internal"].includes(binding.displayClass) ||
+    binding.matchedDisplayCount !== 1 ||
+    binding.semanticWindowCount !== 1
+  ) {
+    return null;
+  }
+  return {
+    displayClass: binding.displayClass,
+    matchedDisplayCount: 1,
+    semanticWindowCount: 1,
+  };
+}
+
+export function normalizeEphemeralWindowDisplayBinding(binding) {
+  if (
+    typeof binding !== "object" ||
+    binding === null ||
+    Array.isArray(binding) ||
+    JSON.stringify(Object.keys(binding).toSorted(compareCodeUnits)) !==
+      JSON.stringify([
+        "displayClass",
+        "displayIdentity",
+        "matchedDisplayCount",
+        "semanticWindowCount",
+        "windowIdentity",
+        "windowPosition",
+      ]) ||
+    !["external", "internal"].includes(binding.displayClass) ||
+    typeof binding.displayIdentity !== "string" ||
+    !/^[0-9]+$/u.test(binding.displayIdentity) ||
+    binding.matchedDisplayCount !== 1 ||
+    binding.semanticWindowCount !== 1 ||
+    typeof binding.windowIdentity !== "string" ||
+    !/^[0-9]+$/u.test(binding.windowIdentity) ||
+    typeof binding.windowPosition !== "string" ||
+    !/^-?[0-9]+\.[0-9]{3}:-?[0-9]+\.[0-9]{3}$/u.test(binding.windowPosition)
+  ) {
+    return null;
+  }
+  return { ...binding };
+}
+
+export function windowDisplayEvidenceComposes(automated, physical) {
+  const normalizedAutomated = normalizeWindowDisplayBinding(automated);
+  const normalizedPhysical = normalizeWindowDisplayBinding(physical);
+  return (
+    normalizedAutomated !== null &&
+    normalizedPhysical !== null &&
+    normalizedAutomated.matchedDisplayCount ===
+      normalizedPhysical.matchedDisplayCount &&
+    normalizedAutomated.semanticWindowCount ===
+      normalizedPhysical.semanticWindowCount
+  );
 }
 
 export function assertStableReferenceEnvironment(before, after) {
@@ -2166,7 +2340,10 @@ export function createCodexTracerAcceptanceIo() {
         ),
         "utf8",
       );
-      const referenceEnvironmentBefore = await inspectReferenceEnvironment();
+      const referenceEnvironmentBefore = await inspectReferenceEnvironment(
+        run,
+        () => inspectActiveDisplayTopology(adapter.binary),
+      );
       const firstVisibleKeikoOverheadP95Ms = await measureFirstVisibleP95(
         prepared.internal,
         adapter.binary,
@@ -2202,6 +2379,8 @@ export function createCodexTracerAcceptanceIo() {
               binary: adapter.binary,
               pid: child.pid,
             }),
+          inspectWindowDisplayBinding: () =>
+            inspectWindowDisplayBinding(adapter.binary, child.pid),
           observeRuntime: async () => {
             runtimeOwnerships.push(
               await authenticateOwnedStagedRuntime({
@@ -2234,14 +2413,20 @@ export function createCodexTracerAcceptanceIo() {
         ]);
         const referenceEnvironment = assertStableReferenceEnvironment(
           referenceEnvironmentBefore,
-          await inspectReferenceEnvironment(),
+          await inspectReferenceEnvironment(run, () =>
+            inspectActiveDisplayTopology(adapter.binary),
+          ),
         );
         const physicalObservation = JSON.parse(
           await readFile(physicalObservationPath, "utf8"),
         );
         if (
           physicalObservationFailures(physicalObservation, prepared.expected)
-            .length > 0
+            .length > 0 ||
+          !windowDisplayEvidenceComposes(
+            journey.windowDisplayBinding,
+            physicalObservation.windowDisplayBinding,
+          )
         ) {
           throw new Error("acceptance-physical-observation-invalid");
         }
@@ -2257,6 +2442,7 @@ export function createCodexTracerAcceptanceIo() {
               nativePickerCancellation.measurements,
             nativePickerCancellationP95Ms: nativePickerCancellation.p95Ms,
             turnCancellationProjectionMs: journey.turnCancellationProjectionMs,
+            turnCancellationTerminal: journey.turnCancellationTerminal,
             turnDurationMs: journey.turnDurationMs,
             workspaceSelectionNativeActionMs:
               journey.workspaceSelectionNativeActionMs,
@@ -2264,6 +2450,7 @@ export function createCodexTracerAcceptanceIo() {
           journey: structuredClone(acceptanceJourneyContract),
           physical: {
             ...structuredClone(acceptancePhysicalContract),
+            observation: physicalObservation,
             packageExecutableSha256: prepared.expected.packageExecutableSha256,
             runner: process.env.ImageOS
               ? `${process.env.ImageOS}-${process.env.ImageVersion ?? "current"}`

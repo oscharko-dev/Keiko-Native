@@ -227,7 +227,14 @@ impl TurnSession {
     }
 
     pub fn fail(&mut self, state: TurnState, reason: TurnReason) -> Result<(), TurnError> {
-        if !matches!(self.state, TurnState::Preflighting | TurnState::Streaming)
+        let stopping_containment = self.state == TurnState::Stopping
+            && state == TurnState::ContainmentFailed
+            && matches!(
+                reason,
+                TurnReason::InternalFailure | TurnReason::ProtocolRejected
+            );
+        if (!matches!(self.state, TurnState::Preflighting | TurnState::Streaming)
+            && !stopping_containment)
             || !matches!(
                 state,
                 TurnState::Failed
@@ -558,10 +565,100 @@ mod tests {
     }
 
     #[test]
+    fn stopping_can_settle_as_truthful_containment_failure_once() {
+        let mut current = session("Explain one terminal state.");
+        current.mark_streaming().unwrap();
+        current.request_stop(TurnReason::UserCancelled).unwrap();
+
+        current
+            .fail(TurnState::ContainmentFailed, TurnReason::InternalFailure)
+            .unwrap();
+        current.settle_cleanup(true).unwrap();
+        assert_eq!(current.view().state, TurnState::ContainmentFailed);
+        assert_eq!(current.view().reason, Some(TurnReason::InternalFailure));
+        assert_eq!(
+            current.fail(TurnState::CleanupFailed, TurnReason::CleanupFailed),
+            Err(TurnError::InvalidTransition),
+            "the first truthful terminal must remain immutable"
+        );
+    }
+
+    #[test]
+    fn stopping_accepts_only_exact_internal_containment_reasons() {
+        for reason in [TurnReason::InternalFailure, TurnReason::ProtocolRejected] {
+            let mut current = session("Explain one terminal state.");
+            current.mark_streaming().unwrap();
+            current.request_stop(TurnReason::UserCancelled).unwrap();
+            current
+                .fail(TurnState::ContainmentFailed, reason)
+                .expect("exact containment reason");
+            assert_eq!(current.view().reason, Some(reason));
+        }
+
+        for rejected in [TurnReason::BufferLimit, TurnReason::RuntimeIncompatible] {
+            let mut current = session("Explain one terminal state.");
+            current.mark_streaming().unwrap();
+            current.request_stop(TurnReason::UserCancelled).unwrap();
+            assert_eq!(
+                current.fail(TurnState::ContainmentFailed, rejected),
+                Err(TurnError::InvalidTransition)
+            );
+        }
+    }
+
+    #[test]
+    fn a151_transition_short_circuits_are_fail_closed() {
+        let mut preflight = session("Reject cancellation before stopping.");
+        assert_eq!(
+            preflight.cancel(TurnReason::UserCancelled),
+            Err(TurnError::InvalidTransition)
+        );
+
+        let mut stopping = session("Reject a cleaned stopping projection.");
+        stopping
+            .request_stop(TurnReason::RendererLost)
+            .expect("enter stopping");
+        assert_eq!(
+            stopping.settle_cleanup(true),
+            Err(TurnError::InvalidTransition)
+        );
+
+        let mut wrong_state = session("Reject a non-containment stopping failure.");
+        wrong_state
+            .request_stop(TurnReason::AppShutdown)
+            .expect("enter stopping");
+        assert_eq!(
+            wrong_state.fail(TurnState::Failed, TurnReason::InternalFailure),
+            Err(TurnError::InvalidTransition)
+        );
+
+        let mut wrong_reason = session("Reject a containment reason outside the allowlist.");
+        wrong_reason
+            .request_stop(TurnReason::UserCancelled)
+            .expect("enter stopping");
+        assert_eq!(
+            wrong_reason.fail(TurnState::ContainmentFailed, TurnReason::BufferLimit),
+            Err(TurnError::InvalidTransition)
+        );
+    }
+
+    #[test]
     fn approved_runtime_contract_is_exact() {
         assert!(runtime_contract_is_approved(&RuntimeDescriptor::approved()));
         let mut drifted = RuntimeDescriptor::approved();
         drifted.version = "0.146.0".to_owned();
         assert!(!runtime_contract_is_approved(&drifted));
+
+        let mut digest = RuntimeDescriptor::approved();
+        digest.artifact_sha256 = "0".repeat(64);
+        assert!(!runtime_contract_is_approved(&digest));
+
+        let mut containment = RuntimeDescriptor::approved();
+        containment.containment_profile = "drifted".to_owned();
+        assert!(!runtime_contract_is_approved(&containment));
+
+        let mut reusable = RuntimeDescriptor::approved();
+        reusable.fresh_start_required = false;
+        assert!(!runtime_contract_is_approved(&reusable));
     }
 }

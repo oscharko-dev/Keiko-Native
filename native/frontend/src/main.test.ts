@@ -1,7 +1,12 @@
+// @vitest-environment happy-dom
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act } from "react";
 import { expectedSourceRevision, type Invoke, type TurnView } from "./port";
 
 const authority = { documentNonce: "a".repeat(64), generation: 7 };
+const domWindow = globalThis.window;
+const domDocument = globalThis.document;
 
 const invoke = vi.fn(
   async (
@@ -99,6 +104,9 @@ const invoke = vi.fn(
   },
 );
 const render = vi.fn();
+const rootFactory = vi.hoisted(() => ({
+  current: null as null | ((container: Element | DocumentFragment) => unknown),
+}));
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke,
@@ -106,10 +114,14 @@ vi.mock("@tauri-apps/api/core", () => ({
     onmessage = (_value: T): void => undefined;
   },
 }));
-vi.mock("react-dom/client", () => ({ createRoot: () => ({ render }) }));
+vi.mock("react-dom/client", () => ({
+  createRoot: (container: Element | DocumentFragment) =>
+    rootFactory.current?.(container) ?? { render },
+}));
 
 describe("production renderer composition", () => {
   beforeEach(() => {
+    rootFactory.current = null;
     invoke.mockClear();
     render.mockClear();
     Object.defineProperty(globalThis, "window", {
@@ -1081,25 +1093,12 @@ describe("production renderer composition", () => {
       },
     };
     turnChannel?.onmessage(cancelled);
-    const earlyRetryElements = all(render.mock.calls.at(-1)?.[0]);
-    const earlyRetryTask = earlyRetryElements.find(
-      ({ props }) => props.id === "codex-task",
-    )?.props;
-    const earlyRetrySubmit = earlyRetryElements.find(
-      ({ type, props }) =>
-        type === "button" && props.children === "Begrenzten Auftrag starten",
-    )?.props;
-    const earlyRetryTaskNode = { disabled: false, value: "Retry task." };
-    const earlyRetrySubmitNode = { disabled: true };
-    (earlyRetryTask?.ref as (node: typeof earlyRetryTaskNode) => void)(
-      earlyRetryTaskNode,
+    expect(JSON.stringify(render.mock.calls.at(-1)?.[0])).toContain(
+      "Codex-Lauf wird beendet",
     );
-    (earlyRetrySubmit?.ref as (node: typeof earlyRetrySubmitNode) => void)(
-      earlyRetrySubmitNode,
+    expect(JSON.stringify(render.mock.calls.at(-1)?.[0])).not.toContain(
+      "Begrenzten Auftrag starten",
     );
-    (earlyRetryTask?.onInput as () => void)();
-    (earlyRetrySubmit?.onClick as () => void)();
-    expect(earlyRetrySubmitNode.disabled).toBe(true);
     const terminalRenderCount = render.mock.calls.length;
     resolveTurn?.(
       JSON.stringify({
@@ -1128,5 +1127,413 @@ describe("production renderer composition", () => {
     );
     (recoveredTask?.onInput as () => void)();
     expect(recoveredSubmitNode.disabled).toBe(false);
+  });
+
+  it("commits stopping to the real stable live region before a pending terminal", async () => {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: domWindow,
+    });
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: domDocument,
+    });
+    Object.defineProperty(domWindow, "__KEIKO_RENDERER_AUTHORITY", {
+      configurable: true,
+      value: authority,
+    });
+    domDocument.body.innerHTML = '<div id="root"></div>';
+    const { startRenderer } = await import("./main");
+    const actualClient =
+      await vi.importActual<typeof import("react-dom/client")>(
+        "react-dom/client",
+      );
+    rootFactory.current = actualClient.createRoot;
+    Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+    let resolveCancellation!: (value: string) => void;
+    let resolveTurn!: (value: string) => void;
+    let turnRequestId = "";
+    let turnChannel: { onmessage: (value: TurnView) => void } | undefined;
+    const terminalBeforeAck = vi.fn<Invoke>(async (command, arguments_) => {
+      const request = JSON.parse(arguments_.request) as {
+        requestId: string;
+        operation: { kind: string; workspaceGeneration?: number };
+      };
+      if (command === "application_cancel") {
+        return new Promise<string>((resolve) => {
+          resolveCancellation = resolve;
+        });
+      }
+      if (command !== "codex_turn_request") {
+        return invoke(command, arguments_);
+      }
+      turnRequestId = request.requestId;
+      turnChannel = arguments_.onEvent;
+      arguments_.onEvent?.onmessage({
+        taskId: "task-0000000000000007-0000000000000001",
+        runId: "run-0000000000000007-0000000000000001",
+        workspaceGeneration: request.operation.workspaceGeneration ?? 0,
+        state: "preflighting",
+        agentText: "",
+        providerThreadEstablished: false,
+        providerTurnEstablished: false,
+        evidence: {
+          runtimeVersion: "0.145.0",
+          runtimeArtifactSha256:
+            "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
+          containmentProfile: "keiko-codex-readiness-v1",
+          authorityProfile: "keiko-codex-no-effect-v1",
+          messageBytes: 0,
+          quarantinedEvents: 0,
+          acceptedEffects: 0,
+          repositoryContextBytesToRuntime: 0,
+          cleanupComplete: false,
+          terminalState: "preflighting",
+        },
+      });
+      return new Promise<string>((resolve) => {
+        resolveTurn = resolve;
+      });
+    });
+    await act(async () => {
+      await startRenderer(terminalBeforeAck, async () => authority);
+    });
+    const click = async (label: string) => {
+      const button = Array.from(domDocument.querySelectorAll("button")).find(
+        (candidate) => candidate.textContent === label,
+      );
+      expect(button, label).toBeDefined();
+      await act(async () => button?.click());
+    };
+    await click("Foundation öffnen");
+    await click("Repository auswählen");
+    await click("Codex-Bereitschaft prüfen");
+    const task = domDocument.querySelector<HTMLTextAreaElement>("#codex-task");
+    expect(task).not.toBeNull();
+    await act(async () => {
+      if (task !== null) {
+        task.value = "Bounded task.";
+        task.dispatchEvent(new domWindow.Event("input", { bubbles: true }));
+      }
+    });
+    await click("Begrenzten Auftrag starten");
+    const status = domDocument.querySelector(".turn-status");
+    expect(status).not.toBeNull();
+    const oldValues: Array<string | null> = [];
+    const observer = new domWindow.MutationObserver((records) => {
+      oldValues.push(...records.map((record) => record.oldValue));
+    });
+    observer.observe(status as Node, {
+      characterData: true,
+      characterDataOldValue: true,
+      childList: true,
+      subtree: true,
+    });
+    await click("Codex-Lauf abbrechen");
+    const cancelled: TurnView = {
+      taskId: "task-0000000000000007-0000000000000001",
+      runId: "run-0000000000000007-0000000000000001",
+      workspaceGeneration: 1,
+      state: "cancelled",
+      reason: "user-cancelled",
+      agentText: "",
+      providerThreadEstablished: false,
+      providerTurnEstablished: false,
+      evidence: {
+        runtimeVersion: "0.145.0",
+        runtimeArtifactSha256:
+          "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
+        containmentProfile: "keiko-codex-readiness-v1",
+        authorityProfile: "keiko-codex-no-effect-v1",
+        messageBytes: 0,
+        quarantinedEvents: 0,
+        acceptedEffects: 0,
+        repositoryContextBytesToRuntime: 0,
+        cleanupComplete: true,
+        terminalState: "cancelled",
+      },
+    };
+    turnChannel?.onmessage(cancelled);
+    resolveTurn(
+      JSON.stringify({
+        schemaVersion: 1,
+        requestId: turnRequestId,
+        result: { kind: "codex-turn", state: cancelled },
+      }),
+    );
+    await act(async () => {
+      resolveCancellation(
+        JSON.stringify({
+          schemaVersion: 1,
+          requestId: turnRequestId,
+          result: { kind: "application-cancel", status: "cancelled" },
+        }),
+      );
+    });
+    observer.disconnect();
+
+    expect(domDocument.querySelector(".turn-status")).toBe(status);
+    expect(oldValues).toContain("Keiko beendet den Codex-Lauf sicher.");
+    expect(status?.textContent).toBe(
+      "Der Codex-Lauf wurde abgebrochen und vollständig beendet.",
+    );
+  });
+
+  it("commits one fail-closed terminal to the stable live region at the cleanup reserve", async () => {
+    vi.useFakeTimers();
+    try {
+      Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: domWindow,
+      });
+      Object.defineProperty(globalThis, "document", {
+        configurable: true,
+        value: domDocument,
+      });
+      Object.defineProperty(domWindow, "__KEIKO_RENDERER_AUTHORITY", {
+        configurable: true,
+        value: authority,
+      });
+      domDocument.body.innerHTML = '<div id="root"></div>';
+      const { startRenderer } = await import("./main");
+      const actualClient =
+        await vi.importActual<typeof import("react-dom/client")>(
+          "react-dom/client",
+        );
+      rootFactory.current = actualClient.createRoot;
+      Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+      let resolveTurn!: (value: string) => void;
+      let turnRequestId = "";
+      let turnChannel: { onmessage: (value: TurnView) => void } | undefined;
+      let readinessRequests = 0;
+      let workspaceSelections = 0;
+      const withheldTerminal = vi.fn<Invoke>(async (command, arguments_) => {
+        const request = JSON.parse(arguments_.request) as {
+          requestId: string;
+          operation: { kind: string; workspaceGeneration?: number };
+        };
+        if (command === "runtime_request") {
+          readinessRequests += 1;
+          if (readinessRequests === 2) {
+            throw new Error("readiness IPC failed");
+          }
+          if (readinessRequests === 3) {
+            return JSON.stringify({
+              schemaVersion: 1,
+              requestId: request.requestId,
+              result: {
+                kind: "runtime-readiness",
+                state: { state: "unavailable", quarantinedEvents: 0 },
+              },
+            });
+          }
+          return invoke(command, arguments_);
+        }
+        if (command === "workspace_request") {
+          const selecting = request.operation.kind === "workspace-select";
+          if (selecting) {
+            workspaceSelections += 1;
+          }
+          const state = selecting
+            ? {
+                kind: "bound",
+                generation: workspaceSelections === 3 ? 4 : workspaceSelections,
+                displayLabel: `Keiko Native ${workspaceSelections}`,
+              }
+            : { kind: "empty", generation: 3 };
+          return JSON.stringify({
+            schemaVersion: 1,
+            requestId: request.requestId,
+            result: { kind: "workspace", state },
+          });
+        }
+        if (command === "application_cancel") {
+          return JSON.stringify({
+            schemaVersion: 1,
+            requestId: request.requestId,
+            result: { kind: "application-cancel", status: "cancelled" },
+          });
+        }
+        if (command !== "codex_turn_request") {
+          return invoke(command, arguments_);
+        }
+        turnRequestId = request.requestId;
+        turnChannel = arguments_.onEvent;
+        arguments_.onEvent?.onmessage({
+          taskId: "task-0000000000000007-0000000000000001",
+          runId: "run-0000000000000007-0000000000000001",
+          workspaceGeneration: request.operation.workspaceGeneration ?? 0,
+          state: "preflighting",
+          agentText: "",
+          providerThreadEstablished: false,
+          providerTurnEstablished: false,
+          evidence: {
+            runtimeVersion: "0.145.0",
+            runtimeArtifactSha256:
+              "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
+            containmentProfile: "keiko-codex-readiness-v1",
+            authorityProfile: "keiko-codex-no-effect-v1",
+            messageBytes: 0,
+            quarantinedEvents: 0,
+            acceptedEffects: 0,
+            repositoryContextBytesToRuntime: 0,
+            cleanupComplete: false,
+            terminalState: "preflighting",
+          },
+        });
+        return new Promise<string>((resolve) => {
+          resolveTurn = resolve;
+        });
+      });
+      await act(async () => {
+        await startRenderer(withheldTerminal, async () => authority);
+      });
+      const click = async (label: string) => {
+        const button = Array.from(domDocument.querySelectorAll("button")).find(
+          (candidate) => candidate.textContent === label,
+        );
+        expect(button, label).toBeDefined();
+        await act(async () => button?.click());
+      };
+      await click("Foundation öffnen");
+      await click("Repository auswählen");
+      await click("Codex-Bereitschaft prüfen");
+      const task =
+        domDocument.querySelector<HTMLTextAreaElement>("#codex-task");
+      await act(async () => {
+        if (task !== null) {
+          task.value = "Bounded task.";
+          task.dispatchEvent(new domWindow.Event("input", { bubbles: true }));
+        }
+      });
+      await click("Begrenzten Auftrag starten");
+      const status = domDocument.querySelector(".turn-status");
+      expect(status).not.toBeNull();
+      const terminalText =
+        "Keiko konnte die Beendigung des Codex-Laufs nicht bestätigen. Starten Sie keinen neuen Lauf.";
+      const observed: string[] = [];
+      const observer = new domWindow.MutationObserver(() => {
+        observed.push(status?.textContent ?? "");
+      });
+      observer.observe(status as Node, {
+        characterData: true,
+        childList: true,
+        subtree: true,
+      });
+
+      await click("Codex-Lauf abbrechen");
+      await act(async () => vi.advanceTimersByTimeAsync(4_499));
+      expect(status?.textContent).toBe("Keiko beendet den Codex-Lauf sicher.");
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+      expect(domDocument.querySelector(".turn-status")).toBe(status);
+      expect(status?.getAttribute("role")).toBe("status");
+      expect(status?.getAttribute("aria-live")).toBe("polite");
+      expect(status?.getAttribute("aria-atomic")).toBe("true");
+      expect(status?.textContent).toBe(terminalText);
+      expect(domDocument.body.textContent).toContain(
+        "Die Bereinigung ist nicht bestätigt. Prüfen Sie die Codex-Bereitschaft erneut, bevor Sie fortfahren.",
+      );
+      const blockedTask =
+        domDocument.querySelector<HTMLTextAreaElement>("#codex-task");
+      const blockedSubmit = Array.from(
+        domDocument.querySelectorAll<HTMLButtonElement>("button"),
+      ).find(
+        (candidate) => candidate.textContent === "Begrenzten Auftrag starten",
+      );
+      expect(blockedTask?.disabled).toBe(true);
+      expect(blockedSubmit?.disabled).toBe(true);
+      await act(async () => {
+        blockedTask?.dispatchEvent(
+          new domWindow.KeyboardEvent("keydown", {
+            bubbles: true,
+            key: "Enter",
+          }),
+        );
+      });
+      await act(async () => blockedSubmit?.click());
+      expect(
+        withheldTerminal.mock.calls.filter(
+          ([command]) => command === "codex_turn_request",
+        ),
+      ).toHaveLength(1);
+
+      await click("Anderes Repository auswählen");
+      expect(status?.textContent).toBe(terminalText);
+      expect(blockedTask?.disabled).toBe(true);
+      expect(domDocument.body.textContent).toContain("Noch nicht geprüft.");
+
+      await click("Auswahl aufheben");
+      expect(status?.textContent).toBe(terminalText);
+      expect(blockedTask?.disabled).toBe(true);
+      expect(domDocument.body.textContent).toContain(
+        "Kein Repository ausgewählt.",
+      );
+
+      await click("Repository auswählen");
+      expect(status?.textContent).toBe(terminalText);
+      expect(blockedTask?.disabled).toBe(true);
+      expect(domDocument.body.textContent).toContain("Keiko Native 3");
+
+      await click("Codex-Bereitschaft prüfen");
+      expect(status?.textContent).toBe(terminalText);
+      expect(blockedTask?.disabled).toBe(true);
+      expect(domDocument.body.textContent).toContain(
+        "Die Bereinigung ist nicht bestätigt. Prüfen Sie die Codex-Bereitschaft erneut, bevor Sie fortfahren.",
+      );
+
+      await click("Prüfung wiederholen");
+      expect(status?.textContent).toBe(terminalText);
+      expect(blockedTask?.disabled).toBe(true);
+      expect(domDocument.body.textContent).toContain(
+        "Die Bereinigung ist nicht bestätigt. Prüfen Sie die Codex-Bereitschaft erneut, bevor Sie fortfahren.",
+      );
+
+      await click("Prüfung wiederholen");
+      expect(domDocument.querySelector(".turn-status")).toBeNull();
+      expect(blockedTask?.disabled).toBe(false);
+      expect(blockedSubmit?.disabled).toBe(false);
+      expect(domDocument.body.textContent).not.toContain(terminalText);
+
+      const cancelled: TurnView = {
+        taskId: "task-0000000000000007-0000000000000001",
+        runId: "run-0000000000000007-0000000000000001",
+        workspaceGeneration: 1,
+        state: "cancelled",
+        reason: "user-cancelled",
+        agentText: "",
+        providerThreadEstablished: false,
+        providerTurnEstablished: false,
+        evidence: {
+          runtimeVersion: "0.145.0",
+          runtimeArtifactSha256:
+            "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
+          containmentProfile: "keiko-codex-readiness-v1",
+          authorityProfile: "keiko-codex-no-effect-v1",
+          messageBytes: 0,
+          quarantinedEvents: 0,
+          acceptedEffects: 0,
+          repositoryContextBytesToRuntime: 0,
+          cleanupComplete: true,
+          terminalState: "cancelled",
+        },
+      };
+      turnChannel?.onmessage(cancelled);
+      resolveTurn(
+        JSON.stringify({
+          schemaVersion: 1,
+          requestId: turnRequestId,
+          result: { kind: "codex-turn", state: cancelled },
+        }),
+      );
+      await act(async () => Promise.resolve());
+      observer.disconnect();
+
+      expect(domDocument.querySelectorAll(".turn-status")).toHaveLength(0);
+      expect(observed.filter((value) => value === terminalText)).toHaveLength(
+        1,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

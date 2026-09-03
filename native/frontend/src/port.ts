@@ -142,6 +142,8 @@ export interface TurnResponse {
   result: { kind: "codex-turn"; state: TurnView };
 }
 
+const TURN_CANCELLATION_WATCHDOG_MS = 4_500;
+
 type FoundationOperation =
   | { kind: "foundation-load" }
   | { kind: "dismiss-welcome" }
@@ -521,17 +523,78 @@ export function createRendererPort(
       let latest: TurnView | null = null;
       let cancellationAccepted = false;
       let cancellationDispatched = false;
+      let provisionalTerminal: TurnView | null = null;
+      let pendingTerminalResponse: string | null = null;
+      let cancellationWatchdog: ReturnType<typeof setTimeout> | null = null;
       const finish = () => {
+        if (cancellationWatchdog !== null) {
+          clearTimeout(cancellationWatchdog);
+          cancellationWatchdog = null;
+        }
         signal?.removeEventListener("abort", cancel);
         if (activeTurnCancellationRetry === dispatchCancellation) {
           activeTurnCancellationRetry = null;
         }
       };
-      const fail = (message: string) => {
+      const fail = (message: string, waitForWatchdog = false) => {
         if (terminal) return;
+        if (waitForWatchdog && cancellationWatchdog !== null) return;
         terminal = true;
         finish();
         reject(new Error(message));
+      };
+      const watchdogTerminal = (): TurnView => {
+        const suffix = request.requestId.slice("request-".length);
+        const current: TurnView = latest ?? {
+          taskId: `task-${suffix}`,
+          runId: `run-${suffix}`,
+          workspaceGeneration,
+          state: "preflighting",
+          agentText: "",
+          providerThreadEstablished: false,
+          providerTurnEstablished: false,
+          evidence: {
+            runtimeVersion: "0.145.0",
+            runtimeArtifactSha256:
+              "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
+            containmentProfile: "keiko-codex-readiness-v1",
+            authorityProfile: "keiko-codex-no-effect-v1",
+            messageBytes: 0,
+            quarantinedEvents: 0,
+            acceptedEffects: 0,
+            repositoryContextBytesToRuntime: 0,
+            cleanupComplete: false,
+            terminalState: "preflighting",
+          },
+        };
+        return {
+          ...current,
+          state: "containment-failed",
+          reason: "internal-failure",
+          evidence: {
+            ...current.evidence,
+            cleanupComplete: false,
+            terminalState: "containment-failed",
+          },
+        };
+      };
+      const startCancellationWatchdog = () => {
+        if (terminal || cancellationWatchdog !== null) return;
+        cancellationWatchdog = setTimeout(() => {
+          if (terminal) return;
+          const state = watchdogTerminal();
+          terminal = true;
+          latest = state;
+          provisionalTerminal = null;
+          pendingTerminalResponse = null;
+          finish();
+          onUpdate(state);
+          resolve({
+            schemaVersion: 1,
+            requestId: request.requestId,
+            result: { kind: "codex-turn", state },
+          });
+        }, TURN_CANCELLATION_WATCHDOG_MS);
       };
       const projectStopping = () => {
         if (
@@ -554,6 +617,41 @@ export function createRendererPort(
         };
         onUpdate(latest);
       };
+      const commitTerminalResponse = (encoded: string) => {
+        if (terminal) return;
+        let response: unknown;
+        try {
+          response = JSON.parse(encoded);
+        } catch {
+          fail("codex-turn-failed", true);
+          return;
+        }
+        if (
+          !isTurnResponse(response) ||
+          response.requestId !== request.requestId ||
+          !validTurnProgression(latest, response.result.state) ||
+          !isTerminalTurn(response.result.state)
+        ) {
+          fail("codex-turn-failed", true);
+          return;
+        }
+        latest = response.result.state;
+        onUpdate(response.result.state);
+        terminal = true;
+        finish();
+        resolve(response);
+      };
+      const commitPendingTerminalResponse = () => {
+        if (
+          pendingTerminalResponse === null ||
+          (cancellationDispatched && !cancellationAccepted)
+        ) {
+          return;
+        }
+        const encoded = pendingTerminalResponse;
+        pendingTerminalResponse = null;
+        commitTerminalResponse(encoded);
+      };
       const dispatchCancellation = () => {
         if (cancellationDispatched) return;
         cancellationDispatched = true;
@@ -574,14 +672,19 @@ export function createRendererPort(
             } else {
               cancellationDispatched = false;
             }
+            commitPendingTerminalResponse();
           })
           .catch(() => {
-            if (!terminal) cancellationDispatched = false;
+            if (!terminal) {
+              cancellationDispatched = false;
+              commitPendingTerminalResponse();
+            }
           });
       };
       activeTurnCancellationRetry = dispatchCancellation;
       const cancel = () => {
         if (terminal || (latest !== null && isTerminalTurn(latest))) return;
+        startCancellationWatchdog();
         dispatchCancellation();
       };
       const onEvent = channelFactory();
@@ -601,7 +704,19 @@ export function createRendererPort(
           !validTurnProgression(latest, candidate)
         ) {
           dispatchCancellation();
-          fail("codex-turn-failed");
+          fail("codex-turn-failed", true);
+          return;
+        }
+        if (isTerminalTurn(candidate)) {
+          if (
+            provisionalTerminal !== null &&
+            JSON.stringify(provisionalTerminal) !== JSON.stringify(candidate)
+          ) {
+            dispatchCancellation();
+            fail("codex-turn-failed", true);
+            return;
+          }
+          provisionalTerminal = candidate;
           return;
         }
         latest = candidate;
@@ -617,29 +732,13 @@ export function createRendererPort(
       }).then(
         (encoded) => {
           if (terminal) return;
-          let response: unknown;
-          try {
-            response = JSON.parse(encoded);
-          } catch {
-            fail("codex-turn-failed");
+          if (cancellationDispatched && !cancellationAccepted) {
+            pendingTerminalResponse = encoded;
             return;
           }
-          if (
-            !isTurnResponse(response) ||
-            response.requestId !== request.requestId ||
-            !validTurnProgression(latest, response.result.state) ||
-            !isTerminalTurn(response.result.state)
-          ) {
-            fail("codex-turn-failed");
-            return;
-          }
-          latest = response.result.state;
-          onUpdate(response.result.state);
-          terminal = true;
-          finish();
-          resolve(response);
+          commitTerminalResponse(encoded);
         },
-        () => fail("codex-turn-failed"),
+        () => fail("codex-turn-failed", true),
       );
       if (signal?.aborted) cancel();
     });
@@ -1046,7 +1145,9 @@ function validTurnProgression(
     (previous.state === "streaming" &&
       (next.state === "stopping" || isTerminalTurn(next))) ||
     (previous.state === "stopping" &&
-      (next.state === "cancelled" || next.state === "cleanup-failed"))
+      (next.state === "cancelled" ||
+        next.state === "containment-failed" ||
+        next.state === "cleanup-failed"))
   );
 }
 
