@@ -116,6 +116,30 @@ test("architecture scans every source and rejects generic capabilities", () => {
     ),
     [],
   );
+  for (const command of ["codex_turn_request", "runtime_request"]) {
+    assert.deepEqual(
+      architectureFailures(
+        roots.map((entry, index) =>
+          index === roots.length - 1
+            ? { ...entry, text: `invoke("${command}")` }
+            : entry,
+        ),
+        project,
+      ),
+      [],
+    );
+  }
+  assert.deepEqual(
+    architectureFailures(
+      roots.map((entry, index) =>
+        index === roots.length - 1
+          ? { ...entry, text: 'invoke("workspace_request")' }
+          : entry,
+      ),
+      project,
+    ),
+    [],
+  );
   assert.ok(
     architectureFailures(
       roots.map((entry, index) =>
@@ -126,6 +150,28 @@ test("architecture scans every source and rejects generic capabilities", () => {
       project,
     ).includes("forbidden-renderer-command:foundation_shell"),
   );
+  assert.ok(
+    architectureFailures(
+      roots.map((entry, index) =>
+        index === roots.length - 1
+          ? { ...entry, text: 'invoke("workspace_shell")' }
+          : entry,
+      ),
+      project,
+    ).includes("forbidden-renderer-command:workspace_shell"),
+  );
+  for (const command of ["codex_execute", "runtime_shell"]) {
+    assert.ok(
+      architectureFailures(
+        roots.map((entry, index) =>
+          index === roots.length - 1
+            ? { ...entry, text: `invoke("${command}")` }
+            : entry,
+        ),
+        project,
+      ).includes(`forbidden-renderer-command:${command}`),
+    );
+  }
 });
 
 test("desktop main remains thin declarative wiring", () => {
@@ -317,6 +363,7 @@ lto = true
       acknowledgementMs: 12,
       cleanupOwnedDescendants: 0,
       shutdownMs: 8,
+      workspaceAcknowledgementMs: 10,
     },
     npmLockSha256: "c".repeat(64),
     packageManifestSha256: "d".repeat(64),
@@ -329,11 +376,12 @@ lto = true
       npmLockSha256: evidence.npmLockSha256,
       packageManifestSha256: evidence.packageManifestSha256,
       readinessFingerprint: evidence.readinessFingerprint,
+      foundationReadinessFingerprint: evidence.foundationReadinessFingerprint,
       sourceRevision: evidence.sourceRevision,
     }),
     [],
   );
-  assert.equal(evidence.outcomes.length, 4);
+  assert.equal(evidence.outcomes.length, 5);
   assert.equal(evidence.boundedReasonCodes.length, 6);
 
   const env = nativeGateTestSupport.productiveRustEnv();

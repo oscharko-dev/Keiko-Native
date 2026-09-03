@@ -1,4 +1,8 @@
 :root {
+  --control-primary-background: #6458e8;
+  --control-primary-hover-background: #5a50d6;
+  --focus-outline: #61e8c6;
+  --textarea-border: #7c849a;
   color-scheme: light dark;
   font-family:
     Inter,
@@ -36,18 +40,24 @@ button {
   border: 1px solid rgb(255 255 255 / 18%);
   border-radius: 12px;
   padding: 0.65rem 1rem;
-  background: #766cff;
+  background: var(--control-primary-background);
   color: #fff;
   cursor: pointer;
 }
 
 button:hover {
-  background: #887fff;
+  background: var(--control-primary-hover-background);
+}
+
+button:disabled,
+button[aria-disabled="true"] {
+  cursor: progress;
+  opacity: 0.7;
 }
 
 button:focus-visible,
 textarea:focus-visible {
-  outline: 3px solid #61e8c6;
+  outline: 3px solid var(--focus-outline);
   outline-offset: 3px;
 }
 
@@ -145,6 +155,95 @@ h1 {
   gap: 0.65rem;
 }
 
+.workspace-card,
+.runtime-card,
+.turn-card {
+  margin: 0 0 2rem;
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 18px;
+  padding: 1.25rem;
+  background: rgb(0 0 0 / 18%);
+}
+
+.workspace-card h2,
+.runtime-card h2,
+.turn-card h2 {
+  margin: 0;
+  font-size: 1.35rem;
+}
+
+.authority-copy {
+  margin: 0.9rem 0 1.2rem;
+  border-inline-start: 4px solid #8cebd2;
+  padding-inline-start: 0.8rem;
+  line-height: 1.55;
+}
+
+.byte-count {
+  margin: 0.4rem 0 0.9rem;
+  color: #aeb6cc;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.85rem;
+}
+
+.turn-result {
+  margin-top: 1.2rem;
+}
+
+.turn-status {
+  border-inline-start: 4px solid #8cebd2;
+  padding-inline-start: 0.8rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.turn-status-failed,
+.turn-status-timed-out,
+.turn-status-containment-failed,
+.turn-status-cleanup-failed {
+  border-inline-start-color: #ffbd66;
+}
+
+.agent-response {
+  margin: 1rem 0;
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 14px;
+  padding: 1rem;
+  background: rgb(0 0 0 / 20%);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.workspace-status {
+  margin: 0.9rem 0 0;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.runtime-status {
+  margin: 0.9rem 0;
+  border-inline-start: 4px solid #8cebd2;
+  padding-inline-start: 0.8rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.runtime-status-incompatible,
+.runtime-status-authentication-required,
+.runtime-status-containment-failed,
+.runtime-status-timed-out,
+.runtime-status-cancelled,
+.runtime-status-cleanup-failed,
+.runtime-status-unavailable {
+  border-inline-start-color: #ffbd66;
+}
+
+.workspace-status-closed {
+  border-inline-start: 4px solid #ffbd66;
+  padding-inline-start: 0.8rem;
+}
+
 .metadata-row {
   display: grid;
   grid-template-columns: minmax(7rem, 0.35fr) 1fr;
@@ -172,7 +271,7 @@ label {
 textarea {
   width: 100%;
   resize: vertical;
-  border: 1px solid rgb(255 255 255 / 22%);
+  border: 1px solid var(--textarea-border);
   border-radius: 14px;
   padding: 1rem;
   background: rgb(0 0 0 / 24%);
@@ -188,6 +287,8 @@ footer {
 
 @media (prefers-color-scheme: light) {
   :root {
+    --focus-outline: #08785e;
+    --textarea-border: #6d7487;
     background: #eef0f8;
     color: #13182a;
   }
@@ -237,6 +338,74 @@ footer {
     border-color: rgb(25 32 55 / 18%);
     background: #fff;
     color: #13182a;
+  }
+
+  .workspace-card,
+  .runtime-card,
+  .turn-card {
+    border-color: rgb(25 32 55 / 16%);
+    background: rgb(238 240 248 / 72%);
+  }
+
+  .workspace-status-closed {
+    border-inline-start-color: #9a5200;
+  }
+
+  .runtime-status {
+    border-inline-start-color: #08785e;
+  }
+
+  .authority-copy,
+  .turn-status {
+    border-inline-start-color: #08785e;
+  }
+
+  .turn-status-failed,
+  .turn-status-timed-out,
+  .turn-status-containment-failed,
+  .turn-status-cleanup-failed {
+    border-inline-start-color: #9a5200;
+  }
+
+  .agent-response {
+    border-color: rgb(25 32 55 / 16%);
+    background: #fff;
+  }
+
+  .runtime-status-incompatible,
+  .runtime-status-authentication-required,
+  .runtime-status-containment-failed,
+  .runtime-status-timed-out,
+  .runtime-status-cancelled,
+  .runtime-status-cleanup-failed,
+  .runtime-status-unavailable {
+    border-inline-start-color: #9a5200;
+  }
+}
+
+@media (prefers-contrast: more) {
+  button,
+  textarea,
+  .welcome-card,
+  .content-card,
+  .canvas-card,
+  .workspace-card,
+  .runtime-card,
+  .turn-card {
+    border-width: 2px;
+  }
+
+  .workspace-status-closed {
+    border-inline-start-width: 6px;
+  }
+
+  .runtime-status {
+    border-inline-start-width: 6px;
+  }
+
+  .authority-copy,
+  .turn-status {
+    border-inline-start-width: 6px;
   }
 }
 

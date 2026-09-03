@@ -81,6 +81,9 @@ test("package policy requires exact paths, dependencies, notices and SPDX", () =
         "secret-value",
         "test-listener",
         "remote-debugging",
+        "evaluate:macos-accessibility-driver",
+        "dev.oscharko.keiko-native.evaluation.accessibility",
+        "KeikoAccessibilityEvaluation",
       ],
       prohibitedPathFragments: [
         "node_modules",
@@ -259,9 +262,11 @@ test("package policy requires exact paths, dependencies, notices and SPDX", () =
 
 test("evidence schema and redaction fail closed", () => {
   const evidence = {
-    schema: "keiko-native-packaged-shell-evidence/v1",
+    schema: "keiko-native-packaged-shell-evidence/v2",
     sourceRevision: "0".repeat(40),
     readinessFingerprint:
+      "9ffd5d0ff53857f35ff47f470a4661fdd89ddcba8d08a2b92cf9c36a4afd446e",
+    foundationReadinessFingerprint:
       "da2459bd3becc6cbf651a24ef1b64d1b11a8ed642bfddc92923f0d6ed6dc8e5e",
     packageManifestSha256: "b".repeat(64),
     cargoLockSha256: "c".repeat(64),
@@ -270,6 +275,7 @@ test("evidence schema and redaction fail closed", () => {
     architecture: "arm64",
     outcomes: [
       "packaged-health-acknowledged",
+      "packaged-workspace-status-acknowledged",
       "normal-shutdown",
       "zero-owned-descendants",
       "package-policy",
@@ -283,6 +289,7 @@ test("evidence schema and redaction fail closed", () => {
       "shutting-down",
     ],
     acknowledgementMs: 1,
+    workspaceAcknowledgementMs: 1,
     shutdownMs: 2,
     cleanupOwnedDescendants: 0,
     redaction: "closed",
@@ -290,6 +297,7 @@ test("evidence schema and redaction fail closed", () => {
   const bindings = {
     sourceRevision: evidence.sourceRevision,
     readinessFingerprint: evidence.readinessFingerprint,
+    foundationReadinessFingerprint: evidence.foundationReadinessFingerprint,
     packageManifestSha256: evidence.packageManifestSha256,
     cargoLockSha256: evidence.cargoLockSha256,
     npmLockSha256: evidence.npmLockSha256,
@@ -306,6 +314,7 @@ test("evidence schema and redaction fail closed", () => {
     { ...evidence, schema: "other" },
     { ...evidence, sourceRevision: "bad" },
     { ...evidence, readinessFingerprint: "0".repeat(64) },
+    { ...evidence, foundationReadinessFingerprint: "0".repeat(64) },
     { ...evidence, packageManifestSha256: "bad" },
     { ...evidence, cargoLockSha256: "bad" },
     { ...evidence, npmLockSha256: "bad" },
@@ -317,6 +326,8 @@ test("evidence schema and redaction fail closed", () => {
       boundedReasonCodes: [...evidence.boundedReasonCodes, "extra"],
     },
     { ...evidence, acknowledgementMs: 30_001 },
+    { ...evidence, workspaceAcknowledgementMs: 30_001 },
+    { ...evidence, workspaceAcknowledgementMs: 2 },
     { ...evidence, shutdownMs: 1.5 },
     { ...evidence, cleanupOwnedDescendants: 1 },
     { ...evidence, redaction: "open" },

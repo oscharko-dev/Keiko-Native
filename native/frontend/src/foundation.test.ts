@@ -5,7 +5,11 @@ import {
   renderFoundation,
   type FoundationController,
   type FoundationView,
+  type RuntimeController,
+  type TurnController,
+  type WorkspaceController,
 } from "./foundation";
+import type { TurnView } from "./port";
 
 const controller: FoundationController = {
   dismissWelcome: async () => ({ kind: "canvas", committedText: "" }),
@@ -51,6 +55,16 @@ function elements(
     Record<string, unknown> | undefined;
   if (props === undefined) return [];
   return [{ type, props }, ...elements(props.children)];
+}
+
+function completedRuntimeDescriptor() {
+  return {
+    version: "0.145.0" as const,
+    artifactSha256:
+      "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590" as const,
+    containmentProfile: "keiko-codex-readiness-v1" as const,
+    freshStartRequired: true as const,
+  };
 }
 
 describe("closed Foundation presentation", () => {
@@ -252,6 +266,356 @@ describe("closed Foundation presentation", () => {
       expect(commit).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it("presents every workspace state without exposing a path or color-only meaning", async () => {
+    const workspaceController: WorkspaceController = {
+      selectWorkspace: vi.fn(async () => undefined),
+      clearWorkspace: vi.fn(async () => undefined),
+    };
+    const states = [
+      { kind: "empty", generation: 0 },
+      { kind: "selecting", generation: 1 },
+      {
+        kind: "bound",
+        generation: 1,
+        displayLabel: "Keiko Native",
+      },
+      { kind: "closed", generation: 2, reason: "cancelled" },
+      { kind: "closed", generation: 3, reason: "permission-denied" },
+      { kind: "closed", generation: 4, reason: "invalid" },
+      { kind: "closed", generation: 5, reason: "unavailable" },
+      { kind: "closed", generation: 6, reason: "unsafe" },
+    ] as const;
+
+    for (const state of states) {
+      const rendered = renderFoundation(
+        { kind: "canvas", committedText: "" },
+        controller,
+        state,
+        workspaceController,
+      );
+      const tree = elements(rendered);
+      const status = tree.find(({ props }) => props.role === "status");
+      expect(status?.props["data-workspace-state"]).toBe(state.kind);
+      expect(textContent(rendered)).toContain("Codex erhält weder Pfad");
+      expect(textContent(rendered)).not.toMatch(/\/Users\/|\/private\//u);
+    }
+
+    const bound = renderFoundation(
+      { kind: "canvas", committedText: "" },
+      controller,
+      { kind: "bound", generation: 7, displayLabel: "Keiko Native" },
+      workspaceController,
+    );
+    for (const button of elements(bound).filter(
+      ({ type, props }) =>
+        type === "button" &&
+        ["Anderes Repository auswählen", "Auswahl aufheben"].includes(
+          String(props.children),
+        ),
+    )) {
+      (button.props.onClick as () => void)();
+    }
+    await Promise.resolve();
+    expect(workspaceController.selectWorkspace).toHaveBeenCalledOnce();
+    expect(workspaceController.clearWorkspace).toHaveBeenCalledOnce();
+  });
+
+  it("observes unexpected workspace action rejection with a redacted diagnostic", async () => {
+    const diagnostic = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    try {
+      const workspaceController: WorkspaceController = {
+        selectWorkspace: vi.fn(async () =>
+          Promise.reject(new Error("raw selection detail")),
+        ),
+        clearWorkspace: vi.fn(async () => undefined),
+      };
+      const rendered = renderFoundation(
+        { kind: "canvas", committedText: "" },
+        controller,
+        { kind: "empty", generation: 0 },
+        workspaceController,
+      );
+      const select = elements(rendered).find(
+        ({ type, props }) =>
+          type === "button" && props.children === "Repository auswählen",
+      );
+
+      (select?.props.onClick as () => void)();
+      for (let index = 0; index < 6; index += 1) {
+        await Promise.resolve();
+      }
+
+      expect(diagnostic).toHaveBeenCalledExactlyOnceWith(
+        "Workspace action failed after controller recovery.",
+      );
+      expect(diagnostic).not.toHaveBeenCalledWith(
+        expect.stringContaining("raw selection detail"),
+      );
+    } finally {
+      diagnostic.mockRestore();
+    }
+  });
+
+  it("presents every runtime outcome semantically and exposes a retry action", async () => {
+    const runtimeController: RuntimeController = {
+      checkRuntime: vi.fn(async () => undefined),
+    };
+    const states = [
+      "checking",
+      "ready",
+      "unavailable",
+      "incompatible",
+      "authentication-required",
+      "containment-failed",
+      "timed-out",
+      "cancelled",
+      "cleanup-failed",
+    ] as const;
+    for (const state of states) {
+      const rendered = renderFoundation(
+        { kind: "canvas", committedText: "" },
+        controller,
+        { kind: "empty", generation: 0 },
+        undefined,
+        { state, quarantinedEvents: 0 },
+        runtimeController,
+      );
+      const status = elements(rendered).find(
+        ({ props }) => props["data-runtime-state"] === state,
+      );
+      expect(status?.props.role).toBe("status");
+      expect(textContent(status)).not.toBe("");
+      if (state === "checking") {
+        const check = elements(rendered).find(
+          ({ type, props }) =>
+            type === "button" && props.children === "Codex wird geprüft",
+        );
+        expect(check?.props.disabled).toBe(true);
+      }
+      expect(textContent(rendered)).not.toMatch(
+        /\/Users\/|\/private\/|@example/iu,
+      );
+    }
+    const rendered = renderFoundation(
+      { kind: "canvas", committedText: "" },
+      controller,
+      { kind: "empty", generation: 0 },
+      undefined,
+      null,
+      runtimeController,
+    );
+    const check = elements(rendered).find(
+      ({ type, props }) =>
+        type === "button" && props.children === "Codex-Bereitschaft prüfen",
+    );
+    (check?.props.onClick as () => void)();
+    await Promise.resolve();
+    expect(runtimeController.checkRuntime).toHaveBeenCalledOnce();
+  });
+
+  it("keeps one text-only no-repository turn gated, accessible and distinct from delivery", async () => {
+    const startTurn = vi.fn(async () => undefined);
+    const cancelTurn = vi.fn();
+    const turnController: TurnController = { startTurn, cancelTurn };
+    const completed: TurnView = {
+      taskId: "task-0000000000000007-0000000000000001",
+      runId: "run-0000000000000007-0000000000000001",
+      workspaceGeneration: 3,
+      state: "completed",
+      agentText: "Eine begrenzte Antwort.",
+      providerThreadEstablished: true,
+      providerTurnEstablished: true,
+      evidence: {
+        runtimeVersion: "0.145.0",
+        runtimeArtifactSha256:
+          "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
+        containmentProfile: "keiko-codex-readiness-v1",
+        authorityProfile: "keiko-codex-no-effect-v1",
+        messageBytes: 24,
+        quarantinedEvents: 2,
+        acceptedEffects: 0,
+        repositoryContextBytesToRuntime: 0,
+        cleanupComplete: true,
+        terminalState: "completed",
+      },
+    };
+    const rendered = renderFoundation(
+      { kind: "canvas", committedText: "" },
+      controller,
+      { kind: "bound", generation: 3, displayLabel: "Keiko Native" },
+      undefined,
+      {
+        state: "ready",
+        quarantinedEvents: 0,
+        descriptor: {
+          version: "0.145.0",
+          artifactSha256:
+            "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
+          containmentProfile: "keiko-codex-readiness-v1",
+          freshStartRequired: true,
+        },
+      },
+      undefined,
+      completed,
+      turnController,
+    );
+    const text = textContent(rendered);
+    expect(text).toContain("keinen Repository-Pfad");
+    expect(text).toContain("keine Werkzeuge");
+    expect(text).toContain("weder akzeptiert noch ausgeliefert");
+    expect(text).toContain("Eine begrenzte Antwort.");
+    const status = elements(rendered).find(
+      ({ props }) => props["data-turn-state"] === "completed",
+    );
+    expect(status?.props.role).toBe("status");
+    expect(status?.props["aria-live"]).toBe("polite");
+    const response = elements(rendered).find(
+      ({ props }) => props["aria-label"] === "Codex-Antwort",
+    );
+    expect(response?.props["aria-live"]).toBeUndefined();
+    const surface = elements(rendered).find(({ props }) =>
+      String(props.className ?? "").startsWith("surface "),
+    );
+    expect(surface?.props["aria-live"]).toBeUndefined();
+
+    const task = elements(rendered).find(
+      ({ props }) => props.id === "codex-task",
+    )?.props;
+    const submit = elements(rendered).find(
+      ({ type, props }) =>
+        type === "button" && props.children === "Begrenzten Auftrag starten",
+    )?.props;
+    const count = elements(rendered).find(
+      ({ props }) => props.id === "codex-task-count",
+    )?.props;
+    const textareaNode = {
+      value: "Erkläre eine Invariante.",
+      disabled: false,
+    };
+    const buttonNode = { disabled: true };
+    const countNode = { textContent: "" };
+    (task?.ref as (node: unknown) => void)(textareaNode);
+    (count?.ref as (node: unknown) => void)(countNode);
+    (submit?.ref as (node: unknown) => void)(buttonNode);
+    (task?.onInput as () => void)();
+    expect(buttonNode.disabled).toBe(false);
+    (task?.onCompositionStart as () => void)();
+    expect(buttonNode.disabled).toBe(true);
+    (task?.onCompositionEnd as () => void)();
+    expect(buttonNode.disabled).toBe(false);
+    expect(countNode.textContent).toMatch(/von 4096 Bytes/u);
+    (submit?.onClick as () => void)();
+    await Promise.resolve();
+    expect(startTurn).toHaveBeenCalledExactlyOnceWith(
+      "Erkläre eine Invariante.",
+    );
+    expect(textareaNode.disabled).toBe(true);
+
+    const streaming = {
+      ...completed,
+      state: "streaming" as const,
+      reason: undefined,
+      evidence: {
+        ...completed.evidence,
+        cleanupComplete: false,
+        terminalState: "streaming" as const,
+      },
+    };
+    const active = renderFoundation(
+      { kind: "canvas", committedText: "" },
+      controller,
+      { kind: "bound", generation: 3, displayLabel: "Keiko Native" },
+      undefined,
+      {
+        state: "ready",
+        quarantinedEvents: 0,
+        descriptor: completedRuntimeDescriptor(),
+      },
+      undefined,
+      streaming,
+      turnController,
+    );
+    const readinessRetry = elements(active).find(
+      ({ type, props }) =>
+        type === "button" && props.children === "Prüfung wiederholen",
+    )?.props;
+    expect(readinessRetry?.disabled).toBe(true);
+    const cancel = elements(active).find(
+      ({ type, props }) =>
+        type === "button" && props.children === "Codex-Lauf abbrechen",
+    )?.props;
+    expect(cancel?.["aria-disabled"]).toBeUndefined();
+    (cancel?.onClick as () => void)();
+    expect(cancelTurn).toHaveBeenCalledOnce();
+
+    const stopping = {
+      ...streaming,
+      state: "stopping" as const,
+      reason: "user-cancelled" as const,
+      evidence: {
+        ...streaming.evidence,
+        terminalState: "stopping" as const,
+      },
+    };
+    const stoppingView = renderFoundation(
+      { kind: "canvas", committedText: "" },
+      controller,
+      { kind: "bound", generation: 3, displayLabel: "Keiko Native" },
+      undefined,
+      {
+        state: "ready",
+        quarantinedEvents: 0,
+        descriptor: completedRuntimeDescriptor(),
+      },
+      undefined,
+      stopping,
+      turnController,
+    );
+    const stoppingButton = elements(stoppingView).find(
+      ({ type, props }) =>
+        type === "button" && props.children === "Codex-Lauf wird beendet",
+    )?.props;
+    expect(stoppingButton?.["aria-disabled"]).toBe("true");
+    (stoppingButton?.onClick as () => void)();
+    expect(cancelTurn).toHaveBeenCalledOnce();
+    expect(textContent(stoppingView)).toContain(
+      "Keiko beendet den Codex-Lauf sicher.",
+    );
+  });
+
+  it("keeps the turn disabled until both workspace identity and exact runtime are ready", () => {
+    for (const [workspace, runtime] of [
+      [{ kind: "empty", generation: 0 } as const, null],
+      [
+        { kind: "bound", generation: 3, displayLabel: "Keiko Native" } as const,
+        { state: "unavailable" as const, quarantinedEvents: 0 },
+      ],
+    ] as const) {
+      const rendered = renderFoundation(
+        { kind: "canvas", committedText: "" },
+        controller,
+        workspace,
+        undefined,
+        runtime,
+      );
+      const task = elements(rendered).find(
+        ({ props }) => props.id === "codex-task",
+      )?.props;
+      const submit = elements(rendered).find(
+        ({ type, props }) =>
+          type === "button" && props.children === "Begrenzten Auftrag starten",
+      )?.props;
+      const textareaNode = { value: "Bounded.", disabled: false };
+      const buttonNode = { disabled: false };
+      (task?.ref as (node: unknown) => void)(textareaNode);
+      (submit?.ref as (node: unknown) => void)(buttonNode);
+      (task?.onInput as () => void)();
+      expect(buttonNode.disabled).toBe(true);
     }
   });
 

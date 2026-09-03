@@ -2,12 +2,30 @@ use std::time::Instant;
 
 use keiko_ui_port::ReasonCode;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CancellationSource {
+    User,
+    RendererLost,
+    AppShutdown,
+}
+
 #[derive(Debug)]
 pub(crate) struct InFlight {
     pub(crate) cancelled_at_ms: Option<u64>,
+    pub(crate) cancellation_source: Option<CancellationSource>,
     pub(crate) generation: u64,
     pub(crate) started_at_ms: u64,
-    pub(crate) timeout_ms: u16,
+    pub(crate) timeout_ms: u32,
+}
+
+impl InFlight {
+    pub(crate) fn cancel(&mut self, now_ms: u64, source: CancellationSource) -> u64 {
+        if self.cancelled_at_ms.is_none() {
+            self.cancelled_at_ms = Some(now_ms);
+            self.cancellation_source = Some(source);
+        }
+        self.cancelled_at_ms.unwrap_or(now_ms)
+    }
 }
 
 #[derive(Debug)]

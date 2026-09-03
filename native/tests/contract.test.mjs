@@ -64,3 +64,27 @@ test("frontend build and test loaders preserve the npm-ci inventory", () => {
     );
   }
 });
+
+test("workspace authority remains host-owned and metadata-only", () => {
+  const application = readFileSync(
+    join(root, "crates/keiko-application/src/workspace.rs"),
+    "utf8",
+  );
+  const host = readFileSync(
+    join(root, "crates/keiko-host-macos/src/workspace.rs"),
+    "utf8",
+  );
+  const frontend = readFileSync(join(root, "frontend/src/port.ts"), "utf8");
+
+  assert.doesNotMatch(application, /\b(?:Path|PathBuf|std::fs)\b/u);
+  assert.match(host, /\bsymlink_metadata\b/u);
+  assert.match(host, /\bcanonicalize\b/u);
+  assert.doesNotMatch(
+    host,
+    /\b(?:read_dir|read_to_end|read_to_string|File::open|OpenOptions|write_all)\b/u,
+  );
+  assert.doesNotMatch(
+    frontend,
+    /\b(?:selectedPath|canonicalPath|workspaceRoot|repositoryContent)\b/u,
+  );
+});

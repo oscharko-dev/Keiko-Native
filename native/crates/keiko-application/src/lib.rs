@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+pub mod runtime;
+pub mod turn;
+pub mod workspace;
+
 pub const PRODUCT_NAME: &str = "Keiko Native";
 pub const INTERNAL_CHANNEL: &str = "internal";
 pub const REPOSITORY_URL: &str = "https://github.com/oscharko-dev/Keiko-Native";
@@ -27,6 +31,14 @@ pub enum ApplicationResult {
         status: String,
         build: BuildIdentity,
     },
+    #[serde(rename = "workspace")]
+    Workspace { state: workspace::WorkspaceView },
+    #[serde(rename = "runtime-readiness")]
+    RuntimeReadiness {
+        state: runtime::RuntimeReadinessView,
+    },
+    #[serde(rename = "codex-turn")]
+    CodexTurn { state: turn::TurnView },
     #[serde(rename = "welcome")]
     Welcome { title: String, explanation: String },
     #[serde(rename = "canvas")]

@@ -1,0 +1,62 @@
+{
+  "schemaVersion": "keiko-native-macos-accessibility-driver-capture/v2",
+  "phase": "denied",
+  "predecessor": {
+    "phase": "allowed",
+    "sha256": "fd956ea36b14a389d8ed861698f81c98377d028a9ea7b993d50b14f64ee95994"
+  },
+  "prepared": {
+    "schemaVersion": "keiko-native-macos-accessibility-driver-prepared/v1",
+    "sourceHead": "b53eceb9dc97e9d25b54486853895e67734d3c2a",
+    "sourceDigest": "8a1631f2ae7ecdaf7847681ef039c2cc31d01c9cd4a93466da1fce2bb8b0e608",
+    "bundleIdentifier": "dev.oscharko.keiko-native.evaluation.accessibility",
+    "representativePackageSha256": "9221319c3d37bdd7c2e36c0558f039d60d1aa3b3223f49668c3b4fa7aedf3e0c",
+    "representativeInspection": {
+      "candidateFilesInsidePackage": 0,
+      "missingCheckpoints": [],
+      "packageFiles": [
+        "Contents/Info.plist",
+        "Contents/MacOS/KeikoAccessibilityEvaluation"
+      ],
+      "privateApis": 0,
+      "productHooks": 0,
+      "status": "prepared"
+    },
+    "candidateDigests": {
+      "axuielement": "067860e0e034bea56c66816302fc7ceb76a93696b246a4a743a63db7ddc4ab6b",
+      "systemEvents": "40a389c429c149259897b3eba79368e5f8fb0a85356581d3d2e2e6676b687287"
+    }
+  },
+  "options": {
+    "axuielement": {
+      "status": "denied",
+      "repetitions": 1,
+      "successfulRepetitions": 0,
+      "checkpointPasses": 0,
+      "boundedWaits": true,
+      "unexplainedFailures": 0,
+      "reasonCode": "accessibility-permission-denied",
+      "cleanupOwnedDescendants": 0
+    },
+    "systemEvents": {
+      "status": "denied",
+      "repetitions": 0,
+      "successfulRepetitions": 0,
+      "checkpointPasses": 0,
+      "boundedWaits": true,
+      "unexplainedFailures": 0,
+      "reasonCode": "authoritative-evidence-unavailable",
+      "cleanupOwnedDescendants": 0
+    }
+  },
+  "timings": {
+    "axuielement": [
+      {
+        "checkpoints": [],
+        "elapsedMs": 29,
+        "repetition": 1
+      }
+    ],
+    "systemEvents": []
+  }
+}

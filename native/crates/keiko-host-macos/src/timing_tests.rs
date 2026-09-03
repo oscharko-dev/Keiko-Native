@@ -1,4 +1,6 @@
 use keiko_application::current_build_identity;
+use keiko_application::runtime::RuntimeDescriptor;
+use keiko_application::turn::TurnSession;
 use keiko_ui_port::{dispatch_health, encode_success};
 
 use super::*;
@@ -172,4 +174,79 @@ fn final_mutex_sample_host_unavailability_and_at_most_once_are_enforced() {
             .complete_application_request(duplicate)
             .contains("internal-failure")
     );
+}
+
+#[test]
+fn runtime_cleanup_failure_survives_the_request_deadline() {
+    let (mut lifecycle, sender) = started();
+    lifecycle.set_test_now_ms(0);
+    let accepted = accept(&mut lifecycle, &sender, 1, "request-00000001");
+    let duplicate = AcceptedRequest {
+        generation: accepted.generation,
+        request: accepted.request.clone(),
+    };
+    lifecycle.set_test_now_ms(1_000);
+    let encoded = lifecycle.complete_runtime_request(
+        accepted,
+        RuntimeReadinessView::terminal(RuntimeReadinessState::CleanupFailed, 3),
+    );
+    assert!(encoded.contains("cleanup-failed"));
+    assert!(encoded.contains("\"quarantinedEvents\":3"));
+    assert!(!encoded.contains("timed-out"));
+    assert!(
+        lifecycle
+            .complete_runtime_request(
+                duplicate,
+                RuntimeReadinessView::terminal(RuntimeReadinessState::Ready, 0),
+            )
+            .contains("internal-failure")
+    );
+
+    lifecycle.set_test_now_ms(0);
+    let timed_out = accept(&mut lifecycle, &sender, 2, "request-00000002");
+    lifecycle.set_test_now_ms(1_000);
+    assert!(
+        lifecycle
+            .complete_runtime_request(
+                timed_out,
+                RuntimeReadinessView::terminal(RuntimeReadinessState::Ready, 0),
+            )
+            .contains("timed-out")
+    );
+}
+
+#[test]
+fn turn_containment_failure_survives_late_cancel_and_deadline() {
+    for cancellation_at_ms in [Some(1_u64), None] {
+        let (mut lifecycle, sender) = started();
+        lifecycle.set_test_now_ms(0);
+        let accepted = accept(&mut lifecycle, &sender, 1, "request-00000001");
+        if let Some(cancelled_at_ms) = cancellation_at_ms {
+            lifecycle.set_test_now_ms(cancelled_at_ms);
+            assert!(
+                lifecycle
+                    .cancel_application_request(&sender, &cancel(1))
+                    .contains("cancelled")
+            );
+        }
+        lifecycle.set_test_now_ms(1_000);
+        let mut session = TurnSession::new(
+            1,
+            1,
+            1,
+            "Bounded task.".to_owned(),
+            RuntimeDescriptor::approved(),
+        )
+        .expect("turn session");
+        session
+            .fail(TurnState::ContainmentFailed, TurnReason::ProtocolRejected)
+            .expect("containment terminal");
+        session.settle_cleanup(true).expect("cleanup settlement");
+
+        let encoded = lifecycle.complete_turn_request(accepted, session.view());
+
+        assert!(encoded.contains("containment-failed"));
+        assert!(!encoded.contains("cancelled"));
+        assert!(!encoded.contains("timed-out"));
+    }
 }

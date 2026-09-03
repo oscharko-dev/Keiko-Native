@@ -55,6 +55,7 @@ fn acknowledgement_requires_two_successes_in_one_generation() {
             &nonce('a'),
             &cancel(generation, 1),
         )
+        .encoded
         .contains("cancelled")
     );
     assert!(
@@ -168,6 +169,22 @@ fn command_wrapper_rejects_non_exact_authorities() {
 }
 
 #[test]
+fn runtime_workspace_poison_fails_closed_instead_of_dropping_isolation() {
+    let healthy = Mutex::new(WorkspaceHost::default());
+    assert_eq!(tauri_adapter::runtime_isolation_root(&healthy), Ok(None));
+
+    let poisoned = Mutex::new(WorkspaceHost::default());
+    let _ = std::panic::catch_unwind(|| {
+        let _guard = poisoned.lock().expect("workspace lock before poisoning");
+        panic!("poison workspace");
+    });
+    assert_eq!(
+        tauri_adapter::runtime_isolation_root(&poisoned),
+        Err(ReasonCode::InternalFailure)
+    );
+}
+
+#[test]
 fn tauri_host_commands_cover_success_cancellation_and_poisoning() {
     let lifecycle = Mutex::new(HostLifecycle::default());
     lifecycle
@@ -229,6 +246,7 @@ fn tauri_host_commands_cover_success_cancellation_and_poisoning() {
             &nonce('a'),
             &cancel(1, 1),
         )
+        .encoded
         .contains("cancelled")
     );
     assert!(
@@ -251,6 +269,7 @@ fn tauri_host_commands_cover_success_cancellation_and_poisoning() {
     );
     assert!(
         application_cancel(&poisoned, "main", "tauri://localhost", 0, &nonce('a'), "{}",)
+            .encoded
             .contains("internal-failure")
     );
 }
@@ -293,6 +312,7 @@ fn stale_queued_wrapper_request_and_cancel_keep_document_generation() {
             &old_nonce,
             &cancel(old_generation, 1),
         )
+        .encoded
         .contains("unauthorized")
     );
     assert_eq!(

@@ -1,8 +1,11 @@
 use keiko_application::{ApplicationResponse, BuildIdentity, HealthRequest, health_response};
 use serde::{Deserialize, Serialize};
 
-pub const MAX_REQUEST_BYTES: usize = 4096;
+pub const MAX_REQUEST_BYTES: usize = 8192;
 pub const MAX_SEQUENCE: u64 = 9_007_199_254_740_991;
+const MAX_REQUEST_TIMEOUT_MS: u32 = 1000;
+const MAX_RUNTIME_READINESS_TIMEOUT_MS: u32 = 5000;
+const MAX_CODEX_TURN_TIMEOUT_MS: u32 = 120_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReasonCode {
@@ -52,7 +55,7 @@ pub struct UiRequest {
     request_id: String,
     sequence: u64,
     #[serde(rename = "timeoutMs")]
-    timeout_ms: u16,
+    timeout_ms: u32,
     operation: Operation,
 }
 
@@ -89,6 +92,20 @@ pub enum Operation {
     OpenFoundationLink { destination: LinkDestination },
     #[serde(rename = "quit-application")]
     QuitApplication,
+    #[serde(rename = "workspace-status")]
+    WorkspaceStatus,
+    #[serde(rename = "workspace-select")]
+    WorkspaceSelect,
+    #[serde(rename = "workspace-clear")]
+    WorkspaceClear,
+    #[serde(rename = "runtime-readiness")]
+    RuntimeReadiness,
+    #[serde(rename = "codex-turn-start")]
+    CodexTurnStart {
+        #[serde(rename = "workspaceGeneration")]
+        workspace_generation: u64,
+        task: String,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -112,13 +129,15 @@ pub struct ErrorResponse {
     pub error: ErrorBody,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CancelResult {
     pub kind: String,
     pub status: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CancelResponse {
     #[serde(rename = "schemaVersion")]
     pub schema_version: u8,
@@ -143,6 +162,11 @@ pub fn parse_request(bytes: &[u8]) -> Result<UiRequest, ReasonCode> {
         "commit-canvas-text",
         "open-foundation-link",
         "quit-application",
+        "workspace-status",
+        "workspace-select",
+        "workspace-clear",
+        "runtime-readiness",
+        "codex-turn-start",
     ];
     if value
         .get("operation")
@@ -152,29 +176,76 @@ pub fn parse_request(bytes: &[u8]) -> Result<UiRequest, ReasonCode> {
     {
         return Err(ReasonCode::UnknownOperation);
     }
+    if !operation_fields_are_closed(&value) {
+        return Err(ReasonCode::InvalidRequest);
+    }
     let request: UiRequest =
         serde_json::from_slice(bytes).map_err(|_| ReasonCode::InvalidRequest)?;
     if request.schema_version != 1 {
         return Err(ReasonCode::UnsupportedSchema);
     }
+    let maximum_timeout_ms = match request.operation {
+        Operation::RuntimeReadiness => MAX_RUNTIME_READINESS_TIMEOUT_MS,
+        Operation::CodexTurnStart { .. } => MAX_CODEX_TURN_TIMEOUT_MS,
+        _ => MAX_REQUEST_TIMEOUT_MS,
+    };
     if !valid_request_id(&request.request_id)
         || request.timeout_ms == 0
-        || request.timeout_ms > 1000
+        || request.timeout_ms > maximum_timeout_ms
     {
         return Err(ReasonCode::InvalidRequest);
     }
     if request.sequence == 0 || request.sequence > MAX_SEQUENCE {
         return Err(ReasonCode::StaleRequest);
     }
+    if let Operation::CodexTurnStart {
+        workspace_generation,
+        ref task,
+    } = request.operation
+        && (workspace_generation == 0
+            || workspace_generation > MAX_SEQUENCE
+            || !keiko_application::turn::valid_task(task))
+    {
+        return Err(ReasonCode::InvalidRequest);
+    }
     Ok(request)
 }
 
-pub fn request_metadata(request: &UiRequest) -> (&str, u64, u16) {
+fn operation_fields_are_closed(value: &serde_json::Value) -> bool {
+    let Some(operation) = value
+        .get("operation")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return false;
+    };
+    let Some(kind) = operation.get("kind").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let expected = match kind {
+        "commit-canvas-text" => &["committedText", "kind"][..],
+        "open-foundation-link" => &["destination", "kind"][..],
+        "codex-turn-start" => &["kind", "task", "workspaceGeneration"][..],
+        _ => &["kind"][..],
+    };
+    operation.len() == expected.len() && expected.iter().all(|key| operation.contains_key(*key))
+}
+
+pub fn request_metadata(request: &UiRequest) -> (&str, u64, u32) {
     (&request.request_id, request.sequence, request.timeout_ms)
 }
 
 pub fn request_operation(request: &UiRequest) -> &Operation {
     &request.operation
+}
+
+pub fn turn_input(request: &UiRequest) -> Option<(u64, &str)> {
+    match &request.operation {
+        Operation::CodexTurnStart {
+            workspace_generation,
+            task,
+        } => Some((*workspace_generation, task)),
+        _ => None,
+    }
 }
 
 pub fn parse_cancel(bytes: &[u8]) -> Result<CancelRequest, ReasonCode> {
@@ -311,6 +382,131 @@ mod tests {
     }
 
     #[test]
+    fn workspace_intents_are_closed_and_never_accept_a_renderer_path() {
+        let request = |operation: &str| {
+            format!(
+                r#"{{"schemaVersion":1,"requestId":"request-0000000000000001-0000000000000001","sequence":1,"timeoutMs":1000,"operation":{operation}}}"#
+            )
+        };
+        for accepted in [
+            r#"{"kind":"workspace-status"}"#,
+            r#"{"kind":"workspace-select"}"#,
+            r#"{"kind":"workspace-clear"}"#,
+        ] {
+            assert!(parse_request(request(accepted).as_bytes()).is_ok());
+        }
+        for rejected in [
+            r#"{"kind":"workspace-select","path":"/private/sensitive"}"#,
+            r#"{"kind":"workspace-status","root":"repository"}"#,
+            r#"{"kind":"workspace-clear","generation":1}"#,
+        ] {
+            assert_eq!(
+                parse_request(request(rejected).as_bytes()),
+                Err(ReasonCode::InvalidRequest)
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_readiness_is_a_closed_path_free_intent_with_its_own_deadline() {
+        let request = |timeout_ms: u32, operation: &str| {
+            format!(
+                r#"{{"schemaVersion":1,"requestId":"request-0000000000000001-0000000000000001","sequence":1,"timeoutMs":{timeout_ms},"operation":{operation}}}"#
+            )
+        };
+        assert!(parse_request(request(5000, r#"{"kind":"runtime-readiness"}"#).as_bytes()).is_ok());
+        for rejected in [
+            request(5001, r#"{"kind":"runtime-readiness"}"#),
+            request(5000, r#"{"kind":"runtime-readiness","path":"/tmp/codex"}"#),
+            request(
+                5000,
+                r#"{"kind":"runtime-readiness","environment":{"HOME":"/tmp"}}"#,
+            ),
+            request(5000, r#"{"kind":"application-health"}"#),
+        ] {
+            assert_eq!(
+                parse_request(rejected.as_bytes()),
+                Err(ReasonCode::InvalidRequest)
+            );
+        }
+    }
+
+    #[test]
+    fn codex_turn_is_closed_bounded_and_has_the_frozen_deadline() {
+        let request = |timeout_ms: u32, operation: &str| {
+            format!(
+                r#"{{"schemaVersion":1,"requestId":"request-0000000000000001-0000000000000001","sequence":1,"timeoutMs":{timeout_ms},"operation":{operation}}}"#
+            )
+        };
+        let encoded = request(
+            120_000,
+            r#"{"kind":"codex-turn-start","workspaceGeneration":7,"task":"Grüße かな 😀"}"#,
+        );
+        let parsed = parse_request(encoded.as_bytes()).expect("closed turn");
+        assert_eq!(turn_input(&parsed), Some((7, "Grüße かな 😀")));
+        for rejected in [
+            request(
+                120_001,
+                r#"{"kind":"codex-turn-start","workspaceGeneration":7,"task":"bounded"}"#,
+            ),
+            request(
+                120_000,
+                r#"{"kind":"codex-turn-start","workspaceGeneration":0,"task":"bounded"}"#,
+            ),
+            request(
+                120_000,
+                r#"{"kind":"codex-turn-start","workspaceGeneration":7,"task":""}"#,
+            ),
+            request(
+                120_000,
+                r#"{"kind":"codex-turn-start","workspaceGeneration":7,"task":"bounded","path":"/tmp/repository"}"#,
+            ),
+            request(
+                120_000,
+                r#"{"kind":"codex-turn-start","workspaceGeneration":7,"task":"bounded","tools":[]}"#,
+            ),
+        ] {
+            assert_eq!(
+                parse_request(rejected.as_bytes()),
+                Err(ReasonCode::InvalidRequest)
+            );
+        }
+        let oversized_task = "x".repeat(keiko_application::turn::MAX_TASK_BYTES + 1);
+        assert_eq!(
+            parse_request(
+                request(
+                    120_000,
+                    &format!(
+                        r#"{{"kind":"codex-turn-start","workspaceGeneration":7,"task":"{oversized_task}"}}"#
+                    ),
+                )
+                .as_bytes(),
+            ),
+            Err(ReasonCode::InvalidRequest)
+        );
+    }
+
+    #[test]
+    fn workspace_response_exposes_only_bounded_view_state() {
+        let encoded = encode_success(&keiko_application::application_response(
+            "request-0000000000000001-0000000000000001",
+            keiko_application::ApplicationResult::Workspace {
+                state: keiko_application::workspace::WorkspaceView::Bound {
+                    generation: 3,
+                    display_label: "Keiko Native".to_owned(),
+                },
+            },
+        ));
+        assert_eq!(
+            encoded,
+            r#"{"schemaVersion":1,"requestId":"request-0000000000000001-0000000000000001","result":{"kind":"workspace","state":{"kind":"bound","generation":3,"displayLabel":"Keiko Native"}}}"#
+        );
+        for prohibited in ["path", "root", "device", "inode", ".git"] {
+            assert!(!encoded.contains(prohibited));
+        }
+    }
+
+    #[test]
     fn rejects_unknown_fields_and_oversized_payloads() {
         let mut unknown = canonical();
         unknown.splice(1..1, b"\"extra\":true,".iter().copied());
@@ -346,7 +542,7 @@ mod tests {
 
     #[test]
     fn enforces_request_identifier_sequence_and_timeout_boundaries() {
-        let request = |request_id: &str, sequence: u64, timeout_ms: u16| {
+        let request = |request_id: &str, sequence: u64, timeout_ms: u32| {
             format!(
                 r#"{{"schemaVersion":1,"requestId":"{request_id}","sequence":{sequence},"timeoutMs":{timeout_ms},"operation":{{"kind":"application-health"}}}}"#,
             )

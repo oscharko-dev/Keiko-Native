@@ -2,6 +2,11 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, sep } from "node:path";
 
 const coverageModules = Object.freeze([
+  "codex-compatibility.mjs",
+  "codex-tracer-acceptance.mjs",
+  "codex-tracer-acceptance-io.mjs",
+  "codex-tracer-accessibility.mjs",
+  "codex-tracer-accessibility-source.mjs",
   "deterministic-order.mjs",
   "git-integrity.mjs",
   "contract.mjs",
@@ -50,6 +55,10 @@ const coverageModules = Object.freeze([
   "lifecycle-wakeup-router.mjs",
   "single-file-zip.mjs",
   "merge-group.mjs",
+  "macos-accessibility-driver-evaluation.mjs",
+  "macos-accessibility-driver-harness.mjs",
+  "macos-accessibility-driver-source.mjs",
+  "macos-accessibility-foundation-attestation.mjs",
   "internal-release.mjs",
   "internal-release-workflow.mjs",
   "attestation-policy.mjs",

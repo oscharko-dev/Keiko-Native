@@ -128,6 +128,7 @@ const adr0006Target = {
 const productiveCommands = [
   ...Object.values(adr0006Target.commands),
   "acceptance:macos",
+  "acceptance:codex-tracer:macos",
 ];
 
 function productiveManifest(overrides = {}) {
@@ -3866,6 +3867,10 @@ test("fails closed for missing declared productive roots", async () => {
       packageJson(
         Object.fromEntries([
           ...commandNames.map((command) => [command, "node --version"]),
+          [
+            "acceptance:codex-tracer:macos",
+            "node quality/run-codex-tracer-acceptance.mjs",
+          ],
           ["coverage", canonicalCoverageCommand],
           ["quality:control", qualityControlScript],
           [
@@ -3907,6 +3912,10 @@ test("accepts declared productive source roots and targets", async () => {
       packageJson(
         Object.fromEntries([
           ...commandNames.map((command) => [command, "node --version"]),
+          [
+            "acceptance:codex-tracer:macos",
+            "node quality/run-codex-tracer-acceptance.mjs",
+          ],
           ["coverage", canonicalCoverageCommand],
           ["quality:control", qualityControlScript],
           [
@@ -3971,6 +3980,10 @@ test("fails closed when productive commands are not wired locally and in CI", as
     assert.match(failures, /Local quality does not execute/u);
     assert.match(failures, /Native CI command step/u);
     assert.match(failures, /Native acceptance package script is missing/u);
+    assert.match(
+      failures,
+      /Codex tracer acceptance package script is missing/u,
+    );
     assert.match(failures, /Native CI marker is missing/u);
   } finally {
     await rm(root, { force: true, recursive: true });

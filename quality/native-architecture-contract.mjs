@@ -43,13 +43,20 @@ export function architectureFailures(entries, project) {
     )
     .map(({ text }) => text)
     .join("\n");
-  for (const command of frontend.matchAll(/["'](application_[a-z_-]+)["']/gu)) {
-    if (!new Set(["application_request", "application_cancel"]).has(command[1]))
+  const allowedCommands = new Set([
+    "application_request",
+    "application_cancel",
+    "codex_turn_request",
+    "foundation_request",
+    "runtime_request",
+    "workspace_request",
+  ]);
+  for (const command of frontend.matchAll(
+    /["']((?:application|codex|foundation|runtime|workspace)_[a-z_-]+)["']/gu,
+  )) {
+    if (!allowedCommands.has(command[1])) {
       failures.push(`forbidden-renderer-command:${command[1]}`);
-  }
-  for (const command of frontend.matchAll(/["'](foundation_[a-z_-]+)["']/gu)) {
-    if (command[1] !== "foundation_request")
-      failures.push(`forbidden-renderer-command:${command[1]}`);
+    }
   }
   return failures;
 }

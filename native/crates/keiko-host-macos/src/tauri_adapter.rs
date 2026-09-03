@@ -1,13 +1,16 @@
 use std::sync::Mutex;
 
+use tauri::ipc::Channel;
 use tauri::webview::{PageLoadEvent, PageLoadPayload};
 use tauri::{AppHandle, Manager, RunEvent, Runtime, State, Webview, WebviewWindow, Window};
 
 use crate::document_nonce::secure_document_nonce;
 use crate::{
-    FoundationHost, HostLifecycle, SenderContext, application_cancel as dispatch_cancel,
-    application_request as dispatch_request, canonical_origin,
-    foundation_request as dispatch_foundation_request, is_bundled_navigation,
+    FolderPickerResult, FoundationHost, HostLifecycle, RuntimeHost, SenderContext, WorkspaceHost,
+    application_cancel as dispatch_cancel, application_request as dispatch_request,
+    canonical_origin, foundation_request as dispatch_foundation_request, is_bundled_navigation,
+    runtime_request as dispatch_runtime_request, turn_request as dispatch_turn_request,
+    workspace_request as dispatch_workspace_request,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -89,6 +92,23 @@ pub fn lose_renderer(lifecycle: &Mutex<HostLifecycle>) {
     }
 }
 
+pub fn stop_runtime(runtime: &RuntimeHost) {
+    runtime.cancel_for_renderer_loss();
+}
+
+pub fn stop_runtime_for_shutdown(runtime: &RuntimeHost) -> bool {
+    runtime.cancel_for_app_shutdown_and_wait()
+}
+
+pub(crate) fn runtime_isolation_root(
+    workspace: &Mutex<WorkspaceHost>,
+) -> Result<Option<std::path::PathBuf>, keiko_ui_port::ReasonCode> {
+    workspace
+        .lock()
+        .map(|workspace| workspace.bound_root_for_isolation())
+        .map_err(|_| keiko_ui_port::ReasonCode::InternalFailure)
+}
+
 pub fn shut_down(lifecycle: &Mutex<HostLifecycle>) {
     if let Ok(mut lifecycle) = lifecycle.lock() {
         lifecycle.shutdown();
@@ -122,19 +142,24 @@ pub fn application_request(
 pub fn application_cancel(
     window: WebviewWindow,
     lifecycle: State<'_, Mutex<HostLifecycle>>,
+    runtime: State<'_, RuntimeHost>,
     generation: u64,
     document_nonce: String,
     request: String,
 ) -> String {
     let origin = canonical_origin(window.url().ok().as_ref());
-    dispatch_cancel(
+    let output = dispatch_cancel(
         lifecycle.inner(),
         window.label(),
         &origin,
         generation,
         &document_nonce,
         &request,
-    )
+    );
+    if let Some(request_id) = output.cancelled_request_id.as_deref() {
+        runtime.cancel_request(request_id);
+    }
+    output.encoded
 }
 
 #[tauri::command]
@@ -165,6 +190,160 @@ pub fn foundation_request(
         app.exit(0);
     }
     output.encoded
+}
+
+#[tauri::command]
+pub fn workspace_request(
+    window: WebviewWindow,
+    lifecycle: State<'_, Mutex<HostLifecycle>>,
+    workspace: State<'_, Mutex<WorkspaceHost>>,
+    runtime: State<'_, RuntimeHost>,
+    generation: u64,
+    document_nonce: String,
+    request: String,
+) -> String {
+    let origin = canonical_origin(window.url().ok().as_ref());
+    let sender = SenderContext {
+        window_label: window.label().to_owned(),
+        origin,
+        generation,
+        document_nonce,
+    };
+    let output = dispatch_workspace_request(
+        lifecycle.inner(),
+        workspace.inner(),
+        &sender,
+        &request,
+        Box::new(|workspace_generation| {
+            runtime.cancel_for_workspace_change_and_wait(workspace_generation)
+        }),
+        Box::new(platform_select_workspace),
+    );
+    if output.acknowledged_status {
+        eprintln!("keiko-native-workspace-ack/v1 state=available");
+    }
+    output.encoded
+}
+
+#[tauri::command]
+pub async fn runtime_request(
+    app: AppHandle,
+    window: WebviewWindow,
+    generation: u64,
+    document_nonce: String,
+    request: String,
+) -> String {
+    let sender = SenderContext {
+        window_label: window.label().to_owned(),
+        origin: canonical_origin(window.url().ok().as_ref()),
+        generation,
+        document_nonce,
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let lifecycle = app.state::<Mutex<HostLifecycle>>();
+        let runtime = app.state::<RuntimeHost>();
+        let workspace = app.state::<Mutex<WorkspaceHost>>();
+        let selected_workspace = match runtime_isolation_root(workspace.inner()) {
+            Ok(selected_workspace) => selected_workspace,
+            Err(reason) => return keiko_ui_port::encode_error("unknown-request", reason),
+        };
+        dispatch_runtime_request(
+            lifecycle.inner(),
+            runtime.inner(),
+            &sender,
+            selected_workspace.as_deref(),
+            &request,
+        )
+        .encoded
+    })
+    .await
+    .unwrap_or_else(|_| {
+        keiko_ui_port::encode_error(
+            "unknown-request",
+            keiko_ui_port::ReasonCode::InternalFailure,
+        )
+    })
+}
+
+#[tauri::command]
+pub async fn codex_turn_request(
+    app: AppHandle,
+    window: WebviewWindow,
+    generation: u64,
+    document_nonce: String,
+    request: String,
+    on_event: Channel<keiko_application::turn::TurnView>,
+) -> String {
+    let sender = SenderContext {
+        window_label: window.label().to_owned(),
+        origin: canonical_origin(window.url().ok().as_ref()),
+        generation,
+        document_nonce,
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let lifecycle = app.state::<Mutex<HostLifecycle>>();
+        let runtime = app.state::<RuntimeHost>();
+        let workspace = app.state::<Mutex<WorkspaceHost>>();
+        dispatch_turn_request(
+            lifecycle.inner(),
+            workspace.inner(),
+            runtime.inner(),
+            &sender,
+            &request,
+            |view| {
+                if on_event.send(view).is_err() {
+                    runtime.cancel_for_renderer_loss();
+                }
+            },
+        )
+        .encoded
+    })
+    .await
+    .unwrap_or_else(|_| {
+        keiko_ui_port::encode_error(
+            "unknown-request",
+            keiko_ui_port::ReasonCode::InternalFailure,
+        )
+    })
+}
+
+fn platform_select_workspace() -> FolderPickerResult {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSModalResponseCancel, NSModalResponseOK, NSOpenPanel};
+        #[allow(deprecated)]
+        use objc2_foundation::MainThreadMarker;
+        use objc2_foundation::NSString;
+
+        let Some(main_thread) = MainThreadMarker::new() else {
+            return FolderPickerResult::Unavailable;
+        };
+        let panel = NSOpenPanel::openPanel(main_thread);
+        panel.setCanChooseDirectories(true);
+        panel.setCanChooseFiles(false);
+        panel.setAllowsMultipleSelection(false);
+        panel.setResolvesAliases(false);
+        panel.setTitle(Some(&NSString::from_str(
+            "Lokales Git-Repository auswählen",
+        )));
+        panel.setPrompt(Some(&NSString::from_str("Repository auswählen")));
+        panel.setMessage(Some(&NSString::from_str(
+            "Keiko bindet dieses Repository nur für die aktuelle Sitzung.",
+        )));
+        match panel.runModal() {
+            response if response == NSModalResponseOK => panel
+                .URL()
+                .and_then(|url| url.path())
+                .map(|path| FolderPickerResult::Selected(path.to_string().into()))
+                .unwrap_or(FolderPickerResult::Unavailable),
+            response if response == NSModalResponseCancel => FolderPickerResult::Cancelled,
+            _ => FolderPickerResult::Unavailable,
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        FolderPickerResult::Unavailable
+    }
 }
 
 fn platform_open(url: &str) -> bool {
@@ -200,6 +379,7 @@ pub fn handle_page_load<R: Runtime>(webview: &Webview<R>, payload: &PageLoadPayl
     );
     match decision {
         PageLoadDecision::BeginDocument => {
+            stop_runtime(webview.state::<RuntimeHost>().inner());
             if started != Some(true) {
                 eprintln!("keiko-renderer-authority-generation-failed");
             }
@@ -217,17 +397,41 @@ pub fn handle_page_load<R: Runtime>(webview: &Webview<R>, payload: &PageLoadPayl
 
 pub fn handle_web_content_process_terminate<R: Runtime>(webview: &Webview<R>) {
     lose_renderer(webview.state::<Mutex<HostLifecycle>>().inner());
+    stop_runtime(webview.state::<RuntimeHost>().inner());
 }
 
 pub fn handle_window_event<R: Runtime>(window: &Window<R>, event: &tauri::WindowEvent) {
     if matches!(event, tauri::WindowEvent::Destroyed) {
         lose_renderer(window.state::<Mutex<HostLifecycle>>().inner());
+        stop_runtime(window.state::<RuntimeHost>().inner());
     }
 }
 
+fn begin_exit_request_shutdown(
+    lifecycle: &Mutex<HostLifecycle>,
+    stop_runtime: impl FnOnce() -> bool,
+) -> bool {
+    shut_down(lifecycle);
+    !stop_runtime()
+}
+
 pub fn handle_run_event<R: Runtime>(handle: &AppHandle<R>, event: RunEvent) {
-    if matches!(event, RunEvent::Exit | RunEvent::ExitRequested { .. }) {
-        shut_down(handle.state::<Mutex<HostLifecycle>>().inner());
+    match event {
+        RunEvent::ExitRequested { api, .. } => {
+            if begin_exit_request_shutdown(handle.state::<Mutex<HostLifecycle>>().inner(), || {
+                stop_runtime_for_shutdown(handle.state::<RuntimeHost>().inner())
+            }) {
+                api.prevent_exit();
+                eprintln!("keiko-native-runtime-shutdown-cleanup-failed");
+            }
+        }
+        RunEvent::Exit => {
+            shut_down(handle.state::<Mutex<HostLifecycle>>().inner());
+            if !stop_runtime_for_shutdown(handle.state::<RuntimeHost>().inner()) {
+                eprintln!("keiko-native-runtime-shutdown-cleanup-failed");
+            }
+        }
+        _ => {}
     }
 }
 
