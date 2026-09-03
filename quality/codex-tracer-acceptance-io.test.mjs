@@ -1150,10 +1150,12 @@ function referenceEnvironmentOutputs(displayOutput) {
   ]);
 }
 
-async function inspectDisplayProfile(displayOutput) {
+async function inspectDisplayProfile(displayOutput, inspectDisplayTopology) {
   const outputs = referenceEnvironmentOutputs(displayOutput);
-  return inspectReferenceEnvironment((command, args) =>
-    Promise.resolve(outputs.get([command, ...args].join("\0"))),
+  return inspectReferenceEnvironment(
+    (command, args) =>
+      Promise.resolve(outputs.get([command, ...args].join("\0"))),
+    inspectDisplayTopology,
   );
 }
 
@@ -1169,6 +1171,102 @@ function externalDisplay({ main = false, refresh = "60.00" } = {}) {
     spdisplays_online: "spdisplays_yes",
   };
 }
+
+test("reference inspection invokes and agrees with the AppKit display aggregate", async () => {
+  const cases = [
+    {
+      displays: [externalDisplay({ main: true })],
+      topology: {
+        activeDisplayCount: 1,
+        externalDisplayCount: 1,
+        internalDisplayCount: 0,
+      },
+    },
+    {
+      displays: [
+        {
+          _spdisplays_pixels: "3024 x 1964",
+          _spdisplays_resolution: "1512 x 982 @ 120.00Hz",
+          spdisplays_connection_type: "spdisplays_internal",
+          spdisplays_main: "spdisplays_yes",
+          spdisplays_online: "spdisplays_yes",
+        },
+      ],
+      topology: {
+        activeDisplayCount: 1,
+        externalDisplayCount: 0,
+        internalDisplayCount: 1,
+      },
+    },
+  ];
+  for (const { displays, topology } of cases) {
+    let inspections = 0;
+    await inspectDisplayProfile(displayProfile(displays), async () => {
+      inspections += 1;
+      return topology;
+    });
+    assert.equal(inspections, 1);
+  }
+});
+
+test("reference inspection rejects mismatched or malformed AppKit aggregates", async () => {
+  const profile = displayProfile([externalDisplay({ main: true })]);
+  for (const topology of [
+    {
+      activeDisplayCount: 2,
+      externalDisplayCount: 2,
+      internalDisplayCount: 0,
+    },
+    {
+      activeDisplayCount: 1,
+      externalDisplayCount: 0,
+      internalDisplayCount: 1,
+    },
+    {
+      activeDisplayCount: 1,
+      externalDisplayCount: 1,
+      internalDisplayCount: 0,
+      displayIdentity: "private",
+    },
+    null,
+  ]) {
+    await assert.rejects(
+      inspectDisplayProfile(profile, async () => topology),
+      /acceptance-reference-environment-invalid/u,
+    );
+  }
+});
+
+test("reference inspection rejects AppKit topology drift between samples", async () => {
+  const before = await inspectDisplayProfile(
+    displayProfile([externalDisplay({ main: true })]),
+    async () => ({
+      activeDisplayCount: 1,
+      externalDisplayCount: 1,
+      internalDisplayCount: 0,
+    }),
+  );
+  const after = await inspectDisplayProfile(
+    displayProfile([
+      {
+        _spdisplays_pixels: "3024 x 1964",
+        _spdisplays_resolution: "1512 x 982 @ 120.00Hz",
+        spdisplays_connection_type: "spdisplays_internal",
+        spdisplays_main: "spdisplays_yes",
+        spdisplays_online: "spdisplays_yes",
+      },
+    ]),
+    async () => ({
+      activeDisplayCount: 1,
+      externalDisplayCount: 0,
+      internalDisplayCount: 1,
+    }),
+  );
+  assert.throws(
+    () => assertStableReferenceEnvironment(before, after),
+    /acceptance-reference-environment-changed/u,
+  );
+});
 
 test("reference Mac inspection accepts one external and mixed topologies deterministically", async () => {
   const external = await inspectDisplayProfile(

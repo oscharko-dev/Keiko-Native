@@ -30,6 +30,7 @@ import {
   acceptanceJourneyContract,
   acceptancePackageInspectionContract,
   acceptancePhysicalContract,
+  referenceDisplayTopology,
   referenceEnvironmentFailures,
   workspaceAcceptanceBudgetLimits,
   workspaceAcceptanceIdentityContract,
@@ -1778,7 +1779,27 @@ function normalizedDisplay(serialized) {
   }
 }
 
-export async function inspectReferenceEnvironment(runCommand = run) {
+function matchesReferenceDisplayTopology(observed, expected) {
+  const keys = [
+    "activeDisplayCount",
+    "externalDisplayCount",
+    "internalDisplayCount",
+  ];
+  return (
+    expected !== null &&
+    typeof observed === "object" &&
+    observed !== null &&
+    !Array.isArray(observed) &&
+    JSON.stringify(Object.keys(observed).toSorted(compareCodeUnits)) ===
+      JSON.stringify(keys) &&
+    keys.every((key) => observed[key] === expected[key])
+  );
+}
+
+export async function inspectReferenceEnvironment(
+  runCommand = run,
+  inspectDisplayTopology,
+) {
   const options = {
     inheritEnvironment: false,
     maxOutputBytes: 64 * 1024,
@@ -1792,6 +1813,18 @@ export async function inspectReferenceEnvironment(runCommand = run) {
   const environment = normalizedReferenceEnvironment(outputs);
   if (referenceEnvironmentFailures(environment).length > 0)
     throw new Error("acceptance-reference-environment-invalid");
+  if (inspectDisplayTopology !== undefined) {
+    const observedTopology =
+      typeof inspectDisplayTopology === "function"
+        ? await inspectDisplayTopology()
+        : null;
+    const expectedTopology = referenceDisplayTopology(
+      environment.display,
+      environment.scaling,
+    );
+    if (!matchesReferenceDisplayTopology(observedTopology, expectedTopology))
+      throw new Error("acceptance-reference-environment-invalid");
+  }
   return environment;
 }
 

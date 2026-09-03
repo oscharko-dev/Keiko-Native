@@ -449,22 +449,25 @@ export function referenceEnvironmentFailures(environment) {
     if (environment?.[key] !== value)
       failures.push(`reference-environment-${key}`);
   }
-  failures.push(
-    ...displayTopologyFailures(environment?.display, environment?.scaling),
-  );
+  if (
+    referenceDisplayTopology(environment?.display, environment?.scaling) ===
+    null
+  ) {
+    failures.push("reference-environment-display-topology");
+  }
   if (!acceptedPowerConditions.has(environment?.power))
     failures.push("reference-environment-power");
   return failures;
 }
 
-function displayTopologyFailures(display, scaling) {
+export function referenceDisplayTopology(display, scaling) {
   if (
     typeof display !== "string" ||
     !display.startsWith("topology-v1:") ||
     typeof scaling !== "string" ||
     !scaling.startsWith("modes-v1:")
   ) {
-    return ["reference-environment-display-topology"];
+    return null;
   }
   const displays = display.slice("topology-v1:".length).split(",");
   const modes = scaling.slice("modes-v1:".length).split(",");
@@ -473,7 +476,7 @@ function displayTopologyFailures(display, scaling) {
     displays.length > MAX_REFERENCE_DISPLAYS ||
     displays.length !== modes.length
   ) {
-    return ["reference-environment-display-topology"];
+    return null;
   }
   const entries = displays.map((entry, index) => `${entry}|${modes[index]}`);
   const valid = entries.every((entry) => validDisplayTopologyEntry(entry));
@@ -484,9 +487,17 @@ function displayTopologyFailures(display, scaling) {
     mainCount !== 1 ||
     JSON.stringify(entries) !== JSON.stringify(canonical)
   ) {
-    return ["reference-environment-display-topology"];
+    return null;
   }
-  return [];
+  return {
+    activeDisplayCount: displays.length,
+    externalDisplayCount: displays.filter((entry) =>
+      entry.startsWith("external-"),
+    ).length,
+    internalDisplayCount: displays.filter((entry) =>
+      entry.startsWith("internal-"),
+    ).length,
+  };
 }
 
 function validDisplayTopologyEntry(entry) {
@@ -743,18 +754,10 @@ export function acceptanceEvidenceFailures(evidence, expected) {
   ) {
     failures.push("cancellation-terminal-facts");
   }
-  const referenceDisplays = evidence?.referenceEnvironment?.display
-    ?.replace(/^topology-v1:/u, "")
-    .split(",");
-  const referenceTopology = {
-    activeDisplayCount: referenceDisplays?.length,
-    externalDisplayCount: referenceDisplays?.filter((display) =>
-      display.startsWith("external-"),
-    ).length,
-    internalDisplayCount: referenceDisplays?.filter((display) =>
-      display.startsWith("internal-"),
-    ).length,
-  };
+  const referenceTopology = referenceDisplayTopology(
+    evidence?.referenceEnvironment?.display,
+    evidence?.referenceEnvironment?.scaling,
+  );
   if (
     JSON.stringify(evidence?.physical?.observation?.displayTopology) !==
     JSON.stringify(referenceTopology)
