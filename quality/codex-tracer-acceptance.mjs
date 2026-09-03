@@ -21,9 +21,9 @@ export const acceptanceIdentityContract = Object.freeze({
   experimentalSchemaSha256:
     "46c4414f08cdbb20e66ce4153ee1edcb865ed5fda67e59511a78939ddb7a82d1",
   issueReadinessFingerprint:
-    "e0fbe5525f6d0a6b226637b28d5d01fa2942280bae9992af94e9f2bbb16d1ec5",
+    "4d8f5d77c00ae306faa1e13f040c55a2408495d2e2024f6355854d2b656326b0",
   parentReadinessFingerprint:
-    "7379fa729c801391761bd84f2148203e67b37219cd84fd73c00e6c0d2f0b39d6",
+    "e7c12d4f3c32cd509c01051c0532d5833fc8e3ff54580592bc7c3b53fc4ab5f0",
   promptSha256:
     "e1a92579b1ca673135331829beb97792c1289a6bccdfe0303302256c546960f6",
   runtimeArtifactSha256:

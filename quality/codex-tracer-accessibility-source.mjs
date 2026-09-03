@@ -46,6 +46,8 @@ export const tracerAccessibilitySource = String.raw`#import <ApplicationServices
 
 static const NSUInteger kMaximumElements = 2048;
 static const NSUInteger kMaximumDepth = 12;
+static const CFIndex kMaximumPickerTraversalElements = 512;
+static const CFIndex kMaximumPickerChildren = 256;
 
 static BOOL ActivateApplication(pid_t pid) {
   NSRunningApplication *application =
@@ -321,8 +323,12 @@ static AXUIElementRef FindPickerPanel(AXUIElementRef application) {
         (AXUIElementRef)CFArrayGetValueAtIndex(windows, index);
     if (StringAttributeEquals(
             window, kAXIdentifierAttribute, CFSTR("open-panel"))) {
+      if (result != NULL) {
+        CFRelease(result);
+        result = NULL;
+        break;
+      }
       result = (AXUIElementRef)CFRetain(window);
-      break;
     }
   }
   CFRelease(value);
@@ -333,33 +339,60 @@ static AXUIElementRef FindDescendantByIdentifier(
     AXUIElementRef root, CFStringRef identifier) {
   CFMutableArrayRef queue =
       CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
+  if (queue == NULL) return NULL;
   CFArrayAppendValue(queue, root);
   AXUIElementRef result = NULL;
-  for (CFIndex cursor = 0;
-       cursor < CFArrayGetCount(queue) && cursor < 128;
-       cursor += 1) {
+  BOOL ambiguous = NO;
+  BOOL complete = YES;
+  for (CFIndex cursor = 0; cursor < CFArrayGetCount(queue); cursor += 1) {
     AXUIElementRef element =
         (AXUIElementRef)CFArrayGetValueAtIndex(queue, cursor);
     if (StringAttributeEquals(element, kAXIdentifierAttribute, identifier)) {
+      if (result != NULL) {
+        ambiguous = YES;
+        break;
+      }
       result = (AXUIElementRef)CFRetain(element);
-      break;
     }
     CFTypeRef value = NULL;
-    if (AXUIElementCopyAttributeValue(
-            element, kAXChildrenAttribute, &value) != kAXErrorSuccess ||
-        value == NULL)
+    AXError childrenError = AXUIElementCopyAttributeValue(
+        element, kAXChildrenAttribute, &value);
+    if (childrenError == kAXErrorAttributeUnsupported ||
+        childrenError == kAXErrorNoValue) {
+      if (value != NULL) CFRelease(value);
       continue;
-    if (CFGetTypeID(value) == CFArrayGetTypeID()) {
-      CFArrayRef children = (CFArrayRef)value;
-      CFIndex count = MIN(CFArrayGetCount(children), 64);
-      for (CFIndex index = 0;
-           index < count && CFArrayGetCount(queue) < 128;
-           index += 1)
-        CFArrayAppendValue(queue, CFArrayGetValueAtIndex(children, index));
+    }
+    if (childrenError != kAXErrorSuccess || value == NULL ||
+        CFGetTypeID(value) != CFArrayGetTypeID()) {
+      if (value != NULL) CFRelease(value);
+      complete = NO;
+      break;
+    }
+    CFArrayRef children = (CFArrayRef)value;
+    CFIndex childCount = CFArrayGetCount(children);
+    if (childCount > kMaximumPickerChildren) {
+      complete = NO;
+    } else {
+      for (CFIndex index = 0; index < childCount; index += 1) {
+        const void *child = CFArrayGetValueAtIndex(children, index);
+        if (CFArrayContainsValue(
+                queue, CFRangeMake(0, CFArrayGetCount(queue)), child))
+          continue;
+        if (CFArrayGetCount(queue) >= kMaximumPickerTraversalElements) {
+          complete = NO;
+          break;
+        }
+        CFArrayAppendValue(queue, child);
+      }
     }
     CFRelease(value);
+    if (!complete) break;
   }
   CFRelease(queue);
+  if ((!complete || ambiguous) && result != NULL) {
+    CFRelease(result);
+    result = NULL;
+  }
   return result;
 }
 
@@ -621,6 +654,33 @@ static BOOL PressPickerControl(
   return error == kAXErrorSuccess;
 }
 
+static AXUIElementRef FindUniqueActionablePickerControl(
+    AXUIElementRef application, CFStringRef identifier) {
+  AXUIElementRef panel = FindPickerPanel(application);
+  if (panel == NULL) return NULL;
+  AXUIElementRef control =
+      FindDescendantByIdentifier(panel, identifier);
+  CFRelease(panel);
+  if (control == NULL) return NULL;
+  CFTypeRef enabled = NULL;
+  CFArrayRef actions = NULL;
+  BOOL isEnabled =
+      AXUIElementCopyAttributeValue(
+          control, kAXEnabledAttribute, &enabled) == kAXErrorSuccess &&
+      enabled != NULL && CFGetTypeID(enabled) == CFBooleanGetTypeID() &&
+      CFBooleanGetValue((CFBooleanRef)enabled);
+  BOOL exposesPress =
+      AXUIElementCopyActionNames(control, &actions) == kAXErrorSuccess &&
+      actions != NULL &&
+      CFArrayContainsValue(
+          actions, CFRangeMake(0, CFArrayGetCount(actions)), kAXPressAction);
+  if (enabled != NULL) CFRelease(enabled);
+  if (actions != NULL) CFRelease(actions);
+  if (isEnabled && exposesPress) return control;
+  CFRelease(control);
+  return NULL;
+}
+
 static double MonotonicSeconds(void);
 
 static BOOL PressPickerControlWithProjectionTiming(
@@ -780,11 +840,6 @@ static BOOL Press(AXUIElementRef application, CFStringRef expected) {
   return Perform(application, expected, kAXPressAction);
 }
 
-static BOOL PressEither(
-    AXUIElementRef application, CFStringRef first, CFStringRef second) {
-  return Press(application, first) || Press(application, second);
-}
-
 static BOOL SetValue(
     AXUIElementRef application, CFStringRef expected, CFStringRef value) {
   AXUIElementRef element = FindUnique(application, expected);
@@ -889,6 +944,41 @@ static BOOL WaitForUnique(
     double now = MonotonicSeconds();
     if (now < 0.0 || now >= deadline) return NO;
   }
+}
+
+static AXUIElementRef WaitForUniqueActionablePickerControl(
+    AXUIElementRef application, CFStringRef identifier) {
+  const double startedAt = MonotonicSeconds();
+  if (startedAt < 0.0) return NULL;
+  const double deadline = startedAt + 5.0;
+  while (YES) {
+    AXUIElementRef control =
+        FindUniqueActionablePickerControl(application, identifier);
+    if (control != NULL) return control;
+    usleep(5 * 1000);
+    double now = MonotonicSeconds();
+    if (now < 0.0 || now >= deadline) return NULL;
+  }
+}
+
+static BOOL PressReadyPickerCancellation(
+    AXUIElementRef application,
+    double *projectionStartedAt,
+    const char **failureReasonCode) {
+  AXUIElementRef control = WaitForUniqueActionablePickerControl(
+      application, CFSTR("CancelButton"));
+  if (control == NULL) return NO;
+  *failureReasonCode = "bounded-wait-expired";
+  double actionStartedAt = MonotonicSeconds();
+  if (actionStartedAt < 0.0) {
+    CFRelease(control);
+    return NO;
+  }
+  AXError error = AXUIElementPerformAction(control, kAXPressAction);
+  CFRelease(control);
+  if (error != kAXErrorSuccess) return NO;
+  *projectionStartedAt = actionStartedAt;
+  return YES;
 }
 
 static BOOL WaitForProjection(
@@ -996,6 +1086,8 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
     double projectionStartedAt = 0.0;
     NSUInteger nativeActionMs = 0;
     NSString *selectedWorkspaceProjection = nil;
+    const char *failureReasonCode =
+        "missing-or-ambiguous-semantic-target";
     if ([action isEqualToString:@"probe-start"]) {
       BOOL welcome = HasUnique(application, CFSTR("Foundation öffnen"));
       BOOL canvas = HasUnique(application, CFSTR("codex-task"));
@@ -1068,12 +1160,8 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
         }
       }
     } else if ([action isEqualToString:@"cancel-workspace-picker"]) {
-      projectionStartedAt = MonotonicSeconds();
-      passed = PressPickerControl(application, CFSTR("CancelButton"));
-      if (!passed) {
-        projectionStartedAt = MonotonicSeconds();
-        passed = PressEither(application, CFSTR("Cancel"), CFSTR("Abbrechen"));
-      }
+      passed = PressReadyPickerCancellation(
+          application, &projectionStartedAt, &failureReasonCode);
     } else if ([action isEqualToString:@"observe-workspace-cancelled"]) {
       passed = HasUnique(
           application,
@@ -1144,17 +1232,16 @@ ${tracerAccessibilityActivatingActions.map((action) => `      @"${action}",`).jo
       if ([observation isEqualToString:@"observe-workspace-selected"]) {
         EmitWorkspaceProjection(
             passed,
-            "missing-or-ambiguous-semantic-target",
+            failureReasonCode,
             projectedMs,
             nativeActionMs);
       } else {
-        EmitProjection(
-            passed, "missing-or-ambiguous-semantic-target", projectedMs);
+        EmitProjection(passed, failureReasonCode, projectedMs);
       }
       return passed ? 0 : 1;
     }
     CFRelease(application);
-    Emit(passed, "missing-or-ambiguous-semantic-target");
+    Emit(passed, failureReasonCode);
     return passed ? 0 : 1;
   }
 }
