@@ -99,6 +99,10 @@ const referenceEnvironmentCommands = Object.freeze([
   ],
   ["/usr/bin/sw_vers", ["-productVersion"]],
   ["/usr/bin/sw_vers", ["-buildVersion"]],
+  [
+    "/usr/sbin/system_profiler",
+    ["SPDisplaysDataType", "-json", "-detailLevel", "mini"],
+  ],
   ["/usr/bin/pmset", ["-g", "batt"]],
   ["/usr/bin/pmset", ["-g", "custom"]],
   ["/usr/bin/pmset", ["-g", "therm"]],
@@ -1791,58 +1795,6 @@ export async function inspectReferenceEnvironment(runCommand = run) {
   return environment;
 }
 
-function normalizedWorkspaceDisplay(serialized) {
-  try {
-    const displays = JSON.parse(serialized)?.SPDisplaysDataType?.flatMap(
-      ({ spdisplays_ndrvs: drivers }) => drivers ?? [],
-    );
-    const display =
-      Array.isArray(displays) && displays.length === 1 ? displays[0] : null;
-    return display?.spdisplays_connection_type === "spdisplays_internal" &&
-      display?.spdisplays_main === "spdisplays_yes" &&
-      display?._spdisplays_pixels === "3024 x 1964" &&
-      display?._spdisplays_resolution === "1512 x 982 @ 120.00Hz"
-      ? {
-          display: "built-in-main-3024x1964-120hz",
-          scaling: "logical-1512x982-2x-default",
-        }
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-export async function inspectWorkspaceReferenceEnvironment(runCommand = run) {
-  const options = {
-    inheritEnvironment: false,
-    maxOutputBytes: 64 * 1024,
-    timeoutMs: acceptanceSubprocessTimeouts.inspection,
-  };
-  const [outputs, displayOutput] = await Promise.all([
-    Promise.all(
-      referenceEnvironmentCommands.map(([command, args]) =>
-        runCommand(command, args, options),
-      ),
-    ),
-    runCommand(
-      "/usr/sbin/system_profiler",
-      ["SPDisplaysDataType", "-json", "-detailLevel", "mini"],
-      options,
-    ),
-  ]);
-  const current = normalizedReferenceEnvironment([
-    ...outputs.slice(0, 3),
-    { activeDisplayCount: 1, externalDisplayCount: 0, internalDisplayCount: 1 },
-    ...outputs.slice(3),
-  ]);
-  const display = normalizedWorkspaceDisplay(displayOutput);
-  const { displayTopology: _displayTopology, ...normalized } = current;
-  const environment = display === null ? null : { ...display, ...normalized };
-  if (workspaceReferenceEnvironmentFailures(environment).length > 0)
-    throw new Error("workspace-acceptance-reference-environment-invalid");
-  return environment;
-}
-
 async function inspectActiveDisplayTopology(adapterBinary) {
   const serialized = await runAcceptanceSubprocess(
     adapterBinary,
@@ -1987,8 +1939,7 @@ async function prepareWorkspaceJourney(prepared, reportProgress) {
       }).then(() => ({ error: undefined, status: 0 })),
   );
   reportProgress("started", "post-observation:reference-environment");
-  const referenceEnvironmentBefore =
-    await inspectWorkspaceReferenceEnvironment();
+  const referenceEnvironmentBefore = await inspectReferenceEnvironment();
   reportProgress("completed", "post-observation:reference-environment");
   const [runtimeBefore, workspaceBefore] = await Promise.all([
     snapshotDirectory(prepared.internal.runtimeWorkRoot),
@@ -2073,7 +2024,7 @@ async function executeWorkspaceJourney(prepared, resources, reportProgress) {
     reportProgress("started", "post-observation:reference-environment");
     const [referenceEnvironmentAfter, runtimeAfter, workspaceAfter] =
       await Promise.all([
-        inspectWorkspaceReferenceEnvironment(),
+        inspectReferenceEnvironment(),
         snapshotDirectory(prepared.internal.runtimeWorkRoot),
         Promise.all(
           prepared.internal.workspaceRoots.map((root) =>
@@ -2137,11 +2088,12 @@ function normalizedReferenceEnvironment([
   hardware,
   version,
   build,
-  displayTopology,
+  displayOutput,
   powerOutput,
   powerProfiles,
   thermalOutput,
 ]) {
+  const display = normalizedDisplay(displayOutput);
   const powerMatch = /^Now drawing from '(AC|Battery) Power'(?:\n|$)/u.exec(
     powerOutput,
   );
@@ -2159,7 +2111,7 @@ function normalizedReferenceEnvironment([
     "Note: No CPU power status has been recorded",
   ].join("\n");
   return {
-    displayTopology,
+    ...display,
     hardware:
       hardware === "Apple M4\n17179869184\nMac16,1"
         ? "apple-m4-16-gib-mac16-1"

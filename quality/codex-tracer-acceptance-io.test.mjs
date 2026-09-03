@@ -1016,6 +1016,7 @@ test("reference Mac inspection accepts a valid two-external-display topology", a
 
 test("reference Mac inspection emits only normalized closed reproducibility metadata", async () => {
   const calls = [];
+  const displaySerialCanary = "private-display-serial";
   const outputs = new Map([
     [
       "/usr/sbin/sysctl\0-n\0machdep.cpu.brand_string\0hw.memsize\0hw.model",

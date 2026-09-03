@@ -291,6 +291,21 @@ test("cancellation evidence rejects contradictory terminal facts", () => {
   );
 });
 
+test("physical display evidence matches identity-free reference aggregates", () => {
+  const { evidence, expected } = validEvidence();
+  evidence.physical.observation.displayTopology = {
+    activeDisplayCount: 2,
+    externalDisplayCount: 2,
+    internalDisplayCount: 0,
+  };
+
+  assert.ok(
+    acceptanceEvidenceFailures(evidence, expected).includes(
+      "display-topology-facts",
+    ),
+  );
+});
+
 test("full v3 durably retains the validated physical v2 observation", () => {
   const { evidence, expected } = validEvidence();
   evidence.physical.observation = {
