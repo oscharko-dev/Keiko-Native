@@ -23,7 +23,7 @@
     "axe-core": "4.12.1",
     "happy-dom": "20.11.0",
     "typescript": "5.9.3",
-    "vite": "7.3.6",
+    "vite": "7.3.7",
     "vitest": "4.1.8"
   }
 }
